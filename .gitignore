@@ -1,0 +1,8 @@
+/target
+/data
+/test-media
+/releases
+/web/dist/dist
+*.DS_Store
+docker-compose.override.yml
+fyms-rs

@@ -1,0 +1,110 @@
+services:
+  # ============================================
+  # FYMS 媒体服务器
+  # ============================================
+  fyms:
+    image: qingde/fyms-rust:latest
+    container_name: fyms-rust
+    restart: unless-stopped
+    ports:
+      - "8961:8961"           # 服务端口，左边可改（如 "9000:8961"）
+    environment:
+      # ---------- 数据库配置 ----------
+      - DB_HOST=db            # 用下面的 db 容器就填 db；用外部数据库就填 IP
+      - DB_PORT=5432          # 数据库端口
+      - DB_NAME=media_server  # 数据库名
+      - DB_USER=postgres      # 数据库用户名
+      - DB_PASSWORD=postgres  # 数据库密码，生产环境务必修改！
+      # ---------- Redis 配置 ----------
+      - REDIS_HOST=redis      # 用下面的 redis 容器就填 redis；用外部 Redis 就填 IP
+      - REDIS_PORT=6379       # Redis 端口
+      - REDIS_PASSWORD=fyms_redis_secret  # Redis 密码，建议修改
+      # ---------- 其他配置 ----------
+      - PORT=8961             # 服务监听端口
+      - SERVER_NAME=FYMS      # 显示在播放器中的服务器名称
+      # - DB_POOL_MAX=400     # 数据库连接池上限（默认400，一般不用改）
+    volumes:
+      - ./data:/app/data      # 应用数据（缓存、日志、备份）
+      - /mnt:/mnt:ro          # 媒体文件目录（只读），根据实际路径修改
+      # 如有多个媒体目录，按需添加：
+      # - /path/to/movies:/path/to/movies:ro
+      # - /path/to/tvshows:/path/to/tvshows:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+
+  # ============================================
+  # PostgreSQL 数据库
+  # 如果已有外部 PostgreSQL，可删除此服务，
+  # 并修改上方 DB_HOST/DB_PORT/DB_PASSWORD 指向外部数据库
+  # ============================================
+  db:
+    image: postgres:16-alpine
+    container_name: fyms-postgres
+    restart: unless-stopped
+    # ---------- 性能调优（按数据量和服务器内存调整） ----------
+    # shared_buffers:      PG 数据页缓存，建议为服务器内存的 25%，最大 8GB
+    #                      1万电影+3万集 → 512MB | 10万+50万 → 2GB | 更大 → 4-8GB
+    # effective_cache_size: 预估操作系统文件缓存大小，通常为内存的 50-75%
+    # work_mem:            每个排序/哈希操作的内存，复杂查询多时适当增大
+    command: postgres -c shared_buffers=512MB -c effective_cache_size=2GB -c work_mem=16MB
+    environment:
+      - POSTGRES_USER=postgres       # 需与上方 DB_USER 一致
+      - POSTGRES_PASSWORD=postgres   # 需与上方 DB_PASSWORD 一致
+      - POSTGRES_DB=media_server     # 需与上方 DB_NAME 一致
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Redis 缓存
+  # 如果已有外部 Redis，可删除此服务，
+  # 并修改上方 REDIS_HOST/REDIS_PORT 指向外部 Redis
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: fyms-redis
+    restart: unless-stopped
+    command: redis-server --requirepass fyms_redis_secret  # 密码需与上方 REDIS_PASSWORD 一致
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "fyms_redis_secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# 持久化卷
+volumes:
+  pgdata:
+  redisdata:
+
+# ============================================
+# 使用外部数据库的配置示例：
+# 假设你的 PostgreSQL 在 192.168.100.50:5301
+#
+#   fyms:
+#     environment:
+#       - DB_HOST=192.168.100.50
+#       - DB_PORT=5301
+#       - DB_NAME=media_server
+#       - DB_USER=postgres
+#       - DB_PASSWORD=你的密码
+#       - REDIS_HOST=redis
+#       - REDIS_PORT=6379
+#       - REDIS_PASSWORD=fyms_redis_secret
+#     depends_on:
+#       redis:
+#         condition: service_healthy
+#     # 删掉 db 的 depends_on
+#
+# 然后删除上面的 db 服务和 pgdata 卷即可
+# ============================================

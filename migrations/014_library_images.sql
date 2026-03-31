@@ -1,0 +1,2 @@
+ALTER TABLE libraries ADD COLUMN IF NOT EXISTS primary_image_path VARCHAR(1000);
+ALTER TABLE libraries ADD COLUMN IF NOT EXISTS primary_image_tag VARCHAR(100);

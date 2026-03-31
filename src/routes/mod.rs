@@ -1,0 +1,9 @@
+pub mod system;
+pub mod users;
+pub mod library;
+pub mod playback;
+pub mod videos;
+pub mod images;
+pub mod compat;
+pub mod stats;
+pub mod webhook;
