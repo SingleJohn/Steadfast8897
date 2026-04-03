@@ -1,8 +1,35 @@
-/target
+# Go
+/fyms
+/fyms-*
+/main
+/tmp/
+
+# Data & runtime
 /data
 /test-media
 /releases
-/web/dist/dist
+
+# macOS
 *.DS_Store
+
+# Docker
 docker-compose.override.yml
-fyms-rs
+docker-compose.dev.yml
+
+# Environment
+.env
+.air.toml
+
+# Frontend build output & dependencies
+web/dist/
+web/node_modules/
+web/.vite/
+
+# Logs & coverage
+*.log
+coverage/
+
+# Local editor / AI tool config
+.claude/
+.vscode/
+.idea/

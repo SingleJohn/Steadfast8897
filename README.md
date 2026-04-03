@@ -1,6 +1,6 @@
 # FYMS - Emby-Compatible Media Server
 
-高性能 Emby 兼容媒体服务器，Rust 编写。支持 Infuse、Emby 等客户端连接。
+高性能 Emby 兼容媒体服务器，Go + Vue 编写。支持 Infuse、Emby 等客户端连接。
 
 ## 功能
 
@@ -15,12 +15,67 @@
 - 媒体库实时文件监听
 - 备份与恢复
 - Emby Gateway 兼容
+- Gateway 请求与 IP 观测统计
+- 观测中心播放面板支持最近播放记录自动刷新
+
+## 项目结构
+
+```
+├── main.go             # Go 后端入口
+├── internal/           # Go 后端源码
+├── migrations/         # PostgreSQL 数据库迁移
+├── web/                # Vue 3 前端源码
+│   ├── src/            #   前端组件与页面
+│   ├── package.json    #   前端依赖
+│   └── dist/           #   构建产物（gitignore）
+├── go.mod              # Go 依赖
+├── Dockerfile          # 多阶段构建（前端 + 后端）
+└── docker-compose.yml  # 一键部署
+```
+
+## 本地开发
+
+### 前置要求
+
+- Go 1.23+
+- Node.js 20+
+- PostgreSQL 16+
+- Redis 7+
+
+### 后端
+
+```bash
+# 配置环境变量（或创建 .env 文件）
+export DB_HOST=localhost DB_PORT=5432 DB_NAME=media_server
+export DB_USER=postgres DB_PASSWORD=postgres
+export REDIS_HOST=127.0.0.1 REDIS_PORT=6379
+
+# 启动后端
+go run .
+```
+
+### 前端
+
+```bash
+cd web
+npm install
+npm run dev
+# 访问 http://localhost:3001，API 请求代理到后端 8961 端口
+```
+
+### 构建前端
+
+```bash
+cd web
+npm run build
+# 产物输出到 web/dist/，后端启动时自动加载
+```
 
 ## 快速部署（Docker）
 
 ```bash
 # 下载 docker-compose.yml
-curl -O https://raw.githubusercontent.com/Laiqingde/Fyms/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/ffoocn/fyms/main/docker-compose.yml
 
 # 启动（包含 PostgreSQL + Redis）
 docker-compose up -d
@@ -28,9 +83,10 @@ docker-compose up -d
 # 访问 http://localhost:8961
 ```
 
+
 ## 裸机部署
 
-从 [Releases](https://github.com/Laiqingde/Fyms/releases) 下载最新版本的压缩包，解压后：
+从 [Releases](https://github.com/ffoocn/fyms/releases) 下载最新版本的压缩包，解压后：
 
 ```bash
 # 需要自行安装 PostgreSQL 和 Redis
@@ -44,8 +100,8 @@ export DB_PASSWORD=postgres
 export REDIS_HOST=127.0.0.1
 export REDIS_PORT=6379
 
-# 运行
-./fyms-rs
+# 在解压后的发布目录中运行
+./fyms
 ```
 
 ## 环境变量
@@ -64,12 +120,52 @@ export REDIS_PORT=6379
 | REDIS_PASSWORD | | Redis 密码（可选） |
 | DB_POOL_MAX | 400 | 数据库连接池上限 |
 
+## 管理后台配置补充
+
+- 后台 `管理 -> 媒体库` 页面已调整为顶部标签切换，`媒体库` 与 `扫描设置` 分开展示，更接近 Emby 的操作方式
+- 后台 `管理 -> 总览` 已移除 `流量趋势`、`Emby 源状态`、`Top 重定向后端` 三个展示模块，页面聚焦基础运行状态与服务控制
+- 后台左侧导航在 `元数据` 与 `工具` 之间增加了分割线，提升“管理”分组内的视觉层次
+
+## 仓库清理约定
+
+- 构建产物与本地依赖目录默认不入库：`web/dist/`、`web/node_modules/`、`web/.vite/`
+- 本地工具配置与编辑器目录默认不入库：`.claude/`、`.vscode/`、`.idea/`
+- 日志与覆盖率输出默认不入库：`*.log`、`coverage/`
+
+## 前台首页补充
+
+- 前台 `/#/` 首页保留轮播、继续观看、收藏和分媒体库最新内容等核心浏览区
+- 首页会在检测到媒体库扫描任务时展示顶部扫描横幅，并自动轮询刷新扫描进度
+- 首页已移除顶部“问候语 + 用户名”欢迎模块，减少首屏干扰
+- 亮色模式下首页滚动时不再切换为暗色壳层，整体视觉跟随当前主题保持一致
+- 前台媒体页已移除左侧边栏，导航聚焦为顶部搜索、返回与用户菜单
+- 首页轮播、扫描横幅、列表控件等圆角统一改为跟随主题设置中的 `圆角`
+- 媒体详情页已支持按展示需求隐藏“导演”模块
+
+### 元数据代理
+
+- 后台 `管理 -> 元数据 -> 刮削代理` 支持 `http://`、`https://`、`socks5://` 代理地址
+- 代理配置会在 TMDB 客户端创建时读取
+- 如果正在执行“刮削缺失元数据”批量任务，修改代理后请停止并重新启动该任务，让新配置生效
+- 后端日志会输出 TMDB 是否启用代理，以及代理地址格式是否无效
+
+### 元数据保存位置
+
+- 后台 `管理 -> 元数据 -> 刮削保存位置` 支持：
+- `数据库`：图片保存到 `data/metadata/`
+- `媒体目录`：图片与 NFO 直接写入媒体目录
+- `两者都写`：同时写入 `data/metadata/` 和媒体目录
+- 目前媒体目录模式会写入：
+- 电影：`poster.jpg`、`fanart.jpg`、`movie.nfo`
+- 剧集：剧集目录 `poster.jpg`、`fanart.jpg`、`tvshow.nfo`
+- 季：季目录 `poster.jpg`
+
 ## docker-compose.yml 配置说明
 
 ```yaml
 services:
   fyms:
-    image: qingde/fyms-rust:latest
+    image: eianz/fyms:latest
     ports:
       - "8961:8961"          # 左边可改
     volumes:
@@ -88,3 +184,15 @@ services:
 | Infuse | `http://IP:8961` |
 | Emby 客户端 | `http://IP:8961` |
 | Emby Gateway | upstream `http://IP:8961` |
+
+## 性能优化记录
+
+### 媒体库扫描优化（scanner.go）
+
+| 优化项 | 优化前 | 优化后 | 影响 |
+|--------|--------|--------|------|
+| 文件系统遍历 | countMediaEntries 预遍历 + 扫描再遍历（两次 NFS 往返） | 一次遍历收集 → 设总数 → goroutine 直接扫描 | NFS I/O 减半 |
+| 扫描并发度 | 5 个 goroutine | 10 个 goroutine | 吞吐量翻倍 |
+| ApplyNfoData | 每个 item 7+ 次独立 UPDATE | 1 次合并 UPDATE + 子查询替代 SELECT | DB 往返减少 ~70% |
+| IsVideoExt | slice O(n) 线性搜索 | map O(1) 查找 | 高频调用开销消除 |
+| NFO 正则解析 | 每个 NFO 编译 18+ 个正则 | 包级别预编译复用 | 消除重复编译 |

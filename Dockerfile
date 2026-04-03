@@ -1,20 +1,26 @@
-# ====== Stage 1: Build ======
-FROM rust:1.88-slim AS builder
+# ====== Stage 1: Build Frontend ======
+FROM node:22-slim AS frontend-builder
 
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
-    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null; \
-    apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev build-essential \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# ====== Stage 2: Build Backend (Go) ======
+FROM golang:1.23-alpine AS backend-builder
+
+RUN apk add --no-cache git
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY main.go ./
+COPY internal/ ./internal/
 
-# Build release binary
-RUN cargo build --release && strip target/release/fyms-rs
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o fyms .
 
-# ====== Stage 2: Runtime ======
+# ====== Stage 3: Runtime ======
 FROM debian:12-slim
 
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
@@ -27,13 +33,12 @@ RUN useradd -m -u 1000 fyms
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/fyms-rs /app/fyms-rs
-COPY web/dist /app/web/dist
+COPY --from=backend-builder /build/fyms /app/fyms
+COPY --from=frontend-builder /build/web/dist /app/web/dist
 COPY migrations /app/migrations
 RUN mkdir -p /app/data/logs /app/data/cache/images && chown -R fyms:fyms /app
 
-# Entrypoint script: ensure data dirs are writable, then exec app
-RUN printf '#!/bin/sh\nmkdir -p /app/data/logs /app/data/cache/images 2>/dev/null\nexec /app/fyms-rs "$@"\n' > /app/entrypoint.sh \
+RUN printf '#!/bin/sh\nmkdir -p /app/data/logs /app/data/cache/images 2>/dev/null\nexec /app/fyms "$@"\n' > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh
 
 USER fyms

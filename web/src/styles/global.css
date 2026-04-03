@@ -1,0 +1,243 @@
+:root {
+  color-scheme: light dark;
+
+  /* Palette: Slate-ish Neutral Tones */
+  --c-slate-50: #f8fafc;
+  --c-slate-100: #f1f5f9;
+  --c-slate-200: #e2e8f0;
+  --c-slate-300: #cbd5e1;
+  --c-slate-400: #94a3b8;
+  --c-slate-500: #64748b;
+  --c-slate-600: #475569;
+  --c-slate-700: #334155;
+  --c-slate-800: #1e293b;
+  --c-slate-900: #0f172a;
+  --c-slate-950: #020617;
+
+  /* App Tokens - Light Mode */
+  --app-bg: var(--c-slate-50);
+  --app-surface-1: rgba(255, 255, 255, 0.85);
+  --app-surface-2: rgba(255, 255, 255, 0.6);
+  --app-border: var(--c-slate-200);
+  --app-border-hover: var(--c-slate-300);
+  --app-text: var(--c-slate-900);
+  --app-text-muted: var(--c-slate-500);
+
+  --app-radius: 12px;
+  --app-radius-card: calc(var(--app-radius) + 4px);
+
+  /* Soft Shadows */
+  --app-shadow-0: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --app-shadow-1: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --app-shadow-card: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
+  --app-shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.06), 0 10px 10px -5px rgba(0, 0, 0, 0.03);
+
+  /* Primary & Functional Colors */
+  --app-primary: #10b981;
+  --app-primary-rgb: 16, 185, 129;
+  --app-glass-blur: 12px;
+
+  --app-success: #10b981;
+  --app-info: #3b82f6;
+  --app-warning: #f59e0b;
+  --app-error: #ef4444;
+
+  --app-section-gap: 24px;
+  --app-section-gap-compact: 16px;
+}
+
+html.app-dark {
+  --app-bg: var(--c-slate-950);
+  --app-surface-1: rgba(15, 23, 42, 0.8);
+  --app-surface-2: rgba(15, 23, 42, 0.55);
+  --app-border: var(--c-slate-800);
+  --app-border-hover: var(--c-slate-700);
+  --app-text: var(--c-slate-100);
+  --app-text-muted: var(--c-slate-400);
+
+  --app-shadow-0: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --app-shadow-1: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+  --app-shadow-card: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+  --app-shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+}
+
+html,
+body {
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: var(--app-bg);
+  color: var(--app-text);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+#app {
+  height: 100%;
+}
+
+/* --- Glass Effects --- */
+
+.glass {
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+}
+
+.glass-card {
+  background: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-0);
+  border-radius: var(--app-radius-card);
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, border-radius 0.2s ease;
+}
+
+.glass-card.interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--app-shadow-card);
+  border-color: var(--app-border-hover);
+}
+
+/* Naive UI Card overrides */
+.n-card > .n-card-header {
+  padding: 20px 24px 16px;
+}
+.n-card > .n-card__content {
+  padding: 0 24px 24px;
+}
+.n-card.n-card--bordered {
+  border-color: var(--app-border);
+}
+
+.n-card:not(.n-card--embedded) {
+  background: var(--app-surface-2) !important;
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+}
+
+.n-drawer .n-drawer-body-content-wrapper {
+  background: var(--app-surface-2) !important;
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+}
+
+.n-modal .n-card,
+.n-dialog .n-card {
+  background: var(--app-surface-2) !important;
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+}
+
+/* Glass modal */
+.glass-modal .n-card {
+  background: rgba(255, 255, 255, 0.55) !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  box-shadow: var(--app-shadow-card);
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+}
+.app-dark .glass-modal .n-card {
+  background: rgba(15, 23, 42, 0.6) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.glass-modal .n-data-table-th {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--app-text-muted);
+  font-weight: 600;
+}
+.app-dark .glass-modal .n-data-table-th {
+  background: rgba(15, 23, 42, 0.6);
+}
+.glass-modal .n-data-table-td {
+  background: transparent;
+}
+.glass-modal .n-data-table-th,
+.glass-modal .n-data-table-td {
+  border-color: rgba(148, 163, 184, 0.28);
+}
+.app-dark .glass-modal .n-data-table-th,
+.app-dark .glass-modal .n-data-table-td {
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.glass-modal .n-data-table {
+  --n-td-color: transparent !important;
+  --n-td-color-modal: transparent !important;
+  --n-th-color: rgba(148, 163, 184, 0.15) !important;
+  --n-th-color-modal: rgba(148, 163, 184, 0.15) !important;
+  --n-border-color: rgba(148, 163, 184, 0.28) !important;
+  --n-border-color-modal: rgba(148, 163, 184, 0.28) !important;
+}
+.app-dark .glass-modal .n-data-table {
+  --n-th-color: rgba(15, 23, 42, 0.6) !important;
+  --n-th-color-modal: rgba(15, 23, 42, 0.6) !important;
+  --n-border-color: rgba(148, 163, 184, 0.18) !important;
+  --n-border-color-modal: rgba(148, 163, 184, 0.18) !important;
+}
+
+.glass-modal .n-data-table-wrapper,
+.glass-modal .n-data-table-base-table,
+.glass-modal .n-data-table-table {
+  background: transparent !important;
+}
+
+/* Modal mask */
+.n-modal-mask,
+.n-dialog-mask {
+  background-color: rgba(15, 23, 42, 0.25) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+html.app-dark .n-modal-mask,
+html.app-dark .n-dialog-mask {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+}
+
+/* Dropdown / Popover glass */
+.n-popover,
+.n-dropdown-menu {
+  --n-color: var(--app-surface-2) !important;
+  background-color: var(--n-color) !important;
+  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+}
+
+/* Tooltip color fix */
+html:not(.app-dark) .n-tooltip {
+  --n-color: rgba(255, 255, 255, 0.92) !important;
+  --n-text-color: rgba(15, 23, 42, 0.92) !important;
+  color: rgba(15, 23, 42, 0.92) !important;
+}
+html.app-dark .n-tooltip {
+  --n-color: rgba(15, 23, 42, 0.85) !important;
+  --n-text-color: rgba(248, 250, 252, 0.92) !important;
+  color: rgba(248, 250, 252, 0.92) !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-slate-300);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-slate-400);
+}
+html.app-dark ::-webkit-scrollbar-thumb {
+  background: var(--c-slate-700);
+}
+html.app-dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--c-slate-600);
+}

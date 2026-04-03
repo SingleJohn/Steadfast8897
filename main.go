@@ -1,0 +1,276 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"fyms/internal/config"
+	"fyms/internal/database"
+	"fyms/internal/gateway"
+	"fyms/internal/handlers"
+	"fyms/internal/middleware"
+	"fyms/internal/services"
+)
+
+func init() {
+	mime.AddExtensionType(".wasm", "application/wasm")
+}
+
+func main() {
+	cfg := config.NewAppConfig()
+
+	logBuffer := services.NewLogBuffer(2000)
+
+	textHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	bufHandler := services.NewBufferHandler(textHandler, logBuffer)
+	slog.SetDefault(slog.New(bufHandler))
+
+	os.MkdirAll("data/logs", 0755)
+	go cleanupOldLogs("data/logs", 7)
+
+	slog.Info("FYMS starting", "port", cfg.Port)
+
+	pool, err := database.CreatePool(cfg)
+	if err != nil {
+		slog.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	if _, err := os.Stat("migrations"); err == nil {
+		if err := database.RunMigrations(pool, "migrations"); err != nil {
+			slog.Error("Failed to run migrations", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
+	sessionManager := services.NewSessionManager()
+	progressBuffer := services.NewProgressBuffer(pool)
+	scanProgress := services.NewScanProgressTracker()
+	probeTask := services.NewProbeTask()
+	fileWatcher := services.NewFileWatcher()
+	scrapeTask := services.NewScrapeTask()
+
+	var proxyURL *string
+	pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'tmdb_proxy'").Scan(&proxyURL)
+
+	var httpClient *http.Client
+	if proxyURL != nil && *proxyURL != "" {
+		proxyURLParsed, err := url.Parse(*proxyURL)
+		if err == nil {
+			httpClient = &http.Client{
+				Timeout: 15 * time.Second,
+				Transport: &http.Transport{
+					Proxy: http.ProxyURL(proxyURLParsed),
+				},
+			}
+			slog.Info("HTTP client configured with proxy", "proxy", *proxyURL)
+		} else {
+			httpClient = &http.Client{Timeout: 15 * time.Second}
+		}
+	} else {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+
+	state := &handlers.AppState{
+		DB:             pool,
+		Cache:          cache,
+		Config:         cfg,
+		SessionManager: sessionManager,
+		ProgressBuffer: progressBuffer,
+		ScanProgress:   scanProgress,
+		ProbeTask:      probeTask,
+		FileWatcher:    fileWatcher,
+		LogBuffer:      logBuffer,
+		ScrapeTask:     scrapeTask,
+		HTTPClient:     httpClient,
+	}
+
+	ctx := context.Background()
+	fileWatcher.Start(ctx, pool, cache)
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.FlushStalePlaybacks(pool, sessionManager)
+		}
+	}()
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(corsMiddleware())
+	r.Use(requestLogger())
+
+	r.Use(func(c *gin.Context) {
+		c.Set("state", state)
+		c.Next()
+	})
+
+	// Gateway (302 redirect engine)
+	gwStore := gateway.NewStore(pool)
+	gwRuntime := gateway.NewRuntime(gwStore, slog.Default(), cfg.Port)
+
+	gwCfg, err := gwStore.LoadConfig(ctx)
+	if err != nil {
+		slog.Warn("Failed to load gateway config, using defaults", "error", err)
+		gwCfg = gateway.DefaultGatewayConfig()
+	}
+	if err := gwRuntime.Rebuild(ctx, gwCfg); err != nil {
+		slog.Error("Failed to start gateway runtime", "error", err)
+	}
+
+	authMW := middleware.RequireAuth(pool, cache, sessionManager)
+	adminMW := middleware.RequireAdmin(pool, cache, sessionManager)
+	optAuthMW := middleware.OptionalAuth(pool, cache, sessionManager)
+
+	registerRoutes := func(group *gin.RouterGroup) {
+		handlers.RegisterSystemRoutes(group, state, adminMW)
+		handlers.RegisterUserRoutes(group, state, authMW, adminMW, optAuthMW)
+		handlers.RegisterLibraryRoutes(group, state, authMW, adminMW, optAuthMW)
+		handlers.RegisterPlaybackRoutes(group, state, authMW)
+		handlers.RegisterVideoRoutes(group, state, authMW)
+		handlers.RegisterImageRoutes(group, state)
+		handlers.RegisterCompatRoutes(group, state, authMW, adminMW, optAuthMW)
+		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
+		handlers.RegisterWebhookRoutes(group, state)
+		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
+	}
+
+	root := r.Group("")
+	registerRoutes(root)
+
+	emby := r.Group("/emby")
+	registerRoutes(emby)
+
+	webDist := "web/dist"
+	if _, err := os.Stat(webDist); err == nil {
+		r.Static("/web/dist", webDist)
+		r.NoRoute(func(c *gin.Context) {
+			p := c.Request.URL.Path
+			isAPI := strings.HasPrefix(p, "/api") ||
+				strings.HasPrefix(p, "/emby") ||
+				strings.HasPrefix(p, "/Gateway") ||
+				strings.HasPrefix(p, "/Users") ||
+				strings.HasPrefix(p, "/System") ||
+				strings.HasPrefix(p, "/Items") ||
+				strings.HasPrefix(p, "/Videos") ||
+				strings.HasPrefix(p, "/Sessions") ||
+				strings.HasPrefix(p, "/Library") ||
+				strings.HasPrefix(p, "/Auth") ||
+				strings.HasPrefix(p, "/Stats") ||
+				strings.HasPrefix(p, "/Plugins") ||
+				strings.HasPrefix(p, "/Shows")
+			if isAPI {
+				c.JSON(404, gin.H{"message": "Not found"})
+				return
+			}
+			localPath := filepath.Join(webDist, p)
+			if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+				c.File(localPath)
+				return
+			}
+			c.File(filepath.Join(webDist, "index.html"))
+		})
+	}
+
+	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
+	slog.Info("FYMS started", "addr", "http://"+addr, "serverID", cfg.ServerID)
+
+	if err := r.Run(addr); err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Emby-Token, X-Emby-Authorization")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	}
+}
+
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
+		method := c.Request.Method
+
+		ip := c.GetHeader("X-Forwarded-For")
+		if ip != "" {
+			ip = strings.SplitN(ip, ",", 2)[0]
+			ip = strings.TrimSpace(ip)
+		}
+		if ip == "" {
+			ip = c.GetHeader("X-Real-IP")
+		}
+		if ip == "" {
+			ip = c.ClientIP()
+		}
+
+		isPolling := strings.HasSuffix(path, "/Scan/Progress") ||
+			strings.HasSuffix(path, "/Probe/Progress") ||
+			strings.HasSuffix(path, "/Sessions") ||
+			strings.HasSuffix(path, "/Ping")
+
+		start := time.Now()
+		c.Next()
+		elapsed := time.Since(start).Milliseconds()
+		status := c.Writer.Status()
+
+		if !isPolling {
+			q := ""
+			if query != "" {
+				q = "?" + query
+			}
+			msg := fmt.Sprintf("%s %s%s → %d (%dms) ip=%s", method, path, q, status, elapsed, ip)
+			if status >= 500 {
+				slog.Error(msg)
+			} else if status >= 400 {
+				slog.Warn(msg)
+			} else {
+				slog.Info(msg)
+			}
+		}
+	}
+}
+
+func cleanupOldLogs(dir string, retentionDays int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.Remove(filepath.Join(dir, entry.Name()))
+			slog.Info("Cleaned up old log file", "file", entry.Name())
+		}
+	}
+}

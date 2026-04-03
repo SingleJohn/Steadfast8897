@@ -3,8 +3,8 @@ services:
   # FYMS 媒体服务器
   # ============================================
   fyms:
-    image: qingde/fyms-rust:latest
-    container_name: fyms-rust
+    image: eianz/fyms:latest
+    container_name: fyms
     restart: unless-stopped
     ports:
       - "8961:8961"           # 服务端口，左边可改（如 "9000:8961"）
