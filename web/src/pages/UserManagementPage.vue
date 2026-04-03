@@ -62,6 +62,13 @@ const editNewPw = ref('')
 const editConfirmPw = ref('')
 const showDeleteConfirm = ref(false)
 const solidModalMenuProps = { class: 'solid-modal-menu' }
+const forceSolidModalStyle = {
+  '--n-color': 'var(--app-modal-solid-card)',
+  '--n-color-modal': 'var(--app-modal-solid-card)',
+  '--n-border-color': 'var(--app-modal-solid-border)',
+  '--n-box-shadow': 'var(--app-shadow-card)',
+  '--n-action-color': 'var(--app-modal-solid-soft)',
+}
 
 const showEditModal = computed(() => editUserId.value !== null)
 
@@ -252,7 +259,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
     </div>
 
     <!-- Create User Modal -->
-    <n-modal v-model:show="showCreate" preset="card" title="添加用户" style="max-width: 440px" class="glass-modal solid-modal-card">
+    <n-modal v-model:show="showCreate" preset="card" title="添加用户" :style="[forceSolidModalStyle, { maxWidth: '440px' }]" class="glass-modal solid-modal-card force-solid-modal">
       <n-space vertical :size="16">
         <div>
           <label class="form-label">用户名</label>
@@ -309,8 +316,8 @@ const isSelf = computed(() => auth.userId === editUserId.value)
       :show="showEditModal"
       @update:show="(v: boolean) => { if (!v) closeEdit() }"
       preset="card"
-      class="glass-modal"
-      style="width: 640px; max-width: 94vw"
+      class="glass-modal force-solid-modal"
+      :style="[forceSolidModalStyle, { width: '640px', maxWidth: '94vw' }]"
       :title="editUser ? `编辑 · ${editUser.Name}` : '加载中...'"
     >
       <div v-if="editLoading" style="padding: 40px; text-align: center">
@@ -495,7 +502,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
   align-items: center;
   gap: 16px;
   padding: 16px 20px;
-  background: var(--app-surface-1);
+  background: var(--app-modal-panel-bg, var(--app-surface-1));
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   margin-bottom: 16px;
@@ -520,7 +527,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
 }
 
 .section-card {
-  background: var(--app-surface-1);
+  background: var(--app-modal-panel-bg, var(--app-surface-1));
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius);
   padding: 16px 20px;
@@ -554,7 +561,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
 
 .folder-list {
   margin-top: 10px; padding: 10px 14px;
-  background: rgba(128,128,128,0.04); border-radius: 8px;
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.04)); border-radius: 8px;
 }
 .folder-item { padding: 3px 0; }
 .folder-type { font-size: 12px; color: var(--app-text-muted); margin-left: 4px; }

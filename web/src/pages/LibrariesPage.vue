@@ -36,6 +36,13 @@ const newLibType = ref('movies')
 const newLibPaths = ref<string[]>([])
 const newLibPathInput = ref('')
 const solidModalMenuProps = { class: 'solid-modal-menu' }
+const forceSolidModalStyle = {
+  '--n-color': 'var(--app-modal-solid-card)',
+  '--n-color-modal': 'var(--app-modal-solid-card)',
+  '--n-border-color': 'var(--app-modal-solid-border)',
+  '--n-box-shadow': 'var(--app-shadow-card)',
+  '--n-action-color': 'var(--app-modal-solid-soft)',
+}
 
 const showDirBrowser = ref(false)
 const dirBrowserPath = ref('/mnt')
@@ -221,7 +228,7 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
     </n-tabs>
 
     <!-- Add Library Modal -->
-    <n-modal v-model:show="showAddLib" preset="card" title="添加媒体库" style="width: 500px; max-width: 90vw" class="solid-modal-card">
+    <n-modal v-model:show="showAddLib" preset="card" title="添加媒体库" :style="[forceSolidModalStyle, { width: '500px', maxWidth: '90vw' }]" class="solid-modal-card force-solid-modal">
       <form @submit.prevent="handleAddLibrary">
         <div class="form-group">
           <label class="form-label">名称</label>
@@ -258,7 +265,7 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
     </n-modal>
 
     <!-- Dir Browser Modal -->
-    <n-modal v-model:show="showDirBrowser" preset="card" title="选择文件夹" style="width: 500px; max-width: 90vw" class="dir-browser-modal">
+    <n-modal v-model:show="showDirBrowser" preset="card" title="选择文件夹" :style="[forceSolidModalStyle, { width: '500px', maxWidth: '90vw' }]" class="dir-browser-modal solid-modal-card force-solid-modal">
       <div class="dir-current">{{ dirBrowserPath }}</div>
       <n-scrollbar style="max-height: min(400px, 50vh)">
         <div v-if="dirBrowserPath !== '/'" @click="dirParentPath" class="dir-row" style="color: var(--app-text-muted)">&#8592; 上一级</div>
@@ -338,11 +345,11 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
 
 .form-group { margin-bottom: 20px; }
 .form-label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; }
-.path-chip { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--app-surface-1, rgba(255,255,255,0.04)); border-radius: 4px; margin-bottom: 4px; font-size: 13px; color: var(--app-text); }
+.path-chip { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--app-modal-panel-bg-soft, var(--app-surface-1, rgba(255,255,255,0.04))); border-radius: 4px; margin-bottom: 4px; font-size: 13px; color: var(--app-text); }
 
-.dir-current { background: var(--app-surface-1, rgba(0,0,0,0.3)); padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; color: var(--app-primary); word-break: break-all; font-family: monospace; }
+.dir-current { background: var(--app-modal-panel-bg-soft, var(--app-surface-1, rgba(0,0,0,0.3))); padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; color: var(--app-primary); word-break: break-all; font-family: monospace; }
 .dir-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-size: 14px; color: var(--app-text); }
-.dir-row:hover { background: var(--app-surface-2, #2a2a2a); }
+.dir-row:hover { background: var(--app-modal-hover-bg, var(--app-surface-2, #2a2a2a)); }
 
 @media (max-width: 640px) {
   .libraries-actions {

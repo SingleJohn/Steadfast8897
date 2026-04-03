@@ -41,6 +41,12 @@
   --app-info: #3b82f6;
   --app-warning: #f59e0b;
   --app-error: #ef4444;
+  --app-modal-solid-card: #ffffff;
+  --app-modal-solid-soft: #f8fafc;
+  --app-modal-solid-border: #cbd5e1;
+
+  --app-modal-glass: rgba(255, 255, 255, 0.72);
+  --app-modal-glass-border: rgba(203, 213, 225, 0.6);
 
   --app-section-gap: 24px;
   --app-section-gap-compact: 16px;
@@ -59,6 +65,12 @@ html.app-dark {
   --app-shadow-1: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
   --app-shadow-card: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
   --app-shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+  --app-modal-solid-card: #0f172a;
+  --app-modal-solid-soft: #111c31;
+  --app-modal-solid-border: #334155;
+
+  --app-modal-glass: rgba(15, 23, 42, 0.75);
+  --app-modal-glass-border: rgba(51, 65, 85, 0.6);
 }
 
 html,
@@ -115,15 +127,64 @@ body {
 }
 
 .n-card:not(.n-card--embedded) {
-  background: var(--app-surface-2) !important;
+  background: var(--app-surface-2);
   backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
 }
 
 .n-drawer .n-drawer-body-content-wrapper {
-  background: var(--app-surface-2) !important;
+  background: var(--app-surface-2);
   backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+}
+
+/*
+ * Global modal fallback.
+ * This does not rely on custom classes being mounted onto the teleported
+ * modal root, so it still works if Naive UI attaches user classes to a
+ * different wrapper than expected.
+ */
+body .n-modal .n-card:not(.n-card--embedded),
+body .n-dialog .n-card:not(.n-card--embedded) {
+  --app-modal-panel-bg: rgba(255, 255, 255, 0.65);
+  --app-modal-panel-bg-soft: rgba(248, 250, 252, 0.7);
+  --app-modal-hover-bg: rgba(241, 245, 249, 0.75);
+  --app-modal-input-bg: rgba(255, 255, 255, 0.85);
+  --n-color: var(--app-modal-glass) !important;
+  background: var(--app-modal-glass) !important;
+  border: 1px solid var(--app-modal-glass-border) !important;
+  box-shadow: var(--app-shadow-card) !important;
+  backdrop-filter: blur(24px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.8) !important;
+}
+html.app-dark body .n-modal .n-card:not(.n-card--embedded),
+html.app-dark body .n-dialog .n-card:not(.n-card--embedded) {
+  --app-modal-panel-bg: rgba(15, 23, 42, 0.65);
+  --app-modal-panel-bg-soft: rgba(17, 28, 49, 0.7);
+  --app-modal-hover-bg: rgba(30, 41, 59, 0.7);
+  --app-modal-input-bg: rgba(15, 23, 42, 0.85);
+  --n-color: var(--app-modal-glass) !important;
+  background: var(--app-modal-glass) !important;
+  border: 1px solid var(--app-modal-glass-border) !important;
+  backdrop-filter: blur(24px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.8) !important;
+}
+body .n-modal .n-input,
+body .n-modal .n-base-selection,
+body .n-dialog .n-input,
+body .n-dialog .n-base-selection {
+  --n-color: var(--app-modal-input-bg, rgba(255, 255, 255, 0.96)) !important;
+  --n-color-disabled: var(--app-modal-input-bg, rgba(255, 255, 255, 0.96)) !important;
+  --n-color-active: var(--app-modal-input-bg, rgba(255, 255, 255, 0.96)) !important;
+  --n-color-focus: var(--app-modal-input-bg, rgba(255, 255, 255, 0.96)) !important;
+}
+
+.force-solid-modal .n-card:not(.n-card--embedded) {
+  background: var(--app-modal-glass) !important;
+  border: 1px solid var(--app-modal-glass-border) !important;
+  box-shadow: var(--app-shadow-card) !important;
+  backdrop-filter: blur(24px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.8) !important;
 }
 
 /*
@@ -134,24 +195,41 @@ body {
  */
 .glass-modal .n-card:not(.n-card--embedded),
 .solid-modal-card .n-card:not(.n-card--embedded) {
-  background: rgba(255, 255, 255, 0.82) !important;
-  border: 1px solid rgba(203, 213, 225, 0.6) !important;
+  background: var(--app-modal-glass) !important;
+  border: 1px solid var(--app-modal-glass-border) !important;
   box-shadow: var(--app-shadow-card);
-  backdrop-filter: blur(16px) saturate(1.6) !important;
-  -webkit-backdrop-filter: blur(16px) saturate(1.6) !important;
-}
-.solid-modal-card .n-card:not(.n-card--embedded) {
-  background: rgba(255, 255, 255, 0.92) !important;
-  border: 1px solid rgba(203, 213, 225, 0.7) !important;
+  backdrop-filter: blur(24px) saturate(1.8) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.8) !important;
 }
 html.app-dark .glass-modal .n-card:not(.n-card--embedded),
 html.app-dark .solid-modal-card .n-card:not(.n-card--embedded) {
-  background: rgba(15, 23, 42, 0.88) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: var(--app-modal-glass) !important;
+  border: 1px solid var(--app-modal-glass-border) !important;
 }
-html.app-dark .solid-modal-card .n-card:not(.n-card--embedded) {
-  background: rgba(15, 23, 42, 0.94) !important;
-  border: 1px solid rgba(71, 85, 105, 0.7) !important;
+
+.glass-modal,
+.solid-modal-card {
+  --app-modal-panel-bg: rgba(255, 255, 255, 0.55);
+  --app-modal-panel-bg-soft: rgba(248, 250, 252, 0.6);
+  --app-modal-hover-bg: rgba(241, 245, 249, 0.65);
+  --app-modal-input-bg: rgba(255, 255, 255, 0.8);
+}
+html.app-dark .glass-modal,
+html.app-dark .solid-modal-card {
+  --app-modal-panel-bg: rgba(15, 23, 42, 0.55);
+  --app-modal-panel-bg-soft: rgba(15, 23, 42, 0.6);
+  --app-modal-hover-bg: rgba(30, 41, 59, 0.6);
+  --app-modal-input-bg: rgba(15, 23, 42, 0.8);
+}
+
+.glass-modal .n-input,
+.glass-modal .n-base-selection,
+.solid-modal-card .n-input,
+.solid-modal-card .n-base-selection {
+  --n-color: var(--app-modal-input-bg) !important;
+  --n-color-disabled: var(--app-modal-input-bg) !important;
+  --n-color-active: var(--app-modal-input-bg) !important;
+  --n-color-focus: var(--app-modal-input-bg) !important;
 }
 
 .glass-modal .n-data-table-th {
@@ -198,13 +276,13 @@ html.app-dark .solid-modal-card .n-card:not(.n-card--embedded) {
 /* Modal mask */
 .n-modal-mask,
 .n-dialog-mask {
-  background-color: rgba(15, 23, 42, 0.25) !important;
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+  background-color: rgba(15, 23, 42, 0.42) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 html.app-dark .n-modal-mask,
 html.app-dark .n-dialog-mask {
-  background-color: rgba(0, 0, 0, 0.45) !important;
+  background-color: rgba(0, 0, 0, 0.55) !important;
 }
 
 /* Dropdown / Popover glass */

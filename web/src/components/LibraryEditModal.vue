@@ -50,6 +50,13 @@ const typeOptions = [
 ]
 const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧' }
 const solidModalMenuProps = { class: 'solid-modal-menu' }
+const forceSolidModalStyle = {
+  '--n-color': 'var(--app-modal-solid-card)',
+  '--n-color-modal': 'var(--app-modal-solid-card)',
+  '--n-border-color': 'var(--app-modal-solid-border)',
+  '--n-box-shadow': 'var(--app-shadow-card)',
+  '--n-action-color': 'var(--app-modal-solid-soft)',
+}
 
 const visible = ref(false)
 
@@ -247,8 +254,8 @@ async function onSetCoverUrl() {
     :show="visible"
     preset="card"
     :title="library?.Name || '编辑媒体库'"
-    style="width: 620px; max-width: 92vw"
-    class="solid-modal-card"
+    :style="[forceSolidModalStyle, { width: '620px', maxWidth: '92vw' }]"
+    class="solid-modal-card force-solid-modal"
     :mask-closable="true"
     @update:show="(v: boolean) => { if (!v) handleClose() }"
   >
@@ -353,7 +360,7 @@ async function onSetCoverUrl() {
     </template>
 
     <!-- Dir Browser Sub-Modal -->
-    <n-modal v-model:show="showBrowser" preset="card" title="选择文件夹" style="max-width: 480px; max-height: 70vh">
+    <n-modal v-model:show="showBrowser" preset="card" title="选择文件夹" :style="[forceSolidModalStyle, { maxWidth: '480px', maxHeight: '70vh' }]" class="solid-modal-card force-solid-modal">
       <div class="em-dir-current">{{ browserPath }}</div>
       <n-scrollbar style="max-height: min(350px, 45vh)">
         <div v-if="browserPath !== '/'" class="em-dir-row" @click="loadBrowserDir(parentDir())">← 上一级</div>
@@ -429,7 +436,7 @@ async function onSetCoverUrl() {
 .em-cover-btn {
   display: inline-flex; align-items: center; gap: 3px;
   padding: 3px 8px; font-size: 11px; border-radius: 5px;
-  background: rgba(128,128,128,0.1); border: 1px solid var(--app-border);
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.1)); border: 1px solid var(--app-border);
   color: var(--app-text-muted); cursor: pointer; transition: all 0.15s;
 }
 .em-cover-btn:hover { border-color: var(--app-primary); color: var(--app-primary); }
@@ -459,7 +466,7 @@ async function onSetCoverUrl() {
 }
 
 .em-section {
-  background: rgba(128,128,128,0.04);
+  background: var(--app-modal-panel-bg, rgba(128,128,128,0.04));
   border: 1px solid var(--app-border);
   border-radius: 8px;
   padding: 16px 18px;
@@ -482,7 +489,7 @@ async function onSetCoverUrl() {
 .em-folder-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px;
-  background: rgba(128,128,128,0.04);
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.04));
   border-radius: 6px;
   margin-bottom: 4px;
 }
@@ -494,7 +501,7 @@ async function onSetCoverUrl() {
 .em-add-path { display: flex; gap: 6px; align-items: stretch; }
 
 .em-dir-current {
-  background: rgba(128,128,128,0.06); padding: 8px 12px;
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.06)); padding: 8px 12px;
   border-radius: 6px; margin-bottom: 10px;
   font-size: 12px; color: var(--app-primary);
   word-break: break-all; font-family: monospace;
@@ -504,7 +511,7 @@ async function onSetCoverUrl() {
   cursor: pointer; border-radius: 4px; font-size: 13px; color: var(--app-text);
   transition: background 0.15s;
 }
-.em-dir-row:hover { background: rgba(128,128,128,0.08); }
+.em-dir-row:hover { background: var(--app-modal-hover-bg, rgba(128,128,128,0.08)); }
 
 @media (max-width: 500px) {
   .em-banner { flex-direction: column; }
