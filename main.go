@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -21,6 +23,9 @@ import (
 	"fyms/internal/middleware"
 	"fyms/internal/services"
 )
+
+//go:embed all:web/dist
+var embeddedWeb embed.FS
 
 func init() {
 	mime.AddExtensionType(".wasm", "application/wasm")
@@ -155,9 +160,20 @@ func main() {
 	emby := r.Group("/emby")
 	registerRoutes(emby)
 
-	webDist := "web/dist"
-	if _, err := os.Stat(webDist); err == nil {
-		r.Static("/web/dist", webDist)
+	useEmbedded := false
+	var webFS http.FileSystem
+	if _, err := fs.Stat(embeddedWeb, "web/dist/index.html"); err == nil {
+		subFS, _ := fs.Sub(embeddedWeb, "web/dist")
+		webFS = http.FS(subFS)
+		useEmbedded = true
+		slog.Info("Serving frontend from embedded assets")
+	} else if _, err := os.Stat("web/dist/index.html"); err == nil {
+		webFS = http.Dir("web/dist")
+		slog.Info("Serving frontend from filesystem (web/dist)")
+	}
+
+	if webFS != nil {
+		r.StaticFS("/web/dist", webFS)
 		r.NoRoute(func(c *gin.Context) {
 			p := c.Request.URL.Path
 			isAPI := strings.HasPrefix(p, "/api") ||
@@ -177,12 +193,21 @@ func main() {
 				c.JSON(404, gin.H{"message": "Not found"})
 				return
 			}
-			localPath := filepath.Join(webDist, p)
-			if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
-				c.File(localPath)
-				return
+			if useEmbedded {
+				if f, err := webFS.Open(p); err == nil {
+					f.Close()
+					c.FileFromFS(p, webFS)
+					return
+				}
+				c.FileFromFS("index.html", webFS)
+			} else {
+				localPath := filepath.Join("web/dist", p)
+				if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+					c.File(localPath)
+					return
+				}
+				c.File(filepath.Join("web/dist", "index.html"))
 			}
-			c.File(filepath.Join(webDist, "index.html"))
 		})
 	}
 

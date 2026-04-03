@@ -21,7 +21,8 @@ docker-compose.dev.yml
 .air.toml
 
 # Frontend build output & dependencies
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 web/node_modules/
 web/.vite/
 

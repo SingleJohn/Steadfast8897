@@ -217,9 +217,8 @@ jobs:
 
           ARCHIVE_BASENAME="fyms_${{ steps.version.outputs.value }}_${{ matrix.target }}"
           PACKAGE_DIR="package/${ARCHIVE_BASENAME}"
-          mkdir -p "${PACKAGE_DIR}/web" "${PACKAGE_DIR}/migrations"
+          mkdir -p "${PACKAGE_DIR}/migrations"
           cp "dist/${{ matrix.binary_name }}" "${PACKAGE_DIR}/${{ matrix.binary_name }}"
-          cp -R web/dist "${PACKAGE_DIR}/web/dist"
           cp migrations/*.sql "${PACKAGE_DIR}/migrations/"
           cp README.md "${PACKAGE_DIR}/README.md"
 

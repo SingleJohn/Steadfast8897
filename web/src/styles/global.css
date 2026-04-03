@@ -126,39 +126,19 @@ body {
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
 }
 
-.n-modal .n-card,
-.n-dialog .n-card {
-  background: rgba(255, 255, 255, 0.92) !important;
-  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
-  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
-}
-.app-dark .n-modal .n-card,
-.app-dark .n-dialog .n-card {
-  background: rgba(15, 23, 42, 0.94) !important;
-}
-
-/* Glass modal — high enough base opacity so Chrome (weak backdrop-filter) stays readable */
-.glass-modal .n-card {
-  background: rgba(255, 255, 255, 0.88) !important;
-  border: 1px solid rgba(203, 213, 225, 0.6) !important;
-  box-shadow: var(--app-shadow-card);
-  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
-  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
-}
-.app-dark .glass-modal .n-card {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-}
-
+/* Modal cards — fully opaque, no backdrop-filter (Chrome renders it inconsistently) */
+.glass-modal .n-card,
 .solid-modal-card .n-card {
-  background: rgba(255, 255, 255, 0.96) !important;
-  border: 1px solid rgba(203, 213, 225, 0.7) !important;
-  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25) !important;
-  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25) !important;
+  background: var(--c-slate-50) !important;
+  border: 1px solid var(--c-slate-200) !important;
+  box-shadow: var(--app-shadow-card);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
-.app-dark .solid-modal-card .n-card {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border: 1px solid rgba(71, 85, 105, 0.9) !important;
+html.app-dark .glass-modal .n-card,
+html.app-dark .solid-modal-card .n-card {
+  background: var(--c-slate-950) !important;
+  border: 1px solid var(--c-slate-800) !important;
 }
 
 .glass-modal .n-data-table-th {

@@ -25,6 +25,8 @@ RUN go mod download
 COPY main.go ./
 COPY internal/ ./internal/
 
+COPY --from=frontend-builder /build/web/dist /build/web/dist
+
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w \
       -X fyms/internal/config.BuildVersion=${BUILD_VERSION} \
@@ -47,7 +49,6 @@ RUN useradd -m -u 1000 fyms
 WORKDIR /app
 
 COPY --from=backend-builder /build/fyms /app/fyms
-COPY --from=frontend-builder /build/web/dist /app/web/dist
 COPY migrations /app/migrations
 RUN mkdir -p /app/data/logs /app/data/cache/images && chown -R fyms:fyms /app
 
