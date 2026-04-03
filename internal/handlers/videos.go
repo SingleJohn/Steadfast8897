@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,12 +24,17 @@ import (
 
 // RegisterVideoRoutes registers playback and streaming endpoints.
 func RegisterVideoRoutes(group *gin.RouterGroup, state *AppState, authMW gin.HandlerFunc) {
-	g := group.Group("")
-	g.Use(authMW)
-	g.GET("/Items/:itemId/PlaybackInfo", func(c *gin.Context) { getPlaybackInfo(c, state) })
-	g.POST("/Items/:itemId/PlaybackInfo", func(c *gin.Context) { getPlaybackInfo(c, state) })
-	g.GET("/Videos/:itemId/stream", func(c *gin.Context) { streamVideo(c, state) })
-	g.GET("/Videos/:itemId/stream.:container", func(c *gin.Context) { streamVideo(c, state) })
+	// PlaybackInfo requires authentication
+	auth := group.Group("")
+	auth.Use(authMW)
+	auth.GET("/Items/:itemId/PlaybackInfo", func(c *gin.Context) { getPlaybackInfo(c, state) })
+	auth.POST("/Items/:itemId/PlaybackInfo", func(c *gin.Context) { getPlaybackInfo(c, state) })
+
+	// Stream endpoints: NO route-level auth (matches Rust behavior).
+	// Auth is handled internally via api_key query param / X-Emby-Token header.
+	// This allows 302-redirected clients to access streams without re-authenticating.
+	group.GET("/Videos/:itemId/stream", func(c *gin.Context) { streamVideo(c, state) })
+	group.GET("/Videos/:itemId/stream.:container", func(c *gin.Context) { streamVideo(c, state) })
 }
 
 type mediaVersionRow struct {
@@ -130,7 +137,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		return
 	}
 
-	var mediaStreams []dto.MediaStreamInfo
+	mediaStreams := make([]dto.MediaStreamInfo, 0, len(streamRows))
 	for i := range streamRows {
 		mediaStreams = append(mediaStreams, dto.FormatMediaStreamDto(&streamRows[i]))
 	}
@@ -195,12 +202,13 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 			RunTimeTicks:          mv.RuntimeTicks,
 			SupportsDirectPlay:    true,
 			SupportsDirectStream:  true,
-			SupportsTranscoding:   policy == nil || policy.EnableVideoTranscoding,
-			MediaStreams:           versionStreams,
+			SupportsTranscoding:   false,
+			MediaStreams:          versionStreams,
 			ReadAtNativeFramerate: false,
 			Size:                  mv.Size,
 			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", *uid, actualContainer, msid),
 			ETag:                  msid,
+			Formats:               []string{},
 		}
 		if mv.Bitrate != nil {
 			b := int64(*mv.Bitrate)
@@ -209,11 +217,38 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		sources = append(sources, src)
 	}
 
-	playSessionID := uuid.New().String()
+	playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
+	if sources == nil {
+		sources = []dto.MediaSourceInfo{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"MediaSources":  sources,
 		"PlaySessionId": playSessionID,
 	})
+}
+
+// resolveStreamUser resolves the user ID from api_key query param or X-Emby-Token header.
+// Returns empty string if no valid token is found (stream still proceeds, matching Rust).
+func resolveStreamUser(ctx context.Context, state *AppState, c *gin.Context) string {
+	token := c.Query("api_key")
+	if token == "" {
+		token = c.GetHeader("X-Emby-Token")
+	}
+	if token == "" {
+		// Also try the Authorization header used by middleware
+		if authUser := middleware.GetAuthUser(c); authUser != nil {
+			return authUser.ID
+		}
+		return ""
+	}
+	var userID string
+	err := state.DB.QueryRow(ctx,
+		"SELECT user_id::text FROM access_tokens WHERE token = $1", token).Scan(&userID)
+	if err != nil {
+		return ""
+	}
+	return userID
 }
 
 func countUserPlayingStreams(sm *services.SessionManager, userID string) int {
@@ -288,30 +323,21 @@ func streamVideo(c *gin.Context, state *AppState) {
 		return
 	}
 
-	authUser := middleware.GetAuthUser(c)
-	if authUser == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
-		return
-	}
-	if !strings.HasPrefix(authUser.ID, "api-key-") {
-		userUUID, perr := uuid.Parse(authUser.ID)
-		if perr != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
-			return
-		}
-		policy, err := models.GetUserPolicy(ctx, state.DB, userUUID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Policy error"})
-			return
-		}
-		if policy != nil && !policy.EnableMediaPlayback {
-			c.JSON(http.StatusForbidden, gin.H{"message": "Playback disabled"})
-			return
-		}
-		if policy != nil && policy.SimultaneousStreamLimit > 0 {
-			if n := countUserPlayingStreams(state.SessionManager, authUser.ID); int32(n) >= policy.SimultaneousStreamLimit {
-				c.JSON(http.StatusTooManyRequests, gin.H{"message": "Too many simultaneous streams"})
+	// Resolve user from token (optional, matching Rust: no auth required for stream).
+	// Check api_key query param, then X-Emby-Token header.
+	userID := resolveStreamUser(ctx, state, c)
+	if userID != "" {
+		if userUUID, err := uuid.Parse(userID); err == nil {
+			policy, _ := models.GetUserPolicy(ctx, state.DB, userUUID)
+			if policy != nil && !policy.EnableMediaPlayback {
+				c.JSON(http.StatusForbidden, gin.H{"message": "Playback disabled"})
 				return
+			}
+			if policy != nil && policy.SimultaneousStreamLimit > 0 {
+				if n := countUserPlayingStreams(state.SessionManager, userID); int32(n) > policy.SimultaneousStreamLimit {
+					c.JSON(http.StatusForbidden, gin.H{"message": "Stream limit reached"})
+					return
+				}
 			}
 		}
 	}
@@ -319,19 +345,23 @@ func streamVideo(c *gin.Context, state *AppState) {
 	msid := c.Query("MediaSourceId")
 	var filePath string
 	if msid != "" {
+		// Match Rust: query by id only, without item_id constraint
 		var fp string
 		err := state.DB.QueryRow(ctx,
-			`SELECT file_path FROM media_versions WHERE id = $1::uuid AND item_id = $2::uuid`,
-			msid, *uid).Scan(&fp)
+			`SELECT file_path FROM media_versions WHERE id = $1::uuid`,
+			msid).Scan(&fp)
 		if err == pgx.ErrNoRows {
+			slog.Warn("[Stream] media_versions not found", "msid", msid, "itemId", itemID)
 			c.JSON(http.StatusNotFound, gin.H{"message": "Media source not found"})
 			return
 		}
 		if err != nil {
+			slog.Error("[Stream] DB error", "msid", msid, "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
 		filePath = fp
+		slog.Info("[Stream] resolved media_version", "msid", msid, "path", fp)
 	} else {
 		err := state.DB.QueryRow(ctx,
 			`SELECT file_path FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC LIMIT 1`,
@@ -340,11 +370,13 @@ func streamVideo(c *gin.Context, state *AppState) {
 			var row *dto.ItemRow
 			row, err = models.GetItemByID(ctx, state.DB, *uid)
 			if err != nil || row == nil || row.FilePath == nil || *row.FilePath == "" {
+				slog.Warn("[Stream] no media file", "itemId", itemID)
 				c.JSON(http.StatusNotFound, gin.H{"message": "No media file"})
 				return
 			}
 			filePath = *row.FilePath
 		} else if err != nil {
+			slog.Error("[Stream] DB error", "itemId", itemID, "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
@@ -353,19 +385,24 @@ func streamVideo(c *gin.Context, state *AppState) {
 	if strings.HasSuffix(strings.ToLower(filePath), ".strm") {
 		if rp := resolveStrmPath(filePath); rp != nil {
 			if rp.isRemote {
+				slog.Info("[Stream] 302 redirect (strm remote)", "url", rp.filePath)
 				c.Redirect(http.StatusFound, rp.filePath)
 				return
 			}
 			filePath = rp.filePath
+		} else {
+			slog.Warn("[Stream] strm resolve failed", "strmPath", filePath)
 		}
 	}
 	if strings.HasPrefix(strings.ToLower(filePath), "http://") || strings.HasPrefix(strings.ToLower(filePath), "https://") {
+		slog.Info("[Stream] 302 redirect (http)", "url", filePath)
 		c.Redirect(http.StatusFound, filePath)
 		return
 	}
 
 	fi, err := os.Stat(filePath)
 	if err != nil {
+		slog.Warn("[Stream] file not found on disk", "path", filePath, "err", err)
 		c.JSON(http.StatusNotFound, gin.H{"message": "File not found"})
 		return
 	}

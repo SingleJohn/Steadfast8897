@@ -150,18 +150,20 @@ func buildUserResponse(ctx context.Context, st *AppState, u *models.User, includ
 	policyResp["IsHidden"] = u.IsHidden
 
 	resp := map[string]interface{}{
-		"Id":                         u.ID.String(),
 		"Name":                       u.Name,
 		"ServerId":                   st.Config.ServerID,
+		"Id":                         u.ID.String(),
 		"HasPassword":                true,
 		"HasConfiguredPassword":      true,
 		"HasConfiguredEasyPassword":  false,
-		"EnableUserPreferenceAccess": true,
-		"IsHidden":                   u.IsHidden,
-		"IsDisabled":                 u.IsDisabled,
-		"LastLoginDate":              formatTimeRFC3339(u.LastLoginDate),
-		"LastActivityDate":           formatTimeRFC3339(u.LastActivityDate),
 		"Policy":                     policyResp,
+	}
+	// Match Rust: only include date fields when non-nil
+	if u.LastLoginDate != nil {
+		resp["LastLoginDate"] = u.LastLoginDate.UTC().Format("2006-01-02T15:04:05.0000000Z")
+	}
+	if u.LastActivityDate != nil {
+		resp["LastActivityDate"] = u.LastActivityDate.UTC().Format("2006-01-02T15:04:05.0000000Z")
 	}
 
 	if includeConfig {
@@ -212,23 +214,7 @@ func RegisterUserRoutes(group *gin.RouterGroup, state *AppState, authMW, adminMW
 }
 
 func GetPublicUsers(c *gin.Context) {
-	st := GetState(c)
-	ctx := c.Request.Context()
-	users, err := models.GetPublicUsers(ctx, st.DB)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
-	out := make([]map[string]interface{}, 0, len(users))
-	for i := range users {
-		m, err := buildUserResponse(ctx, st, &users[i], false)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
-		out = append(out, m)
-	}
-	c.JSON(http.StatusOK, out)
+	c.JSON(http.StatusOK, []interface{}{})
 }
 
 func GetAllUsers(c *gin.Context) {
@@ -437,19 +423,11 @@ func authenticateResponse(c *gin.Context, st *AppState, u *models.User, token st
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	info := middleware.GetAuthInfo(c)
-	sessionInfo := map[string]interface{}{
-		"UserId":               u.ID.String(),
-		"DeviceId":             strOrPtr(info.DeviceID, "unknown"),
-		"DeviceName":           strOrPtr(info.Device, ""),
-		"Client":               strOrPtr(info.Client, "FYMS"),
-		"ApplicationVersion":   strOrPtr(info.Version, st.Config.Version),
-	}
+	// Match Rust: only User + AccessToken + ServerId (no SessionInfo)
 	c.JSON(http.StatusOK, gin.H{
 		"User":        m,
 		"AccessToken": token,
 		"ServerId":    st.Config.ServerID,
-		"SessionInfo": sessionInfo,
 	})
 }
 

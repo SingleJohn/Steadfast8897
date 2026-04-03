@@ -46,6 +46,7 @@ func serveImage(c *gin.Context, state *AppState) {
 
 	var primaryPath, backdropPath *string
 	var itemType string
+	var castImageURL string
 	err = state.DB.QueryRow(ctx,
 		`SELECT primary_image_path, backdrop_image_path, type FROM items WHERE id = $1::uuid`,
 		*uid).Scan(&primaryPath, &backdropPath, &itemType)
@@ -53,11 +54,22 @@ func serveImage(c *gin.Context, state *AppState) {
 		var libImgPath *string
 		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid", *uid).Scan(&libImgPath)
 		if lerr != nil || libImgPath == nil || *libImgPath == "" {
-			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
-			return
+			// Rust compatibility: when itemId is a cast_members.id, serve the actor headshot.
+			// Many Emby clients request GET /Items/{personId}/Images/Primary where personId
+			// is cast_members.id (not in items table).
+			var imgURL *string
+			state.DB.QueryRow(ctx,
+				"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
+				*uid).Scan(&imgURL)
+			if imgURL == nil || *imgURL == "" {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+				return
+			}
+			castImageURL = *imgURL
+		} else {
+			primaryPath = libImgPath
+			itemType = "CollectionFolder"
 		}
-		primaryPath = libImgPath
-		itemType = "CollectionFolder"
 	}
 
 	tag := c.Query("tag")
@@ -96,7 +108,14 @@ func serveImage(c *gin.Context, state *AppState) {
 	var sourcePath string
 	var sourceIsURL bool
 
-	if tag != "" {
+	// If this is a cast_member lookup (actor headshot), use the image_url directly
+	if castImageURL != "" {
+		sourcePath = castImageURL
+		sourceIsURL = strings.HasPrefix(strings.ToLower(castImageURL), "http://") ||
+			strings.HasPrefix(strings.ToLower(castImageURL), "https://")
+	}
+
+	if sourcePath == "" && tag != "" {
 		var imgURL *string
 		err = state.DB.QueryRow(ctx,
 			`SELECT image_url FROM cast_members WHERE id = $1::uuid AND item_id = $2::uuid`,
@@ -148,6 +167,20 @@ func serveImage(c *gin.Context, state *AppState) {
 			case "Backdrop", "Banner":
 				state.DB.QueryRow(ctx, "SELECT backdrop_image_path FROM items WHERE id = $1::uuid", *seriesID).Scan(&sourcePath)
 			}
+			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
+				strings.HasPrefix(strings.ToLower(sourcePath), "https://")
+		}
+	}
+
+	// Rust compatibility: if no image found from item, check cast_members by UUID
+	// (handles case where item exists but has no image, and itemId happens to also be a cast_member)
+	if sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath)) {
+		var castURL *string
+		state.DB.QueryRow(ctx,
+			"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
+			*uid).Scan(&castURL)
+		if castURL != nil && *castURL != "" {
+			sourcePath = *castURL
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
 				strings.HasPrefix(strings.ToLower(sourcePath), "https://")
 		}

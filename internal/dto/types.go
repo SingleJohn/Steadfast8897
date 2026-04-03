@@ -33,7 +33,7 @@ type BaseItemDto struct {
 	Container                  *string                `json:"Container,omitempty"`
 	ProviderIDs                *json.RawMessage       `json:"ProviderIds,omitempty"`
 	MediaSources               []MediaSourceInfo      `json:"MediaSources,omitempty"`
-	MediaStreams                []MediaStreamInfo      `json:"MediaStreams,omitempty"`
+	MediaStreams               []MediaStreamInfo      `json:"MediaStreams,omitempty"`
 	UserData                   *UserItemDataDto       `json:"UserData,omitempty"`
 	Path                       *string                `json:"Path,omitempty"`
 	GenreItems                 []GenreItem            `json:"GenreItems,omitempty"`

@@ -425,7 +425,9 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	if len(cast) == 0 && seriesItem != nil {
 		cast, _ = models.GetItemCast(ctx, pool, seriesItem.ID)
 	}
-	base.People = cast
+	if len(cast) > 0 {
+		base.People = cast
+	}
 
 	streams, err := models.GetMediaStreams(ctx, pool, item.ID)
 	if err != nil {
@@ -489,13 +491,14 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			RunTimeTicks:          rt,
 			SupportsDirectPlay:    true,
 			SupportsDirectStream:  true,
-			SupportsTranscoding:   true,
-			MediaStreams:           versionStreams,
+			SupportsTranscoding:   false,
+			MediaStreams:          versionStreams,
 			Bitrate:               bitrate,
 			Size:                  sz,
 			ReadAtNativeFramerate: false,
 			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, container, idStr),
 			ETag:                  idStr,
+			Formats:               []string{},
 		}
 		sources = append(sources, ms)
 		mvIdx++
@@ -515,9 +518,10 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			RunTimeTicks:         item.RuntimeTicks,
 			SupportsDirectPlay:   true,
 			SupportsDirectStream: true,
-			SupportsTranscoding:  true,
+			SupportsTranscoding:  false,
 			MediaStreams:         streamDtos,
 			ReadAtNativeFramerate: false,
+			Formats:              []string{},
 		}
 		sources = []dto.MediaSourceInfo{ms}
 	}
@@ -614,7 +618,39 @@ func getItemDetail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, base)
+
+	// Rust converts DTO to JSON value then explicitly adds MediaSources/MediaStreams
+	// for Movie/Episode. We replicate that: marshal→map→inject fields.
+	rawJSON, _ := json.Marshal(base)
+	var result gin.H
+	if err := json.Unmarshal(rawJSON, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	if item.ItemType == "Movie" || item.ItemType == "Episode" {
+		// Ensure MediaSources is always present (even as []) for playable items
+		if _, ok := result["MediaSources"]; !ok {
+			result["MediaSources"] = []dto.MediaSourceInfo{}
+		}
+
+		// Top-level MediaStreams: if DB had no streams, try mediainfo fallback (matching Rust)
+		if base.MediaStreams == nil || len(base.MediaStreams) == 0 {
+			var miRaw []byte
+			err := state.DB.QueryRow(ctx,
+				`SELECT mediainfo->'MediaStreams' FROM media_versions
+				 WHERE item_id = $1::uuid AND mediainfo IS NOT NULL
+				 ORDER BY is_primary DESC LIMIT 1`, item.ID).Scan(&miRaw)
+			if err == nil && len(miRaw) > 0 {
+				var miStreams []dto.MediaStreamInfo
+				if json.Unmarshal(miRaw, &miStreams) == nil && len(miStreams) > 0 {
+					result["MediaStreams"] = miStreams
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func getSimilarItems(c *gin.Context) {

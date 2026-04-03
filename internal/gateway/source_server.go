@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -258,7 +259,10 @@ func (rt *Runtime) tryResolvePlaybackRoute(w http.ResponseWriter, r *http.Reques
 
 	var realPath string
 	if src.Upstream.Mode == "self" {
-		realPath = rt.resolveSelfMediaPath(r.Context(), r, src, itemID, mediaSourceID)
+		realPath = rt.resolveSelfMediaPathDirect(r.Context(), itemID, mediaSourceID)
+		if realPath == "" {
+			realPath = rt.resolveSelfMediaPath(r.Context(), r, src, itemID, mediaSourceID)
+		}
 	} else {
 		realPath = rt.resolveRemoteMediaPath(r.Context(), src, itemID, mediaSourceID)
 	}
@@ -468,6 +472,65 @@ func (rt *Runtime) resolveRemoteMediaPath(ctx context.Context, src EmbySourceCon
 		}
 	}
 	return realPath
+}
+
+// resolveSelfMediaPathDirect queries the database directly to resolve the real media path,
+// bypassing the HTTP API. This avoids authentication issues and reduces latency since
+// the Gateway shares the same database pool as the main FYMS server.
+func (rt *Runtime) resolveSelfMediaPathDirect(ctx context.Context, itemID, mediaSourceID string) string {
+	pool := rt.store.Pool()
+
+	var filePath string
+
+	if mediaSourceID != "" {
+		err := pool.QueryRow(ctx,
+			"SELECT file_path FROM media_versions WHERE id = $1::uuid", mediaSourceID).Scan(&filePath)
+		if err == nil && filePath != "" {
+			resolved := resolveStrmContent(filePath)
+			rt.logger.Debug("resolveSelfMediaPathDirect: found by mediaSourceID", "msid", mediaSourceID, "raw", filePath, "resolved", resolved)
+			return resolved
+		}
+	}
+
+	err := pool.QueryRow(ctx,
+		`SELECT file_path FROM media_versions WHERE item_id = $1::uuid
+		 ORDER BY is_primary DESC, created_at ASC LIMIT 1`, itemID).Scan(&filePath)
+	if err == nil && filePath != "" {
+		resolved := resolveStrmContent(filePath)
+		rt.logger.Debug("resolveSelfMediaPathDirect: found by item media_version", "itemID", itemID, "raw", filePath, "resolved", resolved)
+		return resolved
+	}
+
+	var fp *string
+	err = pool.QueryRow(ctx,
+		"SELECT file_path FROM items WHERE id = $1::uuid", itemID).Scan(&fp)
+	if err == nil && fp != nil && *fp != "" {
+		resolved := resolveStrmContent(*fp)
+		rt.logger.Debug("resolveSelfMediaPathDirect: found by item.file_path", "itemID", itemID, "raw", *fp, "resolved", resolved)
+		return resolved
+	}
+
+	rt.logger.Debug("resolveSelfMediaPathDirect: no path found", "itemID", itemID, "msid", mediaSourceID)
+	return ""
+}
+
+// resolveStrmContent reads a .strm file and returns the first non-empty, non-comment line.
+// For non-.strm paths, returns the path unchanged.
+func resolveStrmContent(filePath string) string {
+	if !strings.HasSuffix(strings.ToLower(filePath), ".strm") {
+		return filePath
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return filePath
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return filePath
 }
 
 // matchInterceptItemID extracts the Emby item ID from playback URLs.

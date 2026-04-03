@@ -998,7 +998,7 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 	}
 
 	streamRows, _ := models.GetMediaStreams(ctx, state.DB, itemID)
-	var baseStreams []dto.MediaStreamInfo
+	baseStreams := make([]dto.MediaStreamInfo, 0, len(streamRows))
 	for i := range streamRows {
 		baseStreams = append(baseStreams, dto.FormatMediaStreamDto(&streamRows[i]))
 	}
@@ -1063,11 +1063,12 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 			RunTimeTicks:         mv.RuntimeTicks,
 			SupportsDirectPlay:   true,
 			SupportsDirectStream: true,
-			SupportsTranscoding:  true,
-			MediaStreams:          versionStreams,
+			SupportsTranscoding:  false,
+			MediaStreams:         versionStreams,
 			DirectStreamURL:      fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, actualContainer, msid),
 			ETag:                 msid,
 			Size:                 mv.Size,
+			Formats:              []string{},
 		}
 		if mv.Bitrate != nil {
 			b := int64(*mv.Bitrate)
