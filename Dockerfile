@@ -2,10 +2,12 @@
 FROM node:22-slim AS frontend-builder
 
 WORKDIR /build/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
 COPY web/ ./
-RUN npm run build
+RUN if [ -f dist/index.html ]; then \
+      echo "Using prebuilt frontend assets from web/dist"; \
+    else \
+      npm ci && npm run build; \
+    fi
 
 # ====== Stage 2: Build Backend (Go) ======
 FROM golang:1.23-alpine AS backend-builder
