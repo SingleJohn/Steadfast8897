@@ -50,6 +50,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/VirtualFolders/Update", adminMW, updateLibraryInfo)
 	u.POST("/Library/VirtualFolders/:id/Refresh", adminMW, refreshSingleLibrary)
 	u.POST("/Library/VirtualFolders/:id/Image", adminMW, uploadLibraryImage)
+	u.POST("/Library/VirtualFolders/:id/ImageUrl", adminMW, setLibraryImageFromURL)
 	u.DELETE("/Library/VirtualFolders/:id/Image", adminMW, deleteLibraryImage)
 	u.GET("/Library/Scan/Progress", getScanProgress)
 
@@ -1255,6 +1256,83 @@ func uploadLibraryImage(c *gin.Context) {
 
 	if len(data) > 20*1024*1024 {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "File too large (max 20MB)"})
+		return
+	}
+
+	imgDir := filepath.Join("data", "library-images", idStr)
+	if err := os.MkdirAll(imgDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	fpath := filepath.Join(imgDir, "primary.jpg")
+	if err := os.WriteFile(fpath, data, 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	tag := uuid.New().String()
+	if err := models.UpdateLibraryImage(ctx, state.DB, id, fpath, tag); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"ImageTag": tag})
+}
+
+func setLibraryImageFromURL(c *gin.Context) {
+	state := GetState(c)
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid id"})
+		return
+	}
+	ctx := c.Request.Context()
+	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	if err != nil || lib == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
+		return
+	}
+
+	var body struct {
+		Url string `json:"Url"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Url == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Url is required"})
+		return
+	}
+
+	if !strings.HasPrefix(body.Url, "http://") && !strings.HasPrefix(body.Url, "https://") {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Url must start with http:// or https://"})
+		return
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(body.Url)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Failed to fetch image: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadRequest, gin.H{"message": fmt.Sprintf("Remote server returned %d", resp.StatusCode)})
+		return
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !strings.HasPrefix(ct, "image/") {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "URL does not point to an image (Content-Type: " + ct + ")"})
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024+1))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to read image data"})
+		return
+	}
+	if len(data) > 20*1024*1024 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Image too large (max 20MB)"})
 		return
 	}
 

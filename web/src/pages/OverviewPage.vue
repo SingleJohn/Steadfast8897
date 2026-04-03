@@ -58,6 +58,21 @@ function libNameForScan(libId: string) {
   return libraries.value.find((l: any) => l.ItemId === libId)?.Name || libId
 }
 
+function formatVersion(info: any): string {
+  const ver = info.Version || 'dev'
+  const commit = info.BuildCommit
+  if (commit) return `${ver} (${commit.substring(0, 7)})`
+  return ver
+}
+
+function formatServerId(id: string | undefined): string {
+  if (!id) return '-'
+  if (id.length === 32 && !id.includes('-')) {
+    return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`
+  }
+  return id
+}
+
 async function handleRestart() {
   showRestart.value = false
   try {
@@ -173,9 +188,9 @@ onUnmounted(() => {
       <div v-if="serverInfo" class="server-info-grid">
         <div v-for="row in [
           ['名称', serverInfo.ServerName],
-          ['版本', serverInfo.Version],
-          ['ID', serverInfo.Id],
-          ['操作系统', serverInfo.OperatingSystem],
+          ['版本', formatVersion(serverInfo)],
+          ['ID', formatServerId(serverInfo.Id)],
+          ['操作系统', serverInfo.OperatingSystemDisplayName || serverInfo.OperatingSystem],
           ['本地地址', serverInfo.LocalAddress],
         ]" :key="row[0]" class="server-info-item">
           <span class="server-info-label">{{ row[0] }}</span>

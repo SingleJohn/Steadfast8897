@@ -3,11 +3,11 @@ import { ref, watch } from 'vue'
 import {
   NButton, NInput, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
 } from 'naive-ui'
-import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline } from '@vicons/ionicons5'
+import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
   addLibraryPath, removeLibraryPath, refreshSingleLibrary,
-  uploadLibraryImage, deleteLibraryImage, browseDirectories,
+  uploadLibraryImage, setLibraryImageUrl, deleteLibraryImage, browseDirectories,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
 
@@ -40,6 +40,9 @@ const uploadingImage = ref(false)
 const imageTag = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
 const coverKey = ref(0)
+const coverUrlInput = ref('')
+const settingUrlImage = ref(false)
+const showUrlInput = ref(false)
 
 const typeOptions = [
   { label: '电影', value: 'movies' },
@@ -218,6 +221,25 @@ async function onDeleteCover() {
     showToast('删除封面失败', 'error')
   }
 }
+
+async function onSetCoverUrl() {
+  const url = coverUrlInput.value.trim()
+  if (!url || !props.libraryId) return
+  settingUrlImage.value = true
+  try {
+    const res = await setLibraryImageUrl(props.libraryId, url) as { ImageTag: string }
+    imageTag.value = res.ImageTag
+    coverKey.value++
+    coverUrlInput.value = ''
+    showUrlInput.value = false
+    showToast('封面已设置', 'success')
+    emit('updated')
+  } catch {
+    showToast('从 URL 获取封面失败', 'error')
+  } finally {
+    settingUrlImage.value = false
+  }
+}
 </script>
 
 <template>
@@ -226,6 +248,7 @@ async function onDeleteCover() {
     preset="card"
     :title="library?.Name || '编辑媒体库'"
     style="width: 620px; max-width: 92vw"
+    class="solid-modal-card"
     :mask-closable="true"
     @update:show="(v: boolean) => { if (!v) handleClose() }"
   >
@@ -250,10 +273,18 @@ async function onDeleteCover() {
               {{ uploadingImage ? '...' : '上传' }}
               <input type="file" accept="image/*" style="display: none" :disabled="uploadingImage" @change="onCoverChange" />
             </label>
+            <button class="em-cover-btn" @click="showUrlInput = !showUrlInput">
+              <n-icon :size="13"><LinkOutline /></n-icon>
+              链接
+            </button>
             <button v-if="coverUrl()" class="em-cover-btn em-cover-btn-del" @click="onDeleteCover">
               <n-icon :size="13"><TrashOutline /></n-icon>
               删除
             </button>
+          </div>
+          <div v-if="showUrlInput" class="em-url-input">
+            <n-input v-model:value="coverUrlInput" size="tiny" placeholder="输入图片 URL" :disabled="settingUrlImage" @keydown.enter.prevent="onSetCoverUrl" />
+            <n-button size="tiny" type="primary" :loading="settingUrlImage" :disabled="!coverUrlInput.trim()" @click="onSetCoverUrl">确定</n-button>
           </div>
         </div>
 
@@ -403,6 +434,12 @@ async function onDeleteCover() {
 }
 .em-cover-btn:hover { border-color: var(--app-primary); color: var(--app-primary); }
 .em-cover-btn-del:hover { border-color: var(--app-error); color: var(--app-error); }
+
+.em-url-input {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
 
 .em-banner-info {
   flex: 1;

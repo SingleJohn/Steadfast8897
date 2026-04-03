@@ -281,6 +281,13 @@ export async function uploadLibraryImage(id: string, file: File) {
   return res.json();
 }
 
+export async function setLibraryImageUrl(id: string, url: string) {
+  return request<{ ImageTag: string }>(`/Library/VirtualFolders/${id}/ImageUrl`, {
+    method: 'POST',
+    body: JSON.stringify({ Url: url }),
+  });
+}
+
 export async function deleteLibraryImage(id: string) {
   return request(`/Library/VirtualFolders/${id}/Image`, { method: 'DELETE' });
 }

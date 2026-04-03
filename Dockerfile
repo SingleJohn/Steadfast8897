@@ -14,13 +14,24 @@ FROM golang:1.23-alpine AS backend-builder
 
 RUN apk add --no-cache git
 
+ARG BUILD_VERSION=""
+ARG BUILD_COMMIT=""
+ARG BUILD_TIME=""
+ARG BUILD_REPO=""
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY main.go ./
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o fyms .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w \
+      -X fyms/internal/config.BuildVersion=${BUILD_VERSION} \
+      -X fyms/internal/config.BuildCommit=${BUILD_COMMIT} \
+      -X fyms/internal/config.BuildTime=${BUILD_TIME} \
+      -X fyms/internal/config.BuildRepo=${BUILD_REPO}" \
+    -o fyms .
 
 # ====== Stage 3: Runtime ======
 FROM debian:12-slim

@@ -83,7 +83,7 @@ func resolveVersion() string {
 	if BuildVersion != "" {
 		return BuildVersion
 	}
-	return "4.7.0.0"
+	return "dev"
 }
 
 func (c *AppConfig) DatabaseURL() string {

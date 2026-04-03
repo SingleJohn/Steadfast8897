@@ -221,7 +221,7 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
     </n-tabs>
 
     <!-- Add Library Modal -->
-    <n-modal v-model:show="showAddLib" preset="card" title="添加媒体库" style="width: 500px; max-width: 90vw">
+    <n-modal v-model:show="showAddLib" preset="card" title="添加媒体库" style="width: 500px; max-width: 90vw" class="solid-modal-card">
       <form @submit.prevent="handleAddLibrary">
         <div class="form-group">
           <label class="form-label">名称</label>
