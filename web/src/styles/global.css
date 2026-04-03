@@ -126,19 +126,32 @@ body {
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
 }
 
-/* Modal cards — fully opaque, no backdrop-filter (Chrome renders it inconsistently) */
-.glass-modal .n-card,
-.solid-modal-card .n-card {
-  background: var(--c-slate-50) !important;
-  border: 1px solid var(--c-slate-200) !important;
+/*
+ * Modal card overrides.
+ * Use :not(.n-card--embedded) to reach specificity 0-3-0, which beats
+ * the general .n-card:not(.n-card--embedded) rule (0-2-0) regardless
+ * of the CSS bundle order that Vite production builds may produce.
+ */
+.glass-modal .n-card:not(.n-card--embedded),
+.solid-modal-card .n-card:not(.n-card--embedded) {
+  background: rgba(255, 255, 255, 0.82) !important;
+  border: 1px solid rgba(203, 213, 225, 0.6) !important;
   box-shadow: var(--app-shadow-card);
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+  backdrop-filter: blur(16px) saturate(1.6) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.6) !important;
 }
-html.app-dark .glass-modal .n-card,
-html.app-dark .solid-modal-card .n-card {
-  background: var(--c-slate-950) !important;
-  border: 1px solid var(--c-slate-800) !important;
+.solid-modal-card .n-card:not(.n-card--embedded) {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(203, 213, 225, 0.7) !important;
+}
+html.app-dark .glass-modal .n-card:not(.n-card--embedded),
+html.app-dark .solid-modal-card .n-card:not(.n-card--embedded) {
+  background: rgba(15, 23, 42, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+html.app-dark .solid-modal-card .n-card:not(.n-card--embedded) {
+  background: rgba(15, 23, 42, 0.94) !important;
+  border: 1px solid rgba(71, 85, 105, 0.7) !important;
 }
 
 .glass-modal .n-data-table-th {
