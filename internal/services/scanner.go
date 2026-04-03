@@ -234,7 +234,11 @@ func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *N
 	}
 	if nfo.Title != nil {
 		addClause("name", "", *nfo.Title)
-		addClause("sort_name", "", strings.ToLower(*nfo.Title))
+		var itemType string
+		_ = pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType)
+		if itemType != "Episode" {
+			addClause("sort_name", "", strings.ToLower(*nfo.Title))
+		}
 	}
 	if nfo.Tagline != nil {
 		addClause("tagline", "", *nfo.Tagline)

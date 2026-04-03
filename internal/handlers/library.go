@@ -160,13 +160,23 @@ func getUserViews(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// queryAny returns the first non-empty query parameter value among the given keys.
+func queryAny(c *gin.Context, keys ...string) string {
+	for _, k := range keys {
+		if v := c.Query(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOptions, error) {
 	opts := &models.ItemQueryOptions{}
 
-	if pid := strings.TrimSpace(c.Query("ParentId")); pid != "" {
+	if pid := strings.TrimSpace(queryAny(c, "ParentId", "parentId", "parentid")); pid != "" {
 		opts.ParentID = &pid
 	}
-	if s := strings.TrimSpace(c.Query("IncludeItemTypes")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "IncludeItemTypes", "includeItemTypes", "includeitemtypes")); s != "" {
 		for _, t := range strings.Split(s, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {
@@ -174,33 +184,34 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 			}
 		}
 	}
-	if s := strings.TrimSpace(c.Query("SortBy")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "SortBy", "sortBy", "sortby")); s != "" {
 		opts.SortBy = &s
 	}
-	if s := strings.TrimSpace(c.Query("SortOrder")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "SortOrder", "sortOrder", "sortorder")); s != "" {
 		opts.SortOrder = &s
 	}
-	if s := strings.TrimSpace(c.Query("Limit")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "Limit", "limit")); s != "" {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		opts.Limit = &n
 	}
-	if s := strings.TrimSpace(c.Query("StartIndex")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "StartIndex", "startIndex", "startindex")); s != "" {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
 			return nil, err
 		}
 		opts.StartIndex = &n
 	}
-	recursive := strings.EqualFold(c.Query("Recursive"), "true") || c.Query("Recursive") == "1"
+	recStr := queryAny(c, "Recursive", "recursive")
+	recursive := strings.EqualFold(recStr, "true") || recStr == "1"
 	opts.Recursive = recursive
 
-	if s := strings.TrimSpace(c.Query("SearchTerm")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "SearchTerm", "searchTerm", "searchterm")); s != "" {
 		opts.SearchTerm = &s
 	}
-	if s := strings.TrimSpace(c.Query("Filters")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "Filters", "filters")); s != "" {
 		for _, f := range strings.Split(s, ",") {
 			f = strings.TrimSpace(f)
 			if f != "" {
@@ -208,7 +219,7 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 			}
 		}
 	}
-	if s := strings.TrimSpace(c.Query("GenreIds")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "GenreIds", "genreIds", "genreids")); s != "" {
 		for _, g := range strings.Split(s, ",") {
 			g = strings.TrimSpace(g)
 			if g != "" {
@@ -216,7 +227,7 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 			}
 		}
 	}
-	if s := strings.TrimSpace(c.Query("Years")); s != "" {
+	if s := strings.TrimSpace(queryAny(c, "Years", "years")); s != "" {
 		for _, y := range strings.Split(s, ",") {
 			y = strings.TrimSpace(y)
 			if y == "" {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NSkeleton, NIcon, NSpace, NSelect } from 'naive-ui'
+import { NButton, NSkeleton, NIcon, NSpace } from 'naive-ui'
 import {
   CheckmarkDoneOutline,
   Heart,
@@ -96,13 +96,6 @@ const crew = computed(() => {
   return result
 })
 
-const videoStreams = computed(() => (item.value?.MediaStreams || []).filter((s: any) => s.Type === 'Video'))
-const audioStreams = computed(() => (item.value?.MediaStreams || []).filter((s: any) => s.Type === 'Audio'))
-const subtitleStreams = computed(() => (item.value?.MediaStreams || []).filter((s: any) => s.Type === 'Subtitle'))
-
-const selectedVideo = ref(0)
-const selectedAudio = ref(0)
-const selectedSubtitle = ref(0)
 
 function personImgSrc(person: any): string {
   const imageId = person.PrimaryImageItemId || person.Id
@@ -274,27 +267,6 @@ function handleGenreClick(genreId: string) {
             </div>
           </div>
 
-          <!-- Media stream selectors -->
-          <div v-if="videoStreams.length || audioStreams.length || subtitleStreams.length" class="stream-section">
-            <h3 class="section-heading">媒体信息</h3>
-            <div class="stream-grid">
-              <div v-if="videoStreams.length" class="stream-row">
-                <label class="stream-label">视频</label>
-                <n-select v-if="videoStreams.length > 1" v-model:value="selectedVideo" :options="videoStreams.map((s: any, i: number) => ({ label: s.DisplayTitle || `${(s.Codec||'').toUpperCase()} ${s.Width}x${s.Height}`, value: i }))" size="small" style="max-width: 340px" />
-                <span v-else class="stream-value">{{ videoStreams[0].DisplayTitle || `${(videoStreams[0].Codec||'').toUpperCase()} ${videoStreams[0].Width}x${videoStreams[0].Height}` }}</span>
-              </div>
-              <div v-if="audioStreams.length" class="stream-row">
-                <label class="stream-label">音频</label>
-                <n-select v-if="audioStreams.length > 1" v-model:value="selectedAudio" :options="audioStreams.map((s: any, i: number) => ({ label: s.DisplayTitle || `${(s.Codec||'').toUpperCase()} ${s.Channels}ch ${s.Language||''}`, value: i }))" size="small" style="max-width: 340px" />
-                <span v-else class="stream-value">{{ audioStreams[0].DisplayTitle || `${(audioStreams[0].Codec||'').toUpperCase()} ${audioStreams[0].Channels}ch` }}</span>
-              </div>
-              <div v-if="subtitleStreams.length" class="stream-row">
-                <label class="stream-label">字幕</label>
-                <n-select v-if="subtitleStreams.length > 1" v-model:value="selectedSubtitle" :options="subtitleStreams.map((s: any, i: number) => ({ label: s.DisplayTitle || s.Language || '未知', value: i }))" size="small" style="max-width: 340px" />
-                <span v-else class="stream-value">{{ subtitleStreams[0].DisplayTitle || subtitleStreams[0].Language || '未知' }}</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- Facts sidebar -->
@@ -682,38 +654,6 @@ function handleGenreClick(genreId: string) {
 :global(html:not(.app-dark)) .crew-label,
 :global(html:not(.app-dark)) .item-overview {
   text-shadow: none;
-}
-
-/* ═══ Stream Section ═══ */
-.stream-section { margin-bottom: 8px; }
-
-.stream-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.stream-row {
-  display: grid;
-  grid-template-columns: 48px 1fr;
-  align-items: center;
-  gap: 10px;
-}
-
-.stream-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--app-text-muted);
-}
-
-.stream-value {
-  padding: 5px 14px;
-  background: var(--app-surface-2);
-  border-radius: 999px;
-  border: 1px solid var(--app-border);
-  font-size: 12px;
-  color: var(--app-text);
-  display: inline-block;
 }
 
 /* ═══ Section Heading ═══ */

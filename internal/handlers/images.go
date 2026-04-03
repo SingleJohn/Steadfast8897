@@ -6,6 +6,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,12 +15,13 @@ import (
 
 	"github.com/disintegration/imaging"
 	"github.com/gin-gonic/gin"
+	_ "golang.org/x/image/webp"
 
 	"fyms/internal/config"
 	"fyms/internal/models"
 )
 
-var imageSemaphore = make(chan struct{}, 3)
+var imageSemaphore = make(chan struct{}, 10)
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
@@ -232,9 +234,11 @@ func serveImage(c *gin.Context, state *AppState) {
 			cacheName = fmt.Sprintf("%s_%s_%s_%dx%d%s", *uid, imageType, tag, maxW, maxH, ext)
 		}
 		outPath = filepath.Join(state.Config.CacheDir, cacheName)
-		if err := resizeImage(localPath, outPath, maxW, maxH, quality, encFmt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
+		if st, serr := os.Stat(outPath); serr == nil && st.Size() > 0 {
+			// cached resize exists
+		} else if err := resizeImage(localPath, outPath, maxW, maxH, quality, encFmt); err != nil {
+			slog.Warn("[Image] resize failed, serving original", "path", localPath, "error", err)
+			outPath = localPath
 		}
 	}
 

@@ -333,11 +333,11 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		}
 		bindID = *sid
 		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
-		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST`
+		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
 	} else {
 		bindID = *suid
 		countSQL = "SELECT COUNT(*) FROM items WHERE series_id = $1::uuid AND type = 'Episode'"
-		itemSQL = `SELECT i.id FROM items i WHERE i.series_id = $1::uuid AND i.type = 'Episode' ORDER BY i.parent_index_number NULLS LAST, i.index_number NULLS LAST`
+		itemSQL = `SELECT i.id FROM items i WHERE i.series_id = $1::uuid AND i.type = 'Episode' ORDER BY i.parent_index_number NULLS LAST, i.index_number NULLS LAST, i.id ASC`
 	}
 
 	var totalCount int64
@@ -783,33 +783,36 @@ func deviceInfo(c *gin.Context, state *AppState) {
 	})
 }
 
+func compatQueryAny(c *gin.Context, keys ...string) string {
+	for _, k := range keys {
+		if v := c.Query(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func itemsSearch(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 
-	ids := c.Query("Ids")
-	if ids == "" {
-		ids = c.Query("ids")
-	}
-	searchTerm := c.Query("SearchTerm")
-	if searchTerm == "" {
-		searchTerm = c.Query("searchTerm")
-	}
-	includeTypes := c.Query("IncludeItemTypes")
-	if includeTypes == "" {
-		includeTypes = c.Query("includeItemTypes")
-	}
-	fields := c.Query("Fields")
-	if fields == "" {
-		fields = c.Query("fields")
-	}
-	limitStr := c.Query("Limit")
-	if limitStr == "" {
-		limitStr = c.Query("limit")
-	}
+	ids := compatQueryAny(c, "Ids", "ids")
+	searchTerm := compatQueryAny(c, "SearchTerm", "searchTerm", "searchterm")
+	includeTypes := compatQueryAny(c, "IncludeItemTypes", "includeItemTypes", "includeitemtypes")
+	fields := compatQueryAny(c, "Fields", "fields")
+	parentID := compatQueryAny(c, "ParentId", "parentId", "parentid")
+	recStr := compatQueryAny(c, "Recursive", "recursive")
+	recursive := strings.EqualFold(recStr, "true") || recStr == "1"
+	limitStr := compatQueryAny(c, "Limit", "limit")
 	limitVal := int64(50)
 	if limitStr != "" {
 		if n, err := strconv.ParseInt(limitStr, 10, 64); err == nil && n > 0 {
 			limitVal = n
+		}
+	}
+	startIndex := int64(0)
+	if v := compatQueryAny(c, "StartIndex", "startIndex", "startindex"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			startIndex = n
 		}
 	}
 
@@ -856,6 +859,18 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			sql += " AND id IN (" + strings.Join(placeholders, ",") + ")"
 		}
 	}
+	if parentID != "" {
+		pid, _ := models.ResolveToUUID(ctx, state.DB, parentID)
+		if pid != nil {
+			if recursive {
+				sql += " AND library_id = $" + strconv.Itoa(idx) + "::uuid"
+			} else {
+				sql += " AND parent_id = $" + strconv.Itoa(idx) + "::uuid"
+			}
+			args = append(args, *pid)
+			idx++
+		}
+	}
 	if includeTypes != "" {
 		typeList := strings.Split(includeTypes, ",")
 		var placeholders []string
@@ -877,8 +892,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		args = append(args, "%"+searchTerm+"%")
 		idx++
 	}
-	sql += " ORDER BY sort_name LIMIT $" + strconv.Itoa(idx) + "::bigint"
+	sql += " ORDER BY sort_name"
+	sql += " LIMIT $" + strconv.Itoa(idx) + "::bigint"
 	args = append(args, limitVal)
+	idx++
+	if startIndex > 0 {
+		sql += " OFFSET $" + strconv.Itoa(idx) + "::bigint"
+		args = append(args, startIndex)
+		idx++
+	}
 
 	rows, err := state.DB.Query(ctx, sql, args...)
 	if err != nil {
@@ -888,6 +910,12 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	defer rows.Close()
 
 	needMediaSources := strings.Contains(fields, "MediaSources") || strings.Contains(fields, "Path")
+
+	auth := middleware.GetAuthUser(c)
+	var authUserID string
+	if auth != nil && !strings.HasPrefix(auth.ID, "api-key-") {
+		authUserID = auth.ID
+	}
 
 	var items []gin.H
 	for rows.Next() {
@@ -911,7 +939,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		if err != nil || row == nil {
 			continue
 		}
-		d := dto.FormatItemDto(row, state.Config.ServerID, nil)
+
+		var ud *dto.UserDataRow
+		if authUserID != "" {
+			u, uerr := models.GetUserItemData(ctx, state.DB, authUserID, itemID)
+			if uerr == nil && u != nil {
+				ud = u
+			}
+		}
+		d := dto.FormatItemDto(row, state.Config.ServerID, ud)
 		result := dtoToMap(d)
 
 		if embyID, ok := m["emby_id"]; ok && embyID != nil {

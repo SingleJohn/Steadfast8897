@@ -310,6 +310,10 @@ func buildOrderBy(options *ItemQueryOptions) string {
 				col = "RANDOM()"
 			case "DatePlayed":
 				col = "uid.last_played_date"
+			case "IndexNumber":
+				col = "i.parent_index_number NULLS LAST, i.index_number"
+			case "ParentIndexNumber":
+				col = "i.parent_index_number"
 			default:
 				continue
 			}

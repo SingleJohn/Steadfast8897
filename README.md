@@ -185,6 +185,34 @@ services:
 | Emby 客户端 | `http://IP:8961` |
 | Emby Gateway | upstream `http://IP:8961` |
 
+## Bug 修复记录
+
+### 图片服务 500 错误修复（images.go）
+
+- **WebP 支持**：注册 `golang.org/x/image/webp` 解码器，解决 WebP 格式图片在缩放时解码失败返回 500 的问题
+- **缩放降级策略**：`resizeImage` 失败时不再返回 500，改为退回原图直接发送，保证图片至少可见
+- **缩放缓存**：已缩放的图片会缓存到 `data/cache/`，重复请求直接命中缓存，避免 SMB/NFS 上重复 IO
+- **并发提升**：图片处理信号量从 3 提升到 10，减少高并发场景下的排队延迟
+
+### 剧集排序修复（compat.go / item.go / scanner.go）
+
+- **`buildOrderBy` 支持 `IndexNumber`**：Emby 客户端常发 `SortBy=IndexNumber`，之前未支持会退回 `sort_name` 字母序，导致集序错乱
+- **稳定排序**：`getEpisodes` SQL 增加 `i.id ASC` 作为最终排序键，保证同 `index_number` 条目的顺序稳定
+- **`ApplyNfoData` 保护**：Episode 类型的 `sort_name` 不再被 NFO 标题覆盖，保留 `episode %04d` 数字格式
+
+### 搜索空白修复（library.go / compat.go）
+
+- **查询参数大小写兼容**：`parseItemQueryOptions` 和 `itemsSearch` 同时支持 PascalCase / camelCase / 全小写参数名，兼容更多第三方客户端
+- **`GET /Items` 增加 `ParentId` + `Recursive` 支持**：compat 端点之前不处理这两个参数，导致依赖它们的客户端返回全量或空白
+- **`GET /Items` 增加 `StartIndex` 分页支持**：避免客户端分页请求无效
+
+### 元数据刮削保存修复（tmdb.go）
+
+- **`media_dir` 模式降级**：当写入媒体目录失败（权限、网络盘不可写）时，自动降级到 `data/metadata/`，不再丢失已下载的元数据
+- **Season 海报同步修复**：季海报写入逻辑同步增加降级保护
+- **HTTP 路径排除**：`resolveScrapeSaveTargets` 跳过以 `http` 开头的 `file_path`（STRM 远程路径），避免拼出无效本地路径
+- **增强日志**：所有媒体目录写入失败都有 `slog.Warn` 输出，方便排查权限和路径问题
+
 ## 性能优化记录
 
 ### 媒体库扫描优化（scanner.go）

@@ -137,15 +137,17 @@ func resolveScrapeSaveTargets(ctx context.Context, pool *pgxpool.Pool, itemID, i
 	case "Movie":
 		var filePath *string
 		if err := pool.QueryRow(ctx, "SELECT file_path FROM items WHERE id = $1::uuid", itemID).Scan(&filePath); err == nil && filePath != nil && *filePath != "" {
-			dir := filepath.Dir(*filePath)
-			targets.PosterPath = filepath.Join(dir, "poster.jpg")
-			targets.BackdropPath = filepath.Join(dir, "fanart.jpg")
-			targets.NfoPath = filepath.Join(dir, "movie.nfo")
+			if !strings.HasPrefix(strings.ToLower(*filePath), "http") {
+				dir := filepath.Dir(*filePath)
+				targets.PosterPath = filepath.Join(dir, "poster.jpg")
+				targets.BackdropPath = filepath.Join(dir, "fanart.jpg")
+				targets.NfoPath = filepath.Join(dir, "movie.nfo")
+			}
 		}
 	case "Series":
 		var episodePath *string
 		if err := pool.QueryRow(ctx,
-			"SELECT file_path FROM items WHERE series_id = $1::uuid AND type = 'Episode' AND file_path IS NOT NULL ORDER BY created_at ASC LIMIT 1",
+			"SELECT file_path FROM items WHERE series_id = $1::uuid AND type = 'Episode' AND file_path IS NOT NULL AND file_path NOT LIKE 'http%' ORDER BY created_at ASC LIMIT 1",
 			itemID,
 		).Scan(&episodePath); err == nil && episodePath != nil && *episodePath != "" {
 			showDir := filepath.Dir(filepath.Dir(*episodePath))
@@ -153,6 +155,12 @@ func resolveScrapeSaveTargets(ctx context.Context, pool *pgxpool.Pool, itemID, i
 			targets.BackdropPath = filepath.Join(showDir, "fanart.jpg")
 			targets.NfoPath = filepath.Join(showDir, "tvshow.nfo")
 		}
+	}
+
+	if targets.PosterPath != "" {
+		slog.Debug("[TMDB] Resolved media save targets", "item_id", itemID, "poster", targets.PosterPath, "backdrop", targets.BackdropPath, "nfo", targets.NfoPath)
+	} else {
+		slog.Debug("[TMDB] No media directory target resolved, will use data/metadata/", "item_id", itemID, "type", itemType)
 	}
 
 	return targets
@@ -617,11 +625,18 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		var dbPosterPath string
 		var dbPosterTag *string
 
-		if saveToMedia && targets.PosterPath != "" && client.DownloadImage(ctx, posterPath, targets.PosterPath, "w500") {
-			dbPosterPath = targets.PosterPath
-			dbPosterTag = GenerateImageTag(targets.PosterPath)
+		mediaSaved := false
+		if saveToMedia && targets.PosterPath != "" {
+			if client.DownloadImage(ctx, posterPath, targets.PosterPath, "w500") {
+				dbPosterPath = targets.PosterPath
+				dbPosterTag = GenerateImageTag(targets.PosterPath)
+				mediaSaved = true
+			} else {
+				slog.Warn("[TMDB] Failed to save poster to media directory, falling back to data/metadata/",
+					"item_id", itemID, "path", targets.PosterPath)
+			}
 		}
-		if saveToData {
+		if saveToData || (saveToMedia && !mediaSaved) {
 			dataPath := fmt.Sprintf("data/metadata/%s/poster.jpg", itemID)
 			if client.DownloadImage(ctx, posterPath, dataPath, "w500") && dbPosterPath == "" {
 				dbPosterPath = dataPath
@@ -640,11 +655,18 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		var dbBackdropPath string
 		var dbBackdropTag *string
 
-		if saveToMedia && targets.BackdropPath != "" && client.DownloadImage(ctx, backdropPath, targets.BackdropPath, "w1280") {
-			dbBackdropPath = targets.BackdropPath
-			dbBackdropTag = GenerateImageTag(targets.BackdropPath)
+		mediaSaved := false
+		if saveToMedia && targets.BackdropPath != "" {
+			if client.DownloadImage(ctx, backdropPath, targets.BackdropPath, "w1280") {
+				dbBackdropPath = targets.BackdropPath
+				dbBackdropTag = GenerateImageTag(targets.BackdropPath)
+				mediaSaved = true
+			} else {
+				slog.Warn("[TMDB] Failed to save backdrop to media directory, falling back to data/metadata/",
+					"item_id", itemID, "path", targets.BackdropPath)
+			}
 		}
-		if saveToData {
+		if saveToData || (saveToMedia && !mediaSaved) {
 			dataPath := fmt.Sprintf("data/metadata/%s/backdrop.jpg", itemID)
 			if client.DownloadImage(ctx, backdropPath, dataPath, "w1280") && dbBackdropPath == "" {
 				dbBackdropPath = dataPath
@@ -719,14 +741,20 @@ func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbCl
 		var dbPosterPath string
 		var dbPosterTag *string
 
+		mediaSaved := false
 		if saveToMedia {
 			mediaPath := resolveSeasonPosterMediaPath(ctx, pool, sid)
-			if mediaPath != "" && client.DownloadImage(ctx, *posterPath, mediaPath, "w500") {
-				dbPosterPath = mediaPath
-				dbPosterTag = GenerateImageTag(mediaPath)
+			if mediaPath != "" {
+				if client.DownloadImage(ctx, *posterPath, mediaPath, "w500") {
+					dbPosterPath = mediaPath
+					dbPosterTag = GenerateImageTag(mediaPath)
+					mediaSaved = true
+				} else {
+					slog.Warn("[TMDB] Failed to save season poster to media directory", "season_id", sid, "path", mediaPath)
+				}
 			}
 		}
-		if saveToData {
+		if saveToData || (saveToMedia && !mediaSaved) {
 			dataPath := fmt.Sprintf("data/metadata/%s/poster.jpg", sid)
 			if client.DownloadImage(ctx, *posterPath, dataPath, "w500") && dbPosterPath == "" {
 				dbPosterPath = dataPath
