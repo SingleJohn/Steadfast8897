@@ -35,6 +35,7 @@ const newLibName = ref('')
 const newLibType = ref('movies')
 const newLibPaths = ref<string[]>([])
 const newLibPathInput = ref('')
+const solidModalMenuProps = { class: 'solid-modal-menu' }
 
 const showDirBrowser = ref(false)
 const dirBrowserPath = ref('/mnt')
@@ -228,7 +229,7 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
         </div>
         <div class="form-group">
           <label class="form-label">类型</label>
-          <n-select v-model:value="newLibType" :options="libTypeOptions" />
+          <n-select v-model:value="newLibType" :options="libTypeOptions" :menu-props="solidModalMenuProps" />
         </div>
         <div>
           <label class="form-label">路径</label>

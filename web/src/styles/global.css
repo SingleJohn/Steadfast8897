@@ -146,6 +146,17 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
+.solid-modal-card .n-card {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid rgba(203, 213, 225, 0.92) !important;
+  backdrop-filter: blur(calc(var(--app-glass-blur) * 0.55)) saturate(1.15) !important;
+  -webkit-backdrop-filter: blur(calc(var(--app-glass-blur) * 0.55)) saturate(1.15) !important;
+}
+.app-dark .solid-modal-card .n-card {
+  background: rgba(15, 23, 42, 0.9) !important;
+  border: 1px solid rgba(71, 85, 105, 0.9) !important;
+}
+
 .glass-modal .n-data-table-th {
   background: rgba(148, 163, 184, 0.15);
   color: var(--app-text-muted);
@@ -206,6 +217,22 @@ html.app-dark .n-dialog-mask {
   background-color: var(--n-color) !important;
   backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.5);
+}
+
+/* Make select menus inside edit/create modals easier to read. */
+.solid-modal-menu {
+  --n-color: rgba(255, 255, 255, 0.96) !important;
+  background-color: var(--n-color) !important;
+  border: 1px solid rgba(203, 213, 225, 0.92) !important;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.12) !important;
+  backdrop-filter: blur(calc(var(--app-glass-blur) * 0.55)) saturate(1.15) !important;
+  -webkit-backdrop-filter: blur(calc(var(--app-glass-blur) * 0.55)) saturate(1.15) !important;
+}
+html.app-dark .solid-modal-menu {
+  --n-color: rgba(15, 23, 42, 0.94) !important;
+  background-color: var(--n-color) !important;
+  border: 1px solid rgba(71, 85, 105, 0.9) !important;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45) !important;
 }
 
 /* Tooltip color fix */

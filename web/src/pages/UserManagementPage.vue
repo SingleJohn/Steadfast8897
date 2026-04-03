@@ -61,6 +61,7 @@ const editCurrentPw = ref('')
 const editNewPw = ref('')
 const editConfirmPw = ref('')
 const showDeleteConfirm = ref(false)
+const solidModalMenuProps = { class: 'solid-modal-menu' }
 
 const showEditModal = computed(() => editUserId.value !== null)
 
@@ -251,7 +252,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
     </div>
 
     <!-- Create User Modal -->
-    <n-modal v-model:show="showCreate" preset="card" title="添加用户" style="max-width: 440px" class="glass-modal">
+    <n-modal v-model:show="showCreate" preset="card" title="添加用户" style="max-width: 440px" class="glass-modal solid-modal-card">
       <n-space vertical :size="16">
         <div>
           <label class="form-label">用户名</label>
@@ -391,7 +392,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
                 <span>最大同时播放数</span>
                 <span class="toggle-desc">0 表示不限制</span>
               </div>
-              <n-select v-model:value="editPolicy.SimultaneousStreamLimit" :options="streamLimitOptions" size="small" style="width: 100px" />
+              <n-select v-model:value="editPolicy.SimultaneousStreamLimit" :options="streamLimitOptions" size="small" style="width: 100px" :menu-props="solidModalMenuProps" />
             </div>
           </div>
 

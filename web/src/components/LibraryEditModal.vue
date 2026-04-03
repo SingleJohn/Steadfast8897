@@ -46,6 +46,7 @@ const typeOptions = [
   { label: '电视剧', value: 'tvshows' },
 ]
 const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧' }
+const solidModalMenuProps = { class: 'solid-modal-menu' }
 
 const visible = ref(false)
 
@@ -270,7 +271,7 @@ async function onDeleteCover() {
             </div>
             <div>
               <label class="em-label">内容类型</label>
-              <n-select v-model:value="collectionType" :options="typeOptions" size="small" />
+              <n-select v-model:value="collectionType" :options="typeOptions" size="small" :menu-props="solidModalMenuProps" />
             </div>
           </div>
           <div style="margin-top: 12px">
