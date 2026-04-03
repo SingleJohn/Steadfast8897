@@ -1,7 +1,6 @@
 .git
 data
 web/node_modules
-web/dist
 web/.vite
 *.DS_Store
 .env
