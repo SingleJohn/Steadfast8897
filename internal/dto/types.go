@@ -40,6 +40,11 @@ type BaseItemDto struct {
 	GenreItems                 []GenreItem            `json:"GenreItems,omitempty"`
 	Genres                     []string               `json:"Genres,omitempty"`
 	People                     []map[string]interface{} `json:"People,omitempty"`
+	OriginalTitle              *string                `json:"OriginalTitle,omitempty"`
+	Taglines                   []string               `json:"Taglines,omitempty"`
+	DateCreated                *string                `json:"DateCreated,omitempty"`
+	Studios                    []StudioItem           `json:"Studios,omitempty"`
+	ProductionLocations        []string               `json:"ProductionLocations,omitempty"`
 	Etag                       *string                `json:"Etag,omitempty"`
 	SeriesPrimaryImageItemID   *string                `json:"SeriesPrimaryImageItemId,omitempty"`
 	SeriesPrimaryImageTag      *string                `json:"SeriesPrimaryImageTag,omitempty"`
@@ -54,6 +59,11 @@ type BaseItemDto struct {
 type GenreItem struct {
 	Name string `json:"Name"`
 	ID   string `json:"Id"`
+}
+
+type StudioItem struct {
+	Name string `json:"Name"`
+	ID   string `json:"Id,omitempty"`
 }
 
 type MediaSourceInfo struct {
@@ -138,6 +148,9 @@ type ItemRow struct {
 	SeriesFallbackID       *string
 	ChildCount             *int64
 	RecursiveItemCount     *int64
+	Tagline                *string
+	Studio                 *string
+	CreatedAt              *time.Time
 }
 
 type UserDataRow struct {

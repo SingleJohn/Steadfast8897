@@ -597,7 +597,10 @@ func submitCustomQuery(c *gin.Context, state *AppState) {
 		"GRANT", "REVOKE", "COPY", "EXECUTE", "DO ", "CALL", "SET ",
 		"PG_READ_FILE", "PG_WRITE_FILE", "PG_SLEEP", "LO_IMPORT", "LO_EXPORT"}
 	for _, kw := range forbidden {
-		if strings.Contains(trimmed, kw) {
+		// Use word-boundary matching to avoid false positives (e.g. DateCreated containing CREATE)
+		kwTrimmed := strings.TrimSpace(kw)
+		pattern := `(?i)\b` + regexp.QuoteMeta(kwTrimmed) + `\b`
+		if matched, _ := regexp.MatchString(pattern, trimmed); matched {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden keyword: " + kw})
 			return
 		}
@@ -617,13 +620,34 @@ func submitCustomQuery(c *gin.Context, state *AppState) {
 		return
 	}
 
-	sql = strings.ReplaceAll(sql, "PlaybackActivity", `"PlaybackActivity"`)
-	sql = rewriteRowID.ReplaceAllString(sql, "id")
+	// Step 1: SQLite function rewrites (before column name mapping)
+	sql = rewriteSubstrInstr.ReplaceAllString(sql, "split_part($1, '$2', 1)")
+	sql = rewriteInstr.ReplaceAllString(sql, "POSITION($2 IN $1)")
 	sql = rewriteStrftimeYMD.ReplaceAllString(sql, "TO_CHAR($1, 'YYYY-MM-DD')")
 	sql = rewriteStrftimeH.ReplaceAllString(sql, "TO_CHAR($1, 'HH24')")
 	sql = rewriteStrftimeW.ReplaceAllString(sql, "EXTRACT(DOW FROM $1)::text")
 	sql = rewriteDatetimeDays.ReplaceAllString(sql, "(NOW() - INTERVAL '$1 days')")
 	sql = rewriteDatetimeNow.ReplaceAllString(sql, "NOW()")
+	sql = rewriteRowID.ReplaceAllString(sql, "id")
+	sql = rewriteUserList.ReplaceAllString(sql, "SELECT id::text FROM users WHERE is_admin = true")
+
+	// Step 2: Fix GROUP BY before column quoting (aliases like "name" are unquoted)
+	sql = fixLooseGroupBy(sql)
+
+	// Step 3: Table + column name mapping for PG case sensitivity
+	sql = strings.ReplaceAll(sql, "PlaybackActivity", `"PlaybackActivity"`)
+	embyColumns := map[string]string{
+		"UserId": `"UserId"`, "DateCreated": `"DateCreated"`, "ItemId": `"ItemId"`,
+		"ItemType": `"ItemType"`, "ItemName": `"ItemName"`, "PlayDuration": `"PlayDuration"`,
+		"PauseDuration": `"PauseDuration"`, "ClientName": `"ClientName"`, "DeviceName": `"DeviceName"`,
+		"RemoteAddress": `"ClientIp"`, "ClientIp": `"ClientIp"`, "PlaybackMethod": `"PlaybackMethod"`,
+		"SeriesName": `"SeriesName"`,
+	}
+	for embyCol, pgCol := range embyColumns {
+		re := regexp.MustCompile(`\b` + embyCol + `\b`)
+		sql = re.ReplaceAllString(sql, pgCol)
+	}
+	sql = strings.ReplaceAll(sql, `"PauseDuration"`, "0")
 
 	rows, err := state.DB.Query(c.Request.Context(), sql)
 	if err != nil {
@@ -664,7 +688,111 @@ var (
 	rewriteStrftimeW    = regexp.MustCompile(`(?i)strftime\s*\(\s*'%w'\s*,\s*(\w+)\s*\)`)
 	rewriteDatetimeDays = regexp.MustCompile(`(?i)datetime\s*\(\s*'now'\s*,\s*'-(\d+)\s+days?'\s*\)`)
 	rewriteDatetimeNow  = regexp.MustCompile(`(?i)datetime\s*\(\s*'now'\s*\)`)
+	rewriteSubstrInstr  = regexp.MustCompile(`(?i)substr\s*\(\s*(\w+)\s*,\s*0\s*,\s*instr\s*\(\s*\w+\s*,\s*'([^']+)'\s*\)\s*\)`)
+	rewriteInstr        = regexp.MustCompile(`(?i)instr\s*\(\s*(\w+)\s*,\s*'([^']+)'\s*\)`)
+	rewriteUserList     = regexp.MustCompile(`(?i)select\s+UserId\s+from\s+UserList`)
 )
+
+// fixLooseGroupBy detects SELECT columns not in GROUP BY and not in aggregate functions,
+// then wraps them with MIN() to satisfy PostgreSQL strict GROUP BY rules.
+func fixLooseGroupBy(sql string) string {
+	upper := strings.ToUpper(sql)
+	groupByIdx := strings.LastIndex(upper, "GROUP BY")
+	if groupByIdx < 0 {
+		return sql
+	}
+
+	// Extract GROUP BY columns
+	afterGroupBy := sql[groupByIdx+8:]
+	// Cut at ORDER BY / LIMIT / HAVING if present
+	for _, kw := range []string{"ORDER BY", "LIMIT", "HAVING"} {
+		if idx := strings.Index(strings.ToUpper(afterGroupBy), kw); idx >= 0 {
+			afterGroupBy = afterGroupBy[:idx]
+		}
+	}
+	groupCols := make(map[string]bool)
+	for _, col := range strings.Split(afterGroupBy, ",") {
+		col = strings.TrimSpace(col)
+		col = strings.Trim(col, `"`)
+		if col != "" {
+			groupCols[strings.ToLower(col)] = true
+		}
+	}
+
+	// Extract SELECT columns (between SELECT and FROM)
+	selectIdx := strings.Index(upper, "SELECT")
+	fromIdx := strings.Index(upper, "FROM")
+	if selectIdx < 0 || fromIdx < 0 || fromIdx <= selectIdx+6 {
+		return sql
+	}
+	selectPart := sql[selectIdx+6 : fromIdx]
+
+	// Parse SELECT columns, wrap non-grouped non-aggregate ones
+	var newCols []string
+	for _, col := range splitSelectColumns(selectPart) {
+		trimmed := strings.TrimSpace(col)
+		if trimmed == "" {
+			continue
+		}
+
+		upperCol := strings.ToUpper(trimmed)
+		// Skip if already an aggregate
+		isAgg := false
+		for _, fn := range []string{"SUM(", "COUNT(", "MAX(", "MIN(", "AVG("} {
+			if strings.Contains(upperCol, fn) {
+				isAgg = true
+				break
+			}
+		}
+		if isAgg {
+			newCols = append(newCols, trimmed)
+			continue
+		}
+
+		// Extract the bare column name and alias (handle "X AS alias")
+		bareName := trimmed
+		alias := ""
+		aliasName := ""
+		if asIdx := strings.LastIndex(strings.ToUpper(trimmed), " AS "); asIdx >= 0 {
+			bareName = strings.TrimSpace(trimmed[:asIdx])
+			alias = strings.TrimSpace(trimmed[asIdx:])
+			aliasName = strings.TrimSpace(trimmed[asIdx+4:])
+		}
+		bareNameClean := strings.ToLower(strings.Trim(bareName, `"`))
+
+		// Check if bare name or alias is in GROUP BY
+		if groupCols[bareNameClean] || (aliasName != "" && groupCols[strings.ToLower(aliasName)]) {
+			newCols = append(newCols, trimmed)
+		} else {
+			// Wrap with MIN()
+			newCols = append(newCols, "MIN("+bareName+")"+alias)
+		}
+	}
+
+	return sql[:selectIdx+6] + " " + strings.Join(newCols, ", ") + " " + sql[fromIdx:]
+}
+
+// splitSelectColumns splits SELECT column list respecting parentheses.
+func splitSelectColumns(s string) []string {
+	var result []string
+	depth := 0
+	start := 0
+	for i, c := range s {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				result = append(result, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	result = append(result, s[start:])
+	return result
+}
 
 func isSafePlaybackActivityQuery(q string) bool {
 	low := strings.ToLower(strings.TrimSpace(q))
@@ -857,7 +985,8 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		i.runtime_ticks, i.index_number, i.parent_index_number, i.parent_id,
 		i.series_id, i.series_name, i.season_id, i.container, i.file_path,
 		i.resolved_path, i.provider_ids, i.primary_image_tag, i.backdrop_image_tag,
-		NULL::bigint AS child_count, NULL::bigint AS recursive_item_count, i.emby_id`
+		NULL::bigint AS child_count, NULL::bigint AS recursive_item_count,
+		i.tagline, i.studio, i.created_at, i.emby_id`
 
 	seriesCols := `, sf.primary_image_tag AS series_primary_image_tag, sf.backdrop_image_tag AS series_backdrop_image_tag, sf.id AS series_fallback_id`
 	seriesJoin := " LEFT JOIN items sf ON sf.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)"
@@ -1012,6 +1141,8 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	defer rows.Close()
 
 	needMediaSources := strings.Contains(fields, "MediaSources") || strings.Contains(fields, "Path")
+	needGenres := strings.Contains(fields, "Genres")
+	needPeople := strings.Contains(fields, "People")
 
 	var items []gin.H
 	for rows.Next() {
@@ -1060,6 +1191,23 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			msc := models.GetMediaSourceCount(ctx, state.DB, itemID)
 			if msc > 1 {
 				result["MediaSourceCount"] = msc
+			}
+		}
+
+		if needGenres {
+			genres, _ := models.GetItemGenres(ctx, state.DB, itemID)
+			genreNames := make([]string, 0, len(genres))
+			for _, g := range genres {
+				genreNames = append(genreNames, g[1])
+			}
+			result["Genres"] = genreNames
+		}
+		if needPeople {
+			cast, _ := models.GetItemCast(ctx, state.DB, itemID)
+			if cast != nil {
+				result["People"] = cast
+			} else {
+				result["People"] = []interface{}{}
 			}
 		}
 

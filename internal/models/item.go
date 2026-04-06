@@ -509,6 +509,9 @@ func MapColsToItemRow(m map[string]interface{}) dto.ItemRow {
 	item.SeriesFallbackID = getUUIDStrPtr(m, "series_fallback_id")
 	item.ChildCount = getInt64Ptr(m, "child_count")
 	item.RecursiveItemCount = getInt64Ptr(m, "recursive_item_count")
+	item.Tagline = getStringPtr(m, "tagline")
+	item.Studio = getStringPtr(m, "studio")
+	item.CreatedAt = getTimePtr(m, "created_at")
 	return item
 }
 

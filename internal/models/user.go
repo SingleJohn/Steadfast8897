@@ -48,6 +48,8 @@ type UserPolicy struct {
 	SimultaneousStreamLimit    int32
 	InvalidLoginAttemptCount   int32
 	LoginAttemptsBeforeLockout int32
+	BlockedMediaFolders        []string
+	EnabledFolders             []string
 }
 
 type PolicyUpdate struct {
@@ -66,8 +68,13 @@ type PolicyUpdate struct {
 	EnableUserPreferenceAccess *bool  `json:"EnableUserPreferenceAccess,omitempty"`
 	EnableRemoteControl        *bool  `json:"EnableRemoteControlOfOtherUsers,omitempty"`
 	EnableSharedDeviceControl  *bool  `json:"EnableSharedDeviceControl,omitempty"`
-	RemoteClientBitrateLimit   *int32 `json:"RemoteClientBitrateLimit,omitempty"`
-	SimultaneousStreamLimit    *int32 `json:"SimultaneousStreamLimit,omitempty"`
+	RemoteClientBitrateLimit   *int32   `json:"RemoteClientBitrateLimit,omitempty"`
+	SimultaneousStreamLimit    *int32   `json:"SimultaneousStreamLimit,omitempty"`
+	IsHidden                   *bool    `json:"IsHidden,omitempty"`
+	IsHiddenRemotely           *bool    `json:"IsHiddenRemotely,omitempty"`
+	IsDisabled                 *bool    `json:"IsDisabled,omitempty"`
+	BlockedMediaFolders        []string `json:"BlockedMediaFolders,omitempty"`
+	EnabledFolders             []string `json:"EnabledFolders,omitempty"`
 }
 
 const userColumns = `id, name, password_hash, is_admin, created_at, is_disabled, is_hidden, last_login_date, last_activity_date, emby_password_hash`
@@ -241,6 +248,7 @@ func GetUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) (*
 		&p.EnableUserPreferenceAccess, &p.EnableRemoteControl, &p.EnableSharedDeviceControl,
 		&p.MaxParentalRating, &p.RemoteClientBitrateLimit, &p.SimultaneousStreamLimit,
 		&p.InvalidLoginAttemptCount, &p.LoginAttemptsBeforeLockout,
+		&p.BlockedMediaFolders, &p.EnabledFolders,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -323,12 +331,39 @@ func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID,
 		}
 	}
 
+	if policy.BlockedMediaFolders != nil {
+		_, err := pool.Exec(ctx, "UPDATE user_policies SET blocked_media_folders = $1 WHERE user_id = $2",
+			policy.BlockedMediaFolders, userID)
+		if err != nil {
+			return err
+		}
+	}
+	if policy.EnabledFolders != nil {
+		_, err := pool.Exec(ctx, "UPDATE user_policies SET enabled_folders = $1 WHERE user_id = $2",
+			policy.EnabledFolders, userID)
+		if err != nil {
+			return err
+		}
+	}
+
 	if policy.IsAdministrator != nil {
 		_, err := pool.Exec(ctx, "UPDATE users SET is_admin = $1 WHERE id = $2",
 			*policy.IsAdministrator, userID)
 		if err != nil {
 			return err
 		}
+	}
+	if policy.IsHidden != nil || policy.IsHiddenRemotely != nil {
+		hidden := false
+		if policy.IsHidden != nil {
+			hidden = *policy.IsHidden
+		} else if policy.IsHiddenRemotely != nil {
+			hidden = *policy.IsHiddenRemotely
+		}
+		pool.Exec(ctx, "UPDATE users SET is_hidden = $1 WHERE id = $2", hidden, userID)
+	}
+	if policy.IsDisabled != nil {
+		pool.Exec(ctx, "UPDATE users SET is_disabled = $1 WHERE id = $2", *policy.IsDisabled, userID)
 	}
 
 	return nil
@@ -349,11 +384,21 @@ func FormatPolicyResponse(policy *UserPolicy, isAdmin bool) map[string]interface
 	}
 
 	if policy != nil {
+		blockedFolders := policy.BlockedMediaFolders
+		if blockedFolders == nil {
+			blockedFolders = []string{}
+		}
+		enabledFolders := policy.EnabledFolders
+		if enabledFolders == nil {
+			enabledFolders = []string{}
+		}
 		return map[string]interface{}{
 			"IsAdministrator":                  policy.IsAdministrator,
 			"IsDisabled":                       false,
 			"IsHidden":                         false,
 			"EnableAllFolders":                 policy.EnableAllFolders,
+			"BlockedMediaFolders":              blockedFolders,
+			"EnabledFolders":                   enabledFolders,
 			"EnableRemoteAccess":               policy.EnableRemoteAccess,
 			"EnableMediaPlayback":              policy.EnableMediaPlayback,
 			"EnableAudioPlaybackTranscoding":   policy.EnableAudioTranscoding,

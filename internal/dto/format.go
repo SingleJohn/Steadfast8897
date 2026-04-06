@@ -126,6 +126,19 @@ func FormatItemDto(item *ItemRow, serverID string, userData *UserDataRow) BaseIt
 	dto.ChildCount = item.ChildCount
 	dto.RecursiveItemCount = item.RecursiveItemCount
 
+	// Supplemental fields for bot/search compatibility
+	if item.Tagline != nil && *item.Tagline != "" {
+		dto.Taglines = []string{*item.Tagline}
+	}
+	if item.CreatedAt != nil {
+		t := item.CreatedAt.UTC().Format("2006-01-02T15:04:05.0000000Z")
+		dto.DateCreated = &t
+	}
+	if item.Studio != nil && *item.Studio != "" {
+		dto.Studios = []StudioItem{{Name: *item.Studio}}
+	}
+	dto.ProductionLocations = []string{}
+
 	if userData != nil {
 		position := int64(0)
 		if userData.PlaybackPositionTicks != nil {

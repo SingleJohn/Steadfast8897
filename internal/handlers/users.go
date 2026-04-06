@@ -194,7 +194,7 @@ func RegisterUserRoutes(group *gin.RouterGroup, state *AppState, authMW, adminMW
 	_ = state
 	group.GET("/Users/Public", GetPublicUsers)
 	group.GET("/Users", authMW, GetAllUsers)
-	group.GET("/Users/Query", authMW, GetAllUsers)
+	group.GET("/Users/Query", authMW, QueryUsers)
 	group.GET("/Users/Me", authMW, getMe)
 	group.POST("/Users/New", adminMW, CreateUser)
 	group.POST("/Users/AuthenticateByName", optAuthMW, AuthenticateByName)
@@ -240,6 +240,38 @@ func GetAllUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+func QueryUsers(c *gin.Context) {
+	st := GetState(c)
+	ctx := c.Request.Context()
+
+	nameFilter := c.Query("NameStartsWithOrGreater")
+	if nameFilter == "" {
+		nameFilter = c.Query("nameStartsWithOrGreater")
+	}
+
+	users, err := models.GetAllUsers(ctx, st.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	out := make([]map[string]interface{}, 0)
+	for i := range users {
+		if nameFilter != "" && users[i].Name < nameFilter {
+			continue
+		}
+		m, err := buildUserResponse(ctx, st, &users[i], true)
+		if err != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"Items":            out,
+		"TotalRecordCount": len(out),
+	})
+}
+
 type createUserBody struct {
 	Name     string `json:"Name"`
 	Password string `json:"Password"`
@@ -248,11 +280,15 @@ type createUserBody struct {
 func CreateUser(c *gin.Context) {
 	st := GetState(c)
 	var body createUserBody
-	if err := c.ShouldBindJSON(&body); err != nil || body.Name == "" || body.Password == "" {
+	if err := c.ShouldBindJSON(&body); err != nil || body.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
-	u, err := models.CreateUser(c.Request.Context(), st.DB, body.Name, body.Password, false)
+	password := body.Password
+	if password == "" {
+		password = uuid.New().String()[:16]
+	}
+	u, err := models.CreateUser(c.Request.Context(), st.DB, body.Name, password, false)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
