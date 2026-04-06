@@ -22,6 +22,7 @@ type AppState struct {
 	LogBuffer      *services.LogBuffer
 	ScrapeTask     *services.ScrapeTask
 	HTTPClient     *http.Client
+	Updater        *services.Updater
 }
 
 func GetState(c *gin.Context) *AppState {

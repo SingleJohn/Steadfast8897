@@ -132,6 +132,50 @@ export async function getSystemInfo() {
   return request<any>('/System/Info/Public');
 }
 
+export type UpdateStatus = {
+  status: string
+  message: string
+  currentVersion: string
+  latestVersion: string
+  targetVersion: string
+  channel: string
+  hasUpdate: boolean
+  currentImage?: string
+  targetImage?: string
+  releaseSource?: string
+  releaseNotesUrl?: string
+  githubReleaseUrl?: string
+  helperContainer?: string
+  lastCheckedAt?: string
+  startedAt?: string
+  completedAt?: string
+  error?: string
+  logs?: string[]
+  needsDockerSocket?: boolean
+}
+
+export async function getUpdateStatus() {
+  return requestJson<UpdateStatus>('/System/Update/Status')
+}
+
+export async function checkForUpdate() {
+  return requestJson<UpdateStatus>('/System/Update/Check', { method: 'POST' })
+}
+
+export async function applyUpdate(categories: string[] = ['settings', 'users', 'libraries', 'media']) {
+  return requestJson<UpdateStatus>('/System/Update/Apply', {
+    method: 'POST',
+    body: JSON.stringify({ categories }),
+  })
+}
+
+export async function setUpdateChannel(channel: 'stable' | 'beta') {
+  return requestJson<UpdateStatus>('/System/Update/Channel', {
+    method: 'POST',
+    body: JSON.stringify({ channel }),
+  })
+}
+
 // Library
 export async function getViews() {
   const userId = getUserId();
@@ -489,6 +533,41 @@ export async function restoreBackup(filename: string, categories: string[]) {
 }
 export function getBackupDownloadUrl(filename: string) {
   return `/System/Backups/${encodeURIComponent(filename)}`;
+}
+
+// Library Sort Order
+export async function updateLibrarySortOrder(orders: { Id: string; SortOrder: number }[]) {
+  return request('/Library/VirtualFolders/SortOrder', { method: 'POST', body: JSON.stringify(orders) });
+}
+
+// Platform Libraries
+export async function getPlatforms() {
+  return requestJson<any>('/Library/Platforms');
+}
+export async function addPlatformLibrary(name: string) {
+  return request('/Library/Platforms', { method: 'POST', body: JSON.stringify({ PlatformName: name }) });
+}
+export async function setPlatformEnable(name: string, enabled: boolean) {
+  return request(`/Library/Platforms/${encodeURIComponent(name)}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' });
+}
+export async function deletePlatformLibrary(id: string) {
+  return request(`/Library/Platforms/${id}`, { method: 'DELETE' });
+}
+export async function scanPlatformStudios() {
+  return requestJson<any>('/Library/Platforms/Scan', { method: 'POST' });
+}
+export async function scanPlatformByFilename() {
+  return requestJson<any>('/Library/Platforms/ScanFilename', { method: 'POST' });
+}
+export async function rescrapeMissingStudio() {
+  return requestJson<any>('/Library/Platforms/Rescrape', { method: 'POST' });
+}
+export async function getRescrapeProgress() {
+  return requestJson<any>('/Library/Platforms/Rescrape/Progress');
+}
+
+export async function getTaskSummary() {
+  return requestJson<any>('/Library/Tasks/Summary');
 }
 
 export { getToken, getUserId };

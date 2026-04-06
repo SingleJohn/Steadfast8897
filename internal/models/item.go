@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type ItemQueryOptions struct {
 	UserID           *string
 	GenreIDs         []string
 	Years            []int
+	Studio           *string
 }
 
 type QueryResult struct {
@@ -96,6 +98,27 @@ func GetEmbyID(ctx context.Context, pool *pgxpool.Pool, uuidStr string) *int32 {
 	return &eid
 }
 
+func mergedRepresentativeExpr(itemAlias string) string {
+	return fmt.Sprintf(
+		"CASE WHEN %s.type = 'Movie' THEN COALESCE(%s.merged_to_id::text, %s.id::text) ELSE %s.id::text END",
+		itemAlias, itemAlias, itemAlias, itemAlias,
+	)
+}
+
+func libraryRepresentativeCountExpr(itemAlias string) string {
+	return fmt.Sprintf(
+		"COUNT(DISTINCT CASE WHEN %s.type = 'Movie' THEN COALESCE(%s.merged_to_id::text, %s.id::text) ELSE %s.id::text END)",
+		itemAlias, itemAlias, itemAlias, itemAlias,
+	)
+}
+
+func shouldUseLibraryRepresentative(options *ItemQueryOptions) bool {
+	if options == nil || options.Studio != nil {
+		return false
+	}
+	return options.ParentID != nil || options.LibraryID != nil
+}
+
 func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptions) (*ItemQueryResult, error) {
 	var conditions []string
 	var params []interface{}
@@ -155,6 +178,12 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		conditions = append(conditions, fmt.Sprintf("i.production_year IN (%s)", strings.Join(placeholders, ",")))
 	}
 
+	if options.Studio != nil {
+		conditions = append(conditions, fmt.Sprintf("i.studio = $%d", paramIdx))
+		params = append(params, *options.Studio)
+		paramIdx++
+	}
+
 	userJoin := ""
 	if options.UserID != nil {
 		userJoin = fmt.Sprintf(
@@ -179,14 +208,26 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		}
 	}
 
+	// Platform virtual libraries show only the global merged primary.
+	// Ordinary user libraries use a per-library representative selection later
+	// so a title does not disappear just because the global primary lives elsewhere.
+	if options.Studio != nil {
+		conditions = append(conditions, "i.merged_to_id IS NULL")
+	}
+
 	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
+	useRepresentative := shouldUseLibraryRepresentative(options)
+	countTarget := "DISTINCT i.id"
+	if useRepresentative {
+		countTarget = "DISTINCT " + mergedRepresentativeExpr("i")
+	}
 	countSQL := fmt.Sprintf(
-		"SELECT COUNT(DISTINCT i.id) FROM items i %s %s %s",
-		genreJoin, userJoin, whereClause)
+		"SELECT COUNT(%s) FROM items i %s %s %s",
+		countTarget, genreJoin, userJoin, whereClause)
 
 	var totalCount int64
 	countParams := make([]interface{}, len(params))
@@ -213,7 +254,30 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	isRandom := strings.Contains(orderBy, "RANDOM()")
 
 	var itemSQL string
-	if genreJoin != "" && isRandom {
+	if useRepresentative {
+		outerOrder := buildOrderByForAlias(options, "ranked", "ranked")
+		itemSQL = fmt.Sprintf(
+			`WITH filtered AS (
+				SELECT %s i.*, %s, %s, %s AS merge_group_key
+				FROM items i %s %s %s %s
+			), ranked AS (
+				SELECT filtered.*,
+					ROW_NUMBER() OVER (
+						PARTITION BY merge_group_key
+						ORDER BY
+							CASE WHEN filtered.merged_to_id IS NULL THEN 0 ELSE 1 END,
+							CASE WHEN filtered.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
+							CASE WHEN filtered.primary_image_path IS NOT NULL AND filtered.primary_image_path <> '' THEN 0 ELSE 1 END,
+							CASE WHEN filtered.overview IS NOT NULL AND filtered.overview <> '' THEN 0 ELSE 1 END,
+							filtered.updated_at DESC,
+							filtered.id
+					) AS merge_row_num
+				FROM filtered
+			)
+			SELECT * FROM ranked WHERE merge_row_num = 1 ORDER BY %s`,
+			needDistinct, userColumns, seriesCols, mergedRepresentativeExpr("i"),
+			genreJoin, userJoin, seriesJoin, whereClause, outerOrder)
+	} else if genreJoin != "" && isRandom {
 		itemSQL = fmt.Sprintf(
 			"SELECT * FROM (SELECT DISTINCT i.*, %s, %s FROM items i %s %s %s %s) sub",
 			userColumns, seriesCols, genreJoin, userJoin, seriesJoin, whereClause)
@@ -279,7 +343,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	}, nil
 }
 
-func buildOrderBy(options *ItemQueryOptions) string {
+func buildOrderByForAlias(options *ItemQueryOptions, itemAlias, userAlias string) string {
 	if options.SortBy != nil {
 		sortDir := "ASC"
 		if options.SortOrder != nil && *options.SortOrder == "Descending" {
@@ -295,25 +359,25 @@ func buildOrderBy(options *ItemQueryOptions) string {
 			var col string
 			switch f {
 			case "SortName":
-				col = "i.sort_name"
+				col = itemAlias + ".sort_name"
 			case "DateCreated":
-				col = "i.created_at"
+				col = itemAlias + ".created_at"
 			case "PremiereDate":
-				col = "i.premiere_date"
+				col = itemAlias + ".premiere_date"
 			case "ProductionYear":
-				col = "i.production_year"
+				col = itemAlias + ".production_year"
 			case "CommunityRating":
-				col = "i.community_rating"
+				col = itemAlias + ".community_rating"
 			case "Runtime":
-				col = "i.runtime_ticks"
+				col = itemAlias + ".runtime_ticks"
 			case "Random":
 				col = "RANDOM()"
 			case "DatePlayed":
-				col = "uid.last_played_date"
+				col = userAlias + ".last_played_date"
 			case "IndexNumber":
-				col = "i.parent_index_number NULLS LAST, i.index_number"
+				col = itemAlias + ".parent_index_number NULLS LAST, " + itemAlias + ".index_number"
 			case "ParentIndexNumber":
-				col = "i.parent_index_number"
+				col = itemAlias + ".parent_index_number"
 			default:
 				continue
 			}
@@ -323,7 +387,11 @@ func buildOrderBy(options *ItemQueryOptions) string {
 			return strings.Join(mapped, ", ")
 		}
 	}
-	return "i.sort_name ASC"
+	return itemAlias + ".sort_name ASC"
+}
+
+func buildOrderBy(options *ItemQueryOptions) string {
+	return buildOrderByForAlias(options, "i", "uid")
 }
 
 func scanItemRow(row pgx.Row) (*dto.ItemRow, error) {
@@ -364,8 +432,8 @@ func scanItemRows(rows pgx.Rows) ([]dto.ItemRow, []dto.UserDataRow, error) {
 			colMap[name] = vals[i]
 		}
 
-		item := mapColsToItemRow(colMap)
-		ud := mapColsToUserData(colMap)
+		item := MapColsToItemRow(colMap)
+		ud := MapColsToUserDataRow(colMap)
 		items = append(items, item)
 		userData = append(userData, ud)
 	}
@@ -388,11 +456,11 @@ func mapToItemRow(cols []string, vals []interface{}) *dto.ItemRow {
 	for i, c := range cols {
 		m[c] = vals[i]
 	}
-	item := mapColsToItemRow(m)
+	item := MapColsToItemRow(m)
 	return &item
 }
 
-func mapColsToItemRow(m map[string]interface{}) dto.ItemRow {
+func MapColsToItemRow(m map[string]interface{}) dto.ItemRow {
 	item := dto.ItemRow{}
 	item.ID = getUUIDStr(m, "id")
 	item.Name = getString(m, "name")
@@ -444,7 +512,7 @@ func mapColsToItemRow(m map[string]interface{}) dto.ItemRow {
 	return item
 }
 
-func mapColsToUserData(m map[string]interface{}) dto.UserDataRow {
+func MapColsToUserDataRow(m map[string]interface{}) dto.UserDataRow {
 	return dto.UserDataRow{
 		PlaybackPositionTicks: getInt64Ptr(m, "playback_position_ticks"),
 		PlayCount:             getInt32Ptr(m, "play_count"),
@@ -558,6 +626,17 @@ func GetChildCount(ctx context.Context, pool *pgxpool.Pool, parentID string) (in
 	return count, err
 }
 
+func GetLibraryDisplayItemCount(ctx context.Context, pool *pgxpool.Pool, libraryID string) (int64, error) {
+	var count int64
+	err := pool.QueryRow(ctx,
+		`SELECT `+libraryRepresentativeCountExpr("i")+`
+		   FROM items i
+		  WHERE i.library_id = $1::uuid
+		    AND i.type IN ('Movie', 'Series')`,
+		libraryID).Scan(&count)
+	return count, err
+}
+
 func GetRecursiveItemCount(ctx context.Context, pool *pgxpool.Pool, parentID string) (int64, error) {
 	var count int64
 	err := pool.QueryRow(ctx,
@@ -583,7 +662,28 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 	}
 
 	rows, err := pool.Query(ctx,
-		"SELECT * FROM items WHERE library_id = $1::uuid AND type = $2 ORDER BY updated_at DESC LIMIT $3::bigint",
+		`WITH filtered AS (
+			SELECT *, CASE WHEN type = 'Movie' THEN COALESCE(merged_to_id::text, id::text) ELSE id::text END AS merge_group_key
+			FROM items
+			WHERE library_id = $1::uuid AND type = $2
+		), ranked AS (
+			SELECT filtered.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY merge_group_key
+					ORDER BY
+						CASE WHEN filtered.merged_to_id IS NULL THEN 0 ELSE 1 END,
+						CASE WHEN filtered.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
+						CASE WHEN filtered.primary_image_path IS NOT NULL AND filtered.primary_image_path <> '' THEN 0 ELSE 1 END,
+						CASE WHEN filtered.overview IS NOT NULL AND filtered.overview <> '' THEN 0 ELSE 1 END,
+						filtered.updated_at DESC,
+						filtered.id
+				) AS merge_row_num
+			FROM filtered
+		)
+		SELECT * FROM ranked
+		WHERE merge_row_num = 1
+		ORDER BY updated_at DESC
+		LIMIT $3::bigint`,
 		libraryID, itemType, limit)
 	if err != nil {
 		return nil, err
@@ -779,4 +879,186 @@ func GetAllGenresWithCounts(ctx context.Context, pool *pgxpool.Pool) ([]struct {
 		}{id.String(), name, count})
 	}
 	return result, rows.Err()
+}
+
+// MergeMultiVersionItems merges duplicate items WITHIN the same platform
+// (studio) so that each platform virtual library shows only one entry per
+// logical movie, with all physical versions aggregated as MediaSources.
+//
+// Key design decisions (learned from Jellyfin source):
+//   - Group by tmdb_id + type + studio — never merge across different studios
+//   - Only merge Movies (Series require episode re-parenting which is complex)
+//   - Reset all previous merges first to ensure idempotent results
+//   - The merged_to_id filter is only applied in platform library queries,
+//     so regular library browsing remains unaffected
+func MergeMultiVersionItems(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	// Full reset: undo all previous merges so we can re-compute cleanly.
+	// This ensures idempotent behavior and fixes any stale/incorrect merges.
+	resetTag, _ := pool.Exec(ctx, `UPDATE items SET merged_to_id = NULL WHERE merged_to_id IS NOT NULL`)
+	if resetTag.RowsAffected() > 0 {
+		slog.Info("[Merge] Reset previous merges", "reset_count", resetTag.RowsAffected())
+	}
+
+	// Find duplicate groups: same tmdb_id + type + studio within platform items.
+	// Only merge Movies; Series merging would orphan their child seasons/episodes.
+	rows, err := pool.Query(ctx,
+		`SELECT tmdb_id, studio
+		 FROM items
+		 WHERE tmdb_id IS NOT NULL
+		   AND type = 'Movie'
+		   AND studio IS NOT NULL AND studio <> ''
+		   AND merged_to_id IS NULL
+		 GROUP BY tmdb_id, studio
+		 HAVING COUNT(*) > 1`)
+	if err != nil {
+		return 0, fmt.Errorf("find merge groups: %w", err)
+	}
+	defer rows.Close()
+
+	type mergeGroup struct {
+		TmdbID int32
+		Studio string
+	}
+	var groups []mergeGroup
+	for rows.Next() {
+		var g mergeGroup
+		if err := rows.Scan(&g.TmdbID, &g.Studio); err != nil {
+			return 0, err
+		}
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	slog.Info("[Merge] Found duplicate groups", "count", len(groups))
+
+	merged := 0
+	for _, g := range groups {
+		// Pick best primary: image > overview > most recent
+		var primaryID string
+		err := pool.QueryRow(ctx,
+			`SELECT id::text FROM items
+			 WHERE tmdb_id = $1 AND type = 'Movie' AND studio = $2 AND merged_to_id IS NULL
+			 ORDER BY
+			   (CASE WHEN primary_image_tag IS NOT NULL THEN 0 ELSE 1 END),
+			   (CASE WHEN primary_image_path IS NOT NULL AND primary_image_path <> '' THEN 0 ELSE 1 END),
+			   (CASE WHEN overview IS NOT NULL AND overview <> '' THEN 0 ELSE 1 END),
+			   updated_at DESC
+			 LIMIT 1`, g.TmdbID, g.Studio).Scan(&primaryID)
+		if err != nil {
+			slog.Warn("[Merge] Failed to pick primary", "tmdb_id", g.TmdbID, "studio", g.Studio, "error", err)
+			continue
+		}
+
+		tag, err := pool.Exec(ctx,
+			`UPDATE items SET merged_to_id = $1::uuid
+			 WHERE tmdb_id = $2 AND type = 'Movie' AND studio = $3 AND id <> $1::uuid AND merged_to_id IS NULL`,
+			primaryID, g.TmdbID, g.Studio)
+		if err != nil {
+			slog.Warn("[Merge] Failed to set merged_to_id", "primary", primaryID, "error", err)
+			continue
+		}
+		affected := int(tag.RowsAffected())
+		merged += affected
+
+		syncBestMetadataToPrimary(ctx, pool, primaryID, g.TmdbID, g.Studio)
+	}
+
+	// Re-sync metadata for already-merged groups where primary still lacks data
+	syncExistingMergedGroups(ctx, pool)
+
+	return merged, nil
+}
+
+// syncBestMetadataToPrimary fills NULL/empty metadata fields on the primary
+// using the best available value from any group member (same tmdb_id + studio).
+func syncBestMetadataToPrimary(ctx context.Context, pool *pgxpool.Pool, primaryID string, tmdbID int32, studio string) {
+	_, err := pool.Exec(ctx, `
+		UPDATE items p SET
+			primary_image_path  = COALESCE(NULLIF(p.primary_image_path, ''),  best.img_path),
+			primary_image_tag   = COALESCE(NULLIF(p.primary_image_tag, ''),   best.img_tag),
+			backdrop_image_path = COALESCE(NULLIF(p.backdrop_image_path, ''), best.bd_path),
+			backdrop_image_tag  = COALESCE(NULLIF(p.backdrop_image_tag, ''),  best.bd_tag),
+			overview            = COALESCE(NULLIF(p.overview, ''),            best.overview),
+			community_rating    = COALESCE(p.community_rating,               best.rating),
+			official_rating     = COALESCE(NULLIF(p.official_rating, ''),     best.official)
+		FROM (
+			SELECT
+				(SELECT primary_image_path  FROM items WHERE tmdb_id=$2 AND studio=$3 AND primary_image_path  IS NOT NULL AND primary_image_path  <> '' LIMIT 1) AS img_path,
+				(SELECT primary_image_tag   FROM items WHERE tmdb_id=$2 AND studio=$3 AND primary_image_tag   IS NOT NULL AND primary_image_tag   <> '' LIMIT 1) AS img_tag,
+				(SELECT backdrop_image_path FROM items WHERE tmdb_id=$2 AND studio=$3 AND backdrop_image_path IS NOT NULL AND backdrop_image_path <> '' LIMIT 1) AS bd_path,
+				(SELECT backdrop_image_tag  FROM items WHERE tmdb_id=$2 AND studio=$3 AND backdrop_image_tag  IS NOT NULL AND backdrop_image_tag  <> '' LIMIT 1) AS bd_tag,
+				(SELECT overview            FROM items WHERE tmdb_id=$2 AND studio=$3 AND overview IS NOT NULL AND overview <> '' LIMIT 1) AS overview,
+				(SELECT community_rating    FROM items WHERE tmdb_id=$2 AND studio=$3 AND community_rating    IS NOT NULL LIMIT 1) AS rating,
+				(SELECT official_rating     FROM items WHERE tmdb_id=$2 AND studio=$3 AND official_rating     IS NOT NULL AND official_rating <> '' LIMIT 1) AS official
+		) best
+		WHERE p.id = $1::uuid`,
+		primaryID, tmdbID, studio)
+	if err != nil {
+		slog.Warn("[Merge] syncBestMetadata failed", "primary", primaryID, "error", err)
+	}
+}
+
+// syncExistingMergedGroups re-syncs metadata for primaries that already
+// have secondaries but still lack some metadata fields.
+func syncExistingMergedGroups(ctx context.Context, pool *pgxpool.Pool) {
+	rows, err := pool.Query(ctx,
+		`SELECT DISTINCT p.id::text, p.tmdb_id, p.studio
+		 FROM items p
+		 WHERE p.merged_to_id IS NULL
+		   AND p.tmdb_id IS NOT NULL
+		   AND p.studio IS NOT NULL AND p.studio <> ''
+		   AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = p.id)
+		   AND (p.primary_image_tag IS NULL OR p.primary_image_tag = ''
+		     OR p.backdrop_image_tag IS NULL OR p.backdrop_image_tag = ''
+		     OR p.overview IS NULL OR p.overview = ''
+		     OR p.community_rating IS NULL)`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type prim struct {
+		ID     string
+		TmdbID int32
+		Studio string
+	}
+	var primaries []prim
+	for rows.Next() {
+		var p prim
+		if err := rows.Scan(&p.ID, &p.TmdbID, &p.Studio); err != nil {
+			continue
+		}
+		primaries = append(primaries, p)
+	}
+	for _, p := range primaries {
+		syncBestMetadataToPrimary(ctx, pool, p.ID, p.TmdbID, p.Studio)
+	}
+}
+
+// GetMediaSourceCount returns the total number of media_versions for an item,
+// including versions from all items merged into it (via merged_to_id).
+// Mirrors Jellyfin's Video.MediaSourceCount property which counts
+// LinkedAlternateVersions + LocalAlternateVersions + 1.
+func GetMediaSourceCount(ctx context.Context, pool *pgxpool.Pool, itemID string) int32 {
+	var count int32
+	pool.QueryRow(ctx,
+		`SELECT COALESCE(
+			(SELECT COUNT(*) FROM media_versions WHERE item_id = $1::uuid) +
+			(SELECT COUNT(*) FROM media_versions mv
+			   JOIN items s ON mv.item_id = s.id
+			  WHERE s.merged_to_id = $1::uuid),
+		0)`, itemID).Scan(&count)
+	if count == 0 {
+		count = 1
+	}
+	return count
+}
+
+// UnmergeItem resets merged_to_id for a specific item (manual unmerge).
+func UnmergeItem(ctx context.Context, pool *pgxpool.Pool, itemID string) error {
+	_, err := pool.Exec(ctx,
+		`UPDATE items SET merged_to_id = NULL WHERE id = $1::uuid OR merged_to_id = $1::uuid`, itemID)
+	return err
 }

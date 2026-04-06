@@ -32,6 +32,7 @@ type BaseItemDto struct {
 	SeasonID                   *string                `json:"SeasonId,omitempty"`
 	Container                  *string                `json:"Container,omitempty"`
 	ProviderIDs                *json.RawMessage       `json:"ProviderIds,omitempty"`
+	MediaSourceCount           *int32                 `json:"MediaSourceCount,omitempty"`
 	MediaSources               []MediaSourceInfo      `json:"MediaSources,omitempty"`
 	MediaStreams               []MediaStreamInfo      `json:"MediaStreams,omitempty"`
 	UserData                   *UserItemDataDto       `json:"UserData,omitempty"`

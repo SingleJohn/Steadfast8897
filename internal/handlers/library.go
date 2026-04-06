@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -63,6 +67,9 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Scrape/Stop", adminMW, stopScrape)
 	u.GET("/Library/Scrape/Progress", getScrapeProgress)
 	u.GET("/Library/Scrape/Missing", getMissingScrapeCount)
+	u.GET("/Library/Tasks/Summary", func(c *gin.Context) { getTaskSummary(c, state) })
+
+	u.POST("/Library/MergeVersions", adminMW, func(c *gin.Context) { mergeVersions(c, state) })
 
 	u.POST("/Library/Browse", adminMW, browseDir)
 	u.GET("/Library/BrowseDirectories", adminMW, browseDirGet)
@@ -72,6 +79,20 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.GET("/Users/:userId/Items/LatestBatch", authMW, getLatestBatch)
 
 	u.GET("/Genres", getGenres)
+
+	// Library sort order
+	u.POST("/Library/VirtualFolders/SortOrder", adminMW, func(c *gin.Context) { updateLibrarySortOrder(c, state) })
+
+	// Platform libraries
+	u.GET("/Library/Platforms", adminMW, func(c *gin.Context) { getPlatforms(c, state) })
+	u.POST("/Library/Platforms", adminMW, func(c *gin.Context) { addPlatform(c, state) })
+	u.POST("/Library/Platforms/:name/Enable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, true) })
+	u.POST("/Library/Platforms/:name/Disable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, false) })
+	u.DELETE("/Library/Platforms/:id", adminMW, func(c *gin.Context) { deletePlatform(c, state) })
+	u.POST("/Library/Platforms/Scan", adminMW, func(c *gin.Context) { scanPlatformStudios(c, state) })
+	u.POST("/Library/Platforms/ScanFilename", adminMW, func(c *gin.Context) { scanPlatformByFilename(c, state) })
+	u.POST("/Library/Platforms/Rescrape", adminMW, func(c *gin.Context) { rescrapeMissingStudio(c, state) })
+	u.GET("/Library/Platforms/Rescrape/Progress", adminMW, func(c *gin.Context) { getRescrapeProgress(c, state) })
 }
 
 func matchUserOrAdmin(c *gin.Context, userID string) bool {
@@ -107,14 +128,71 @@ func getUserViews(c *gin.Context) {
 		return
 	}
 
-	out := make([]gin.H, 0, len(libs))
 	sid := state.Config.ServerID
+
+	// Read display settings
+	var platformPosition, showItemCountStr *string
+	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_position'").Scan(&platformPosition)
+	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'library_show_item_count'").Scan(&showItemCountStr)
+	platformBefore := platformPosition != nil && *platformPosition == "before"
+	showItemCount := showItemCountStr == nil || *showItemCountStr != "false"
+
+	// Platform virtual libraries
+	var platformEntries []gin.H
+	if models.IsPlatformLibrariesEnabled(ctx, state.DB) {
+		platforms, _ := models.GetEnabledPlatforms(ctx, state.DB)
+		for _, p := range platforms {
+			if p.ItemCount == 0 {
+				continue
+			}
+			vid := models.PlatformVirtualID(p.PlatformName)
+			colType := models.PlatformCollectionType(ctx, state.DB, p.PlatformName)
+			imgTags := gin.H{}
+			if models.HasPlatformLogo(p.PlatformName) {
+				imgTags["Primary"] = vid
+			}
+			var unplayedCount interface{}
+			if showItemCount {
+				unplayedCount = p.ItemCount
+			} else {
+				unplayedCount = 0
+			}
+			platformEntries = append(platformEntries, gin.H{
+				"Name":               p.PlatformName,
+				"ServerId":           sid,
+				"Id":                 vid,
+				"Etag":               vid,
+				"Type":               "CollectionFolder",
+				"CollectionType":     colType,
+				"IsFolder":           true,
+				"ChildCount":         p.ItemCount,
+				"RecursiveItemCount": p.ItemCount,
+				"SortName":           strings.ToLower(p.PlatformName),
+				"ImageTags":          imgTags,
+				"BackdropImageTags":  []string{},
+				"PlatformLibrary":    true,
+				"UserData": gin.H{
+					"PlaybackPositionTicks": 0,
+					"PlayCount":             0,
+					"IsFavorite":            false,
+					"Played":                false,
+					"UnplayedItemCount":     unplayedCount,
+				},
+			})
+		}
+	}
+
+	out := make([]gin.H, 0, len(libs)+len(platformEntries))
+
+	if platformBefore {
+		out = append(out, platformEntries...)
+	}
+
 	for _, lib := range libs {
 		idStr := lib.ID.String()
 
 		var childCount int64
-		state.DB.QueryRow(ctx,
-			"SELECT COUNT(*) FROM items WHERE library_id = $1 AND type IN ('Movie','Series')", lib.ID).Scan(&childCount)
+		childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
 		var recursiveCount int64
 		state.DB.QueryRow(ctx,
 			"SELECT COUNT(*) FROM items WHERE library_id = $1", lib.ID).Scan(&recursiveCount)
@@ -122,6 +200,13 @@ func getUserViews(c *gin.Context) {
 		imageTags := gin.H{}
 		if lib.PrimaryImageTag != nil {
 			imageTags["Primary"] = *lib.PrimaryImageTag
+		}
+
+		var unplayedCount interface{}
+		if showItemCount {
+			unplayedCount = childCount
+		} else {
+			unplayedCount = 0
 		}
 
 		entry := gin.H{
@@ -140,10 +225,10 @@ func getUserViews(c *gin.Context) {
 			"BackdropImageTags":  []string{},
 			"UserData": gin.H{
 				"PlaybackPositionTicks": 0,
-				"PlayCount":            0,
-				"IsFavorite":           false,
-				"Played":               false,
-				"UnplayedItemCount":    childCount,
+				"PlayCount":             0,
+				"IsFavorite":            false,
+				"Played":                false,
+				"UnplayedItemCount":     unplayedCount,
 			},
 		}
 		if len(lib.Paths) > 0 {
@@ -152,11 +237,15 @@ func getUserViews(c *gin.Context) {
 		out = append(out, entry)
 	}
 
+	if !platformBefore {
+		out = append(out, platformEntries...)
+	}
+
 	resp := gin.H{
 		"Items":            out,
 		"TotalRecordCount": len(out),
 	}
-	state.Cache.SetJSON(ctx, cacheKey, resp, 24*time.Hour)
+	state.Cache.SetJSON(ctx, cacheKey, resp, 60*time.Second)
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -253,13 +342,25 @@ func getItems(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+
 	opts, err := parseItemQueryOptions(c, pathUser)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 
-	ctx := c.Request.Context()
+	// Handle platform virtual library (UUID-based lookup)
+	if opts.ParentID != nil {
+		if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
+			opts.ParentID = nil
+			opts.Studio = &platformName
+			if len(opts.IncludeItemTypes) == 0 {
+				opts.IncludeItemTypes = []string{"Movie", "Series"}
+			}
+			opts.Recursive = true
+		}
+	}
 	res, err := models.QueryItems(ctx, state.DB, opts)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -277,7 +378,7 @@ func getItems(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"Items":             items,
+		"Items":            items,
 		"TotalRecordCount": res.TotalCount,
 	})
 }
@@ -330,7 +431,7 @@ func getResumeItems(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"Items":             items,
+		"Items":            items,
 		"TotalRecordCount": res.TotalCount,
 	})
 }
@@ -359,6 +460,33 @@ func getLatestItems(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// Handle platform virtual library
+	if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, parentID); ok {
+		studioOpt := &models.ItemQueryOptions{
+			Studio:           &platformName,
+			IncludeItemTypes: []string{"Movie", "Series"},
+			Limit:            &limit,
+			Recursive:        true,
+		}
+		sb := "DateCreated"
+		so := "Descending"
+		studioOpt.SortBy = &sb
+		studioOpt.SortOrder = &so
+		res, err := models.QueryItems(ctx, state.DB, studioOpt)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		sid := state.Config.ServerID
+		items := make([]dto.BaseItemDto, 0, len(res.Items))
+		for i := range res.Items {
+			items = append(items, dto.FormatItemDto(&res.Items[i], sid, nil))
+		}
+		c.JSON(http.StatusOK, items)
+		return
+	}
+
 	rows, err := models.GetLatestItems(ctx, state.DB, parentID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -517,28 +645,129 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	if err := mvRows.Err(); err != nil {
 		return base, err
 	}
-	if len(sources) == 0 && len(streamDtos) > 0 {
+	if len(sources) == 0 && (len(streamDtos) > 0 || strOrPath(item) != "") {
 		ms := dto.MediaSourceInfo{
-			ID:                   item.ID,
-			Path:                 strOrPath(item),
-			Protocol:             "File",
-			Type:                 "Default",
-			Container:            strVal(item.Container),
-			Name:                 item.Name,
-			IsRemote:             false,
-			RunTimeTicks:         item.RuntimeTicks,
-			SupportsDirectPlay:   true,
-			SupportsDirectStream: true,
-			SupportsTranscoding:  false,
-			MediaStreams:         streamDtos,
+			ID:                    item.ID,
+			Path:                  strOrPath(item),
+			Protocol:              "File",
+			Type:                  "Default",
+			Container:             strVal(item.Container),
+			Name:                  item.Name,
+			IsRemote:              false,
+			RunTimeTicks:          item.RuntimeTicks,
+			SupportsDirectPlay:    true,
+			SupportsDirectStream:  true,
+			SupportsTranscoding:   false,
+			MediaStreams:          streamDtos,
 			ReadAtNativeFramerate: false,
-			Formats:              []string{},
+			Formats:               []string{},
 		}
 		sources = []dto.MediaSourceInfo{ms}
 	}
 	base.MediaSources = sources
 
+	if item.ItemType == "Movie" || item.ItemType == "Episode" {
+		mergedSources := collectMergedMediaSources(ctx, pool, item.ID, streamDtos)
+		if len(mergedSources) > 0 {
+			base.MediaSources = append(base.MediaSources, mergedSources...)
+		}
+		// Emby standard: set MediaSourceCount so clients know multiple versions exist
+		msc := int32(len(base.MediaSources))
+		if msc > 1 {
+			base.MediaSourceCount = &msc
+		}
+	}
+
 	return base, nil
+}
+
+// collectMergedMediaSources finds items merged into itemID (via merged_to_id)
+// and returns their media_versions as additional MediaSourceInfo entries.
+func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
+	sibRows, err := pool.Query(ctx,
+		`SELECT s.id::text, l.name AS lib_name
+		 FROM items s JOIN libraries l ON s.library_id = l.id
+		 WHERE s.merged_to_id = $1::uuid`, itemID)
+	if err != nil {
+		return nil
+	}
+	defer sibRows.Close()
+
+	type siblingInfo struct{ ID, LibName string }
+	var siblings []siblingInfo
+	for sibRows.Next() {
+		var si siblingInfo
+		if err := sibRows.Scan(&si.ID, &si.LibName); err != nil {
+			continue
+		}
+		siblings = append(siblings, si)
+	}
+	if len(siblings) == 0 {
+		return nil
+	}
+
+	var merged []dto.MediaSourceInfo
+	for _, sib := range siblings {
+		mvRows, err := pool.Query(ctx,
+			`SELECT id::text, name, file_path, COALESCE(container,''), is_primary, runtime_ticks, bitrate, size, mediainfo
+			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
+			sib.ID)
+		if err != nil {
+			continue
+		}
+		for mvRows.Next() {
+			var idStr, name, fpath, container string
+			var isPrimary bool
+			var rt *int64
+			var br *int32
+			var sz *int64
+			var mediaInfoJSON []byte
+			if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON); err != nil {
+				continue
+			}
+			bitrate := (*int64)(nil)
+			if br != nil {
+				v := int64(*br)
+				bitrate = &v
+			}
+			versionStreams := fallbackStreams
+			if len(mediaInfoJSON) > 0 {
+				var mi map[string]json.RawMessage
+				if json.Unmarshal(mediaInfoJSON, &mi) == nil {
+					if msRaw, ok := mi["MediaStreams"]; ok {
+						var miStreams []dto.MediaStreamInfo
+						if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
+							versionStreams = miStreams
+						}
+					}
+				}
+			}
+			srcName := sib.LibName + " - " + name
+			ms := dto.MediaSourceInfo{
+				ID:                    idStr,
+				Path:                  fpath,
+				Protocol:              "File",
+				Type:                  "Default",
+				Container:             container,
+				Name:                  srcName,
+				IsRemote:              false,
+				RunTimeTicks:          rt,
+				SupportsDirectPlay:    true,
+				SupportsDirectStream:  true,
+				SupportsTranscoding:   false,
+				MediaStreams:          versionStreams,
+				Bitrate:               bitrate,
+				Size:                  sz,
+				ReadAtNativeFramerate: false,
+				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, container, idStr),
+				ETag:                  idStr,
+				Formats:               []string{},
+			}
+			merged = append(merged, ms)
+		}
+		mvRows.Close()
+	}
+	return merged
 }
 
 func strOrPath(item *dto.ItemRow) string {
@@ -569,12 +798,45 @@ func getItemDetail(c *gin.Context) {
 	itemID := c.Param("itemId")
 	ctx := c.Request.Context()
 
+	// Check if this is a platform virtual library
+	if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, itemID); ok {
+		count, _ := models.GetItemCountByStudio(ctx, state.DB, platformName)
+		colType := models.PlatformCollectionType(ctx, state.DB, platformName)
+		imgTags := gin.H{}
+		if models.HasPlatformLogo(platformName) {
+			imgTags["Primary"] = itemID
+		}
+		resp := gin.H{
+			"Name":               platformName,
+			"ServerId":           state.Config.ServerID,
+			"Id":                 itemID,
+			"Etag":               itemID,
+			"Type":               "CollectionFolder",
+			"CollectionType":     colType,
+			"IsFolder":           true,
+			"ChildCount":         count,
+			"RecursiveItemCount": count,
+			"SortName":           strings.ToLower(platformName),
+			"ImageTags":          imgTags,
+			"BackdropImageTags":  []string{},
+			"PlatformLibrary":    true,
+			"UserData": gin.H{
+				"PlaybackPositionTicks": 0,
+				"PlayCount":             0,
+				"IsFavorite":            false,
+				"Played":                false,
+				"UnplayedItemCount":     count,
+			},
+		}
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
 	if uid, err := uuid.Parse(itemID); err == nil {
 		lib, lerr := models.GetLibraryByID(ctx, state.DB, uid)
 		if lerr == nil && lib != nil {
 			var childCount int64
-			state.DB.QueryRow(ctx,
-				"SELECT COUNT(*) FROM items WHERE library_id = $1 AND type IN ('Movie','Series')", uid).Scan(&childCount)
+			childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, uid.String())
 			var recursiveCount int64
 			state.DB.QueryRow(ctx,
 				"SELECT COUNT(*) FROM items WHERE library_id = $1", uid).Scan(&recursiveCount)
@@ -600,10 +862,10 @@ func getItemDetail(c *gin.Context) {
 				"BackdropImageTags":  []string{},
 				"UserData": gin.H{
 					"PlaybackPositionTicks": 0,
-					"PlayCount":            0,
-					"IsFavorite":           false,
-					"Played":               false,
-					"UnplayedItemCount":    childCount,
+					"PlayCount":             0,
+					"IsFavorite":            false,
+					"Played":                false,
+					"UnplayedItemCount":     childCount,
 				},
 			}
 			if len(lib.Paths) > 0 {
@@ -622,6 +884,17 @@ func getItemDetail(c *gin.Context) {
 	if item == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 		return
+	}
+
+	// If this is a merged secondary, transparently serve the primary's data
+	// so the client gets the primary's metadata + aggregated MediaSources.
+	var mergedToID *string
+	state.DB.QueryRow(ctx, "SELECT merged_to_id::text FROM items WHERE id = $1::uuid", item.ID).Scan(&mergedToID)
+	if mergedToID != nil && *mergedToID != "" {
+		primary, perr := models.GetItemByAnyID(ctx, state.DB, *mergedToID)
+		if perr == nil && primary != nil {
+			item = primary
+		}
 	}
 
 	base, err := enrichItemDetail(ctx, state.DB, item, pathUser, state.Config.ServerID)
@@ -1088,15 +1361,120 @@ func stopProbe(c *gin.Context) {
 	c.JSON(http.StatusOK, state.ProbeTask.GetProgress())
 }
 
-func getProbeProgress(c *gin.Context) {
-	state := GetState(c)
+type rescrapeProgressResponse struct {
+	Running      bool  `json:"running"`
+	Total        int64 `json:"total"`
+	Success      int64 `json:"success"`
+	NotFound     int64 `json:"not_found"`
+	FetchError   int64 `json:"fetch_error"`
+	Processed    int64 `json:"processed"`
+	PendingTotal int64 `json:"pending_total"`
+	Percentage   int   `json:"percentage"`
+}
+
+type platformTaskSummary struct {
+	ScanRunning      bool                     `json:"scan_running"`
+	PendingTotal     int64                    `json:"pending_total"`
+	PendingTMDBReady int64                    `json:"pending_tmdb_ready_total"`
+	PendingMetadata  int64                    `json:"pending_metadata_total"`
+	ItemsTotal       int64                    `json:"items_total"`
+	Rescrape         rescrapeProgressResponse `json:"rescrape"`
+}
+
+type taskSummaryResponse struct {
+	Scrape   services.ScrapeProgress `json:"scrape"`
+	Probe    services.ProbeProgress  `json:"probe"`
+	Platform platformTaskSummary     `json:"platform"`
+}
+
+func buildEffectiveProbeProgress(ctx context.Context, state *AppState) services.ProbeProgress {
 	prog := state.ProbeTask.GetProgress()
-	if prog.Status == "idle" {
-		if cnt, err := services.GetMissingMediainfoCount(c.Request.Context(), state.DB); err == nil {
+	if prog.Status != "running" && prog.Status != "stopping" {
+		if cnt, err := services.GetMissingMediainfoCount(ctx, state.DB); err == nil {
 			prog.MissingCount = cnt
 		}
+		if prog.MissingCount > 0 {
+			prog.Status = "idle"
+		}
 	}
-	c.JSON(http.StatusOK, prog)
+	if total, err := services.GetTotalMediaVersionsCount(ctx, state.DB); err == nil {
+		prog.VersionsTotal = total
+	}
+	return prog
+}
+
+func buildEffectiveScrapeProgress(ctx context.Context, state *AppState) services.ScrapeProgress {
+	prog := state.ScrapeTask.GetProgress()
+	if prog.Status != "running" && prog.Status != "stopping" {
+		if cnt, err := services.GetMissingScrapeCount(ctx, state.DB); err == nil {
+			prog.MissingCount = cnt
+		}
+		if prog.MissingCount > 0 {
+			prog.Status = "idle"
+		}
+	}
+	if total, err := services.GetTopLevelItemCount(ctx, state.DB); err == nil {
+		prog.ItemsTotal = total
+	}
+	return prog
+}
+
+func buildRescrapeProgressResponse(ctx context.Context, state *AppState) rescrapeProgressResponse {
+	rescrapeProgress.mu.Lock()
+	running := rescrapeProgress.Running
+	rescrapeProgress.mu.Unlock()
+
+	processed := atomic.LoadInt64(&rescrapeProgress.Processed)
+	success := atomic.LoadInt64(&rescrapeProgress.Success)
+	notFound := atomic.LoadInt64(&rescrapeProgress.NotFound)
+	fetchError := atomic.LoadInt64(&rescrapeProgress.FetchError)
+	total := atomic.LoadInt64(&rescrapeProgress.Total)
+	pendingTotal := int64(0)
+	if !running {
+		if cnt, err := models.CountItemsPendingPlatformScan(ctx, state.DB, false, false); err == nil {
+			pendingTotal = cnt
+		}
+	}
+	pct := 0
+	if total > 0 {
+		pct = int(processed * 100 / total)
+	}
+
+	return rescrapeProgressResponse{
+		Running:      running,
+		Total:        total,
+		Success:      success,
+		NotFound:     notFound,
+		FetchError:   fetchError,
+		Processed:    processed,
+		PendingTotal: pendingTotal,
+		Percentage:   pct,
+	}
+}
+
+func buildPlatformTaskSummary(ctx context.Context, state *AppState) platformTaskSummary {
+	pendingTotal, _ := models.CountItemsPendingPlatformScan(ctx, state.DB, false, false)
+	pendingTMDBReady, _ := models.CountItemsPendingPlatformScan(ctx, state.DB, true, false)
+	pendingMetadata, _ := models.CountItemsPendingPlatformMetadataScrape(ctx, state.DB)
+	itemsTotal, _ := services.GetTopLevelItemCount(ctx, state.DB)
+
+	platformScanState.mu.Lock()
+	scanRunning := platformScanState.running
+	platformScanState.mu.Unlock()
+
+	return platformTaskSummary{
+		ScanRunning:      scanRunning,
+		PendingTotal:     pendingTotal,
+		PendingTMDBReady: pendingTMDBReady,
+		PendingMetadata:  pendingMetadata,
+		ItemsTotal:       itemsTotal,
+		Rescrape:         buildRescrapeProgressResponse(ctx, state),
+	}
+}
+
+func getProbeProgress(c *gin.Context) {
+	state := GetState(c)
+	c.JSON(http.StatusOK, buildEffectiveProbeProgress(c.Request.Context(), state))
 }
 
 func scrapeItem(c *gin.Context) {
@@ -1128,19 +1506,50 @@ func stopScrape(c *gin.Context) {
 
 func getScrapeProgress(c *gin.Context) {
 	state := GetState(c)
-	c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
+	c.JSON(http.StatusOK, buildEffectiveScrapeProgress(c.Request.Context(), state))
 }
 
 func getMissingScrapeCount(c *gin.Context) {
 	state := GetState(c)
-	var n int64
-	err := state.DB.QueryRow(c.Request.Context(),
-		`SELECT COUNT(*) FROM items WHERE (overview IS NULL OR overview = '') AND type IN ('Movie', 'Series')`).Scan(&n)
+	n, err := services.GetMissingScrapeCount(c.Request.Context(), state.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"MissingCount": n})
+}
+
+func getTaskSummary(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+	c.JSON(http.StatusOK, taskSummaryResponse{
+		Scrape:   buildEffectiveScrapeProgress(ctx, state),
+		Probe:    buildEffectiveProbeProgress(ctx, state),
+		Platform: buildPlatformTaskSummary(ctx, state),
+	})
+}
+
+func mergeVersions(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+	merged, err := models.MergeMultiVersionItems(ctx, state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	slog.Info("MergeVersions completed", "merged", merged)
+
+	// Gather diagnostic counts
+	var totalPrimaries, totalSecondaries int64
+	state.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM items WHERE merged_to_id IS NULL AND tmdb_id IS NOT NULL
+		   AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = items.id)`).Scan(&totalPrimaries)
+	state.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM items WHERE merged_to_id IS NOT NULL").Scan(&totalSecondaries)
+
+	c.JSON(http.StatusOK, gin.H{
+		"merged":           merged,
+		"total_primaries":  totalPrimaries,
+		"total_secondaries": totalSecondaries,
+	})
 }
 
 type browseBody struct {
@@ -1215,8 +1624,7 @@ func getVirtualFolderDetail(c *gin.Context) {
 	}
 
 	var itemCount int64
-	_ = state.DB.QueryRow(ctx,
-		"SELECT COUNT(*) FROM items WHERE library_id = $1 AND type IN ('Movie','Series')", id).Scan(&itemCount)
+	itemCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, id.String())
 
 	locations := make([]string, 0)
 	if lib.Paths != nil {
@@ -1548,4 +1956,380 @@ func getLatestBatch(c *gin.Context) {
 
 func invalidateViewsCache(c *gin.Context, state *AppState) {
 	state.Cache.Del(c.Request.Context(), "views:all")
+}
+
+// ============ Library Sort Order ============
+
+func updateLibrarySortOrder(c *gin.Context, state *AppState) {
+	var body []models.LibrarySortItem
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
+		return
+	}
+	if err := models.BatchUpdateLibrarySortOrder(c.Request.Context(), state.DB, body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+// ============ Platform Libraries ============
+
+func getPlatforms(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+	platforms, err := models.GetPlatformLibraries(ctx, state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	var globalEnabled *string
+	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_enabled'").Scan(&globalEnabled)
+
+	items := make([]gin.H, 0, len(platforms))
+	for _, p := range platforms {
+		entry := gin.H{
+			"Id":             p.ID,
+			"PlatformName":   p.PlatformName,
+			"Enabled":        p.Enabled,
+			"CollectionType": p.CollectionType,
+			"ItemCount":      p.ItemCount,
+		}
+		if models.HasPlatformLogo(p.PlatformName) {
+			entry["LogoUrl"] = "/Library/Platforms/Logo?name=" + url.QueryEscape(p.PlatformName)
+		}
+		items = append(items, entry)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"GlobalEnabled": globalEnabled != nil && *globalEnabled == "true",
+		"Platforms":     items,
+	})
+}
+
+func addPlatform(c *gin.Context, state *AppState) {
+	var body struct {
+		PlatformName string `json:"PlatformName"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.PlatformName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "PlatformName required"})
+		return
+	}
+	if err := models.AddPlatformLibrary(c.Request.Context(), state.DB, strings.TrimSpace(body.PlatformName)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {
+	name := c.Param("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "name required"})
+		return
+	}
+	if err := models.SetPlatformEnabled(c.Request.Context(), state.DB, name, enabled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+func deletePlatform(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	if err := models.DeletePlatformLibrary(c.Request.Context(), state.DB, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+func scanPlatformStudios(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+
+	platformScanState.mu.Lock()
+	if platformScanState.running {
+		platformScanState.mu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"message": "already running"})
+		return
+	}
+	platformScanState.running = true
+	platformScanState.mu.Unlock()
+	defer func() {
+		if c.Writer.Written() && c.Writer.Status() >= 400 {
+			platformScanState.mu.Lock()
+			platformScanState.running = false
+			platformScanState.mu.Unlock()
+		}
+	}()
+
+	rescan := strings.EqualFold(c.Query("rescan"), "true")
+	items, err := models.GetItemsPendingPlatformScan(ctx, state.DB, 50000, true, rescan)
+	if err != nil {
+		platformScanState.mu.Lock()
+		platformScanState.running = false
+		platformScanState.mu.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	if len(items) == 0 {
+		platformScanState.mu.Lock()
+		platformScanState.running = false
+		platformScanState.mu.Unlock()
+		noTmdbCount, _ := models.CountItemsPendingPlatformMetadataScrape(ctx, state.DB)
+		c.JSON(http.StatusOK, gin.H{
+			"message":          "no_items",
+			"total":            0,
+			"needs_scrape":     noTmdbCount,
+			"needs_scrape_msg": fmt.Sprintf("有 %d 个项目尚未刮削 TMDB，需先执行全量刮削才能获取平台信息", noTmdbCount),
+		})
+		return
+	}
+
+	go func() {
+		defer func() {
+			platformScanState.mu.Lock()
+			platformScanState.running = false
+			platformScanState.mu.Unlock()
+		}()
+		bgCtx := context.Background()
+		client := services.TmdbClientFromConfig(bgCtx, state.DB)
+		if client == nil {
+			slog.Error("[PlatformScan] Failed to create TMDB client, check API key config")
+			return
+		}
+
+		type result struct {
+			id       string
+			itemType string
+			studio   *string
+			failed   bool
+			errMsg   string
+		}
+
+		sem := make(chan struct{}, 5)
+		results := make(chan result, len(items))
+
+		for _, item := range items {
+			sem <- struct{}{}
+			go func(it models.PlatformScanItem) {
+				defer func() { <-sem }()
+				studio, fetchErr := services.RefreshPlatformOnlyByTMDBID(bgCtx, state.DB, it.ID, client)
+				if fetchErr != nil {
+					_ = models.MarkPlatformScanError(bgCtx, state.DB, it.ID, models.PlatformScanSourceTMDB, fetchErr.Error())
+					results <- result{id: it.ID, itemType: it.ItemType, studio: nil, failed: true, errMsg: fetchErr.Error()}
+					return
+				}
+				results <- result{id: it.ID, itemType: it.ItemType, studio: studio}
+			}(item)
+		}
+
+		matched, noMatch, fetchErrors := 0, 0, 0
+		for i := 0; i < len(items); i++ {
+			r := <-results
+			if r.failed {
+				fetchErrors++
+				continue
+			}
+			if r.studio == nil {
+				noMatch++
+			} else {
+				matched++
+			}
+		}
+
+		slog.Info("[PlatformScan] Done", "total", len(items), "matched", matched, "no_platform", noMatch, "fetch_errors", fetchErrors)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"message": "scanning", "total": len(items)})
+}
+
+// scanPlatformByFilename fills studio from filename patterns for items still missing studio.
+func scanPlatformByFilename(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+
+	patterns := []struct {
+		platform string
+		sql      string
+	}{
+		{"Netflix", "file_path ILIKE '%%.NF.%%' OR file_path ILIKE '%%Netflix%%'"},
+		{"Disney+", "file_path ILIKE '%%.DSNP.%%' OR file_path ILIKE '%%Disney+%%'"},
+		{"Apple TV+", "file_path ILIKE '%%.ATVP.%%' OR file_path ILIKE '%%Apple TV%%'"},
+		{"Amazon", "file_path ILIKE '%%.AMZN.%%' OR file_path ILIKE '%%Amazon%%'"},
+		{"HBO", "file_path ILIKE '%%.HMAX.%%' OR file_path ILIKE '%%.HBO.%%'"},
+		{"Hulu", "file_path ILIKE '%%.HULU.%%'"},
+		{"Paramount+", "file_path ILIKE '%%.PMTP.%%' OR file_path ILIKE '%%Paramount+%%'"},
+		{"Peacock", "file_path ILIKE '%%.PCOK.%%'"},
+		{"Crunchyroll", "file_path ILIKE '%%.CR.%%' OR file_path ILIKE '%%Crunchyroll%%'"},
+	}
+
+	total := 0
+	for _, p := range patterns {
+		tag, err := state.DB.Exec(ctx, fmt.Sprintf(
+			`UPDATE items
+			    SET studio = $1,
+			        platform_scan_status = 'matched',
+			        platform_scan_source = 'filename',
+			        platform_scan_error = NULL,
+			        platform_scanned_at = NOW()
+			  WHERE type IN ('Movie', 'Series', 'Season', 'Episode')
+			    AND platform_scan_status IN ('pending', 'error', 'no_match')
+			    AND (%s)`,
+			p.sql), models.CanonicalPlatformName(p.platform))
+		if err != nil {
+			slog.Warn("[PlatformFilename] update failed", "platform", p.platform, "error", err)
+			continue
+		}
+		total += int(tag.RowsAffected())
+
+		_, err = state.DB.Exec(ctx, `UPDATE items
+		    SET studio = $1,
+		        platform_scan_status = 'matched',
+		        platform_scan_source = 'filename',
+		        platform_scan_error = NULL,
+		        platform_scanned_at = NOW()
+		  WHERE type = 'Series' AND id IN (
+			SELECT DISTINCT series_id FROM items WHERE studio = $1 AND series_id IS NOT NULL
+		  )`, models.CanonicalPlatformName(p.platform))
+		if err != nil {
+			slog.Warn("[PlatformFilename] propagate series failed", "platform", p.platform, "error", err)
+		}
+		_, err = state.DB.Exec(ctx, `UPDATE items
+		    SET studio = $1,
+		        platform_scan_status = 'matched',
+		        platform_scan_source = 'filename',
+		        platform_scan_error = NULL,
+		        platform_scanned_at = NOW()
+		  WHERE type = 'Season' AND parent_id IN (
+			SELECT id FROM items WHERE studio = $1 AND type = 'Series'
+		  )`, models.CanonicalPlatformName(p.platform))
+		if err != nil {
+			slog.Warn("[PlatformFilename] propagate season failed", "platform", p.platform, "error", err)
+		}
+	}
+
+	invalidateViewsCache(c, state)
+	slog.Info("[PlatformFilename] Done", "updated", total)
+	c.JSON(http.StatusOK, gin.H{"message": "done", "updated": total})
+}
+
+// Rescrape progress tracking
+var rescrapeProgress struct {
+	mu         sync.Mutex
+	Running    bool  `json:"running"`
+	Total      int64 `json:"total"`
+	Success    int64 `json:"success"`
+	NotFound   int64 `json:"not_found"`   // TMDB search returned no results
+	FetchError int64 `json:"fetch_error"` // API timeout/network error
+	Processed  int64 `json:"processed"`
+}
+
+var platformScanState struct {
+	mu      sync.Mutex
+	running bool
+}
+
+func getRescrapeProgress(c *gin.Context, state *AppState) {
+	c.JSON(http.StatusOK, buildRescrapeProgressResponse(c.Request.Context(), state))
+}
+
+// rescrapeMissingStudio reprocesses items still pending/error for platform identification.
+func rescrapeMissingStudio(c *gin.Context, state *AppState) {
+	rescrapeProgress.mu.Lock()
+	if rescrapeProgress.Running {
+		rescrapeProgress.mu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"message": "already running", "total": atomic.LoadInt64(&rescrapeProgress.Total)})
+		return
+	}
+	rescrapeProgress.Running = true
+	rescrapeProgress.mu.Unlock()
+
+	ctx := c.Request.Context()
+
+	items, err := models.GetItemsPendingPlatformScan(ctx, state.DB, 0, false, false)
+	if err != nil {
+		rescrapeProgress.mu.Lock()
+		rescrapeProgress.Running = false
+		rescrapeProgress.mu.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	totalCount := int64(len(items))
+
+	if totalCount == 0 {
+		rescrapeProgress.mu.Lock()
+		rescrapeProgress.Running = false
+		rescrapeProgress.mu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"message": "no items to rescrape", "total": 0})
+		return
+	}
+
+	atomic.StoreInt64(&rescrapeProgress.Total, totalCount)
+	atomic.StoreInt64(&rescrapeProgress.Success, 0)
+	atomic.StoreInt64(&rescrapeProgress.NotFound, 0)
+	atomic.StoreInt64(&rescrapeProgress.FetchError, 0)
+	atomic.StoreInt64(&rescrapeProgress.Processed, 0)
+
+	go func() {
+		defer func() {
+			rescrapeProgress.mu.Lock()
+			rescrapeProgress.Running = false
+			rescrapeProgress.mu.Unlock()
+		}()
+		bgCtx := context.Background()
+		client := services.TmdbClientFromConfig(bgCtx, state.DB)
+		if client == nil {
+			slog.Error("[Rescrape] Failed to create TMDB client")
+			return
+		}
+
+		batchSize := 500
+		for start := 0; start < len(items); start += batchSize {
+			end := start + batchSize
+			if end > len(items) {
+				end = len(items)
+			}
+			batch := items[start:end]
+			sem := make(chan struct{}, 3)
+			var wg sync.WaitGroup
+			for _, item := range batch {
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(scanItem models.PlatformScanItem) {
+					defer func() { <-sem; wg.Done() }()
+					var err error
+					if scanItem.TmdbID != nil && *scanItem.TmdbID != 0 {
+						_, err = services.RefreshItemMetadataByTMDBID(bgCtx, state.DB, scanItem.ID, client)
+					} else {
+						_, err = services.ScrapeItemWithClient(bgCtx, state.DB, scanItem.ID, client)
+					}
+					if err != nil {
+						errMsg := err.Error()
+						if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "no TMDB ID") || strings.Contains(errMsg, "no results") {
+							atomic.AddInt64(&rescrapeProgress.NotFound, 1)
+							_ = models.MarkPlatformScanNoMatch(bgCtx, state.DB, scanItem.ID, models.PlatformScanSourceSearch, errMsg)
+						} else {
+							atomic.AddInt64(&rescrapeProgress.FetchError, 1)
+							_ = models.MarkPlatformScanError(bgCtx, state.DB, scanItem.ID, models.PlatformScanSourceSearch, errMsg)
+						}
+					} else {
+						atomic.AddInt64(&rescrapeProgress.Success, 1)
+					}
+					atomic.AddInt64(&rescrapeProgress.Processed, 1)
+				}(item)
+			}
+			wg.Wait()
+		}
+
+		s := atomic.LoadInt64(&rescrapeProgress.Success)
+		nf := atomic.LoadInt64(&rescrapeProgress.NotFound)
+		fe := atomic.LoadInt64(&rescrapeProgress.FetchError)
+		slog.Info("[Rescrape] Done", "total", totalCount, "success", s, "not_found", nf, "fetch_error", fe)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"message": "rescraping", "total": totalCount})
 }

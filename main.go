@@ -32,6 +32,14 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == services.UpdateRunnerCommandArg() {
+		if err := services.RunUpdaterRunnerFromEnv(); err != nil {
+			slog.Error("Updater runner failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg := config.NewAppConfig()
 
 	logBuffer := services.NewLogBuffer(2000)
@@ -87,6 +95,7 @@ func main() {
 	} else {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
+	updater := services.NewUpdater(cfg, pool, httpClient, logBuffer)
 
 	state := &handlers.AppState{
 		DB:             pool,
@@ -100,6 +109,7 @@ func main() {
 		LogBuffer:      logBuffer,
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
+		Updater:        updater,
 	}
 
 	ctx := context.Background()
@@ -188,7 +198,8 @@ func main() {
 				strings.HasPrefix(p, "/Auth") ||
 				strings.HasPrefix(p, "/Stats") ||
 				strings.HasPrefix(p, "/Plugins") ||
-				strings.HasPrefix(p, "/Shows")
+				strings.HasPrefix(p, "/Shows") ||
+				strings.HasPrefix(p, "/Search")
 			if isAPI {
 				c.JSON(404, gin.H{"message": "Not found"})
 				return

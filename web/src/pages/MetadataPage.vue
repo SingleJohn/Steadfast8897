@@ -7,8 +7,8 @@ import { AppIcons } from '@/icons/appIcons'
 import { SearchOutline, VideocamOutline, AddOutline, CloseOutline, ArrowForwardOutline } from '@vicons/ionicons5'
 import {
   getSystemConfig, updateSystemConfig,
-  scrapeAllMetadata, getScrapeProgress, stopScrape,
-  startProbe, stopProbe, getProbeProgress,
+  scrapeAllMetadata, stopScrape,
+  startProbe, stopProbe, getTaskSummary,
 } from '@/api/client'
 
 const { showToast } = useToast()
@@ -40,6 +40,14 @@ const probeThreads = ref('5')
 const probePathMappings = ref<{ from: string; to: string }[]>([])
 const savingProbe = ref(false)
 
+async function refreshTaskSummary() {
+  try {
+    const summary = await getTaskSummary()
+    scrapeProgress.value = summary.scrape
+    probeProgress.value = summary.probe
+  } catch {}
+}
+
 async function handleSaveConfig() {
   savingConfig.value = true
   try {
@@ -62,6 +70,7 @@ async function handleScrapeAll() {
   scraping.value = true
   try {
     await scrapeAllMetadata()
+    await refreshTaskSummary()
     showToast('正在刮削缺失元数据，这可能需要一些时间...', 'success')
   } catch {
     showToast('启动元数据刮削失败', 'error')
@@ -89,6 +98,7 @@ async function startProbeJob() {
       probe_path_mappings: JSON.stringify(probePathMappings.value.filter((m) => m.from && m.to)),
     })
     await startProbe(parseInt(probeThreads.value, 10))
+    await refreshTaskSummary()
     showToast('媒体信息探测已启动', 'success')
   } catch (err: any) {
     showToast(err.message || '启动探测失败', 'error')
@@ -99,6 +109,7 @@ async function startProbeJob() {
 
 async function stopProbeJob() {
   await stopProbe()
+  await refreshTaskSummary()
   showToast('正在停止探测...', 'success')
 }
 
@@ -115,12 +126,10 @@ onMounted(() => {
     try { probePathMappings.value = cfg.probe_path_mappings ? JSON.parse(cfg.probe_path_mappings) : [] } catch { probePathMappings.value = [] }
     probeThreads.value = cfg.probe_threads || '5'
   }).catch(() => {})
-  getProbeProgress().then((p) => (probeProgress.value = p)).catch(() => {})
-  getScrapeProgress().then((p) => (scrapeProgress.value = p)).catch(() => {})
+  void refreshTaskSummary()
 
   timers.push(setInterval(() => {
-    getProbeProgress().then((p) => (probeProgress.value = p)).catch(() => {})
-    getScrapeProgress().then((p) => (scrapeProgress.value = p)).catch(() => {})
+    void refreshTaskSummary()
   }, 3000))
 })
 
@@ -142,6 +151,21 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
             </div>
           </div>
         </template>
+
+        <div v-if="scrapeProgress" class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-value">{{ (scrapeProgress.status === 'running' || scrapeProgress.status === 'stopping') ? Math.max((scrapeProgress.total_items || 0) - (scrapeProgress.processed_items || 0), 0) : (scrapeProgress.missing_count || 0) }}</div>
+            <div class="stat-name">待刮削<template v-if="scrapeProgress.items_total"> / {{ scrapeProgress.items_total }} 总项</template></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value ok">{{ scrapeProgress.success_items || 0 }}</div>
+            <div class="stat-name">成功</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value err">{{ scrapeProgress.failed_items || 0 }}</div>
+            <div class="stat-name">失败</div>
+          </div>
+        </div>
 
         <div v-if="scrapeProgress && (scrapeProgress.status === 'running' || scrapeProgress.status === 'stopping')" class="progress-panel">
           <div class="progress-row">
@@ -211,8 +235,8 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
 
         <div class="card-actions">
           <n-button type="primary" size="small" :loading="savingConfig" @click="handleSaveConfig">保存设置</n-button>
-          <n-button v-if="scrapeProgress?.status !== 'running' && scrapeProgress?.status !== 'stopping'" secondary size="small" :loading="scraping" @click="handleScrapeAll">刮削缺失元数据</n-button>
-          <n-button v-else type="warning" size="small" :disabled="scrapeProgress?.status === 'stopping'" @click="stopScrape()">{{ scrapeProgress?.status === 'stopping' ? '停止中...' : '停止刮削' }}</n-button>
+          <n-button v-if="scrapeProgress?.status !== 'running' && scrapeProgress?.status !== 'stopping'" secondary size="small" :loading="scraping" :disabled="scraping || (scrapeProgress?.missing_count === 0 && scrapeProgress?.status === 'idle')" @click="handleScrapeAll">刮削缺失元数据</n-button>
+          <n-button v-else type="warning" size="small" :disabled="scrapeProgress?.status === 'stopping'" @click="async () => { await stopScrape(); await refreshTaskSummary() }">{{ scrapeProgress?.status === 'stopping' ? '停止中...' : '停止刮削' }}</n-button>
         </div>
       </n-card>
 
@@ -235,7 +259,7 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
         <div v-if="probeProgress" class="stats-grid">
           <div class="stat-box">
             <div class="stat-value">{{ probeProgress.status === 'idle' ? probeProgress.missingCount : probeProgress.totalItems - probeProgress.processedItems }}</div>
-            <div class="stat-name">待探测</div>
+            <div class="stat-name">待探测<template v-if="probeProgress.versionsTotal"> / {{ probeProgress.versionsTotal }} 总版本</template></div>
           </div>
           <div class="stat-box">
             <div class="stat-value ok">{{ probeProgress.successItems || 0 }}</div>

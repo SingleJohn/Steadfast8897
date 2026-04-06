@@ -1,0 +1,1074 @@
+package services
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/config"
+)
+
+const (
+	updateChannelKey        = "update_channel"
+	lastUpdateCheckAtKey    = "last_update_check_at"
+	lastUpdateVersionKey    = "last_update_version"
+	lastUpdateAttemptAtKey  = "last_update_attempt_at"
+	lastUpdateTargetKey     = "last_update_target"
+	lastUpdateResultKey     = "last_update_result"
+	lastUpdateErrorKey      = "last_update_error"
+	defaultUpdateChannel    = "stable"
+	defaultSharedDataMount  = "/app/data"
+	updateRunnerCommandArg  = "updater-runner"
+	updateStateRelativePath = "update/state.json"
+)
+
+func UpdateRunnerCommandArg() string {
+	return updateRunnerCommandArg
+}
+
+type UpdateStatus struct {
+	Status            string   `json:"status"`
+	Message           string   `json:"message"`
+	CurrentVersion    string   `json:"currentVersion"`
+	LatestVersion     string   `json:"latestVersion"`
+	TargetVersion     string   `json:"targetVersion"`
+	Channel           string   `json:"channel"`
+	HasUpdate         bool     `json:"hasUpdate"`
+	CurrentImage      string   `json:"currentImage,omitempty"`
+	TargetImage       string   `json:"targetImage,omitempty"`
+	ReleaseSource     string   `json:"releaseSource,omitempty"`
+	ReleaseNotesURL   string   `json:"releaseNotesUrl,omitempty"`
+	GitHubReleaseURL  string   `json:"githubReleaseUrl,omitempty"`
+	HelperContainer   string   `json:"helperContainer,omitempty"`
+	LastCheckedAt     *string  `json:"lastCheckedAt,omitempty"`
+	StartedAt         *string  `json:"startedAt,omitempty"`
+	CompletedAt       *string  `json:"completedAt,omitempty"`
+	Error             *string  `json:"error,omitempty"`
+	Logs              []string `json:"logs,omitempty"`
+	NeedsDockerSocket bool     `json:"needsDockerSocket"`
+}
+
+type UpdateRelease struct {
+	Version          string
+	Channel          string
+	Image            string
+	ReleaseSource    string
+	ReleaseNotesURL  string
+	GitHubReleaseURL string
+}
+
+type Updater struct {
+	mu         sync.Mutex
+	cfg        *config.AppConfig
+	pool       *pgxpool.Pool
+	httpClient *http.Client
+	logBuffer  *LogBuffer
+	statePath  string
+	status     UpdateStatus
+}
+
+type dockerHubTagsResponse struct {
+	Results []struct {
+		Name string `json:"name"`
+	} `json:"results"`
+	Next *string `json:"next"`
+}
+
+type gitHubRelease struct {
+	TagName    string `json:"tag_name"`
+	HTMLURL    string `json:"html_url"`
+	Prerelease bool   `json:"prerelease"`
+}
+
+func NewUpdater(cfg *config.AppConfig, pool *pgxpool.Pool, httpClient *http.Client, logBuffer *LogBuffer) *Updater {
+	u := &Updater{
+		cfg:        cfg,
+		pool:       pool,
+		httpClient: httpClient,
+		logBuffer:  logBuffer,
+		statePath:  filepath.Join(cfg.DataDir, updateStateRelativePath),
+		status: UpdateStatus{
+			Status:            "idle",
+			Message:           "未检查更新",
+			CurrentVersion:    cfg.Version,
+			Channel:           defaultUpdateChannel,
+			NeedsDockerSocket: true,
+		},
+	}
+	u.reloadStateLocked()
+	return u
+}
+
+func (u *Updater) GetStatus(ctx context.Context) UpdateStatus {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	u.status.CurrentVersion = u.cfg.Version
+	if channel := u.getConfigValue(ctx, updateChannelKey); channel != "" {
+		u.status.Channel = normalizeUpdateChannel(channel)
+	}
+	u.status.NeedsDockerSocket = true
+	return cloneUpdateStatus(u.status)
+}
+
+func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
+	u.mu.Lock()
+	u.reloadStateLocked()
+	u.status.Status = "checking"
+	u.status.Message = "正在检查更新"
+	u.status.Error = nil
+	u.status.CompletedAt = nil
+	u.status.CurrentVersion = u.cfg.Version
+	channel := normalizeUpdateChannel(u.getConfigValue(ctx, updateChannelKey))
+	if channel == "" {
+		channel = defaultUpdateChannel
+	}
+	u.status.Channel = channel
+	u.persistStateLocked()
+	u.mu.Unlock()
+
+	release, err := u.resolveLatestRelease(ctx, channel)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	u.status.CurrentVersion = u.cfg.Version
+	u.status.Channel = channel
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.LastCheckedAt = &now
+	_ = u.setConfigValue(ctx, lastUpdateCheckAtKey, now)
+	if err != nil {
+		u.status.Status = "failed"
+		u.status.Message = "检查更新失败"
+		msg := err.Error()
+		u.status.Error = &msg
+		_ = u.setConfigValue(ctx, lastUpdateErrorKey, msg)
+		u.persistStateLocked()
+		return cloneUpdateStatus(u.status), err
+	}
+
+	u.status.LatestVersion = release.Version
+	u.status.TargetVersion = release.Version
+	u.status.TargetImage = release.Image
+	u.status.ReleaseSource = release.ReleaseSource
+	u.status.ReleaseNotesURL = release.ReleaseNotesURL
+	u.status.GitHubReleaseURL = release.GitHubReleaseURL
+	u.status.HasUpdate = compareVersions(u.cfg.Version, release.Version) < 0
+	if u.status.HasUpdate {
+		u.status.Status = "available"
+		u.status.Message = fmt.Sprintf("发现新版本 %s", release.Version)
+	} else {
+		u.status.Status = "idle"
+		u.status.Message = "当前已是最新版本"
+	}
+	_ = u.setConfigValue(ctx, lastUpdateVersionKey, release.Version)
+	_ = u.setConfigValue(ctx, lastUpdateResultKey, "checked")
+	u.persistStateLocked()
+	return cloneUpdateStatus(u.status), nil
+}
+
+func (u *Updater) SetChannel(ctx context.Context, channel string) (UpdateStatus, error) {
+	channel = normalizeUpdateChannel(channel)
+	if channel == "" {
+		return u.GetStatus(ctx), fmt.Errorf("invalid update channel")
+	}
+	if err := u.setConfigValue(ctx, updateChannelKey, channel); err != nil {
+		return u.GetStatus(ctx), err
+	}
+
+	u.mu.Lock()
+	u.reloadStateLocked()
+	u.status.Channel = channel
+	u.status.Message = "更新通道已保存"
+	u.persistStateLocked()
+	u.mu.Unlock()
+	return u.Check(ctx)
+}
+
+func (u *Updater) MarkBackingUp() UpdateStatus {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.Status = "backing_up"
+	u.status.Message = "正在创建更新前备份"
+	u.status.StartedAt = &now
+	u.status.CompletedAt = nil
+	u.status.Error = nil
+	u.appendLogLocked("开始创建更新前备份")
+	u.persistStateLocked()
+	return cloneUpdateStatus(u.status)
+}
+
+func (u *Updater) StartApply(ctx context.Context) (UpdateStatus, error) {
+	u.mu.Lock()
+	u.reloadStateLocked()
+	if isUpdateTaskActive(u.status.Status) {
+		st := cloneUpdateStatus(u.status)
+		u.mu.Unlock()
+		return st, fmt.Errorf("update task already running")
+	}
+	u.mu.Unlock()
+
+	checked, err := u.Check(ctx)
+	if err != nil {
+		return checked, err
+	}
+	if !checked.HasUpdate || checked.TargetImage == "" {
+		return checked, fmt.Errorf("no update available")
+	}
+	if _, err := os.Stat(u.cfg.UpdateDockerSocket); err != nil {
+		return checked, fmt.Errorf("docker socket unavailable: %w", err)
+	}
+
+	dockerClient := newDockerClient(u.cfg.UpdateDockerSocket)
+	defer dockerClient.CloseIdleConnections()
+
+	containerID, err := currentContainerID()
+	if err != nil {
+		return checked, err
+	}
+	inspect, err := dockerClient.inspectContainer(ctx, containerID)
+	if err != nil {
+		return checked, fmt.Errorf("inspect current container: %w", err)
+	}
+
+	helperName := fmt.Sprintf("fyms-updater-%d", time.Now().Unix())
+	helperBinds := buildHelperBinds(u.cfg.UpdateDockerSocket, inspect, defaultSharedDataMount)
+	helperEnv := []string{
+		"FYMS_UPDATE_RUNNER=1",
+		fmt.Sprintf("FYMS_UPDATE_DOCKER_SOCKET=%s", u.cfg.UpdateDockerSocket),
+		fmt.Sprintf("FYMS_UPDATE_TARGET_CONTAINER=%s", containerID),
+		fmt.Sprintf("FYMS_UPDATE_TARGET_IMAGE=%s", checked.TargetImage),
+		fmt.Sprintf("FYMS_UPDATE_TARGET_VERSION=%s", checked.TargetVersion),
+		fmt.Sprintf("FYMS_UPDATE_STATE_PATH=%s", u.statePath),
+	}
+
+	helperBody := map[string]any{
+		"Image": inspect.Config.Image,
+		"Env":   helperEnv,
+		"Cmd":   []string{updateRunnerCommandArg},
+		"Labels": map[string]string{
+			"fyms.update.helper": "true",
+		},
+		"HostConfig": map[string]any{
+			"AutoRemove":  true,
+			"Binds":       helperBinds,
+			"NetworkMode": "none",
+		},
+	}
+
+	helperID, err := dockerClient.createContainer(ctx, helperName, helperBody)
+	if err != nil {
+		return checked, fmt.Errorf("create update helper: %w", err)
+	}
+	if err := dockerClient.startContainer(ctx, helperID); err != nil {
+		return checked, fmt.Errorf("start update helper: %w", err)
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.Status = "restarting"
+	u.status.Message = "更新任务已启动，服务即将重启"
+	u.status.HelperContainer = helperName
+	u.status.StartedAt = &now
+	u.status.CompletedAt = nil
+	u.status.Error = nil
+	u.status.TargetImage = checked.TargetImage
+	u.status.TargetVersion = checked.TargetVersion
+	u.status.CurrentVersion = u.cfg.Version
+	u.appendLogLocked(fmt.Sprintf("更新助手已启动: %s", helperName))
+	u.persistStateLocked()
+	_ = u.setConfigValue(ctx, lastUpdateAttemptAtKey, now)
+	_ = u.setConfigValue(ctx, lastUpdateTargetKey, checked.TargetImage)
+	_ = u.setConfigValue(ctx, lastUpdateResultKey, "started")
+	return cloneUpdateStatus(u.status), nil
+}
+
+func (u *Updater) MarkCompleted(version string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.Status = "completed"
+	u.status.Message = "更新完成"
+	u.status.CurrentVersion = version
+	u.status.CompletedAt = &now
+	u.status.Error = nil
+	u.status.HasUpdate = false
+	u.appendLogLocked(fmt.Sprintf("更新完成，当前版本: %s", version))
+	u.persistStateLocked()
+}
+
+func (u *Updater) MarkFailure(err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.reloadStateLocked()
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.Status = "failed"
+	u.status.Message = "更新失败"
+	u.status.CompletedAt = &now
+	if err != nil {
+		msg := err.Error()
+		u.status.Error = &msg
+		u.appendLogLocked("更新失败: " + msg)
+	}
+	u.persistStateLocked()
+}
+
+func (u *Updater) resolveLatestRelease(ctx context.Context, channel string) (UpdateRelease, error) {
+	tags, err := u.fetchDockerTags(ctx)
+	if err != nil {
+		return UpdateRelease{}, err
+	}
+	latestTag := selectLatestTag(tags, channel)
+	if latestTag == "" {
+		return UpdateRelease{}, fmt.Errorf("no matching docker tags found")
+	}
+	ghRelease, _ := u.fetchGitHubRelease(ctx, latestTag, channel)
+	release := UpdateRelease{
+		Version:       latestTag,
+		Channel:       channel,
+		Image:         fmt.Sprintf("%s:%s", u.cfg.UpdateImageRepo, latestTag),
+		ReleaseSource: "docker",
+	}
+	if ghRelease != nil {
+		release.ReleaseNotesURL = ghRelease.HTMLURL
+		release.GitHubReleaseURL = ghRelease.HTMLURL
+	}
+	return release, nil
+}
+
+func (u *Updater) fetchDockerTags(ctx context.Context) ([]string, error) {
+	parts := strings.SplitN(u.cfg.UpdateImageRepo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid update image repo: %s", u.cfg.UpdateImageRepo)
+	}
+	reqURL := fmt.Sprintf("https://hub.docker.com/v2/namespaces/%s/repositories/%s/tags?page_size=100", parts[0], parts[1])
+	var tags []string
+	seen := map[string]bool{}
+	for reqURL != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := u.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("docker hub returned %d", resp.StatusCode)
+		}
+		var parsed dockerHubTagsResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, err
+		}
+		for _, item := range parsed.Results {
+			if !seen[item.Name] {
+				tags = append(tags, item.Name)
+				seen[item.Name] = true
+			}
+		}
+		if parsed.Next == nil || *parsed.Next == "" {
+			break
+		}
+		reqURL = *parsed.Next
+	}
+	return tags, nil
+}
+
+func (u *Updater) fetchGitHubRelease(ctx context.Context, preferredTag, channel string) (*gitHubRelease, error) {
+	if strings.TrimSpace(u.cfg.UpdateGitHubRepo) == "" {
+		return nil, nil
+	}
+	reqURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=20", u.cfg.UpdateGitHubRepo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github releases returned %d", resp.StatusCode)
+	}
+	var releases []gitHubRelease
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return nil, err
+	}
+	for _, rel := range releases {
+		tag := strings.TrimPrefix(rel.TagName, "v")
+		if preferredTag != "" && tag == preferredTag {
+			return &rel, nil
+		}
+	}
+	for _, rel := range releases {
+		if channel == "stable" && rel.Prerelease {
+			continue
+		}
+		return &rel, nil
+	}
+	return nil, nil
+}
+
+func normalizeUpdateChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "", "stable":
+		return "stable"
+	case "beta":
+		return "beta"
+	default:
+		return ""
+	}
+}
+
+func isPreReleaseTag(tag string) bool {
+	lower := strings.ToLower(tag)
+	return strings.Contains(lower, "beta") ||
+		strings.Contains(lower, "alpha") ||
+		strings.Contains(lower, "rc") ||
+		strings.Contains(lower, "dev") ||
+		strings.Contains(lower, "preview")
+}
+
+func selectLatestTag(tags []string, channel string) string {
+	filtered := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag == "" || tag == "latest" {
+			continue
+		}
+		if !versionTagPattern.MatchString(tag) {
+			continue
+		}
+		if channel == "stable" && isPreReleaseTag(tag) {
+			continue
+		}
+		filtered = append(filtered, tag)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return compareVersions(filtered[i], filtered[j]) > 0
+	})
+	if len(filtered) == 0 {
+		return ""
+	}
+	return filtered[0]
+}
+
+var versionTagPattern = regexp.MustCompile(`^\d+(?:\.\d+)*(?:-[0-9A-Za-z]+)*$`)
+
+func compareVersions(a, b string) int {
+	if a == b {
+		return 0
+	}
+	pa := parseVersionParts(a)
+	pb := parseVersionParts(b)
+	maxLen := len(pa)
+	if len(pb) > maxLen {
+		maxLen = len(pb)
+	}
+	for i := 0; i < maxLen; i++ {
+		av := 0
+		bv := 0
+		if i < len(pa) {
+			av = pa[i]
+		}
+		if i < len(pb) {
+			bv = pb[i]
+		}
+		if av > bv {
+			return 1
+		}
+		if av < bv {
+			return -1
+		}
+	}
+	if isPreReleaseTag(a) && !isPreReleaseTag(b) {
+		return -1
+	}
+	if !isPreReleaseTag(a) && isPreReleaseTag(b) {
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+func parseVersionParts(version string) []int {
+	cleaned := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(version)), "v")
+	separators := strings.NewReplacer("-", ".", "_", ".", "+", ".")
+	chunks := strings.Split(separators.Replace(cleaned), ".")
+	out := make([]int, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		n, err := strconv.Atoi(chunk)
+		if err != nil {
+			break
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func cloneUpdateStatus(in UpdateStatus) UpdateStatus {
+	out := in
+	if in.Logs != nil {
+		out.Logs = append([]string(nil), in.Logs...)
+	}
+	return out
+}
+
+func (u *Updater) appendLogLocked(message string) {
+	ts := time.Now().UTC().Format("15:04:05")
+	u.status.Logs = append(u.status.Logs, fmt.Sprintf("%s %s", ts, message))
+	if len(u.status.Logs) > 20 {
+		u.status.Logs = append([]string(nil), u.status.Logs[len(u.status.Logs)-20:]...)
+	}
+}
+
+func (u *Updater) persistStateLocked() {
+	if u.statePath == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(u.statePath), 0755); err != nil {
+		slog.Warn("create update state dir failed", "error", err)
+		return
+	}
+	raw, err := json.MarshalIndent(u.status, "", "  ")
+	if err != nil {
+		slog.Warn("marshal update state failed", "error", err)
+		return
+	}
+	tmp := u.statePath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0644); err != nil {
+		slog.Warn("write update state temp failed", "error", err)
+		return
+	}
+	if err := os.Rename(tmp, u.statePath); err != nil {
+		slog.Warn("rename update state failed", "error", err)
+	}
+}
+
+func (u *Updater) reloadStateLocked() {
+	if u.statePath == "" {
+		return
+	}
+	data, err := os.ReadFile(u.statePath)
+	if err != nil {
+		return
+	}
+	var parsed UpdateStatus
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return
+	}
+	u.status = parsed
+	if u.status.Channel == "" {
+		u.status.Channel = defaultUpdateChannel
+	}
+	if u.status.CurrentVersion == "" {
+		u.status.CurrentVersion = u.cfg.Version
+	}
+}
+
+func (u *Updater) getConfigValue(ctx context.Context, key string) string {
+	if u.pool == nil {
+		return ""
+	}
+	var val *string
+	if err := u.pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = $1", key).Scan(&val); err != nil || val == nil {
+		return ""
+	}
+	return *val
+}
+
+func (u *Updater) setConfigValue(ctx context.Context, key, value string) error {
+	if u.pool == nil {
+		return nil
+	}
+	_, err := u.pool.Exec(ctx,
+		`INSERT INTO system_config (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+		key, value)
+	return err
+}
+
+func isUpdateTaskActive(status string) bool {
+	switch status {
+	case "checking", "backing_up", "pulling", "recreating", "restarting":
+		return true
+	default:
+		return false
+	}
+}
+
+type dockerClient struct {
+	httpClient *http.Client
+}
+
+func newDockerClient(socketPath string) *dockerClient {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		},
+	}
+	return &dockerClient{
+		httpClient: &http.Client{Transport: transport, Timeout: 0},
+	}
+}
+
+func (dc *dockerClient) CloseIdleConnections() {
+	if tr, ok := dc.httpClient.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+}
+
+func (dc *dockerClient) doJSON(ctx context.Context, method, path string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, reader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := dc.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(data))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return errors.New(msg)
+	}
+	if out != nil && len(data) > 0 {
+		return json.Unmarshal(data, out)
+	}
+	return nil
+}
+
+func (dc *dockerClient) doStream(ctx context.Context, method, path string) error {
+	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := dc.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(data))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
+
+type dockerInspect struct {
+	ID              string                `json:"Id"`
+	Name            string                `json:"Name"`
+	Config          dockerContainerConfig `json:"Config"`
+	HostConfig      map[string]any        `json:"HostConfig"`
+	NetworkSettings dockerNetworkSettings `json:"NetworkSettings"`
+	Mounts          []dockerMountPoint    `json:"Mounts"`
+}
+
+type dockerContainerConfig struct {
+	Image        string              `json:"Image"`
+	Env          []string            `json:"Env"`
+	Cmd          []string            `json:"Cmd"`
+	Entrypoint   []string            `json:"Entrypoint"`
+	Labels       map[string]string   `json:"Labels"`
+	WorkingDir   string              `json:"WorkingDir"`
+	User         string              `json:"User"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts"`
+	StopSignal   string              `json:"StopSignal"`
+	StopTimeout  *int                `json:"StopTimeout"`
+	Healthcheck  any                 `json:"Healthcheck"`
+	Tty          bool                `json:"Tty"`
+	OpenStdin    bool                `json:"OpenStdin"`
+	StdinOnce    bool                `json:"StdinOnce"`
+	AttachStdin  bool                `json:"AttachStdin"`
+	AttachStdout bool                `json:"AttachStdout"`
+	AttachStderr bool                `json:"AttachStderr"`
+}
+
+type dockerNetworkSettings struct {
+	Networks map[string]dockerEndpoint `json:"Networks"`
+}
+
+type dockerEndpoint struct {
+	Aliases           []string          `json:"Aliases"`
+	Links             []string          `json:"Links"`
+	IPAddress         string            `json:"IPAddress"`
+	GlobalIPv6Address string            `json:"GlobalIPv6Address"`
+	MacAddress        string            `json:"MacAddress"`
+	DriverOpts        map[string]string `json:"DriverOpts"`
+	IPAMConfig        map[string]any    `json:"IPAMConfig"`
+}
+
+type dockerMountPoint struct {
+	Type        string `json:"Type"`
+	Name        string `json:"Name"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
+}
+
+func (dc *dockerClient) inspectContainer(ctx context.Context, containerID string) (*dockerInspect, error) {
+	var out dockerInspect
+	if err := dc.doJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (dc *dockerClient) createContainer(ctx context.Context, name string, body any) (string, error) {
+	var out struct {
+		ID string `json:"Id"`
+	}
+	path := "/containers/create"
+	if name != "" {
+		path += "?name=" + url.QueryEscape(name)
+	}
+	if err := dc.doJSON(ctx, http.MethodPost, path, body, &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
+}
+
+func (dc *dockerClient) startContainer(ctx context.Context, containerID string) error {
+	return dc.doJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(containerID)+"/start", nil, nil)
+}
+
+func (dc *dockerClient) stopContainer(ctx context.Context, containerID string, timeoutSec int) error {
+	return dc.doJSON(ctx, http.MethodPost, fmt.Sprintf("/containers/%s/stop?t=%d", url.PathEscape(containerID), timeoutSec), nil, nil)
+}
+
+func (dc *dockerClient) removeContainer(ctx context.Context, containerID string, force bool) error {
+	return dc.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/containers/%s?force=%t", url.PathEscape(containerID), force), nil, nil)
+}
+
+func (dc *dockerClient) renameContainer(ctx context.Context, containerID, newName string) error {
+	return dc.doJSON(ctx, http.MethodPost, fmt.Sprintf("/containers/%s/rename?name=%s", url.PathEscape(containerID), url.QueryEscape(newName)), nil, nil)
+}
+
+func (dc *dockerClient) pullImage(ctx context.Context, image string) error {
+	repo := image
+	tag := "latest"
+	if idx := strings.LastIndex(image, ":"); idx > strings.LastIndex(image, "/") {
+		repo = image[:idx]
+		tag = image[idx+1:]
+	}
+	return dc.doStream(ctx, http.MethodPost, fmt.Sprintf("/images/create?fromImage=%s&tag=%s", url.QueryEscape(repo), url.QueryEscape(tag)))
+}
+
+func currentContainerID() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("FYMS_CONTAINER_ID")); v != "" {
+		return v, nil
+	}
+	if host, err := os.Hostname(); err == nil && strings.TrimSpace(host) != "" {
+		return strings.TrimSpace(host), nil
+	}
+	return "", fmt.Errorf("cannot determine current container id")
+}
+
+func buildHelperBinds(socketPath string, inspect *dockerInspect, sharedDestination string) []string {
+	binds := []string{fmt.Sprintf("%s:%s", socketPath, socketPath)}
+	for _, mount := range inspect.Mounts {
+		if mount.Destination != sharedDestination {
+			continue
+		}
+		mode := "rw"
+		if !mount.RW {
+			mode = "ro"
+		}
+		source := mount.Source
+		if mount.Type == "volume" && mount.Name != "" {
+			source = mount.Name
+		}
+		binds = append(binds, fmt.Sprintf("%s:%s:%s", source, mount.Destination, mode))
+		break
+	}
+	return binds
+}
+
+func RunUpdaterRunnerFromEnv() error {
+	socketPath := strings.TrimSpace(os.Getenv("FYMS_UPDATE_DOCKER_SOCKET"))
+	if socketPath == "" {
+		socketPath = "/var/run/docker.sock"
+	}
+	targetContainer := strings.TrimSpace(os.Getenv("FYMS_UPDATE_TARGET_CONTAINER"))
+	targetImage := strings.TrimSpace(os.Getenv("FYMS_UPDATE_TARGET_IMAGE"))
+	targetVersion := strings.TrimSpace(os.Getenv("FYMS_UPDATE_TARGET_VERSION"))
+	statePath := strings.TrimSpace(os.Getenv("FYMS_UPDATE_STATE_PATH"))
+	if targetContainer == "" || targetImage == "" || statePath == "" {
+		return fmt.Errorf("missing updater runner env")
+	}
+
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		st.Status = "pulling"
+		st.Message = "正在拉取新镜像"
+		st.TargetImage = targetImage
+		st.TargetVersion = targetVersion
+		appendRunnerLog(st, "开始拉取镜像 "+targetImage)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	dockerClient := newDockerClient(socketPath)
+	defer dockerClient.CloseIdleConnections()
+
+	if err := dockerClient.pullImage(ctx, targetImage); err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("pull image failed: %w", err))
+		return err
+	}
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		st.Status = "recreating"
+		st.Message = "正在重建容器"
+		appendRunnerLog(st, "镜像拉取完成")
+	})
+
+	inspect, err := dockerClient.inspectContainer(ctx, targetContainer)
+	if err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("inspect target container failed: %w", err))
+		return err
+	}
+	originalName := strings.TrimPrefix(inspect.Name, "/")
+	if originalName == "" {
+		originalName = targetContainer[:12]
+	}
+	backupName := fmt.Sprintf("%s-backup-%d", originalName, time.Now().Unix())
+
+	if err := dockerClient.renameContainer(ctx, targetContainer, backupName); err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("rename current container failed: %w", err))
+		return err
+	}
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		appendRunnerLog(st, "已重命名旧容器为 "+backupName)
+	})
+
+	if err := dockerClient.stopContainer(ctx, targetContainer, 15); err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("stop old container failed: %w", err))
+		return err
+	}
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		appendRunnerLog(st, "旧容器已停止")
+	})
+
+	createBody := buildReplacementContainerBody(inspect, targetImage)
+	newID, err := dockerClient.createContainer(ctx, originalName, createBody)
+	if err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("create replacement container failed: %w", err))
+		return err
+	}
+	if err := dockerClient.startContainer(ctx, newID); err != nil {
+		writeRunnerFailure(statePath, fmt.Errorf("start replacement container failed: %w", err))
+		return err
+	}
+
+	_ = dockerClient.removeContainer(ctx, targetContainer, false)
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		st.Status = "completed"
+		st.Message = "更新完成"
+		st.CurrentVersion = targetVersion
+		st.CompletedAt = &now
+		st.Error = nil
+		st.HasUpdate = false
+		appendRunnerLog(st, "新容器已启动")
+	})
+	return nil
+}
+
+func buildReplacementContainerBody(inspect *dockerInspect, targetImage string) map[string]any {
+	hostConfig := cloneMap(inspect.HostConfig)
+	if anySliceLen(hostConfig["Binds"]) == 0 {
+		delete(hostConfig, "Binds")
+	}
+	if _, ok := hostConfig["Mounts"]; !ok && len(inspect.Mounts) > 0 {
+		hostConfig["Mounts"] = buildHostMounts(inspect.Mounts)
+	}
+	delete(hostConfig, "Links")
+	delete(hostConfig, "RestartCount")
+
+	endpoints := map[string]any{}
+	for name, endpoint := range inspect.NetworkSettings.Networks {
+		entry := map[string]any{}
+		if len(endpoint.Aliases) > 0 {
+			entry["Aliases"] = endpoint.Aliases
+		}
+		if len(endpoint.Links) > 0 {
+			entry["Links"] = endpoint.Links
+		}
+		if endpoint.IPAMConfig != nil {
+			entry["IPAMConfig"] = endpoint.IPAMConfig
+		}
+		if endpoint.IPAddress != "" {
+			entry["IPv4Address"] = endpoint.IPAddress
+		}
+		if endpoint.GlobalIPv6Address != "" {
+			entry["IPv6Address"] = endpoint.GlobalIPv6Address
+		}
+		if endpoint.MacAddress != "" {
+			entry["MacAddress"] = endpoint.MacAddress
+		}
+		if len(endpoint.DriverOpts) > 0 {
+			entry["DriverOpts"] = endpoint.DriverOpts
+		}
+		endpoints[name] = entry
+	}
+
+	return map[string]any{
+		"Image":            targetImage,
+		"Env":              inspect.Config.Env,
+		"Cmd":              inspect.Config.Cmd,
+		"Entrypoint":       inspect.Config.Entrypoint,
+		"WorkingDir":       inspect.Config.WorkingDir,
+		"User":             inspect.Config.User,
+		"Labels":           inspect.Config.Labels,
+		"ExposedPorts":     inspect.Config.ExposedPorts,
+		"StopSignal":       inspect.Config.StopSignal,
+		"StopTimeout":      inspect.Config.StopTimeout,
+		"Healthcheck":      inspect.Config.Healthcheck,
+		"Tty":              inspect.Config.Tty,
+		"OpenStdin":        inspect.Config.OpenStdin,
+		"StdinOnce":        inspect.Config.StdinOnce,
+		"AttachStdin":      inspect.Config.AttachStdin,
+		"AttachStdout":     inspect.Config.AttachStdout,
+		"AttachStderr":     inspect.Config.AttachStderr,
+		"HostConfig":       hostConfig,
+		"NetworkingConfig": map[string]any{"EndpointsConfig": endpoints},
+	}
+}
+
+func anySliceLen(v any) int {
+	switch vv := v.(type) {
+	case []any:
+		return len(vv)
+	case []string:
+		return len(vv)
+	default:
+		return 0
+	}
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func buildHostMounts(mounts []dockerMountPoint) []map[string]any {
+	out := make([]map[string]any, 0, len(mounts))
+	for _, mount := range mounts {
+		entry := map[string]any{
+			"Type":     mount.Type,
+			"Target":   mount.Destination,
+			"ReadOnly": !mount.RW,
+		}
+		if mount.Type == "volume" && mount.Name != "" {
+			entry["Source"] = mount.Name
+		} else {
+			entry["Source"] = mount.Source
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func writeRunnerFailure(statePath string, err error) {
+	writeRunnerState(statePath, func(st *UpdateStatus) {
+		now := time.Now().UTC().Format(time.RFC3339)
+		st.Status = "failed"
+		st.Message = "更新失败"
+		st.CompletedAt = &now
+		msg := err.Error()
+		st.Error = &msg
+		appendRunnerLog(st, "更新失败: "+msg)
+	})
+}
+
+func appendRunnerLog(st *UpdateStatus, message string) {
+	ts := time.Now().UTC().Format("15:04:05")
+	st.Logs = append(st.Logs, fmt.Sprintf("%s %s", ts, message))
+	if len(st.Logs) > 20 {
+		st.Logs = append([]string(nil), st.Logs[len(st.Logs)-20:]...)
+	}
+}
+
+func writeRunnerState(statePath string, mutate func(st *UpdateStatus)) {
+	if statePath == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(statePath), 0755)
+	state := UpdateStatus{}
+	if data, err := os.ReadFile(statePath); err == nil {
+		_ = json.Unmarshal(data, &state)
+	}
+	mutate(&state)
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := statePath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, statePath)
+}

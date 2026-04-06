@@ -49,6 +49,151 @@ type mediaVersionRow struct {
 	MediaInfo    []byte
 }
 
+func loadMediaVersions(ctx context.Context, state *AppState, itemID string) ([]mediaVersionRow, error) {
+	rows, err := state.DB.Query(ctx,
+		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
+		 FROM media_versions WHERE item_id = $1::uuid
+		 ORDER BY is_primary DESC, created_at ASC`,
+		itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var versions []mediaVersionRow
+	for rows.Next() {
+		var v mediaVersionRow
+		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo); err != nil {
+			return nil, err
+		}
+		versions = append(versions, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
+func playbackJSONInt64(m map[string]interface{}, key string) *int64 {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch n := v.(type) {
+	case float64:
+		i := int64(n)
+		return &i
+	case int64:
+		i := n
+		return &i
+	case int:
+		i := int64(n)
+		return &i
+	}
+	return nil
+}
+
+func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) ([]mediaVersionRow, error) {
+	if item == nil || item.ItemType != "Movie" || item.FilePath == nil || *item.FilePath == "" {
+		hasFilePath := false
+		if item != nil {
+			hasFilePath = item.FilePath != nil && *item.FilePath != ""
+		}
+		slog.Info("playback backfill skipped", "itemId", itemID, "hasItem", item != nil, "itemType", func() string {
+			if item == nil {
+				return ""
+			}
+			return item.ItemType
+		}(), "hasFilePath", hasFilePath)
+		return nil, nil
+	}
+
+	dir := filepath.Dir(*item.FilePath)
+	dirCache := services.CacheDir(dir)
+	if len(dirCache) == 0 {
+		slog.Warn("playback backfill empty dir cache", "itemId", itemID, "dir", dir)
+		return nil, nil
+	}
+
+	var videoFiles [][2]string
+	for _, entry := range dirCache {
+		if services.IsVideoExt(filepath.Ext(entry[0])) {
+			videoFiles = append(videoFiles, entry)
+		}
+	}
+	slog.Info("playback backfill discovered files", "itemId", itemID, "dir", dir, "videoFileCount", len(videoFiles), "itemFilePath", *item.FilePath)
+	if len(videoFiles) == 0 {
+		return nil, nil
+	}
+
+	primaryIndex := 0
+	for i, entry := range videoFiles {
+		if entry[1] == *item.FilePath {
+			primaryIndex = i
+			break
+		}
+	}
+	if primaryIndex != 0 {
+		videoFiles[0], videoFiles[primaryIndex] = videoFiles[primaryIndex], videoFiles[0]
+	}
+
+	for i, entry := range videoFiles {
+		filePath := entry[1]
+		versionName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+		if versionName == "" {
+			versionName = "Unknown"
+		}
+
+		mi := services.ReadMediainfoJSONCached(filePath, dirCache)
+		container := strings.TrimPrefix(strings.ToLower(filepath.Ext(filePath)), ".")
+		if container == "strm" {
+			if rp := services.ResolveStrmPath(filePath); rp != nil {
+				resolved := strings.TrimPrefix(filepath.Ext(*rp), ".")
+				if resolved != "" {
+					container = resolved
+				}
+			}
+		}
+		if container == "" && item.Container != nil {
+			container = *item.Container
+		}
+		if container == "" {
+			container = "mkv"
+		}
+
+		var runtimeTicks, bitrate, size *int64
+		var mediaInfoValue interface{}
+		if mi != nil {
+			runtimeTicks = playbackJSONInt64(mi, "RunTimeTicks")
+			bitrate = playbackJSONInt64(mi, "Bitrate")
+			size = playbackJSONInt64(mi, "Size")
+			if raw, err := json.Marshal(mi); err == nil {
+				mediaInfoValue = string(raw)
+			}
+		}
+
+		if _, err := state.DB.Exec(ctx,
+			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size)
+			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
+			 ON CONFLICT (item_id, file_path) DO UPDATE SET
+			 	name = EXCLUDED.name,
+			 	container = EXCLUDED.container,
+			 	is_primary = EXCLUDED.is_primary,
+			 	mediainfo = COALESCE(EXCLUDED.mediainfo, media_versions.mediainfo),
+			 	runtime_ticks = COALESCE(EXCLUDED.runtime_ticks, media_versions.runtime_ticks),
+			 	bitrate = COALESCE(EXCLUDED.bitrate, media_versions.bitrate),
+			 	size = COALESCE(EXCLUDED.size, media_versions.size)`,
+			itemID, versionName, filePath, container, i == 0, mediaInfoValue, runtimeTicks, bitrate, size,
+		); err != nil {
+			slog.Warn("playback backfill insert failed", "itemId", itemID, "filePath", filePath, "error", err)
+			return nil, err
+		}
+	}
+	slog.Info("playback backfill inserted versions", "itemId", itemID, "count", len(videoFiles))
+
+	return loadMediaVersions(ctx, state, itemID)
+}
+
 func getPlaybackInfo(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 	itemID := c.Param("itemId")
@@ -62,6 +207,17 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 	if err != nil || item == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 		return
+	}
+
+	// If this is a merged secondary, redirect to the primary item
+	var mergedToID *string
+	state.DB.QueryRow(ctx, "SELECT merged_to_id::text FROM items WHERE id = $1::uuid", *uid).Scan(&mergedToID)
+	if mergedToID != nil && *mergedToID != "" {
+		primary, perr := models.GetItemByID(ctx, state.DB, *mergedToID)
+		if perr == nil && primary != nil {
+			item = primary
+			uid = &primary.ID
+		}
 	}
 
 	authUser := middleware.GetAuthUser(c)
@@ -94,29 +250,18 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		}
 	}
 
-	rows, err := state.DB.Query(ctx,
-		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
-		 FROM media_versions WHERE item_id = $1::uuid
-		 ORDER BY is_primary DESC, created_at ASC`,
-		*uid)
+	versions, err := loadMediaVersions(ctx, state, *uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
 
-	var versions []mediaVersionRow
-	for rows.Next() {
-		var v mediaVersionRow
-		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
+	if len(versions) <= 1 {
+		if refreshed, err := backfillMovieDirectoryMediaVersions(ctx, state, *uid, item); err == nil && len(refreshed) > len(versions) {
+			versions = refreshed
+		} else if err != nil {
+			slog.Warn("backfill movie media_versions failed", "itemId", *uid, "error", err)
 		}
-		versions = append(versions, v)
-	}
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
 	}
 
 	if len(versions) == 0 && item.FilePath != nil && *item.FilePath != "" {
@@ -215,6 +360,12 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 			src.Bitrate = &b
 		}
 		sources = append(sources, src)
+	}
+
+	// Append MediaSources from merged secondary items
+	mergedSources := collectMergedPlaybackSources(ctx, state, *uid, mediaStreams)
+	if len(mergedSources) > 0 {
+		sources = append(sources, mergedSources...)
 	}
 
 	playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -464,6 +615,110 @@ func streamVideo(c *gin.Context, state *AppState) {
 	c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
 	c.Status(http.StatusPartialContent)
 	io.CopyN(c.Writer, f, chunkLen)
+}
+
+// collectMergedPlaybackSources finds media_versions from items that have been
+// merged into the given primary item and returns them as additional MediaSources.
+func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
+	sibRows, err := state.DB.Query(ctx,
+		`SELECT s.id::text, l.name AS lib_name
+		 FROM items s JOIN libraries l ON s.library_id = l.id
+		 WHERE s.merged_to_id = $1::uuid`, primaryID)
+	if err != nil {
+		return nil
+	}
+	defer sibRows.Close()
+
+	type sibInfo struct{ ID, LibName string }
+	var siblings []sibInfo
+	for sibRows.Next() {
+		var si sibInfo
+		if err := sibRows.Scan(&si.ID, &si.LibName); err != nil {
+			continue
+		}
+		siblings = append(siblings, si)
+	}
+	if len(siblings) == 0 {
+		return nil
+	}
+
+	var merged []dto.MediaSourceInfo
+	for _, sib := range siblings {
+		mvRows, err := state.DB.Query(ctx,
+			`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
+			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC`, sib.ID)
+		if err != nil {
+			continue
+		}
+		for mvRows.Next() {
+			var mv mediaVersionRow
+			if err := mvRows.Scan(&mv.ID, &mv.Name, &mv.FilePath, &mv.Container, &mv.IsPrimary, &mv.RuntimeTicks, &mv.Bitrate, &mv.Size, &mv.MediaInfo); err != nil {
+				continue
+			}
+			msid := mv.ID.String()
+			actualPath := mv.FilePath
+			actualContainer := ""
+			if mv.Container != nil {
+				actualContainer = *mv.Container
+			}
+			protocol := "File"
+			isRemote := false
+			if strings.HasSuffix(strings.ToLower(mv.FilePath), ".strm") {
+				if rp := resolveStrmPath(mv.FilePath); rp != nil {
+					actualPath = rp.filePath
+					actualContainer = rp.container
+					isRemote = rp.isRemote
+					if isRemote {
+						protocol = "Http"
+					}
+				}
+			} else if strings.HasPrefix(strings.ToLower(actualPath), "http://") || strings.HasPrefix(strings.ToLower(actualPath), "https://") {
+				protocol = "Http"
+				isRemote = true
+			}
+
+			versionStreams := fallbackStreams
+			if len(mv.MediaInfo) > 0 {
+				var mi map[string]json.RawMessage
+				if json.Unmarshal(mv.MediaInfo, &mi) == nil {
+					if msRaw, ok := mi["MediaStreams"]; ok {
+						var miStreams []dto.MediaStreamInfo
+						if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
+							versionStreams = miStreams
+						}
+					}
+				}
+			}
+
+			srcName := sib.LibName + " - " + mv.Name
+			src := dto.MediaSourceInfo{
+				ID:                    msid,
+				Path:                  actualPath,
+				Protocol:              protocol,
+				Type:                  "Default",
+				Container:             actualContainer,
+				Name:                  srcName,
+				IsRemote:              isRemote,
+				RunTimeTicks:          mv.RuntimeTicks,
+				SupportsDirectPlay:    true,
+				SupportsDirectStream:  true,
+				SupportsTranscoding:   false,
+				MediaStreams:          versionStreams,
+				ReadAtNativeFramerate: false,
+				Size:                  mv.Size,
+				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", primaryID, actualContainer, msid),
+				ETag:                  msid,
+				Formats:               []string{},
+			}
+			if mv.Bitrate != nil {
+				b := int64(*mv.Bitrate)
+				src.Bitrate = &b
+			}
+			merged = append(merged, src)
+		}
+		mvRows.Close()
+	}
+	return merged
 }
 
 func mimeForPath(p string) string {

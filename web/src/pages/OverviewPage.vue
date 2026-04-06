@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { NCard, NSpace, NSpin, NButton, NModal, NProgress, NIcon } from 'naive-ui'
-import { BarChartOutline, FlashOutline, ServerOutline, WarningOutline, RefreshOutline } from '@vicons/ionicons5'
+import { NCard, NSpace, NSpin, NButton, NModal, NProgress, NIcon, NTag, NSelect, NAlert } from 'naive-ui'
+import { BarChartOutline, FlashOutline, ServerOutline, WarningOutline, RefreshOutline, CloudDownloadOutline } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
 import StatCard from '@/components/StatCard.vue'
 import {
@@ -17,6 +17,11 @@ import {
   getLibraries,
   restartServer,
   shutdownServer,
+  getUpdateStatus,
+  checkForUpdate,
+  applyUpdate,
+  setUpdateChannel,
+  type UpdateStatus,
 } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useUiStore } from '@/stores/ui'
@@ -35,6 +40,16 @@ const scanProgress = ref<any[]>([])
 const libraries = ref<any[]>([])
 const showRestart = ref(false)
 const showShutdown = ref(false)
+const showUpdateConfirm = ref(false)
+const checkingUpdate = ref(false)
+const applyingUpdate = ref(false)
+const updateConnectionLost = ref(false)
+const updateChannel = ref<'stable' | 'beta'>('stable')
+const updateStatus = ref<UpdateStatus | null>(null)
+const updateChannelOptions = [
+  { label: '稳定版', value: 'stable' },
+  { label: '测试版', value: 'beta' },
+]
 
 const totalRequests = computed(() =>
   dailyStats.value.reduce((s, d) => s + (d.requests ?? 0), 0),
@@ -73,6 +88,33 @@ function formatServerId(id: string | undefined): string {
   return id
 }
 
+function isUpdateBusy(status?: string) {
+  return ['checking', 'backing_up', 'pulling', 'recreating', 'restarting'].includes(status || '')
+}
+
+function formatUpdateTime(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+const updateBadgeType = computed(() => {
+  const status = updateStatus.value?.status
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'error'
+  if (updateStatus.value?.hasUpdate) return 'warning'
+  return 'info'
+})
+
+const updateStatusText = computed(() => {
+  const status = updateStatus.value
+  if (!status) return '未检查'
+  return status.message || status.status || '未知状态'
+})
+
+const updateLogLines = computed(() => updateStatus.value?.logs || [])
+
 async function handleRestart() {
   showRestart.value = false
   try {
@@ -90,6 +132,60 @@ async function handleShutdown() {
     showToast('服务器正在关闭...', 'success')
   } catch {
     showToast('关闭服务器失败', 'error')
+  }
+}
+
+async function loadUpdateStatus() {
+  try {
+    const status = await getUpdateStatus()
+    updateStatus.value = status
+    updateChannel.value = (status.channel as 'stable' | 'beta') || 'stable'
+    if (status.status === 'completed' || status.status === 'failed' || status.status === 'idle' || status.status === 'available') {
+      updateConnectionLost.value = false
+    }
+  } catch (err: any) {
+    if (isUpdateBusy(updateStatus.value?.status)) {
+      updateConnectionLost.value = true
+      return
+    }
+    throw err
+  }
+}
+
+async function handleCheckUpdate() {
+  checkingUpdate.value = true
+  try {
+    updateStatus.value = await checkForUpdate()
+    updateChannel.value = (updateStatus.value.channel as 'stable' | 'beta') || 'stable'
+    showToast(updateStatus.value.hasUpdate ? '发现新版本' : '当前已是最新版本', 'success')
+  } catch (err: any) {
+    showToast(err?.message || '检查更新失败', 'error')
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+async function handleChangeUpdateChannel(value: 'stable' | 'beta') {
+  try {
+    updateStatus.value = await setUpdateChannel(value)
+    updateChannel.value = value
+    showToast('更新通道已保存', 'success')
+  } catch (err: any) {
+    showToast(err?.message || '保存更新通道失败', 'error')
+  }
+}
+
+async function handleApplyUpdate() {
+  showUpdateConfirm.value = false
+  applyingUpdate.value = true
+  updateConnectionLost.value = false
+  try {
+    updateStatus.value = await applyUpdate(['settings', 'users', 'libraries', 'media'])
+    showToast('更新任务已启动，服务会短暂重启', 'success')
+  } catch (err: any) {
+    showToast(err?.message || '启动更新失败', 'error')
+  } finally {
+    applyingUpdate.value = false
   }
 }
 
@@ -115,11 +211,12 @@ async function loadGatewayData() {
 }
 
 async function loadServerData() {
-  const [info, sess, scan, libs] = await Promise.allSettled([
+  const [info, sess, scan, libs, update] = await Promise.allSettled([
     getSystemInfo(),
     getActiveSessions(),
     getScanProgress(),
     getLibraries(),
+    getUpdateStatus(),
   ])
 
   if (info.status === 'fulfilled') serverInfo.value = info.value
@@ -129,6 +226,10 @@ async function loadServerData() {
     scanProgress.value = Array.isArray(items) ? items : []
   }
   if (libs.status === 'fulfilled' && Array.isArray(libs.value)) libraries.value = libs.value
+  if (update.status === 'fulfilled') {
+    updateStatus.value = update.value
+    updateChannel.value = (update.value.channel as 'stable' | 'beta') || 'stable'
+  }
 }
 
 async function loadAll() {
@@ -155,6 +256,9 @@ onMounted(() => {
         })
         .catch(() => {})
     }, 3000),
+    setInterval(() => {
+      loadUpdateStatus().catch(() => {})
+    }, 4000),
   )
 })
 
@@ -198,6 +302,101 @@ onUnmounted(() => {
         </div>
       </div>
       <div v-else class="empty-chart">加载服务器信息中...</div>
+    </n-card>
+
+    <n-card class="glass-card section-card" title="应用更新">
+      <div class="update-header">
+        <div>
+          <div class="update-current">
+            当前版本 <strong>{{ updateStatus?.currentVersion || serverInfo?.Version || 'dev' }}</strong>
+            <n-tag size="small" :type="updateBadgeType as any">{{ updateStatusText }}</n-tag>
+          </div>
+          <div class="update-meta">
+            最新版本：{{ updateStatus?.latestVersion || '-' }}，通道：{{ updateChannel === 'beta' ? '测试版' : '稳定版' }}
+          </div>
+        </div>
+        <n-space align="center">
+          <n-select
+            :value="updateChannel"
+            :options="updateChannelOptions"
+            size="small"
+            style="width: 110px"
+            :disabled="checkingUpdate || applyingUpdate || isUpdateBusy(updateStatus?.status)"
+            @update:value="handleChangeUpdateChannel"
+          />
+          <n-button secondary :loading="checkingUpdate" @click="handleCheckUpdate">
+            <template #icon><n-icon :component="RefreshOutline" /></template>
+            检查更新
+          </n-button>
+          <n-button
+            type="primary"
+            :disabled="!updateStatus?.hasUpdate || isUpdateBusy(updateStatus?.status)"
+            :loading="applyingUpdate"
+            @click="showUpdateConfirm = true"
+          >
+            <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+            立即更新
+          </n-button>
+        </n-space>
+      </div>
+
+      <n-alert
+        v-if="updateStatus?.needsDockerSocket"
+        type="warning"
+        class="update-alert"
+      >
+        启用应用内自更新需要为 FYMS 容器挂载 Docker Socket，并保证 `/app/data` 为持久化目录。
+      </n-alert>
+      <n-alert
+        v-if="updateConnectionLost"
+        type="info"
+        class="update-alert"
+      >
+        更新过程中连接短暂中断是正常现象，页面会持续轮询服务恢复状态。
+      </n-alert>
+      <n-alert
+        v-if="updateStatus?.error"
+        type="error"
+        class="update-alert"
+      >
+        {{ updateStatus.error }}
+      </n-alert>
+
+      <div class="update-grid">
+        <div class="update-item">
+          <span class="update-label">目标镜像</span>
+          <code class="update-code">{{ updateStatus?.targetImage || '-' }}</code>
+        </div>
+        <div class="update-item">
+          <span class="update-label">最近检查</span>
+          <span>{{ formatUpdateTime(updateStatus?.lastCheckedAt) }}</span>
+        </div>
+        <div class="update-item">
+          <span class="update-label">最近完成</span>
+          <span>{{ formatUpdateTime(updateStatus?.completedAt) }}</span>
+        </div>
+        <div class="update-item">
+          <span class="update-label">更新说明</span>
+          <a
+            v-if="updateStatus?.releaseNotesUrl"
+            :href="updateStatus.releaseNotesUrl"
+            target="_blank"
+            rel="noreferrer"
+            class="update-link"
+          >
+            查看发布日志
+          </a>
+          <span v-else>-</span>
+        </div>
+      </div>
+
+      <div v-if="isUpdateBusy(updateStatus?.status)" class="update-progress-wrap">
+        <n-progress type="line" :percentage="85" :show-indicator="false" status="warning" />
+      </div>
+
+      <div v-if="updateLogLines.length" class="update-log">
+        <div v-for="line in updateLogLines" :key="line" class="update-log-line">{{ line }}</div>
+      </div>
     </n-card>
 
     <!-- Active Sessions -->
@@ -256,6 +455,9 @@ onUnmounted(() => {
     </n-modal>
     <n-modal v-model:show="showShutdown" preset="dialog" title="关闭服务器" type="error" positive-text="确认关闭" negative-text="取消" @positive-click="handleShutdown" @negative-click="showShutdown = false">
       确定要关闭服务器吗？服务器将完全停止运行，您需要手动重新启动。
+    </n-modal>
+    <n-modal v-model:show="showUpdateConfirm" preset="dialog" title="立即更新" type="warning" positive-text="开始更新" negative-text="取消" @positive-click="handleApplyUpdate" @negative-click="showUpdateConfirm = false">
+      更新前会自动创建备份，并通过 Docker 拉取新镜像后重建当前容器。过程中服务会短暂中断。
     </n-modal>
   </page-shell>
 </template>
@@ -358,11 +560,95 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+.update-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.update-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  color: var(--app-text);
+}
+
+.update-meta {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.update-alert {
+  margin-bottom: 12px;
+}
+
+.update-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.update-item {
+  background: var(--app-surface-1);
+  border-radius: var(--app-radius, 8px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.update-label {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  text-transform: uppercase;
+}
+
+.update-code {
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--app-text);
+}
+
+.update-link {
+  color: var(--app-primary);
+  text-decoration: none;
+}
+
+.update-progress-wrap {
+  margin-top: 14px;
+}
+
+.update-log {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: var(--app-radius, 8px);
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--app-text);
+  max-height: 180px;
+  overflow: auto;
+}
+
+.update-log-line + .update-log-line {
+  margin-top: 6px;
+}
+
 @media (max-width: 900px) {
   .stat-grid {
     grid-template-columns: repeat(2, 1fr);
   }
   .server-info-grid {
+    grid-template-columns: 1fr;
+  }
+  .update-header {
+    flex-direction: column;
+  }
+  .update-grid {
     grid-template-columns: 1fr;
   }
 }

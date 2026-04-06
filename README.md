@@ -83,6 +83,49 @@ docker-compose up -d
 # 访问 http://localhost:8961
 ```
 
+- 新版镜像默认不再固定以 `uid=1000` 运行，`./data` 挂载目录通常不需要再手工改成 `777`
+- 建议宿主机上的 `data/` 保持常规目录权限即可，例如 `755` 或 `775`
+- 如果你是从旧版本升级，重建容器后建议执行一次媒体库重扫，让历史条目的本地海报/背景图路径回填到数据库
+- 平台库 logo 已直接内置到后端源码，Docker 构建和发布目录不再依赖额外的 `logo/` 资源目录
+
+### Docker 应用内自更新
+
+FYMS 现已支持在后台 `管理 -> 总览` 中检查更新、提示新版本并直接发起更新。该功能仅面向 Docker 部署，且必须满足以下前提：
+
+- `fyms` 容器需要挂载 Docker Socket：`/var/run/docker.sock:/var/run/docker.sock`
+- `fyms` 容器必须使用持久化的 `/app/data`，用于保存更新状态和更新前备份
+- 当前实例应为单容器 FYMS 主实例，不建议在多副本或编排集群中直接使用
+
+示例：
+
+```yaml
+services:
+  fyms:
+    image: eianz/fyms:latest
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - FYMS_UPDATE_IMAGE_REPO=eianz/fyms
+      - FYMS_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
+```
+
+更新流程：
+
+1. 管理员在后台点击 `检查更新`
+2. 有新版本时点击 `立即更新`
+3. FYMS 会先自动创建一份更新前备份
+4. 程序通过 Docker API 拉取目标镜像并重建当前容器
+5. 新容器启动后自动执行数据库迁移
+
+注意事项：
+
+- 更新过程中页面连接短暂中断是正常现象
+- 自更新本质上授予了容器 Docker 宿主机控制权限，安全风险高于外部 updater
+- 首版仅支持 `stable` / `beta` 两个通道
+- `FYMS_UPDATE_GITHUB_REPO` 是可选项；不配置时仍可正常按 Docker 镜像检查和更新
+- 若更新失败，可先查看后台更新日志，再回退到旧镜像手工重启
+
 
 ## 裸机部署
 
@@ -119,6 +162,9 @@ export REDIS_PORT=6379
 | REDIS_PORT | 6379 | Redis 端口 |
 | REDIS_PASSWORD | | Redis 密码（可选） |
 | DB_POOL_MAX | 400 | 数据库连接池上限 |
+| FYMS_UPDATE_IMAGE_REPO | eianz/fyms | 应用内更新使用的 Docker 镜像仓库 |
+| FYMS_UPDATE_GITHUB_REPO | | 可选。配置后后台可显示对应 GitHub Releases 链接 |
+| FYMS_UPDATE_DOCKER_SOCKET | /var/run/docker.sock | 应用内更新访问 Docker Engine 的 Socket 路径 |
 
 ## 管理后台配置补充
 
@@ -131,6 +177,7 @@ export REDIS_PORT=6379
 - 构建产物与本地依赖目录默认不入库：`web/dist/`、`web/node_modules/`、`web/.vite/`
 - 本地工具配置与编辑器目录默认不入库：`.claude/`、`.vscode/`、`.idea/`
 - 日志与覆盖率输出默认不入库：`*.log`、`coverage/`
+- 平台 logo 源图可仅作为本地素材保留；实际构建使用的是 `internal/assets/platform_logos.go` 中的内置资源
 
 ## 前台首页补充
 
@@ -194,6 +241,12 @@ services:
 - **缩放缓存**：已缩放的图片会缓存到 `data/cache/`，重复请求直接命中缓存，避免 SMB/NFS 上重复 IO
 - **并发提升**：图片处理信号量从 3 提升到 10，减少高并发场景下的排队延迟
 
+### Docker 封面权限与本地海报回填修复（Dockerfile / scanner.go）
+
+- **容器数据目录权限兼容**：运行镜像时不再固定为 `uid=1000`，避免宿主机 bind mount 的 `./data` 因属主不一致而必须设置为 `777` 才能正常生成缓存、下载图片或返回封面
+- **单文件电影支持本地海报**：电影以单个视频文件存在时，扫描阶段也会从同目录识别 `poster` / `cover` / `folder` / `thumb` 以及 `fanart` / `backdrop` / `background` / `landscape`
+- **重扫自动回填图片路径**：已存在的电影、剧集、季在重新扫描时，如果目录里后来补上了本地海报/背景图，会自动更新数据库中的图片路径与图片标签，不再一直沿用首次入库时的“无图”状态
+
 ### 剧集排序修复（compat.go / item.go / scanner.go）
 
 - **`buildOrderBy` 支持 `IndexNumber`**：Emby 客户端常发 `SortBy=IndexNumber`，之前未支持会退回 `sort_name` 字母序，导致集序错乱
@@ -212,6 +265,42 @@ services:
 - **Season 海报同步修复**：季海报写入逻辑同步增加降级保护
 - **HTTP 路径排除**：`resolveScrapeSaveTargets` 跳过以 `http` 开头的 `file_path`（STRM 远程路径），避免拼出无效本地路径
 - **增强日志**：所有媒体目录写入失败都有 `slog.Warn` 输出，方便排查权限和路径问题
+
+### 任务总数实时统计修复（library.go / tmdb.go / probe_task.go）
+
+- **刮削/探测总数改为实时计算**：TMDB 刮削、平台重新刮削、媒体信息探测页面在非运行态会重新按当前数据库计算“待处理数量”，不再沿用上一次任务完成后的旧 `total`
+- **任务快照与实时待处理数分离**：运行中继续显示本次任务快照；任务结束后页面会展示当前仍待处理的真实数量，新增媒体库或重新扫描后无需重启页面即可看到更新
+- **统一统计口径**：TMDB 刮削的启动查询与缺失数量统计共用同一条件，减少多个入口各自计算造成的数字漂移
+- **统一任务汇总入口**：新增 `GET /Library/Tasks/Summary`，统一返回 TMDB 刮削、媒体信息探测、平台识别三类任务的实时状态与待处理数量，页面不再各自拼装多套统计来源
+
+### 播放软件媒体信息获取修复（compat.go）
+
+- **`GET /Items` 剧集/季图片回退缺失**：compat 端点的 SQL 查询未 JOIN 父级 Series 获取图片标签，导致 Episode/Season 类型条目自身无图片时，客户端（如 Infuse）无法获取到封面和背景图。修复后增加 `LEFT JOIN items sf` 获取 `series_primary_image_tag`、`series_backdrop_image_tag`、`series_fallback_id`，经 `FormatItemDto` 自动填充父级图片信息
+- **`GET /Items` TotalRecordCount 返回当前页长度**：之前 `TotalRecordCount: len(items)` 返回本页条目数而非数据库总数，导致客户端分页时以为已到末页、不再请求后续页面，表现为"部分媒体信息获取不到"。修复后改为独立 COUNT 查询获取真实总数
+- **`GET /Search/Hints` 剧集/季图片回退缺失**：搜索结果中 Episode/Season 缺少父剧集的图片标签，客户端展示搜索结果时无封面。修复后 JOIN 父级 Series，当条目自身无图片时回退到 `SeriesPrimaryImageTag` / `SeriesBackdropImageTag`，并补充 `PrimaryImageItemId`、`BackdropImageItemId` 让客户端能正确请求图片
+
+### 多版本合并深度修复（item.go / images.go / videos.go / compat.go / library.go）
+
+参考 Jellyfin 核心源码（`Video.cs`、`BaseItemRepository.cs`、`DtoService.cs`）的实现方式，对持久化合并功能进行了全面重构：
+
+**核心设计变更（基于 Jellyfin `PresentationUniqueKey` 机制的适配）：**
+
+- **按 studio 分组合并**：合并仅在相同平台（studio）内进行，不再跨平台合并。Netflix 的电影和 HBO 的同一电影不会被合并，各自在各自的平台库中保持可见
+- **仅合并 Movie 类型**：Series 不参与合并。Series 合并会导致 secondary 的剧集/季成为孤儿（无法通过 primary Series 访问），这是 Jellyfin 也未解决的已知限制
+- **普通用户媒体库优先展示合并结果**：普通媒体库浏览、最新内容与 Emby 兼容 `/Items` 列表会优先按当前库选择一个代表项，同一电影的多个物理版本只显示一条；进入详情/播放后再聚合为多个 `MediaSources`
+- **避免跨库主版本导致条目消失**：如果某个合并组的 global primary 落在别的物理库，当前库不会直接把本库版本过滤没，而是会从本库 secondary 中挑一个代表项显示
+- **平台虚拟库继续复用合并结果**：平台库仍按 `studio` 分组，但展示层不再是唯一的合并入口；普通用户媒体库会先得到正确的一条展示结果，再由平台库复用同一套聚合能力
+- **全量重置+重算**：每次执行合并时先重置所有旧合并，然后按新规则重新计算，保证幂等性
+
+**元数据与 MediaSources：**
+
+- **元数据同步**：合并后 primary 从组内成员继承最佳元数据（图片、概览、评分等），使用 `NULLIF` 同时处理 NULL 和空字符串
+- **图片回退**：`serveImage` 对 Movie/Series 增加 merged 回退链
+- **PlaybackInfo 聚合**：`getPlaybackInfo` 聚合 primary + 所有 merged secondary 的 MediaSources
+- **电影版本回填**：电影目录扫描现在会像剧集一样写入 `media_versions`；对已存在的老电影条目再次扫库时，也会自动补回缺失的版本记录，避免客户端只能看到单个默认源
+- **剧集版本并入补齐**：同库同剧同季同集但来自不同目录时，扫描阶段会复用已有 `Episode`，并把新目录里的视频继续并入同一个 `Episode` 的 `media_versions`，避免只保留首个目录版本
+- **secondary 透明重定向**：详情和播放请求自动重定向到 primary
+- **合并诊断**：`POST /Library/MergeVersions` 返回 `merged`、`total_primaries`、`total_secondaries` 计数
 
 ## 性能优化记录
 

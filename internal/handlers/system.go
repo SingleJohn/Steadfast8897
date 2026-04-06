@@ -61,6 +61,7 @@ func getLocalIP() string {
 func systemInfo(state *AppState, public bool) gin.H {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
+	updateStatus := state.Updater.GetStatus(context.Background())
 
 	port := state.Config.Port
 	info := gin.H{
@@ -76,10 +77,11 @@ func systemInfo(state *AppState, public bool) gin.H {
 
 	if !public {
 		info["OperatingSystemDisplayName"] = fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
-		info["HasPendingRestart"] = false
+		info["HasPendingRestart"] = updateStatus.Status == "pulling" || updateStatus.Status == "recreating" || updateStatus.Status == "restarting"
 		info["IsShuttingDown"] = false
 		info["CanLaunchWebBrowser"] = false
-		info["HasUpdateAvailable"] = false
+		info["HasUpdateAvailable"] = updateStatus.HasUpdate
+		info["UpdateStatus"] = updateStatus
 		info["TranscodingTempPath"] = ""
 		info["LogPath"] = ""
 		info["InternalMetadataPath"] = ""
@@ -120,6 +122,11 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.DELETE("/System/Backups/:filename", adminMW, deleteBackup)
 	group.POST("/System/Restore", adminMW, restoreBackup)
 	group.POST("/System/EmbyMigrate", adminMW, embyMigrate)
+	group.GET("/System/Update/Status", adminMW, getUpdateStatus)
+	group.GET("/System/Update/Progress", adminMW, getUpdateStatus)
+	group.POST("/System/Update/Check", adminMW, checkForUpdate)
+	group.POST("/System/Update/Apply", adminMW, applyUpdate)
+	group.POST("/System/Update/Channel", adminMW, setUpdateChannel)
 }
 
 func getSystemInfo(c *gin.Context) {
@@ -198,6 +205,7 @@ func postConfiguration(c *gin.Context) {
 		return
 	}
 
+	needViewsInvalidate := false
 	for key, raw := range updates {
 		valStr := configValueString(raw)
 		_, err := state.DB.Exec(ctx,
@@ -209,6 +217,13 @@ func postConfiguration(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
+		switch key {
+		case "platform_libraries_enabled", "platform_libraries_position", "library_show_item_count":
+			needViewsInvalidate = true
+		}
+	}
+	if needViewsInvalidate {
+		state.Cache.Del(ctx, "views:all")
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -257,6 +272,14 @@ type backupRequest struct {
 	Categories []string `json:"categories"`
 }
 
+type updateApplyRequest struct {
+	Categories []string `json:"categories"`
+}
+
+type updateChannelRequest struct {
+	Channel string `json:"channel"`
+}
+
 func exportTable(ctx context.Context, pool *pgxpool.Pool, table string) ([]json.RawMessage, error) {
 	sql := fmt.Sprintf("SELECT row_to_json(t) FROM %s t", table)
 	rows, err := pool.Query(ctx, sql)
@@ -276,14 +299,8 @@ func exportTable(ctx context.Context, pool *pgxpool.Pool, table string) ([]json.
 	return out, rows.Err()
 }
 
-func createBackup(c *gin.Context) {
-	ctx := c.Request.Context()
-	state := GetState(c)
-
-	var body backupRequest
-	_ = c.ShouldBindJSON(&body)
-
-	categories := resolveCategories(body.Categories)
+func createBackupSnapshot(ctx context.Context, state *AppState, categories []string) (gin.H, error) {
+	categories = resolveCategories(categories)
 	if len(categories) == 0 {
 		categories = backupCategories
 	}
@@ -293,14 +310,11 @@ func createBackup(c *gin.Context) {
 		for _, table := range tablesForCategory(cat) {
 			rows, err := exportTable(ctx, state.DB, table)
 			if err != nil {
-				slog.Error("createBackup export", "table", table, "error", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-				return
+				return nil, err
 			}
 			raw, err := json.Marshal(rows)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-				return
+				return nil, err
 			}
 			data[table] = raw
 		}
@@ -314,24 +328,37 @@ func createBackup(c *gin.Context) {
 	}
 	content, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+		return nil, err
 	}
 
 	_ = os.MkdirAll(backupDir, 0755)
 	filename := fmt.Sprintf("backup_%s.json", time.Now().Format("20060102_150405"))
-	filepath := filepath.Join(backupDir, filename)
-	if err := os.WriteFile(filepath, content, 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+	path := filepath.Join(backupDir, filename)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		return nil, err
 	}
 
 	slog.Info("[Backup] Created", "filename", filename, "size_kb", len(content)/1024, "categories", categories)
-	c.JSON(http.StatusOK, gin.H{
+	return gin.H{
 		"filename":   filename,
 		"size":       len(content),
 		"categories": categories,
-	})
+	}, nil
+}
+
+func createBackup(c *gin.Context) {
+	ctx := c.Request.Context()
+	state := GetState(c)
+
+	var body backupRequest
+	_ = c.ShouldBindJSON(&body)
+	result, err := createBackupSnapshot(ctx, state, body.Categories)
+	if err != nil {
+		slog.Error("createBackup failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func resolveCategories(in []string) []string {
@@ -574,8 +601,66 @@ func containsStr(slice []string, s string) bool {
 	return false
 }
 
+func getUpdateStatus(c *gin.Context) {
+	state := GetState(c)
+	c.JSON(http.StatusOK, state.Updater.GetStatus(c.Request.Context()))
+}
+
+func checkForUpdate(c *gin.Context) {
+	state := GetState(c)
+	status, err := state.Updater.Check(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"message": err.Error(),
+			"status":  status,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func setUpdateChannel(c *gin.Context) {
+	state := GetState(c)
+	var body updateChannelRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	status, err := state.Updater.SetChannel(c.Request.Context(), body.Channel)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func applyUpdate(c *gin.Context) {
+	state := GetState(c)
+	var body updateApplyRequest
+	_ = c.ShouldBindJSON(&body)
+
+	state.Updater.MarkBackingUp()
+	if _, err := createBackupSnapshot(c.Request.Context(), state, body.Categories); err != nil {
+		state.Updater.MarkFailure(fmt.Errorf("create backup before update: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	status, err := state.Updater.StartApply(c.Request.Context())
+	if err != nil {
+		state.Updater.MarkFailure(err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+			"status":  status,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, status)
+}
+
 type embyMigrateRequest struct {
-	Users  []struct {
+	Users []struct {
 		Name     string `json:"name"`
 		Password string `json:"password"`
 	} `json:"users"`

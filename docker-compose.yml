@@ -22,9 +22,12 @@ services:
       # ---------- 其他配置 ----------
       - PORT=8961             # 服务监听端口
       - SERVER_NAME=FYMS      # 显示在播放器中的服务器名称
+      - FYMS_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
+      # - FYMS_CONTAINER_ID=fyms                     # 一般不用手动设置；需覆盖时可指定当前容器 ID/名称
       # - DB_POOL_MAX=400     # 数据库连接池上限（默认400，一般不用改）
     volumes:
       - ./data:/app/data      # 应用数据（缓存、日志、备份）
+      - /var/run/docker.sock:/var/run/docker.sock  # 应用内自更新必需：允许 FYMS 调用 Docker API
       - /mnt:/mnt:ro          # 媒体文件目录（只读），根据实际路径修改
       # 如有多个媒体目录，按需添加：
       # - /path/to/movies:/path/to/movies:ro
@@ -36,6 +39,10 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
+    # 注意：
+    # 1. 启用应用内自更新后，FYMS 将拥有 Docker 宿主机控制权限
+    # 2. 建议仅在你信任当前镜像与运行环境时启用
+    # 3. 更新过程会短暂重建 fyms 容器，db 和 redis 不会被自动升级
 
   # ============================================
   # PostgreSQL 数据库

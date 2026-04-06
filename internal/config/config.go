@@ -39,6 +39,10 @@ type AppConfig struct {
 
 	DataDir  string
 	CacheDir string
+
+	UpdateImageRepo    string
+	UpdateGitHubRepo   string
+	UpdateDockerSocket string
 }
 
 func NewAppConfig() *AppConfig {
@@ -73,6 +77,10 @@ func NewAppConfig() *AppConfig {
 
 		DataDir:  dataDir,
 		CacheDir: cacheDir,
+
+		UpdateImageRepo:    envOr("FYMS_UPDATE_IMAGE_REPO", "eianz/fyms"),
+		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", ""),
+		UpdateDockerSocket: envOr("FYMS_UPDATE_DOCKER_SOCKET", "/var/run/docker.sock"),
 	}
 }
 

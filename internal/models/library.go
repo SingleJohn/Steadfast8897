@@ -17,12 +17,13 @@ type Library struct {
 	CreatedAt        time.Time `json:"CreatedAt"`
 	PrimaryImagePath *string   `json:"PrimaryImagePath,omitempty"`
 	PrimaryImageTag  *string   `json:"PrimaryImageTag,omitempty"`
+	SortOrder        int       `json:"SortOrder"`
 }
 
 func scanLibrary(row pgx.Row) (*Library, error) {
 	var l Library
 	err := row.Scan(&l.ID, &l.Name, &l.CollectionType, &l.Paths, &l.CreatedAt,
-		&l.PrimaryImagePath, &l.PrimaryImageTag)
+		&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +31,7 @@ func scanLibrary(row pgx.Row) (*Library, error) {
 }
 
 func GetAllLibraries(ctx context.Context, pool *pgxpool.Pool) ([]Library, error) {
-	rows, err := pool.Query(ctx, "SELECT * FROM libraries ORDER BY name")
+	rows, err := pool.Query(ctx, "SELECT * FROM libraries ORDER BY sort_order ASC, name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +41,7 @@ func GetAllLibraries(ctx context.Context, pool *pgxpool.Pool) ([]Library, error)
 	for rows.Next() {
 		var l Library
 		if err := rows.Scan(&l.ID, &l.Name, &l.CollectionType, &l.Paths, &l.CreatedAt,
-			&l.PrimaryImagePath, &l.PrimaryImageTag); err != nil {
+			&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder); err != nil {
 			return nil, err
 		}
 		libs = append(libs, l)
@@ -72,6 +73,29 @@ func UpdateLibrary(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, name *
 		}
 	}
 	return GetLibraryByID(ctx, pool, id)
+}
+
+func UpdateLibrarySortOrder(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, sortOrder int) error {
+	_, err := pool.Exec(ctx, "UPDATE libraries SET sort_order = $1 WHERE id = $2", sortOrder, id)
+	return err
+}
+
+type LibrarySortItem struct {
+	ID        string `json:"Id"`
+	SortOrder int    `json:"SortOrder"`
+}
+
+func BatchUpdateLibrarySortOrder(ctx context.Context, pool *pgxpool.Pool, orders []LibrarySortItem) error {
+	for _, o := range orders {
+		uid, err := uuid.Parse(o.ID)
+		if err != nil {
+			continue
+		}
+		if _, err := pool.Exec(ctx, "UPDATE libraries SET sort_order = $1 WHERE id = $2", o.SortOrder, uid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func DeleteLibrary(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {

@@ -19,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/models"
 )
 
 const (
@@ -422,58 +424,75 @@ func ScrapeItem(ctx context.Context, pool *pgxpool.Pool, itemID string) (map[str
 	return ScrapeItemWithClient(ctx, pool, itemID, client)
 }
 
-// ScrapeItemWithClient scrapes TMDB metadata for a single item using the provided client.
-func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (map[string]interface{}, error) {
-	saveMode := getScrapeSaveMode(ctx, pool)
-	var itemType, name string
-	var year *int32
+type scrapeItemMeta struct {
+	ItemType string
+	Name     string
+	Year     *int32
+	TmdbID   *int32
+}
+
+func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) (*scrapeItemMeta, error) {
+	meta := &scrapeItemMeta{}
 	err := pool.QueryRow(ctx,
-		"SELECT type, name, production_year FROM items WHERE id = $1::uuid", itemID,
-	).Scan(&itemType, &name, &year)
+		"SELECT type, name, production_year, tmdb_id FROM items WHERE id = $1::uuid", itemID,
+	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("item not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query item: %w", err)
 	}
+	return meta, nil
+}
 
-	var details map[string]interface{}
-	var tmdbID int64
+func fetchTMDBDetailsByID(ctx context.Context, client *TmdbClient, itemType string, tmdbID int64) (map[string]interface{}, error) {
+	switch itemType {
+	case "Movie":
+		return client.GetMovieDetails(ctx, tmdbID)
+	case "Series":
+		return client.GetTVDetails(ctx, tmdbID)
+	default:
+		return nil, fmt.Errorf("cannot scrape type: %s", itemType)
+	}
+}
 
+func searchTMDBDetails(ctx context.Context, client *TmdbClient, itemType, name string, year *int32) (int64, map[string]interface{}, error) {
 	switch itemType {
 	case "Movie":
 		search, err := client.SearchMovie(ctx, name, year)
 		if err != nil {
-			return nil, fmt.Errorf("movie not found on TMDB: %w", err)
+			return 0, nil, fmt.Errorf("movie not found on TMDB: %w", err)
 		}
 		tid, ok := jsonInt64(search, "id")
 		if !ok {
-			return nil, fmt.Errorf("no TMDB ID")
+			return 0, nil, fmt.Errorf("no TMDB ID")
 		}
-		tmdbID = tid
-		details, err = client.GetMovieDetails(ctx, tid)
+		details, err := client.GetMovieDetails(ctx, tid)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get movie details: %w", err)
+			return 0, nil, fmt.Errorf("failed to get movie details: %w", err)
 		}
-
+		return tid, details, nil
 	case "Series":
 		search, err := client.SearchTV(ctx, name)
 		if err != nil {
-			return nil, fmt.Errorf("TV show not found on TMDB: %w", err)
+			return 0, nil, fmt.Errorf("TV show not found on TMDB: %w", err)
 		}
 		tid, ok := jsonInt64(search, "id")
 		if !ok {
-			return nil, fmt.Errorf("no TMDB ID")
+			return 0, nil, fmt.Errorf("no TMDB ID")
 		}
-		tmdbID = tid
-		details, err = client.GetTVDetails(ctx, tid)
+		details, err := client.GetTVDetails(ctx, tid)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get TV details: %w", err)
+			return 0, nil, fmt.Errorf("failed to get TV details: %w", err)
 		}
-
+		return tid, details, nil
 	default:
-		return nil, fmt.Errorf("cannot scrape type: %s", itemType)
+		return 0, nil, fmt.Errorf("cannot scrape type: %s", itemType)
 	}
+}
+
+func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient, itemType string, itemName string, tmdbID int64, details map[string]interface{}, updateTMDBID bool, source models.PlatformScanSource) (map[string]interface{}, error) {
+	saveMode := getScrapeSaveMode(ctx, pool)
 
 	// Extract overview with fallback chain: primary language -> en-US -> Douban
 	overview := jsonStringNonEmpty(details, "overview")
@@ -490,7 +509,11 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		}
 	}
 	if overview == nil {
-		overview = fetchDoubanOverview(client.httpClient, name)
+		fallbackName := itemName
+		if title := jsonStringPtr(details, map[string]string{"Movie": "title", "Series": "name"}[itemType]); title != nil && strings.TrimSpace(*title) != "" {
+			fallbackName = *title
+		}
+		overview = fetchDoubanOverview(client.httpClient, fallbackName)
 	}
 
 	rating := jsonFloat64(details, "vote_average")
@@ -563,6 +586,9 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		}
 	}
 
+	// Extract platform/studio from networks (TV) or production_companies (Movie)
+	studio := ExtractPlatform(details, itemType)
+
 	// Build title key based on type
 	titleKey := "title"
 	dateKey := "release_date"
@@ -598,9 +624,26 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		Actors:    actors,
 		Directors: directors,
 		Premiered: premiered,
+		Studio:    studio,
 	}
 
-	ApplyNfoData(ctx, pool, itemID, &nfo)
+	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, &nfo, source)
+
+	// Set studio and propagate to children for Series
+	if studio != nil {
+		if err := models.MarkPlatformScanMatched(ctx, pool, itemID, *studio, source); err != nil {
+			return nil, err
+		}
+		if itemType == "Series" {
+			if err := models.PropagateStudioToChildren(ctx, pool, itemID, *studio); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if err := models.MarkPlatformScanNoMatch(ctx, pool, itemID, source, "no platform matched from TMDB details"); err != nil {
+			return nil, err
+		}
+	}
 
 	targets := resolveScrapeSaveTargets(ctx, pool, itemID, itemType)
 	saveToData := saveMode == "database" || saveMode == "both"
@@ -612,12 +655,13 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		}
 	}
 
-	// Update tmdb_id
-	_, err = pool.Exec(ctx,
-		"UPDATE items SET tmdb_id = $1, updated_at = NOW() WHERE id = $2::uuid",
-		int32(tmdbID), itemID)
-	if err != nil {
-		return nil, fmt.Errorf("update tmdb_id: %w", err)
+	if updateTMDBID {
+		_, err := pool.Exec(ctx,
+			"UPDATE items SET tmdb_id = $1, updated_at = NOW() WHERE id = $2::uuid",
+			int32(tmdbID), itemID)
+		if err != nil {
+			return nil, fmt.Errorf("update tmdb_id: %w", err)
+		}
 	}
 
 	// Download poster
@@ -690,6 +734,67 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		"tmdb_id": tmdbID,
 		"name":    nfo.Title,
 	}, nil
+}
+
+func RefreshItemMetadataByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (map[string]interface{}, error) {
+	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.TmdbID == nil || *meta.TmdbID == 0 {
+		return nil, fmt.Errorf("no TMDB ID")
+	}
+	details, err := fetchTMDBDetailsByID(ctx, client, meta.ItemType, int64(*meta.TmdbID))
+	if err != nil {
+		return nil, err
+	}
+	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, int64(*meta.TmdbID), details, false, models.PlatformScanSourceTMDB)
+}
+
+func RefreshPlatformOnlyByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (*string, error) {
+	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.TmdbID == nil || *meta.TmdbID == 0 {
+		return nil, fmt.Errorf("no TMDB ID")
+	}
+	details, err := fetchTMDBDetailsByID(ctx, client, meta.ItemType, int64(*meta.TmdbID))
+	if err != nil {
+		return nil, err
+	}
+	studio := ExtractPlatform(details, meta.ItemType)
+	if studio == nil {
+		if err := models.MarkPlatformScanNoMatch(ctx, pool, itemID, models.PlatformScanSourceTMDB, "no platform matched from TMDB details"); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if err := models.MarkPlatformScanMatched(ctx, pool, itemID, *studio, models.PlatformScanSourceTMDB); err != nil {
+		return nil, err
+	}
+	if meta.ItemType == "Series" {
+		if err := models.PropagateStudioToChildren(ctx, pool, itemID, *studio); err != nil {
+			return nil, err
+		}
+	}
+	return studio, nil
+}
+
+// ScrapeItemWithClient scrapes TMDB metadata for a single item using the provided client.
+func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (map[string]interface{}, error) {
+	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
+	if err != nil {
+		return nil, err
+	}
+	tmdbID, details, err := searchTMDBDetails(ctx, client, meta.ItemType, meta.Name, meta.Year)
+	if err != nil {
+		if markErr := models.MarkPlatformScanError(ctx, pool, itemID, models.PlatformScanSourceSearch, err.Error()); markErr != nil {
+			slog.Warn("[TMDB] mark platform scan error failed", "item_id", itemID, "error", markErr)
+		}
+		return nil, err
+	}
+	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, tmdbID, details, true, models.PlatformScanSourceSearch)
 }
 
 func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seriesID string, tmdbID int64, saveMode string) {
@@ -852,6 +957,8 @@ type ScrapeProgress struct {
 	CurrentItem    *string `json:"current_item,omitempty"`
 	LastError      *string `json:"last_error,omitempty"`
 	Percentage     int     `json:"percentage"`
+	MissingCount   int64   `json:"missing_count"`
+	ItemsTotal     int64   `json:"items_total"`
 }
 
 type ScrapeTask struct {
@@ -884,27 +991,30 @@ func (t *ScrapeTask) Stop() {
 	}
 }
 
-func (t *ScrapeTask) Start(ctx context.Context, pool *pgxpool.Pool) error {
-	t.mu.Lock()
-	if t.progress.Status == "running" || t.progress.Status == "stopping" {
-		t.mu.Unlock()
-		return fmt.Errorf("already running")
-	}
-	t.mu.Unlock()
+const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '') AND type IN ('Movie', 'Series')`
 
+func GetMissingScrapeCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	var count int64
+	err := pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM items WHERE "+missingMetadataScrapeWhere,
+	).Scan(&count)
+	return count, err
+}
+
+func GetTopLevelItemCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	var count int64
+	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type IN ('Movie', 'Series')").Scan(&count)
+	return count, err
+}
+
+func loadItemsPendingScrape(ctx context.Context, pool *pgxpool.Pool) ([]itemRow, error) {
 	rows, err := pool.Query(ctx,
-		"SELECT id, type, name, production_year FROM items WHERE (overview IS NULL OR overview = '') AND type IN ('Movie', 'Series') ORDER BY created_at DESC")
+		"SELECT id, type, name, production_year FROM items WHERE "+missingMetadataScrapeWhere+" ORDER BY created_at DESC")
 	if err != nil {
-		return fmt.Errorf("query items: %w", err)
+		return nil, fmt.Errorf("query items: %w", err)
 	}
 	defer rows.Close()
 
-	type itemRow struct {
-		id       uuid.UUID
-		itemType string
-		name     string
-		year     *int32
-	}
 	var items []itemRow
 	for rows.Next() {
 		var r itemRow
@@ -913,7 +1023,28 @@ func (t *ScrapeTask) Start(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 		items = append(items, r)
 	}
-	rows.Close()
+	return items, rows.Err()
+}
+
+type itemRow struct {
+	id       uuid.UUID
+	itemType string
+	name     string
+	year     *int32
+}
+
+func (t *ScrapeTask) Start(ctx context.Context, pool *pgxpool.Pool) error {
+	t.mu.Lock()
+	if t.progress.Status == "running" || t.progress.Status == "stopping" {
+		t.mu.Unlock()
+		return fmt.Errorf("already running")
+	}
+	t.mu.Unlock()
+
+	items, err := loadItemsPendingScrape(ctx, pool)
+	if err != nil {
+		return err
+	}
 
 	total := int64(len(items))
 
@@ -979,6 +1110,13 @@ func (t *ScrapeTask) Start(ctx context.Context, pool *pgxpool.Pool) error {
 		t.progress.Status = "completed"
 		t.progress.CurrentItem = nil
 		t.mu.Unlock()
+
+		merged, merr := models.MergeMultiVersionItems(bgCtx, pool)
+		if merr != nil {
+			slog.Error("[Scrape] MergeVersions failed", "error", merr)
+		} else if merged > 0 {
+			slog.Info("[Scrape] MergeVersions completed", "merged", merged)
+		}
 	}()
 
 	return nil
@@ -1062,4 +1200,89 @@ func parseYearPrefix(dateStr string) int {
 		y = y*10 + int(c-'0')
 	}
 	return y
+}
+
+// platformAliases maps known studio/network names to canonical platform names.
+var platformAliases = map[string]string{
+	"netflix":            "Netflix",
+	"hbo":                "HBO",
+	"hbo max":            "HBO",
+	"max":                "HBO",
+	"disney+":            "Disney+",
+	"disney plus":        "Disney+",
+	"apple tv+":          "Apple TV+",
+	"apple tv":           "Apple TV+",
+	"amazon":             "Amazon",
+	"amazon studios":     "Amazon",
+	"amazon prime video": "Amazon",
+	"prime video":        "Amazon",
+	"hulu":               "Hulu",
+	"paramount+":         "Paramount+",
+	"paramount plus":     "Paramount+",
+	"peacock":            "Peacock",
+	"showtime":           "Showtime",
+	"starz":              "Starz",
+	"crunchyroll":        "Crunchyroll",
+	"fx":                 "FX",
+	"fx productions":     "FX",
+	"abc":                "ABC",
+	"nbc":                "NBC",
+	"cbs":                "CBS",
+	"the cw":             "The CW",
+	"bbc":                "BBC",
+	"bbc one":            "BBC",
+	"bbc two":            "BBC",
+	"itv":                "ITV",
+}
+
+func canonicalPlatformAlias(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if canonical, ok := platformAliases[strings.ToLower(name)]; ok {
+		return canonical
+	}
+	return models.CanonicalPlatformName(name)
+}
+
+func extractPlatformCandidates(details map[string]interface{}, itemType string) []string {
+	var candidates []string
+	if itemType == "Series" || itemType == "Episode" || itemType == "Season" {
+		if networks, ok := details["networks"].([]interface{}); ok {
+			for _, n := range networks {
+				nm, ok := n.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				name, ok := nm["name"].(string)
+				if ok && strings.TrimSpace(name) != "" {
+					candidates = append(candidates, name)
+				}
+			}
+		}
+	}
+	if companies, ok := details["production_companies"].([]interface{}); ok {
+		for _, c := range companies {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, ok := cm["name"].(string)
+			if ok && strings.TrimSpace(name) != "" {
+				candidates = append(candidates, name)
+			}
+		}
+	}
+	return candidates
+}
+
+// ExtractPlatform extracts a canonical platform name from TMDB details.
+func ExtractPlatform(details map[string]interface{}, itemType string) *string {
+	for _, candidate := range extractPlatformCandidates(details, itemType) {
+		if canonical := canonicalPlatformAlias(candidate); canonical != "" {
+			return &canonical
+		}
+	}
+	return nil
 }

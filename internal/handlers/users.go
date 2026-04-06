@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -452,6 +455,11 @@ func AuthenticateByName(c *gin.Context) {
 
 	var body authenticateByNameBody
 	contentType := c.GetHeader("Content-Type")
+
+	// Read raw body for flexible parsing
+	rawBody, _ := io.ReadAll(c.Request.Body)
+	c.Request.Body = io.NopCloser(strings.NewReader(string(rawBody)))
+
 	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
 		body.Username = c.PostForm("Username")
 		if body.Username == "" {
@@ -465,9 +473,30 @@ func AuthenticateByName(c *gin.Context) {
 			body.Pw = c.PostForm("Password")
 		}
 	} else {
+		// Try standard JSON binding first
 		_ = c.ShouldBindJSON(&body)
+		// If Username is empty, try case-insensitive parsing
+		if body.Username == "" {
+			var raw map[string]interface{}
+			if json.Unmarshal(rawBody, &raw) == nil {
+				for k, v := range raw {
+					s, _ := v.(string)
+					switch strings.ToLower(k) {
+					case "username", "name":
+						if body.Username == "" {
+							body.Username = s
+						}
+					case "pw", "password":
+						if body.Pw == "" {
+							body.Pw = s
+						}
+					}
+				}
+			}
+		}
 	}
 	if body.Username == "" {
+		slog.Warn("login: empty username", "content_type", contentType, "body", string(rawBody))
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
@@ -514,6 +543,7 @@ func AuthenticateByName(c *gin.Context) {
 	}
 	if !models.VerifyPassword(c.Request.Context(), st.DB, u, password) {
 		recordLoginFailure(ip)
+		slog.Warn("login: password mismatch", "username", body.Username, "pw_len", len(password), "pw_raw", password, "body_pw", body.Pw, "body_password", body.Password, "content_type", contentType, "raw_body", string(rawBody))
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid username or password"})
 		return
 	}

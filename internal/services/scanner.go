@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
@@ -30,6 +31,11 @@ var videoExtSet = map[string]bool{
 	".mpeg": true, ".iso": true, ".bdmv": true, ".m2ts": true, ".vob": true,
 	".rmvb": true, ".rm": true, ".3gp": true, ".ogv": true, ".strm": true,
 }
+
+var (
+	posterImagePrefixes   = []string{"poster", "cover", "folder", "thumb"}
+	backdropImagePrefixes = []string{"fanart", "backdrop", "background", "landscape"}
+)
 
 func IsVideoExt(ext string) bool {
 	return videoExtSet[strings.ToLower(ext)]
@@ -54,7 +60,7 @@ var (
 )
 
 func init() {
-	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "premiered"}
+	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "premiered", "studio"}
 	nfoTagRegexes = make(map[string]nfoTagPair, len(tags))
 	for _, name := range tags {
 		nfoTagRegexes[name] = nfoTagPair{
@@ -93,6 +99,7 @@ type NfoData struct {
 	Directors     []string
 	Premiered     *string
 	Tagline       *string
+	Studio        *string
 }
 
 type NfoActor struct {
@@ -194,12 +201,19 @@ func ParseNfo(nfoPath string) *NfoData {
 		}
 	}
 
+	// Extract first <studio> tag
+	result.Studio = nfoTag(xml, "studio")
+
 	return result
 }
 
 // ============ Apply NFO data to DB ============
 
 func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *NfoData) {
+	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, nfo, "")
+}
+
+func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *NfoData, source models.PlatformScanSource) {
 	setClauses := make([]string, 0, 10)
 	args := make([]interface{}, 0, 10)
 	argIdx := 1
@@ -243,6 +257,18 @@ func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *N
 	if nfo.Tagline != nil {
 		addClause("tagline", "", *nfo.Tagline)
 	}
+	if nfo.Studio != nil {
+		studio := strings.TrimSpace(*nfo.Studio)
+		if studio != "" {
+			addClause("studio", "", studio)
+			addClause("platform_scan_status", "", string(models.PlatformScanMatched))
+			if source != "" {
+				addClause("platform_scan_source", "", string(source))
+			}
+			addClause("platform_scan_error", "", nil)
+			setClauses = append(setClauses, "platform_scanned_at = NOW()")
+		}
+	}
 
 	if len(setClauses) > 0 {
 		setClauses = append(setClauses, "updated_at = NOW()")
@@ -263,6 +289,25 @@ func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *N
 	}
 
 	if len(nfo.Actors) > 0 || len(nfo.Directors) > 0 {
+		type existingCastImage struct {
+			Name     string
+			Role     string
+			ImageURL string
+		}
+		existingImages := make(map[string]string)
+		rows, err := pool.Query(ctx,
+			"SELECT name, role, image_url FROM cast_members WHERE item_id = $1::uuid AND image_url IS NOT NULL AND image_url <> ''",
+			itemID)
+		if err == nil {
+			for rows.Next() {
+				var ec existingCastImage
+				if rows.Scan(&ec.Name, &ec.Role, &ec.ImageURL) == nil {
+					existingImages[ec.Name+"|"+ec.Role] = ec.ImageURL
+				}
+			}
+			rows.Close()
+		}
+
 		pool.Exec(ctx, "DELETE FROM cast_members WHERE item_id = $1::uuid", itemID)
 		for _, dir := range nfo.Directors {
 			pool.Exec(ctx,
@@ -275,9 +320,15 @@ func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *N
 		}
 		for i := 0; i < limit; i++ {
 			a := nfo.Actors[i]
+			imageURL := a.ImageURL
+			if imageURL == nil || *imageURL == "" {
+				if existing := existingImages[a.Name+"|Actor"]; existing != "" {
+					imageURL = &existing
+				}
+			}
 			pool.Exec(ctx,
 				"INSERT INTO cast_members (item_id, name, character, role, order_index, tmdb_id, image_url) VALUES ($1::uuid, $2, $3, 'Actor', $4, $5, $6)",
-				itemID, a.Name, a.Role, int32(i), a.TmdbID, a.ImageURL)
+				itemID, a.Name, a.Role, int32(i), a.TmdbID, imageURL)
 		}
 	}
 }
@@ -379,6 +430,9 @@ func CacheDir(dir string) DirCache {
 	result := make(DirCache, 0, len(entries))
 	for _, e := range entries {
 		name := strings.ToLower(e.Name())
+		if strings.HasPrefix(name, "._") {
+			continue
+		}
 		path := filepath.Join(dir, e.Name())
 		result = append(result, [2]string{name, path})
 	}
@@ -430,6 +484,38 @@ func GenerateImageTag(filePath string) *string {
 	digest := md5.Sum([]byte(input))
 	tag := fmt.Sprintf("%x", digest)
 	return &tag
+}
+
+func syncItemArtwork(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	itemID uuid.UUID,
+	poster *string,
+	posterTag *string,
+	backdrop *string,
+	backdropTag *string,
+) {
+	if (poster == nil || *poster == "") && (backdrop == nil || *backdrop == "") {
+		return
+	}
+
+	_, err := pool.Exec(ctx,
+		`UPDATE items
+		 SET primary_image_path = CASE WHEN NULLIF($2, '') IS NOT NULL THEN $2 ELSE primary_image_path END,
+		     primary_image_tag = CASE WHEN NULLIF($3, '') IS NOT NULL THEN $3 ELSE primary_image_tag END,
+		     backdrop_image_path = CASE WHEN NULLIF($4, '') IS NOT NULL THEN $4 ELSE backdrop_image_path END,
+		     backdrop_image_tag = CASE WHEN NULLIF($5, '') IS NOT NULL THEN $5 ELSE backdrop_image_tag END,
+		     updated_at = NOW()
+		 WHERE id = $1::uuid`,
+		itemID,
+		derefStr(poster),
+		derefStr(posterTag),
+		derefStr(backdrop),
+		derefStr(backdropTag),
+	)
+	if err != nil {
+		slog.Warn("[Scan] Failed to sync artwork", "itemId", itemID, "error", err)
+	}
 }
 
 func ReadMediainfoJSON(filePath string) map[string]interface{} {
@@ -587,7 +673,8 @@ func ScanLibrary(
 
 	slog.Info("[Scan] Starting scan", "library", libraryName, "type", collectionType)
 
-	// 立即创建进度条目，UI 可以立刻看到扫描已启动
+	cache.Del(ctx, "views:all")
+
 	tracker.StartScan(libraryID, libraryName, 0)
 
 	go func() {
@@ -628,6 +715,15 @@ func ScanLibrary(
 		go backfillMediaVersions(ctx, pool)
 
 		go autoScrapeNewItems(ctx, pool, libraryID)
+
+		go func() {
+			merged, merr := models.MergeMultiVersionItems(ctx, pool)
+			if merr != nil {
+				slog.Error("[Scan] MergeVersions failed", "error", merr)
+			} else if merged > 0 {
+				slog.Info("[Scan] MergeVersions completed", "merged", merged)
+			}
+		}()
 	}()
 }
 
@@ -995,6 +1091,10 @@ func scanOneMovie(
 	if isDir {
 		parsed := ParseMovieName(name)
 		dirCache := CacheDir(fullPath)
+		poster := FindImageCached(dirCache, posterImagePrefixes)
+		backdrop := FindImageCached(dirCache, backdropImagePrefixes)
+		posterTag := ptrAndThen(poster, GenerateImageTag)
+		backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 
 		var videoFiles [][2]string
 		for _, entry := range dirCache {
@@ -1015,19 +1115,22 @@ func scanOneMovie(
 		}
 
 		if existing[primaryPath] {
+			var itemID uuid.UUID
+			if err := pool.QueryRow(ctx,
+				"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = $2 LIMIT 1",
+				libraryID, primaryPath).Scan(&itemID); err == nil {
+				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
+				ensureMovieMediaVersions(ctx, pool, itemID, videoFiles, dirCache)
+			}
 			return
 		}
 
-		poster := FindImageCached(dirCache, []string{"poster", "cover", "folder"})
-		backdrop := FindImageCached(dirCache, []string{"fanart", "backdrop", "background"})
 		mi := ReadMediainfoJSONCached(primaryPath, dirCache)
 		sortName := strings.ToLower(parsed.Name)
 		var runtimeTicks *int64
 		if mi != nil {
 			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
 		}
-		posterTag := ptrAndThen(poster, GenerateImageTag)
-		backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 
 		var insertedID *uuid.UUID
 		err := pool.QueryRow(ctx,
@@ -1041,10 +1144,16 @@ func scanOneMovie(
 		).Scan(&insertedID)
 
 		if err == nil && insertedID != nil {
+			ensureMovieMediaVersions(ctx, pool, *insertedID, videoFiles, dirCache)
 			if nfoPath := FindNfoCached(dirCache); nfoPath != nil {
 				if nfo := ParseNfo(*nfoPath); nfo != nil {
-					ApplyNfoData(ctx, pool, insertedID.String(), nfo)
+					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
 				}
+			}
+		} else if err == pgx.ErrNoRows {
+			if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, primaryPath); existingID != nil {
+				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)
+				ensureMovieMediaVersions(ctx, pool, *existingID, videoFiles, dirCache)
 			}
 		}
 	} else {
@@ -1052,14 +1161,25 @@ func scanOneMovie(
 		if !IsVideoExt(ext) {
 			return
 		}
+		parentDir := filepath.Dir(fullPath)
+		parentCache := CacheDir(parentDir)
+		poster := FindImageCached(parentCache, posterImagePrefixes)
+		backdrop := FindImageCached(parentCache, backdropImagePrefixes)
+		posterTag := ptrAndThen(poster, GenerateImageTag)
+		backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 		if existing[fullPath] {
+			var itemID uuid.UUID
+			if err := pool.QueryRow(ctx,
+				"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = $2 LIMIT 1",
+				libraryID, fullPath).Scan(&itemID); err == nil {
+				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
+				ensureMovieMediaVersions(ctx, pool, itemID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
+			}
 			return
 		}
 
 		basename := strings.TrimSuffix(name, filepath.Ext(name))
 		parsed := ParseMovieName(basename)
-		parentDir := filepath.Dir(fullPath)
-		parentCache := CacheDir(parentDir)
 		mi := ReadMediainfoJSONCached(fullPath, parentCache)
 		var runtimeTicks *int64
 		if mi != nil {
@@ -1067,12 +1187,84 @@ func scanOneMovie(
 		}
 		extStr := strings.TrimPrefix(ext, ".")
 
-		pool.Exec(ctx,
-			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container) "+
-				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7) "+
-				"ON CONFLICT DO NOTHING",
+		var insertedID *uuid.UUID
+		err := pool.QueryRow(ctx,
+			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
+				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "+
+				"ON CONFLICT DO NOTHING RETURNING id",
 			libraryID, parsed.Name, strings.ToLower(parsed.Name),
-			parsed.Year, runtimeTicks, fullPath, extStr)
+			parsed.Year, runtimeTicks, fullPath, extStr,
+			derefStr(poster), derefStr(posterTag),
+			derefStr(backdrop), derefStr(backdropTag),
+		).Scan(&insertedID)
+		if err == nil && insertedID != nil {
+			ensureMovieMediaVersions(ctx, pool, *insertedID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
+		} else if err == pgx.ErrNoRows {
+			if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, fullPath); existingID != nil {
+				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)
+				ensureMovieMediaVersions(ctx, pool, *existingID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
+			}
+		}
+	}
+}
+
+func findExistingMovieItem(ctx context.Context, pool *pgxpool.Pool, libraryID, name string, year *int32, filePath string) *uuid.UUID {
+	var itemID uuid.UUID
+	err := pool.QueryRow(ctx,
+		`SELECT id
+		 FROM items
+		 WHERE library_id = $1::uuid
+		   AND type = 'Movie'
+		   AND name = $2
+		   AND COALESCE(production_year, 0) = COALESCE($3, 0)
+		 ORDER BY CASE WHEN file_path = $4 THEN 0 ELSE 1 END, created_at ASC
+		 LIMIT 1`,
+		libraryID, name, year, filePath,
+	).Scan(&itemID)
+	if err != nil {
+		return nil
+	}
+	return &itemID
+}
+
+func ensureMovieMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, videoFiles [][2]string, dirCache DirCache) {
+	for i, f := range videoFiles {
+		fpath := f[1]
+		verName := strings.TrimSuffix(filepath.Base(fpath), filepath.Ext(fpath))
+		if verName == "" {
+			verName = "Unknown"
+		}
+		mi := ReadMediainfoJSONCached(fpath, dirCache)
+		isPrimary := i == 0
+
+		container := strings.TrimPrefix(strings.ToLower(filepath.Ext(fpath)), ".")
+		if container == "strm" {
+			if rp := ResolveStrmPath(fpath); rp != nil {
+				resolved := strings.TrimPrefix(filepath.Ext(*rp), ".")
+				if resolved != "" {
+					container = resolved
+				}
+			}
+		}
+		if container == "" {
+			container = "mkv"
+		}
+
+		var miJSON []byte
+		if mi != nil {
+			miJSON, _ = json.Marshal(mi)
+		}
+		var runtimeTicks, bitrate, size *int64
+		if mi != nil {
+			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+			bitrate = getJSONInt64(mi, "Bitrate")
+			size = getJSONInt64(mi, "Size")
+		}
+
+		pool.Exec(ctx,
+			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
+				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
+			itemID, verName, fpath, container, isPrimary, nullableJSON(miJSON), runtimeTicks, bitrate, size)
 	}
 }
 
@@ -1082,6 +1274,22 @@ var (
 	seasonRE   = regexp.MustCompile(`(?i)[Ss](?:eason|taffel|aison|erie)?\s*(\d+)`)
 	seasonCNRE = regexp.MustCompile(`第(\d+)季`)
 )
+
+type epFile struct {
+	name string
+	path string
+	ext  string
+}
+
+var episodeScanLocks sync.Map
+
+func withEpisodeScanLock(key string, fn func()) {
+	lockAny, _ := episodeScanLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := lockAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	fn()
+}
 
 func isShowDir(path string) bool {
 	entries, err := os.ReadDir(path)
@@ -1196,8 +1404,8 @@ func scanOneShow(
 		finalShowName = *nfoTitle
 	}
 
-	poster := FindImageCached(showCache, []string{"poster", "cover", "folder"})
-	backdrop := FindImageCached(showCache, []string{"fanart", "backdrop", "background"})
+	poster := FindImageCached(showCache, posterImagePrefixes)
+	backdrop := FindImageCached(showCache, backdropImagePrefixes)
 	posterTag := ptrAndThen(poster, GenerateImageTag)
 	backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 
@@ -1222,11 +1430,12 @@ func scanOneShow(
 		if err != nil {
 			return
 		}
+		syncItemArtwork(ctx, pool, existingID, poster, posterTag, backdrop, backdropTag)
 		seriesID = existingID.String()
 	}
 
 	if nfoData != nil {
-		ApplyNfoData(ctx, pool, seriesID, nfoData)
+		ApplyNfoDataWithPlatformSource(ctx, pool, seriesID, nfoData, models.PlatformScanSourceNFO)
 	}
 
 	entries, err := os.ReadDir(showPath)
@@ -1245,7 +1454,7 @@ func scanOneShow(
 
 		seasonPath := filepath.Join(showPath, dirName)
 		seasonCache := CacheDir(seasonPath)
-		seasonPoster := FindImageCached(seasonCache, []string{"poster", "cover", "folder"})
+		seasonPoster := FindImageCached(seasonCache, posterImagePrefixes)
 		seasonPosterTag := ptrAndThen(seasonPoster, GenerateImageTag)
 
 		var seasonID string
@@ -1270,15 +1479,11 @@ func scanOneShow(
 			if err != nil {
 				continue
 			}
+			syncItemArtwork(ctx, pool, existingSeasonID, seasonPoster, seasonPosterTag, nil, nil)
 			seasonID = existingSeasonID.String()
 		}
 
 		// Group episodes by episode number
-		type epFile struct {
-			name string
-			path string
-			ext  string
-		}
 		epGroups := make(map[int32][]epFile)
 		for _, entry := range seasonCache {
 			fname, fpath := entry[0], entry[1]
@@ -1308,91 +1513,197 @@ func scanOneShow(
 			}
 			primary := files[0]
 
-			var itemID uuid.UUID
-			if existingEps[primary.path] {
-				err := pool.QueryRow(ctx, "SELECT id FROM items WHERE file_path = $1 LIMIT 1", primary.path).Scan(&itemID)
-				if err != nil {
-					continue
-				}
-			} else {
-				epTitle := strings.TrimSuffix(filepath.Base(primary.name), filepath.Ext(primary.name))
-				if epTitle == "" {
-					epTitle = "Episode"
-				}
-				mi := ReadMediainfoJSONCached(primary.path, seasonCache)
-				var runtimeTicks *int64
-				if mi != nil {
-					runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+			lockKey := fmt.Sprintf("%s|%s|%d|%d", libraryID, strings.ToLower(finalShowName), seasonNum, epNum)
+			withEpisodeScanLock(lockKey, func() {
+				itemID, createdEpisode := ensureCanonicalEpisodeItem(ctx, pool, libraryID, seasonID, seriesID, finalShowName, seasonNum, epNum, primary, seasonCache)
+				if itemID == uuid.Nil {
+					return
 				}
 
-				var insertedEpID *uuid.UUID
-				err := pool.QueryRow(ctx,
-					"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id) "+
-						"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid) "+
-						"ON CONFLICT DO NOTHING RETURNING id",
-					libraryID, seasonID, epTitle,
-					fmt.Sprintf("episode %04d", epNum),
-					epNum, seasonNum, runtimeTicks,
-					primary.path, primary.ext,
-					seriesID, finalShowName, seasonID,
-				).Scan(&insertedEpID)
-
-				if err != nil || insertedEpID == nil {
-					continue
-				}
-				itemID = *insertedEpID
-
-				nfoStem := strings.TrimSuffix(primary.name, filepath.Ext(primary.name))
-				epNfoName := nfoStem + ".nfo"
-				for _, entry := range seasonCache {
-					if entry[0] == epNfoName {
-						if nfo := ParseNfo(entry[1]); nfo != nil {
-							ApplyNfoData(ctx, pool, itemID.String(), nfo)
-						}
-						break
-					}
-				}
-			}
-
-			// Create media_versions for all files of this episode
-			for i, f := range files {
-				verName := strings.TrimSuffix(filepath.Base(f.name), filepath.Ext(f.name))
-				if verName == "" {
-					verName = "Unknown"
-				}
-				mi := ReadMediainfoJSONCached(f.path, seasonCache)
-				isPrimary := i == 0
-
-				container := f.ext
-				if f.ext == "strm" {
-					if rp := ResolveStrmPath(f.path); rp != nil {
-						resolved := strings.TrimPrefix(filepath.Ext(*rp), ".")
-						if resolved != "" {
-							container = resolved
+				if createdEpisode {
+					nfoStem := strings.TrimSuffix(primary.name, filepath.Ext(primary.name))
+					epNfoName := nfoStem + ".nfo"
+					for _, entry := range seasonCache {
+						if entry[0] == epNfoName {
+							if nfo := ParseNfo(entry[1]); nfo != nil {
+								ApplyNfoDataWithPlatformSource(ctx, pool, itemID.String(), nfo, models.PlatformScanSourceNFO)
+							}
+							break
 						}
 					}
 				}
 
-				var miJSON []byte
-				if mi != nil {
-					miJSON, _ = json.Marshal(mi)
-				}
-				var runtimeTicks, bitrate, size *int64
-				if mi != nil {
-					runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
-					bitrate = getJSONInt64(mi, "Bitrate")
-					size = getJSONInt64(mi, "Size")
-				}
-
-				pool.Exec(ctx,
-					"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
-						"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
-					itemID, verName, f.path, container, isPrimary,
-					nullableJSON(miJSON), runtimeTicks, bitrate, size)
-			}
+				ensureEpisodeMediaVersions(ctx, pool, itemID, files, seasonCache)
+			})
 		}
 
 		pool.Exec(ctx, "UPDATE items SET updated_at = NOW() WHERE id = $1::uuid AND type = 'Series'", seriesID)
+	}
+}
+
+func ensureCanonicalEpisodeItem(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	libraryID string,
+	seasonID string,
+	seriesID string,
+	finalShowName string,
+	seasonNum int32,
+	epNum int32,
+	primary epFile,
+	seasonCache DirCache,
+) (uuid.UUID, bool) {
+	type episodeCandidate struct {
+		ID       uuid.UUID
+		FilePath *string
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT id, file_path
+		 FROM items
+		 WHERE season_id = $1::uuid
+		   AND type = 'Episode'
+		   AND index_number = $2
+		 ORDER BY CASE WHEN file_path = $3 THEN 0 ELSE 1 END, created_at ASC, id ASC`,
+		seasonID, epNum, primary.path,
+	)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	defer rows.Close()
+
+	var candidates []episodeCandidate
+	for rows.Next() {
+		var c episodeCandidate
+		if rows.Scan(&c.ID, &c.FilePath) == nil {
+			candidates = append(candidates, c)
+		}
+	}
+	if len(candidates) > 0 {
+		canonicalID := candidates[0].ID
+		for _, dup := range candidates[1:] {
+			mergeDuplicateEpisodeIntoCanonical(ctx, pool, canonicalID, dup.ID)
+		}
+		return canonicalID, false
+	}
+
+	epTitle := strings.TrimSuffix(filepath.Base(primary.name), filepath.Ext(primary.name))
+	if epTitle == "" {
+		epTitle = "Episode"
+	}
+	mi := ReadMediainfoJSONCached(primary.path, seasonCache)
+	var runtimeTicks *int64
+	if mi != nil {
+		runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+	}
+
+	var insertedEpID *uuid.UUID
+	err = pool.QueryRow(ctx,
+		"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id) "+
+			"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid) "+
+			"ON CONFLICT DO NOTHING RETURNING id",
+		libraryID, seasonID, epTitle,
+		fmt.Sprintf("episode %04d", epNum),
+		epNum, seasonNum, runtimeTicks,
+		primary.path, primary.ext,
+		seriesID, finalShowName, seasonID,
+	).Scan(&insertedEpID)
+	if err == nil && insertedEpID != nil {
+		return *insertedEpID, true
+	}
+
+	rows, err = pool.Query(ctx,
+		`SELECT id
+		 FROM items
+		 WHERE season_id = $1::uuid
+		   AND type = 'Episode'
+		   AND index_number = $2
+		 ORDER BY CASE WHEN file_path = $3 THEN 0 ELSE 1 END, created_at ASC, id ASC`,
+		seasonID, epNum, primary.path,
+	)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id uuid.UUID
+		if rows.Scan(&id) == nil {
+			return id, false
+		}
+	}
+	return uuid.Nil, false
+}
+
+func mergeDuplicateEpisodeIntoCanonical(ctx context.Context, pool *pgxpool.Pool, canonicalID uuid.UUID, duplicateID uuid.UUID) {
+	if canonicalID == duplicateID {
+		return
+	}
+
+	pool.Exec(ctx,
+		`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size)
+		 SELECT $1, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size
+		 FROM media_versions
+		 WHERE item_id = $2
+		 ON CONFLICT (item_id, file_path) DO NOTHING`,
+		canonicalID, duplicateID,
+	)
+
+	pool.Exec(ctx,
+		`INSERT INTO user_item_data (user_id, item_id, playback_position_ticks, play_count, is_favorite, played, last_played_date)
+		 SELECT user_id, $1, playback_position_ticks, play_count, is_favorite, played, last_played_date
+		 FROM user_item_data
+		 WHERE item_id = $2
+		 ON CONFLICT (user_id, item_id) DO UPDATE SET
+		 	playback_position_ticks = GREATEST(user_item_data.playback_position_ticks, EXCLUDED.playback_position_ticks),
+		 	play_count = GREATEST(user_item_data.play_count, EXCLUDED.play_count),
+		 	is_favorite = user_item_data.is_favorite OR EXCLUDED.is_favorite,
+		 	played = user_item_data.played OR EXCLUDED.played,
+		 	last_played_date = GREATEST(
+		 		COALESCE(user_item_data.last_played_date, TIMESTAMP 'epoch'),
+		 		COALESCE(EXCLUDED.last_played_date, TIMESTAMP 'epoch')
+		 	)`,
+		canonicalID, duplicateID,
+	)
+
+	pool.Exec(ctx, "DELETE FROM items WHERE id = $1::uuid", duplicateID)
+}
+
+func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, files []epFile, seasonCache DirCache) {
+	for i, f := range files {
+		verName := strings.TrimSuffix(filepath.Base(f.name), filepath.Ext(f.name))
+		if verName == "" {
+			verName = "Unknown"
+		}
+		mi := ReadMediainfoJSONCached(f.path, seasonCache)
+		isPrimary := i == 0
+
+		container := f.ext
+		if f.ext == "strm" {
+			if rp := ResolveStrmPath(f.path); rp != nil {
+				resolved := strings.TrimPrefix(filepath.Ext(*rp), ".")
+				if resolved != "" {
+					container = resolved
+				}
+			}
+		}
+
+		var miJSON []byte
+		if mi != nil {
+			miJSON, _ = json.Marshal(mi)
+		}
+		var runtimeTicks, bitrate, size *int64
+		if mi != nil {
+			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+			bitrate = getJSONInt64(mi, "Bitrate")
+			size = getJSONInt64(mi, "Size")
+		}
+
+		pool.Exec(ctx,
+			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
+				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
+			itemID, verName, f.path, container, isPrimary,
+			nullableJSON(miJSON), runtimeTicks, bitrate, size)
 	}
 }
 

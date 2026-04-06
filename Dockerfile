@@ -19,6 +19,8 @@ ARG BUILD_COMMIT=""
 ARG BUILD_TIME=""
 ARG BUILD_REPO=""
 
+ENV GOPROXY=https://goproxy.cn,direct
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -52,10 +54,8 @@ COPY --from=backend-builder /build/fyms /app/fyms
 COPY migrations /app/migrations
 RUN mkdir -p /app/data/logs /app/data/cache/images && chown -R fyms:fyms /app
 
-RUN printf '#!/bin/sh\nmkdir -p /app/data/logs /app/data/cache/images 2>/dev/null\nexec /app/fyms "$@"\n' > /app/entrypoint.sh \
+RUN printf '#!/bin/sh\nmkdir -p /app/data/logs /app/data/cache/images /app/data/update 2>/dev/null\nexec /app/fyms "$@"\n' > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh
-
-USER fyms
 
 VOLUME ["/app/data"]
 

@@ -25,6 +25,7 @@ type ProbeProgress struct {
 	Percentage     int     `json:"percentage"`
 	Threads        int     `json:"threads"`
 	MissingCount   int64   `json:"missingCount"`
+	VersionsTotal  int64   `json:"versionsTotal"`
 	Error          *string `json:"error,omitempty"`
 }
 
@@ -284,5 +285,11 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 func GetMissingMediainfoCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	var count int64
 	err := pool.QueryRow(ctx, "SELECT count(*) FROM media_versions WHERE mediainfo IS NULL").Scan(&count)
+	return count, err
+}
+
+func GetTotalMediaVersionsCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	var count int64
+	err := pool.QueryRow(ctx, "SELECT count(*) FROM media_versions").Scan(&count)
 	return count, err
 }
