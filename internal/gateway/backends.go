@@ -10,18 +10,29 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"fyms/internal/gateway/open115"
 )
 
 // BackendAdapter builds a redirect URL for a given object key.
+// userAgent is the User-Agent header from the requesting client; some
+// backends (notably 115) bind the issued URL to this UA, so it must be
+// threaded through and the same UA must be used by the final fetcher.
 type BackendAdapter interface {
 	Name() string
 	Type() string
-	BuildRedirectURL(ctx context.Context, objectKey string) (string, error)
+	BuildRedirectURL(ctx context.Context, objectKey string, userAgent string) (string, error)
 }
 
-// BuildBackendAdapters constructs adapters from config.
-func BuildBackendAdapters(backends []BackendConfig) map[string]BackendAdapter {
+// Open115TokenSaver persists rotated 115 tokens for a given backend ID.
+type Open115TokenSaver func(backendID, accessToken, refreshToken string)
+
+// BuildBackendAdapters constructs adapters from config. tokenSaver may be
+// nil; if provided, it will be invoked whenever a 115_open backend rotates
+// its tokens via refresh, so callers can persist them back to storage.
+func BuildBackendAdapters(backends []BackendConfig, tokenSaver Open115TokenSaver) map[string]BackendAdapter {
 	adapters := map[string]BackendAdapter{}
 	for _, b := range backends {
 		if !b.Enabled {
@@ -55,7 +66,19 @@ func BuildBackendAdapters(backends []BackendConfig) map[string]BackendAdapter {
 			}
 		case "115_open":
 			if b.Open115 != nil {
-				a = &open115Adapter{id: b.ID, name: b.Name, cfg: *b.Open115}
+				backendID := b.ID
+				var saver open115.TokenUpdater
+				if tokenSaver != nil {
+					saver = func(at, rt string) { tokenSaver(backendID, at, rt) }
+				}
+				a = &open115Adapter{
+					id:           b.ID,
+					name:         b.Name,
+					cfg:          *b.Open115,
+					tokenSaver:   saver,
+					pickCodes:    map[string]string{},
+					downURLCache: map[string]downURLEntry{},
+				}
 			}
 		case "115_cookie":
 			if b.Cookie115 != nil {
@@ -70,7 +93,7 @@ func BuildBackendAdapters(backends []BackendConfig) map[string]BackendAdapter {
 }
 
 // TryPool attempts BuildRedirectURL on primary then standby backend.
-func TryPool(ctx context.Context, pool ResourcePoolConfig, adapters map[string]BackendAdapter, objectKey string) (redirectURL string, backendID string, err error) {
+func TryPool(ctx context.Context, pool ResourcePoolConfig, adapters map[string]BackendAdapter, objectKey string, userAgent string) (redirectURL string, backendID string, err error) {
 	ids := []string{}
 	if pool.PrimaryBackendID != "" {
 		ids = append(ids, pool.PrimaryBackendID)
@@ -85,7 +108,7 @@ func TryPool(ctx context.Context, pool ResourcePoolConfig, adapters map[string]B
 			lastErr = fmt.Errorf("backend %s not found", id)
 			continue
 		}
-		u, err := a.BuildRedirectURL(ctx, objectKey)
+		u, err := a.BuildRedirectURL(ctx, objectKey, userAgent)
 		if err != nil {
 			lastErr = err
 			continue
@@ -139,7 +162,7 @@ type s3Adapter struct {
 func (a *s3Adapter) Name() string { return a.name }
 func (a *s3Adapter) Type() string { return "s3" }
 
-func (a *s3Adapter) BuildRedirectURL(_ context.Context, objectKey string) (string, error) {
+func (a *s3Adapter) BuildRedirectURL(_ context.Context, objectKey string, _ string) (string, error) {
 	expiry := a.cfg.SignExpiryMinutes * 60
 	if expiry <= 0 {
 		expiry = 3600
@@ -227,7 +250,7 @@ type localAdapter struct {
 func (a *localAdapter) Name() string { return a.name }
 func (a *localAdapter) Type() string { return "local" }
 
-func (a *localAdapter) BuildRedirectURL(_ context.Context, objectKey string) (string, error) {
+func (a *localAdapter) BuildRedirectURL(_ context.Context, objectKey string, _ string) (string, error) {
 	if a.cfg.BaseURL == "" {
 		return "", fmt.Errorf("local backend %s: base_url is empty", a.id)
 	}
@@ -259,7 +282,7 @@ type localAgentAdapter struct {
 func (a *localAgentAdapter) Name() string { return a.name }
 func (a *localAgentAdapter) Type() string { return "local_agent" }
 
-func (a *localAgentAdapter) BuildRedirectURL(_ context.Context, objectKey string) (string, error) {
+func (a *localAgentAdapter) BuildRedirectURL(_ context.Context, objectKey string, _ string) (string, error) {
 	if a.cfg.PublicBaseURL == "" {
 		return "", fmt.Errorf("local_agent backend %s: public_base_url is empty", a.id)
 	}
@@ -293,7 +316,7 @@ type aliyunCDNAdapter struct {
 func (a *aliyunCDNAdapter) Name() string { return a.name }
 func (a *aliyunCDNAdapter) Type() string { return "aliyun_cdn" }
 
-func (a *aliyunCDNAdapter) BuildRedirectURL(_ context.Context, objectKey string) (string, error) {
+func (a *aliyunCDNAdapter) BuildRedirectURL(_ context.Context, objectKey string, _ string) (string, error) {
 	baseURL := strings.TrimRight(a.cfg.BaseURL, "/")
 	path := "/" + strings.TrimLeft(objectKey, "/")
 
@@ -351,7 +374,7 @@ type gdriveAdapter struct {
 
 func (a *gdriveAdapter) Name() string { return a.name }
 func (a *gdriveAdapter) Type() string { return "gdrive" }
-func (a *gdriveAdapter) BuildRedirectURL(_ context.Context, _ string) (string, error) {
+func (a *gdriveAdapter) BuildRedirectURL(_ context.Context, _ string, _ string) (string, error) {
 	return "", fmt.Errorf("gdrive backend %s: requires OAuth token refresh implementation", a.id)
 }
 
@@ -364,7 +387,7 @@ type pan123Adapter struct {
 func (a *pan123Adapter) Name() string { return a.name }
 func (a *pan123Adapter) Type() string { return "pan123" }
 
-func (a *pan123Adapter) BuildRedirectURL(_ context.Context, objectKey string) (string, error) {
+func (a *pan123Adapter) BuildRedirectURL(_ context.Context, objectKey string, _ string) (string, error) {
 	if a.cfg.DirectLinkMode == "compose" {
 		linkURL, err := a.buildComposedURL(objectKey)
 		if err != nil {
@@ -463,16 +486,134 @@ func pan123JoinURL(base string, segs ...string) string {
 	return out
 }
 
+// --- 115 Open Adapter ---
+//
+// Resolves an objectKey (treated as an absolute path inside 115) into a
+// time-limited download URL via the 115 Open Platform API.
+//
+// objectKey contract: the path mapping rules must produce an objectKey that
+// is the absolute path inside the 115 cloud (e.g. "电影/97家有囍事 (1997).mkv").
+// We accept it with or without a leading slash.
+//
+// Caching strategy (in-memory, per-process):
+//   - pickCodes: path -> pick_code, kept indefinitely (file IDs are stable
+//     and re-resolved on rename / 115 errors).
+//   - downURLCache: pick_code|UA -> (url, expiry). 115 binds the issued URL
+//     to the requesting User-Agent, so the cache key includes UA. Entries
+//     expire per cfg.LinkTTLSeconds (default 110 minutes; 115 default is 2h).
 type open115Adapter struct {
-	id   string
-	name string
-	cfg  Open115BackendConfig
+	id         string
+	name       string
+	cfg        Open115BackendConfig
+	tokenSaver open115.TokenUpdater
+
+	mu           sync.Mutex
+	client       *open115.Client
+	pickCodes    map[string]string
+	downURLCache map[string]downURLEntry
+}
+
+type downURLEntry struct {
+	url    string
+	expiry time.Time
 }
 
 func (a *open115Adapter) Name() string { return a.name }
 func (a *open115Adapter) Type() string { return "115_open" }
-func (a *open115Adapter) BuildRedirectURL(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("115_open backend %s: requires API integration", a.id)
+
+func (a *open115Adapter) ensureClient() *open115.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client == nil {
+		a.client = open115.New(a.cfg.AccessToken, a.cfg.RefreshToken, a.tokenSaver)
+	}
+	return a.client
+}
+
+func (a *open115Adapter) linkTTL() time.Duration {
+	ttl := a.cfg.LinkTTLSeconds
+	if ttl <= 0 {
+		ttl = 110 * 60 // 110 minutes; 115 default is ~2h
+	}
+	return time.Duration(ttl) * time.Second
+}
+
+func (a *open115Adapter) lookupPickCode(path string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pc, ok := a.pickCodes[path]
+	return pc, ok
+}
+
+func (a *open115Adapter) storePickCode(path, pc string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pickCodes[path] = pc
+}
+
+func (a *open115Adapter) lookupDownURL(key string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e, ok := a.downURLCache[key]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(e.expiry) {
+		delete(a.downURLCache, key)
+		return "", false
+	}
+	return e.url, true
+}
+
+func (a *open115Adapter) storeDownURL(key, urlStr string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.downURLCache[key] = downURLEntry{url: urlStr, expiry: time.Now().Add(a.linkTTL())}
+}
+
+func (a *open115Adapter) BuildRedirectURL(ctx context.Context, objectKey string, userAgent string) (string, error) {
+	if a.cfg.AccessToken == "" || a.cfg.RefreshToken == "" {
+		return "", fmt.Errorf("115_open backend %s: access_token / refresh_token not configured", a.id)
+	}
+	path := "/" + strings.TrimLeft(objectKey, "/")
+	if path == "/" {
+		return "", fmt.Errorf("115_open backend %s: empty object_key", a.id)
+	}
+
+	client := a.ensureClient()
+
+	// 1. Resolve pick_code (cached).
+	pickCode, ok := a.lookupPickCode(path)
+	if !ok {
+		fi, err := client.GetFolderInfoByPath(ctx, path)
+		if err != nil {
+			return "", fmt.Errorf("115_open backend %s: resolve path %q: %w", a.id, path, err)
+		}
+		if fi.PickCode == "" {
+			return "", fmt.Errorf("115_open backend %s: path %q has no pick_code (folder?)", a.id, path)
+		}
+		pickCode = fi.PickCode
+		a.storePickCode(path, pickCode)
+	}
+
+	// 2. Cached download URL (keyed by pick_code + UA).
+	cacheKey := pickCode + "|" + userAgent
+	if u, ok := a.lookupDownURL(cacheKey); ok {
+		return u, nil
+	}
+
+	// 3. Fetch fresh download URL.
+	urlStr, err := client.DownloadURL(ctx, pickCode, userAgent)
+	if err != nil {
+		// On any error, drop the path->pickCode cache so a future call re-resolves
+		// (handles renames / deletions).
+		a.mu.Lock()
+		delete(a.pickCodes, path)
+		a.mu.Unlock()
+		return "", fmt.Errorf("115_open backend %s: get downurl: %w", a.id, err)
+	}
+	a.storeDownURL(cacheKey, urlStr)
+	return urlStr, nil
 }
 
 type cookie115Adapter struct {
@@ -483,6 +624,6 @@ type cookie115Adapter struct {
 
 func (a *cookie115Adapter) Name() string { return a.name }
 func (a *cookie115Adapter) Type() string { return "115_cookie" }
-func (a *cookie115Adapter) BuildRedirectURL(_ context.Context, _ string) (string, error) {
+func (a *cookie115Adapter) BuildRedirectURL(_ context.Context, _ string, _ string) (string, error) {
 	return "", fmt.Errorf("115_cookie backend %s: requires cookie management", a.id)
 }

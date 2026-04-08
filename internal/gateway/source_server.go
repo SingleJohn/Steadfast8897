@@ -45,7 +45,7 @@ func (rt *Runtime) Rebuild(ctx context.Context, cfg *GatewayConfig) error {
 	oldSources := rt.getSourceMap()
 
 	rt.config = cfg
-	rt.adapters = BuildBackendAdapters(cfg.Backends)
+	rt.adapters = BuildBackendAdapters(cfg.Backends, rt.saveOpen115Tokens)
 
 	if rt.recorder == nil {
 		rt.recorder = NewRecorder(rt.store, cfg.Observability, rt.logger)
@@ -64,6 +64,43 @@ func (rt *Runtime) getSourceMap() map[string]EmbySourceConfig {
 		m[src.ID] = src
 	}
 	return m
+}
+
+// saveOpen115Tokens persists rotated 115 tokens for the given backend ID
+// back into the gateway config. Invoked from the open115 client whenever
+// a refresh succeeds.
+func (rt *Runtime) saveOpen115Tokens(backendID, accessToken, refreshToken string) {
+	rt.mu.Lock()
+	if rt.config == nil {
+		rt.mu.Unlock()
+		return
+	}
+	updated := false
+	for i := range rt.config.Backends {
+		b := &rt.config.Backends[i]
+		if b.ID != backendID || b.Type != "115_open" || b.Open115 == nil {
+			continue
+		}
+		if b.Open115.AccessToken == accessToken && b.Open115.RefreshToken == refreshToken {
+			break
+		}
+		b.Open115.AccessToken = accessToken
+		b.Open115.RefreshToken = refreshToken
+		updated = true
+		break
+	}
+	cfgCopy := rt.config
+	rt.mu.Unlock()
+	if !updated {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.store.SaveConfig(ctx, cfgCopy); err != nil {
+		rt.logger.Warn("persist 115_open tokens failed", "backend_id", backendID, "error", err)
+		return
+	}
+	rt.logger.Info("persisted refreshed 115_open tokens", "backend_id", backendID)
 }
 
 func (rt *Runtime) reconcileServers(ctx context.Context, cfg *GatewayConfig, oldSources map[string]EmbySourceConfig) error {
@@ -224,7 +261,7 @@ func (rt *Runtime) handleDirectStream(w http.ResponseWriter, r *http.Request, sr
 		return
 	}
 
-	redirectURL, backendID, err := TryPool(r.Context(), *pool, adapters, objectKey)
+	redirectURL, backendID, err := TryPool(r.Context(), *pool, adapters, objectKey, r.UserAgent())
 	if err != nil {
 		rt.logger.Error("302 redirect failed", "source_id", src.ID, "object_key", objectKey, "error", err)
 		http.Error(w, "redirect failed: "+err.Error(), http.StatusBadGateway)
@@ -300,7 +337,7 @@ func (rt *Runtime) tryResolvePlaybackRoute(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 
-	redirectURL, backendID, err := TryPool(r.Context(), *pool, adapters, objectKey)
+	redirectURL, backendID, err := TryPool(r.Context(), *pool, adapters, objectKey, r.UserAgent())
 	if err != nil {
 		rt.logger.Warn("302 redirect failed, falling back to proxy", "source_id", src.ID, "item_id", itemID, "error", err)
 		return false
