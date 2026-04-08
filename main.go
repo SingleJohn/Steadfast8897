@@ -95,7 +95,9 @@ func main() {
 	} else {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
-	updater := services.NewUpdater(cfg, pool, httpClient, logBuffer)
+	// Updater needs a direct (non-proxied) client to reach Docker Hub and GitHub.
+	updateHTTPClient := &http.Client{Timeout: 30 * time.Second}
+	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
 
 	state := &handlers.AppState{
 		DB:             pool,
