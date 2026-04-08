@@ -678,14 +678,14 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 						CASE WHEN filtered.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
 						CASE WHEN filtered.primary_image_path IS NOT NULL AND filtered.primary_image_path <> '' THEN 0 ELSE 1 END,
 						CASE WHEN filtered.overview IS NOT NULL AND filtered.overview <> '' THEN 0 ELSE 1 END,
-						filtered.updated_at DESC,
+						filtered.created_at DESC,
 						filtered.id
 				) AS merge_row_num
 			FROM filtered
 		)
 		SELECT * FROM ranked
 		WHERE merge_row_num = 1
-		ORDER BY updated_at DESC
+		ORDER BY created_at DESC
 		LIMIT $3::bigint`,
 		libraryID, itemType, limit)
 	if err != nil {

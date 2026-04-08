@@ -156,9 +156,9 @@ func handleMovieCreate(ctx context.Context, pool *pgxpool.Pool, filePath string,
 	}
 
 	_, err = pool.Exec(ctx,
-		`INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container)
-		 VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
-		libID, parsed.Name, strings.ToLower(parsed.Name), parsed.Year, runtime, filePath, ext)
+		`INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, created_at)
+		 VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, COALESCE($8, NOW())) ON CONFLICT DO NOTHING`,
+		libID, parsed.Name, strings.ToLower(parsed.Name), parsed.Year, runtime, filePath, ext, fileMtimeOrNil(filePath))
 	if err != nil {
 		return err
 	}

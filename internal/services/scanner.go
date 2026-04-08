@@ -1134,13 +1134,14 @@ func scanOneMovie(
 
 		var insertedID *uuid.UUID
 		err := pool.QueryRow(ctx,
-			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
-				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "+
+			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag, created_at) "+
+				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW())) "+
 				"ON CONFLICT DO NOTHING RETURNING id",
 			libraryID, parsed.Name, sortName, parsed.Year,
 			runtimeTicks, primaryPath, ext,
 			derefStr(poster), derefStr(posterTag),
 			derefStr(backdrop), derefStr(backdropTag),
+			fileMtimeOrNil(primaryPath),
 		).Scan(&insertedID)
 
 		if err == nil && insertedID != nil {
@@ -1189,13 +1190,14 @@ func scanOneMovie(
 
 		var insertedID *uuid.UUID
 		err := pool.QueryRow(ctx,
-			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
-				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "+
+			"INSERT INTO items (library_id, type, name, sort_name, production_year, runtime_ticks, file_path, container, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag, created_at) "+
+				"VALUES ($1::uuid, 'Movie', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW())) "+
 				"ON CONFLICT DO NOTHING RETURNING id",
 			libraryID, parsed.Name, strings.ToLower(parsed.Name),
 			parsed.Year, runtimeTicks, fullPath, extStr,
 			derefStr(poster), derefStr(posterTag),
 			derefStr(backdrop), derefStr(backdropTag),
+			fileMtimeOrNil(fullPath),
 		).Scan(&insertedID)
 		if err == nil && insertedID != nil {
 			ensureMovieMediaVersions(ctx, pool, *insertedID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
@@ -1599,14 +1601,15 @@ func ensureCanonicalEpisodeItem(
 
 	var insertedEpID *uuid.UUID
 	err = pool.QueryRow(ctx,
-		"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id) "+
-			"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid) "+
+		"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id, created_at) "+
+			"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid, COALESCE($13, NOW())) "+
 			"ON CONFLICT DO NOTHING RETURNING id",
 		libraryID, seasonID, epTitle,
 		fmt.Sprintf("episode %04d", epNum),
 		epNum, seasonNum, runtimeTicks,
 		primary.path, primary.ext,
 		seriesID, finalShowName, seasonID,
+		fileMtimeOrNil(primary.path),
 	).Scan(&insertedEpID)
 	if err == nil && insertedEpID != nil {
 		return *insertedEpID, true
@@ -1759,4 +1762,18 @@ func derefStr(p *string) interface{} {
 		return nil
 	}
 	return *p
+}
+
+// fileMtimeOrNil returns the mtime of the file at path, or nil if stat fails.
+// Used as the created_at timestamp for new items so FYMS's "latest" list
+// mirrors Emby's DateCreated (= file mtime on disk).
+func fileMtimeOrNil(path string) interface{} {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return info.ModTime().UTC()
 }
