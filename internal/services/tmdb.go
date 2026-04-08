@@ -363,6 +363,51 @@ func (c *TmdbClient) SearchTV(ctx context.Context, name string) (map[string]inte
 	return first, nil
 }
 
+// SearchMovieMulti returns up to 20 TMDB movie search results.
+func (c *TmdbClient) SearchMovieMulti(ctx context.Context, name string, year *int32) ([]map[string]interface{}, error) {
+	u := fmt.Sprintf("%s/search/movie?api_key={API_KEY}&language=%s&query=%s",
+		TMDB_BASE, c.language, url.QueryEscape(name))
+	if year != nil {
+		u += fmt.Sprintf("&year=%d", *year)
+	}
+	data, err := c.tmdbGet(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	results, ok := data["results"].([]interface{})
+	if !ok || len(results) == 0 {
+		return nil, fmt.Errorf("未找到结果")
+	}
+	var out []map[string]interface{}
+	for _, r := range results {
+		if m, ok := r.(map[string]interface{}); ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// SearchTVMulti returns up to 20 TMDB TV search results.
+func (c *TmdbClient) SearchTVMulti(ctx context.Context, name string) ([]map[string]interface{}, error) {
+	u := fmt.Sprintf("%s/search/tv?api_key={API_KEY}&language=%s&query=%s",
+		TMDB_BASE, c.language, url.QueryEscape(name))
+	data, err := c.tmdbGet(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	results, ok := data["results"].([]interface{})
+	if !ok || len(results) == 0 {
+		return nil, fmt.Errorf("未找到结果")
+	}
+	var out []map[string]interface{}
+	for _, r := range results {
+		if m, ok := r.(map[string]interface{}); ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 func (c *TmdbClient) GetMovieDetails(ctx context.Context, tmdbID int64) (map[string]interface{}, error) {
 	u := fmt.Sprintf("%s/movie/%d?api_key={API_KEY}&language=%s&append_to_response=credits",
 		TMDB_BASE, tmdbID, c.language)
@@ -782,6 +827,43 @@ func RefreshPlatformOnlyByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID
 }
 
 // ScrapeItemWithClient scrapes TMDB metadata for a single item using the provided client.
+// ScrapeItemByTMDBID scrapes an item using an explicit TMDB ID (from user selection).
+func ScrapeItemByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, tmdbID int64) (map[string]interface{}, error) {
+	client := TmdbClientFromConfig(ctx, pool)
+	if client == nil {
+		return nil, fmt.Errorf("TMDB API 密钥未配置")
+	}
+	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
+	if err != nil {
+		return nil, err
+	}
+	details, err := fetchTMDBDetailsByID(ctx, client, meta.ItemType, tmdbID)
+	if err != nil {
+		return nil, fmt.Errorf("获取 TMDB 详情失败: %w", err)
+	}
+	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, tmdbID, details, true, models.PlatformScanSourceSearch)
+}
+
+// SearchTMDBForItem searches TMDB for an item by custom query, returning multiple results.
+func SearchTMDBForItem(ctx context.Context, pool *pgxpool.Pool, itemID, query string, year *int32) ([]map[string]interface{}, error) {
+	client := TmdbClientFromConfig(ctx, pool)
+	if client == nil {
+		return nil, fmt.Errorf("TMDB API 密钥未配置")
+	}
+	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
+	if err != nil {
+		return nil, err
+	}
+	switch meta.ItemType {
+	case "Movie":
+		return client.SearchMovieMulti(ctx, query, year)
+	case "Series":
+		return client.SearchTVMulti(ctx, query)
+	default:
+		return nil, fmt.Errorf("不支持的类型: %s", meta.ItemType)
+	}
+}
+
 func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (map[string]interface{}, error) {
 	meta, err := loadScrapeItemMeta(ctx, pool, itemID)
 	if err != nil {

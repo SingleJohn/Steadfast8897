@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NSkeleton, NIcon, NSpace } from 'naive-ui'
+import { NButton, NSkeleton, NIcon, NSpace, NModal, NInput, NInputNumber, NSpin } from 'naive-ui'
 import {
   CheckmarkDoneOutline,
   Heart,
   HeartOutline,
   PlayOutline,
   RefreshOutline,
+  SearchOutline,
+  FolderOpenOutline,
 } from '@vicons/ionicons5'
-import { getItem, getItems, getImageUrl, toggleFavorite, togglePlayed, scrapeItemMetadata } from '../api/client'
+import { getItem, getItems, getImageUrl, toggleFavorite, togglePlayed, scrapeItemMetadata, searchTmdbForItem, scrapeItemByTmdbId } from '../api/client'
 import { useAuth } from '../composables/useAuth'
 import { useUiStore } from '../stores/ui'
 
@@ -28,6 +30,61 @@ const episodes = ref<any[]>([])
 const loading = ref(true)
 const scraping = ref(false)
 const brokenPeopleImages = ref<Record<string, boolean>>({})
+
+// 自定义刮削
+const showCustomScrape = ref(false)
+const customQuery = ref('')
+const customYear = ref<number | null>(null)
+const tmdbResults = ref<any[]>([])
+const tmdbSearching = ref(false)
+const tmdbApplying = ref<number | null>(null)
+
+async function openCustomScrape() {
+  if (!item.value) return
+  customQuery.value = item.value.Name || ''
+  customYear.value = item.value.ProductionYear || null
+  tmdbResults.value = []
+  tmdbApplying.value = null
+  showCustomScrape.value = true
+}
+
+async function handleTmdbSearch() {
+  if (!item.value || !customQuery.value.trim()) return
+  tmdbSearching.value = true
+  tmdbResults.value = []
+  try {
+    const res = await searchTmdbForItem(item.value.Id, customQuery.value.trim(), customYear.value || undefined)
+    tmdbResults.value = res.results || []
+  } catch (e: any) {
+    tmdbResults.value = []
+  } finally {
+    tmdbSearching.value = false
+  }
+}
+
+async function handleApplyTmdb(tmdbId: number) {
+  if (!item.value) return
+  tmdbApplying.value = tmdbId
+  try {
+    await scrapeItemByTmdbId(item.value.Id, tmdbId)
+    showCustomScrape.value = false
+    item.value = await getItem(item.value.Id)
+  } catch { /* ignore */ } finally {
+    tmdbApplying.value = null
+  }
+}
+
+function splitPath(fullPath: string) {
+  const idx = fullPath.lastIndexOf('/')
+  if (idx < 0) return { dir: '', file: fullPath }
+  return { dir: fullPath.substring(0, idx), file: fullPath.substring(idx + 1) }
+}
+
+function formatFileSize(bytes: number | null | undefined) {
+  if (!bytes) return ''
+  const gb = bytes / 1024 / 1024 / 1024
+  return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`
+}
 
 function formatRuntime(ticks: number): string {
   const min = Math.round(ticks / 10_000_000 / 60)
@@ -229,6 +286,10 @@ function handleGenreClick(genreId: string) {
                 <n-icon :size="16"><RefreshOutline /></n-icon>
                 <span>{{ scraping ? '刮削中' : '刮削' }}</span>
               </button>
+              <button v-if="auth.isAdmin" type="button" class="btn-action" @click="openCustomScrape" title="自定义刮削">
+                <n-icon :size="16"><SearchOutline /></n-icon>
+                <span>自定义刮削</span>
+              </button>
             </div>
 
             <div v-if="item.GenreItems?.length" class="genre-row">
@@ -356,11 +417,62 @@ function handleGenreClick(genreId: string) {
         </div>
       </div>
 
+      <!-- ═══ 文件信息 (仅管理员) ═══ -->
+      <div v-if="auth.isAdmin && (item.Path || item.MediaSources?.length)" class="files-section">
+        <h3 class="section-heading section-heading-light">
+          <n-icon :size="18" style="vertical-align: -3px; margin-right: 6px"><FolderOpenOutline /></n-icon>文件信息
+        </h3>
+        <div class="file-list">
+          <div v-if="item.Path && !item.MediaSources?.length" class="file-entry">
+            <div class="file-dir">{{ splitPath(item.Path).dir }}/</div>
+            <div class="file-name">{{ splitPath(item.Path).file }}</div>
+          </div>
+          <div v-for="(src, idx) in (item.MediaSources || [])" :key="src.Id || idx" class="file-entry">
+            <div class="file-version" v-if="(item.MediaSources?.length || 0) > 1">{{ src.Name || `版本 ${idx + 1}` }}</div>
+            <div class="file-dir">{{ splitPath(src.Path || '').dir }}/</div>
+            <div class="file-name">{{ splitPath(src.Path || '').file }}</div>
+            <div class="file-meta">
+              <span v-if="src.Size">{{ formatFileSize(src.Size) }}</span>
+              <span v-if="src.Container" class="file-container">{{ src.Container.toUpperCase() }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Back link -->
       <div v-if="item.Type === 'Episode' && item.SeriesName" class="back-section">
         <router-link :to="'/item/' + item.SeriesId" class="back-link">← 返回「{{ item.SeriesName }}」</router-link>
       </div>
     </div>
+
+    <!-- ═══ 自定义刮削弹窗 ═══ -->
+    <n-modal v-model:show="showCustomScrape" preset="card" title="自定义刮削 - 搜索 TMDB" style="max-width: 680px; max-height: 85vh;" :bordered="false">
+      <div class="tmdb-search-bar">
+        <n-input v-model:value="customQuery" placeholder="输入名称搜索 TMDB" clearable @keyup.enter="handleTmdbSearch" style="flex: 1" />
+        <n-input-number v-model:value="customYear" :min="1900" :max="2030" placeholder="年份" clearable style="width: 110px" />
+        <n-button type="primary" :loading="tmdbSearching" @click="handleTmdbSearch" :disabled="!customQuery.trim()">搜索</n-button>
+      </div>
+      <div v-if="tmdbSearching" style="text-align: center; padding: 32px 0"><n-spin /></div>
+      <div v-else-if="tmdbResults.length" class="tmdb-results">
+        <div v-for="r in tmdbResults" :key="r.id" class="tmdb-result-card" @click="handleApplyTmdb(r.id)">
+          <img v-if="r.poster_path" :src="'https://image.tmdb.org/t/p/w92' + r.poster_path" class="tmdb-poster" />
+          <div v-else class="tmdb-poster tmdb-poster-empty">?</div>
+          <div class="tmdb-info">
+            <div class="tmdb-title">
+              {{ r.title || r.name || '未知' }}
+              <span v-if="(r.release_date || r.first_air_date)" class="tmdb-year">({{ (r.release_date || r.first_air_date || '').substring(0, 4) }})</span>
+            </div>
+            <div class="tmdb-meta">
+              <span v-if="r.vote_average" class="tmdb-rating">TMDB {{ r.vote_average?.toFixed?.(1) || r.vote_average }}</span>
+              <span class="tmdb-id">ID: {{ r.id }}</span>
+            </div>
+            <div v-if="r.overview" class="tmdb-overview">{{ r.overview.length > 120 ? r.overview.substring(0, 120) + '...' : r.overview }}</div>
+          </div>
+          <div v-if="tmdbApplying === r.id" class="tmdb-applying"><n-spin size="small" /></div>
+        </div>
+      </div>
+      <div v-else-if="!tmdbSearching && customQuery" style="text-align: center; padding: 24px 0; color: #888">点击搜索查找 TMDB 结果</div>
+    </n-modal>
   </div>
 </template>
 
@@ -929,4 +1041,29 @@ function handleGenreClick(genreId: string) {
   .action-row { justify-content: center; }
   .genre-row { justify-content: center; }
 }
+
+/* ═══ 文件信息 ═══ */
+.files-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.08); }
+.file-list { display: flex; flex-direction: column; gap: 12px; }
+.file-entry { background: rgba(255,255,255,0.04); border-radius: 8px; padding: 12px 16px; font-family: monospace; font-size: 13px; line-height: 1.6; }
+.file-version { font-family: inherit; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; font-size: 14px; }
+.file-dir { color: #888; word-break: break-all; }
+.file-name { color: #fff; font-weight: 500; word-break: break-all; }
+.file-meta { margin-top: 4px; color: #666; font-size: 12px; display: flex; gap: 12px; }
+.file-container { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 3px; }
+
+/* ═══ 自定义刮削弹窗 ═══ */
+.tmdb-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.tmdb-results { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.tmdb-result-card { display: flex; gap: 12px; padding: 10px; border-radius: 8px; cursor: pointer; position: relative; transition: background 0.15s; }
+.tmdb-result-card:hover { background: rgba(255,255,255,0.06); }
+.tmdb-poster { width: 46px; height: 69px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+.tmdb-poster-empty { background: rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: center; color: #555; font-size: 20px; }
+.tmdb-info { flex: 1; min-width: 0; }
+.tmdb-title { font-weight: 600; font-size: 15px; color: #eee; }
+.tmdb-year { color: #888; font-weight: 400; margin-left: 4px; }
+.tmdb-meta { font-size: 12px; color: #888; margin-top: 2px; display: flex; gap: 10px; }
+.tmdb-rating { color: #f5c518; font-weight: 600; }
+.tmdb-overview { font-size: 13px; color: #999; margin-top: 4px; line-height: 1.4; }
+.tmdb-applying { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); border-radius: 8px; }
 </style>

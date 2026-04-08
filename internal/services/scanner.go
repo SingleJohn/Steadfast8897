@@ -1411,29 +1411,53 @@ func scanOneShow(
 	posterTag := ptrAndThen(poster, GenerateImageTag)
 	backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 
+	// 查找已有 Series：先按 NFO 名（finalShowName）查，再按目录名（parsed.Name）查。
+	// 这样避免 NFO 中文名和目录英文名产生两个 Series 的问题。
 	var seriesID string
-	var insertedID *uuid.UUID
-	err := pool.QueryRow(ctx,
-		"INSERT INTO items (library_id, type, name, sort_name, production_year, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
-			"VALUES ($1::uuid, 'Series', $2, $3, $4, $5, $6, $7, $8) "+
-			"ON CONFLICT DO NOTHING RETURNING id",
-		libraryID, finalShowName, strings.ToLower(finalShowName), parsed.Year,
-		derefStr(poster), derefStr(posterTag),
-		derefStr(backdrop), derefStr(backdropTag),
-	).Scan(&insertedID)
-
-	if err == nil && insertedID != nil {
-		seriesID = insertedID.String()
-	} else {
-		var existingID uuid.UUID
-		err = pool.QueryRow(ctx,
+	findExisting := func(name string) string {
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx,
 			"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Series' AND name = $2 LIMIT 1",
-			libraryID, finalShowName).Scan(&existingID)
-		if err != nil {
-			return
+			libraryID, name).Scan(&id); err == nil {
+			return id.String()
 		}
-		syncItemArtwork(ctx, pool, existingID, poster, posterTag, backdrop, backdropTag)
-		seriesID = existingID.String()
+		return ""
+	}
+
+	seriesID = findExisting(finalShowName)
+	if seriesID == "" && finalShowName != parsed.Name {
+		// NFO 名未匹配，尝试目录名（可能旧扫描用目录名创建了 Series）
+		seriesID = findExisting(parsed.Name)
+		if seriesID != "" {
+			// 找到旧的目录名 Series，更新为 NFO 中文名
+			pool.Exec(ctx,
+				"UPDATE items SET name = $1, sort_name = $2, updated_at = NOW() WHERE id = $3::uuid",
+				finalShowName, strings.ToLower(finalShowName), seriesID)
+		}
+	}
+
+	if seriesID != "" {
+		uid, _ := uuid.Parse(seriesID)
+		syncItemArtwork(ctx, pool, uid, poster, posterTag, backdrop, backdropTag)
+	} else {
+		var insertedID *uuid.UUID
+		err := pool.QueryRow(ctx,
+			"INSERT INTO items (library_id, type, name, sort_name, production_year, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
+				"VALUES ($1::uuid, 'Series', $2, $3, $4, $5, $6, $7, $8) "+
+				"ON CONFLICT DO NOTHING RETURNING id",
+			libraryID, finalShowName, strings.ToLower(finalShowName), parsed.Year,
+			derefStr(poster), derefStr(posterTag),
+			derefStr(backdrop), derefStr(backdropTag),
+		).Scan(&insertedID)
+		if err == nil && insertedID != nil {
+			seriesID = insertedID.String()
+		} else {
+			// ON CONFLICT → 可能并发插入，再查一次
+			seriesID = findExisting(finalShowName)
+			if seriesID == "" {
+				return
+			}
+		}
 	}
 
 	if nfoData != nil {

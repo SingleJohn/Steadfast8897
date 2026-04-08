@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
@@ -221,23 +220,9 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	}
 
 	useRepresentative := shouldUseLibraryRepresentative(options)
-	countTarget := "DISTINCT i.id"
-	if useRepresentative {
-		countTarget = "DISTINCT " + mergedRepresentativeExpr("i")
-	}
-	countSQL := fmt.Sprintf(
-		"SELECT COUNT(%s) FROM items i %s %s %s",
-		countTarget, genreJoin, userJoin, whereClause)
-
-	var totalCount int64
-	countParams := make([]interface{}, len(params))
-	copy(countParams, params)
-	err := pool.QueryRow(ctx, countSQL, countParams...).Scan(&totalCount)
-	if err != nil {
-		return nil, fmt.Errorf("count query: %w", err)
-	}
 
 	orderBy := buildOrderBy(options)
+	isRandom := strings.Contains(orderBy, "RANDOM()")
 
 	userColumns := "NULL::bigint as playback_position_ticks, 0::int as play_count, FALSE as is_favorite, FALSE as played, NULL::timestamp as last_played_date"
 	if options.UserID != nil {
@@ -251,7 +236,60 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	if genreJoin != "" {
 		needDistinct = "DISTINCT"
 	}
-	isRandom := strings.Contains(orderBy, "RANDOM()")
+
+	// Random 快速路径：从最近 1000 条中随机选取，跳过昂贵的 COUNT 和全表扫描
+	if isRandom && !useRepresentative {
+		lim := int64(6)
+		if options.Limit != nil {
+			lim = *options.Limit
+		}
+		// 用 pg_class 估算值作为 TotalCount（瞬时返回）
+		var totalCount int64
+		_ = pool.QueryRow(ctx, "SELECT COALESCE(reltuples, 0)::bigint FROM pg_class WHERE relname = 'items'").Scan(&totalCount)
+
+		randomSQL := fmt.Sprintf(
+			`WITH recent_ids AS (
+				SELECT i.id FROM items i %s %s %s ORDER BY i.created_at DESC LIMIT 1000
+			)
+			SELECT %s i.*, %s, %s FROM items i %s %s
+			WHERE i.id IN (SELECT id FROM recent_ids)
+			ORDER BY RANDOM() LIMIT $%d::bigint`,
+			genreJoin, userJoin, whereClause,
+			needDistinct, userColumns, seriesCols, userJoin, seriesJoin,
+			paramIdx)
+
+		randomParams := make([]interface{}, len(params))
+		copy(randomParams, params)
+		randomParams = append(randomParams, lim)
+
+		rows, err := pool.Query(ctx, randomSQL, randomParams...)
+		if err != nil {
+			return nil, fmt.Errorf("random query: %w", err)
+		}
+		items, userData, err := scanItemRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		return &ItemQueryResult{Items: items, UserData: userData, TotalCount: totalCount}, nil
+	}
+
+	// 非 Random 路径：精确 COUNT
+	var totalCount int64
+	{
+		countTarget := "DISTINCT i.id"
+		if useRepresentative {
+			countTarget = "DISTINCT " + mergedRepresentativeExpr("i")
+		}
+		countSQL := fmt.Sprintf(
+			"SELECT COUNT(%s) FROM items i %s %s %s",
+			countTarget, genreJoin, userJoin, whereClause)
+		countParams := make([]interface{}, len(params))
+		copy(countParams, params)
+		err := pool.QueryRow(ctx, countSQL, countParams...).Scan(&totalCount)
+		if err != nil {
+			return nil, fmt.Errorf("count query: %w", err)
+		}
+	}
 
 	var itemSQL string
 	if useRepresentative {
@@ -277,53 +315,28 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 			SELECT * FROM ranked WHERE merge_row_num = 1 ORDER BY %s`,
 			needDistinct, userColumns, seriesCols, mergedRepresentativeExpr("i"),
 			genreJoin, userJoin, seriesJoin, whereClause, outerOrder)
-	} else if genreJoin != "" && isRandom {
+	} else if genreJoin != "" {
 		itemSQL = fmt.Sprintf(
-			"SELECT * FROM (SELECT DISTINCT i.*, %s, %s FROM items i %s %s %s %s) sub",
-			userColumns, seriesCols, genreJoin, userJoin, seriesJoin, whereClause)
+			"SELECT DISTINCT i.*, %s, %s FROM items i %s %s %s %s ORDER BY %s",
+			userColumns, seriesCols, genreJoin, userJoin, seriesJoin, whereClause, orderBy)
 	} else {
-		actualOrder := orderBy
-		if isRandom {
-			actualOrder = "i.id"
-		}
 		itemSQL = fmt.Sprintf(
 			"SELECT %s i.*, %s, %s FROM items i %s %s %s %s ORDER BY %s",
-			needDistinct, userColumns, seriesCols, genreJoin, userJoin, seriesJoin, whereClause, actualOrder)
+			needDistinct, userColumns, seriesCols, genreJoin, userJoin, seriesJoin, whereClause, orderBy)
 	}
 
 	itemParams := make([]interface{}, len(params))
 	copy(itemParams, params)
 
-	if isRandom && totalCount > 0 {
-		lim := int64(1)
-		if options.Limit != nil {
-			lim = *options.Limit
-		}
-		maxOffset := totalCount - lim
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
-		randomOffset := int64(0)
-		if maxOffset > 0 {
-			randomOffset = int64(rand.IntN(int(maxOffset)))
-		}
+	if options.Limit != nil {
 		itemSQL += fmt.Sprintf(" LIMIT $%d::bigint", paramIdx)
-		itemParams = append(itemParams, lim)
+		itemParams = append(itemParams, *options.Limit)
 		paramIdx++
+	}
+	if options.StartIndex != nil {
 		itemSQL += fmt.Sprintf(" OFFSET $%d::bigint", paramIdx)
-		itemParams = append(itemParams, randomOffset)
+		itemParams = append(itemParams, *options.StartIndex)
 		paramIdx++
-	} else {
-		if options.Limit != nil {
-			itemSQL += fmt.Sprintf(" LIMIT $%d::bigint", paramIdx)
-			itemParams = append(itemParams, *options.Limit)
-			paramIdx++
-		}
-		if options.StartIndex != nil {
-			itemSQL += fmt.Sprintf(" OFFSET $%d::bigint", paramIdx)
-			itemParams = append(itemParams, *options.StartIndex)
-			paramIdx++
-		}
 	}
 
 	rows, err := pool.Query(ctx, itemSQL, itemParams...)

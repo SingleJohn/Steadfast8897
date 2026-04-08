@@ -386,6 +386,20 @@ export async function scrapeAllMetadata() {
   return request<any>('/Library/Refresh/Metadata', { method: 'POST' });
 }
 
+export async function searchTmdbForItem(itemId: string, query: string, year?: number) {
+  return request<any>(`/Items/${itemId}/SearchTmdb`, {
+    method: 'POST',
+    body: JSON.stringify({ query, year: year || undefined }),
+  });
+}
+
+export async function scrapeItemByTmdbId(itemId: string, tmdbId: number) {
+  return request<any>(`/Items/${itemId}/ScrapeByTmdbId`, {
+    method: 'POST',
+    body: JSON.stringify({ tmdbId }),
+  });
+}
+
 // Genres
 export async function getGenres() {
   return request<any>('/Genres');

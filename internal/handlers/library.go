@@ -63,6 +63,8 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.GET("/Library/Probe/Progress", getProbeProgress)
 
 	u.POST("/Items/:itemId/Scrape", adminMW, scrapeItem)
+	u.POST("/Items/:itemId/SearchTmdb", adminMW, searchTmdbForItem)
+	u.POST("/Items/:itemId/ScrapeByTmdbId", adminMW, scrapeItemByTmdbId)
 	u.POST("/Library/Scrape/All", adminMW, scrapeAll)
 	u.POST("/Library/Scrape/Stop", adminMW, stopScrape)
 	u.GET("/Library/Scrape/Progress", getScrapeProgress)
@@ -1482,6 +1484,43 @@ func scrapeItem(c *gin.Context) {
 	itemID := c.Param("itemId")
 	ctx := c.Request.Context()
 	_, err := services.ScrapeItem(ctx, state.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func searchTmdbForItem(c *gin.Context) {
+	state := GetState(c)
+	itemID := c.Param("itemId")
+	var body struct {
+		Query string `json:"query"`
+		Year  *int32 `json:"year,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供搜索关键词"})
+		return
+	}
+	results, err := services.SearchTMDBForItem(c.Request.Context(), state.DB, itemID, body.Query, body.Year)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results})
+}
+
+func scrapeItemByTmdbId(c *gin.Context) {
+	state := GetState(c)
+	itemID := c.Param("itemId")
+	var body struct {
+		TmdbId int64 `json:"tmdbId"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.TmdbId <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供有效的 TMDB ID"})
+		return
+	}
+	_, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, itemID, body.TmdbId)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
