@@ -67,6 +67,16 @@ func main() {
 		}
 	}
 
+	// 禁用 PG 并行查询，避免 parallel worker 打满 CPU
+	for _, stmt := range []string{
+		"ALTER SYSTEM SET max_parallel_workers_per_gather = 0",
+		"ALTER SYSTEM SET max_parallel_workers = 0",
+		"ALTER SYSTEM SET max_parallel_maintenance_workers = 0",
+		"SELECT pg_reload_conf()",
+	} {
+		pool.Exec(context.Background(), stmt)
+	}
+
 	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
 	sessionManager := services.NewSessionManager()
 	progressBuffer := services.NewProgressBuffer(pool)
