@@ -137,8 +137,12 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, query u
 		return nil, fmt.Errorf("decode response (%s): %w; body=%s", endpoint, err, truncate(string(raw), 200))
 	}
 	if !g.State {
-		// 40140116 = no auth (token expired/revoked)
-		if g.Code == 40140116 || strings.Contains(strings.ToLower(g.Message), "no auth") {
+		// 4014xxxx = all auth-related errors (token expired/invalid/verification failed)
+		if (g.Code >= 40140000 && g.Code < 40150000) ||
+			strings.Contains(strings.ToLower(g.Message), "no auth") ||
+			strings.Contains(g.Message, "无效") ||
+			strings.Contains(g.Message, "校验失败") ||
+			strings.Contains(g.Message, "access_token") {
 			return nil, errAuth{code: g.Code, msg: g.Message}
 		}
 		return nil, fmt.Errorf("115 api error: code=%d msg=%s", g.Code, g.Message)

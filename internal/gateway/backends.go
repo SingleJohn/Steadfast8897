@@ -6,7 +6,9 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -82,7 +84,7 @@ func BuildBackendAdapters(backends []BackendConfig, tokenSaver Open115TokenSaver
 			}
 		case "115_cookie":
 			if b.Cookie115 != nil {
-				a = &cookie115Adapter{id: b.ID, name: b.Name, cfg: *b.Cookie115}
+				a = &cookie115Adapter{id: b.ID, name: b.Name, cfg: *b.Cookie115, pickCodes: map[string]string{}, downURLCache: map[string]downURLEntry{}}
 			}
 		}
 		if a != nil {
@@ -620,10 +622,218 @@ type cookie115Adapter struct {
 	id   string
 	name string
 	cfg  Cookie115BackendConfig
+
+	mu           sync.Mutex
+	pickCodes    map[string]string
+	downURLCache map[string]downURLEntry
 }
 
 func (a *cookie115Adapter) Name() string { return a.name }
 func (a *cookie115Adapter) Type() string { return "115_cookie" }
-func (a *cookie115Adapter) BuildRedirectURL(_ context.Context, _ string, _ string) (string, error) {
-	return "", fmt.Errorf("115_cookie backend %s: requires cookie management", a.id)
+
+func (a *cookie115Adapter) linkTTL() time.Duration {
+	ttl := a.cfg.LinkTTLSeconds
+	if ttl <= 0 {
+		ttl = 110 * 60
+	}
+	return time.Duration(ttl) * time.Second
+}
+
+func (a *cookie115Adapter) lookupPickCode(path string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pc, ok := a.pickCodes[path]
+	return pc, ok
+}
+
+func (a *cookie115Adapter) storePickCode(path, pc string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pickCodes[path] = pc
+}
+
+func (a *cookie115Adapter) lookupDownURL(key string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e, ok := a.downURLCache[key]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(e.expiry) {
+		delete(a.downURLCache, key)
+		return "", false
+	}
+	return e.url, true
+}
+
+func (a *cookie115Adapter) storeDownURL(key, urlStr string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.downURLCache[key] = downURLEntry{url: urlStr, expiry: time.Now().Add(a.linkTTL())}
+}
+
+func (a *cookie115Adapter) BuildRedirectURL(ctx context.Context, objectKey string, userAgent string) (string, error) {
+	if a.cfg.Cookies == "" {
+		return "", fmt.Errorf("115_cookie backend %s: cookies not configured", a.id)
+	}
+	path := "/" + strings.TrimLeft(objectKey, "/")
+	if path == "/" {
+		return "", fmt.Errorf("115_cookie backend %s: empty object_key", a.id)
+	}
+
+	// 1. Resolve pick_code via 115 web API (cached)
+	pickCode, ok := a.lookupPickCode(path)
+	if !ok {
+		pc, err := a.cookie115GetPickCode(ctx, path)
+		if err != nil {
+			return "", fmt.Errorf("115_cookie backend %s: resolve path %q: %w", a.id, path, err)
+		}
+		pickCode = pc
+		a.storePickCode(path, pickCode)
+	}
+
+	// 2. Cached download URL
+	cacheKey := pickCode + "|" + userAgent
+	if u, ok := a.lookupDownURL(cacheKey); ok {
+		return u, nil
+	}
+
+	// 3. Fetch fresh download URL
+	urlStr, err := a.cookie115GetDownURL(ctx, pickCode, userAgent)
+	if err != nil {
+		a.mu.Lock()
+		delete(a.pickCodes, path)
+		a.mu.Unlock()
+		return "", fmt.Errorf("115_cookie backend %s: get downurl: %w", a.id, err)
+	}
+	a.storeDownURL(cacheKey, urlStr)
+	return urlStr, nil
+}
+
+// cookie115GetPickCode resolves a file path to a pick_code using 115's web API.
+// It walks the path segments one by one using /files endpoint.
+func (a *cookie115Adapter) cookie115GetPickCode(ctx context.Context, filePath string) (string, error) {
+	segments := strings.Split(strings.Trim(filePath, "/"), "/")
+	if len(segments) == 0 {
+		return "", fmt.Errorf("empty path")
+	}
+
+	cid := a.cfg.RootFolderID
+	if cid == "" {
+		cid = "0"
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	// Walk each segment to find the final file
+	for i, seg := range segments {
+		isLast := i == len(segments)-1
+
+		apiURL := fmt.Sprintf("https://webapi.115.com/files?cid=%s&limit=1000&show_dir=1&search_value=%s",
+			url.QueryEscape(cid), url.QueryEscape(seg))
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Cookie", a.cfg.Cookies)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			State bool `json:"state"`
+			Data  []struct {
+				CID string `json:"cid"`
+				FID string `json:"fid"`
+				N   string `json:"n"`  // name
+				PC  string `json:"pc"` // pick_code
+				ICO string `json:"ico"`
+			} `json:"data"`
+			ErrNo int `json:"errNo"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("decode response: %w", err)
+		}
+		if !result.State {
+			return "", fmt.Errorf("115 files api error: errNo=%d", result.ErrNo)
+		}
+
+		found := false
+		for _, f := range result.Data {
+			if f.N == seg {
+				if isLast {
+					if f.PC == "" {
+						return "", fmt.Errorf("file %q has no pick_code", seg)
+					}
+					return f.PC, nil
+				}
+				// It's a folder, continue walking
+				cid = f.CID
+				if cid == "" {
+					cid = f.FID
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("segment %q not found in folder cid=%s", seg, cid)
+		}
+	}
+	return "", fmt.Errorf("path walk ended without finding file")
+}
+
+// cookie115GetDownURL fetches a download URL for a pick_code using 115's web API.
+func (a *cookie115Adapter) cookie115GetDownURL(ctx context.Context, pickCode string, ua string) (string, error) {
+	apiURL := "https://proapi.115.com/app/chrome/downurl"
+	dataJSON := fmt.Sprintf(`{"pickcode":"%s"}`, pickCode)
+	form := url.Values{"data": {dataJSON}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", a.cfg.Cookies)
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		State bool            `json:"state"`
+		Code  int             `json:"code"`
+		Msg   string          `json:"msg"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if !result.State {
+		return "", fmt.Errorf("115 downurl error: code=%d msg=%s", result.Code, result.Msg)
+	}
+
+	var m map[string]struct {
+		URL struct {
+			URL string `json:"url"`
+		} `json:"url"`
+	}
+	if err := json.Unmarshal(result.Data, &m); err != nil {
+		return "", fmt.Errorf("decode downurl data: %w", err)
+	}
+	for _, v := range m {
+		if v.URL.URL != "" {
+			return v.URL.URL, nil
+		}
+	}
+	return "", fmt.Errorf("downurl response had no url")
 }

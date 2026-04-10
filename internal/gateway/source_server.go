@@ -326,7 +326,7 @@ func (rt *Runtime) tryResolvePlaybackRoute(w http.ResponseWriter, r *http.Reques
 
 	decision := DecideRoute(src.Routes, realPath)
 	if decision == nil {
-		rt.logger.Debug("no route matched for real path", "source_id", src.ID, "real_path", realPath)
+		rt.logger.Warn("no route matched for real path", "source_id", src.ID, "real_path", realPath)
 		return false
 	}
 
@@ -337,7 +337,7 @@ func (rt *Runtime) tryResolvePlaybackRoute(w http.ResponseWriter, r *http.Reques
 
 	objectKey, ok := ResolveObjectKey(realPath, ruleSet, decision.RequireMapping)
 	if !ok {
-		rt.logger.Debug("path mapping not matched", "source_id", src.ID, "real_path", realPath)
+		rt.logger.Warn("path mapping not matched", "source_id", src.ID, "real_path", realPath, "rule_set", decision.PathRuleSetID, "require_mapping", decision.RequireMapping)
 		return false
 	}
 

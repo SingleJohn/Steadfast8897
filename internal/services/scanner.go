@@ -734,11 +734,9 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 		return
 	}
 
-	rows, err := pool.Query(ctx,
-		"SELECT id::text, name FROM items WHERE library_id = $1::uuid AND type IN ('Movie', 'Series') "+
-			"AND (overview IS NULL OR overview = '') ORDER BY created_at DESC LIMIT 50",
-		libraryID)
-	if err != nil {
+	client := TmdbClientFromConfig(ctx, pool)
+	if client == nil {
+		slog.Warn("[AutoScrape] TMDB API key not configured, skipping")
 		return
 	}
 
@@ -746,41 +744,59 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 		id   string
 		name string
 	}
-	var items []newItem
-	for rows.Next() {
-		var item newItem
-		if err := rows.Scan(&item.id, &item.name); err != nil {
-			continue
-		}
-		items = append(items, item)
-	}
-	rows.Close()
 
-	if len(items) == 0 {
-		return
-	}
-
-	slog.Info("[AutoScrape] Scraping new items", "count", len(items), "library", libraryID)
-
-	client := TmdbClientFromConfig(ctx, pool)
-	if client == nil {
-		slog.Warn("[AutoScrape] TMDB API key not configured, skipping")
-		return
-	}
-
-	success, failed := 0, 0
-	for _, item := range items {
-		_, err := ScrapeItemWithClient(ctx, pool, item.id, client)
+	totalSuccess, totalFailed := 0, 0
+	for batch := 0; ; batch++ {
+		rows, err := pool.Query(ctx,
+			"SELECT id::text, name FROM items WHERE library_id = $1::uuid AND type IN ('Movie', 'Series') "+
+				"AND (overview IS NULL OR overview = '') ORDER BY created_at DESC LIMIT 50",
+			libraryID)
 		if err != nil {
-			failed++
-			slog.Debug("[AutoScrape] Failed", "name", item.name, "error", err)
-		} else {
-			success++
+			break
 		}
-		time.Sleep(300 * time.Millisecond)
+
+		var items []newItem
+		for rows.Next() {
+			var item newItem
+			if err := rows.Scan(&item.id, &item.name); err != nil {
+				continue
+			}
+			items = append(items, item)
+		}
+		rows.Close()
+
+		if len(items) == 0 {
+			break
+		}
+
+		slog.Info("[AutoScrape] Batch start", "batch", batch+1, "count", len(items), "library", libraryID)
+
+		success, failed := 0, 0
+		for _, item := range items {
+			_, err := ScrapeItemWithClient(ctx, pool, item.id, client)
+			if err != nil {
+				failed++
+				slog.Debug("[AutoScrape] Failed", "name", item.name, "error", err)
+			} else {
+				success++
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		totalSuccess += success
+		totalFailed += failed
+		slog.Info("[AutoScrape] Batch done", "batch", batch+1, "success", success, "failed", failed)
+
+		// 如果全部失败说明 TMDB 不可达，停止
+		if success == 0 {
+			slog.Warn("[AutoScrape] All items in batch failed, stopping", "library", libraryID)
+			break
+		}
 	}
 
-	slog.Info("[AutoScrape] Done", "success", success, "failed", failed)
+	if totalSuccess > 0 || totalFailed > 0 {
+		slog.Info("[AutoScrape] Done", "success", totalSuccess, "failed", totalFailed)
+	}
 }
 
 // ============ Cleanup ============

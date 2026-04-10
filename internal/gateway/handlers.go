@@ -42,6 +42,10 @@ func handleSaveConfig(store *Store, runtime *Runtime) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		// Preserve sensitive fields that the frontend may not send back
+		if old, err := store.LoadConfig(c.Request.Context()); err == nil {
+			mergeBackendSecrets(old, &cfg)
+		}
 		if err := store.SaveConfig(c.Request.Context(), &cfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -231,6 +235,36 @@ func unixTimeQuery(c *gin.Context, key string) *time.Time {
 	}
 	t := time.Unix(sec, 0).UTC()
 	return &t
+}
+
+// mergeBackendSecrets preserves sensitive fields from the old config when the
+// new config doesn't include them (e.g. frontend doesn't send cookies/tokens back).
+func mergeBackendSecrets(old, new *GatewayConfig) {
+	oldMap := map[string]BackendConfig{}
+	for _, b := range old.Backends {
+		oldMap[b.ID] = b
+	}
+	for i := range new.Backends {
+		ob, ok := oldMap[new.Backends[i].ID]
+		if !ok {
+			continue
+		}
+		// Preserve 115_cookie cookies
+		if new.Backends[i].Type == "115_cookie" && new.Backends[i].Cookie115 != nil && ob.Cookie115 != nil {
+			if new.Backends[i].Cookie115.Cookies == "" && ob.Cookie115.Cookies != "" {
+				new.Backends[i].Cookie115.Cookies = ob.Cookie115.Cookies
+			}
+		}
+		// Preserve 115_open tokens
+		if new.Backends[i].Type == "115_open" && new.Backends[i].Open115 != nil && ob.Open115 != nil {
+			if new.Backends[i].Open115.AccessToken == "" && ob.Open115.AccessToken != "" {
+				new.Backends[i].Open115.AccessToken = ob.Open115.AccessToken
+			}
+			if new.Backends[i].Open115.RefreshToken == "" && ob.Open115.RefreshToken != "" {
+				new.Backends[i].Open115.RefreshToken = ob.Open115.RefreshToken
+			}
+		}
+	}
 }
 
 // --- 115 Cookie Credential ---
