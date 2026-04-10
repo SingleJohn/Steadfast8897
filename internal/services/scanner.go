@@ -1484,17 +1484,33 @@ func scanOneShow(
 	if err != nil {
 		return
 	}
-	for _, se := range entries {
-		if !se.IsDir() {
-			continue
-		}
-		dirName := se.Name()
-		seasonNum := extractSeasonNumber(dirName)
-		if seasonNum < 0 {
-			continue
-		}
 
-		seasonPath := filepath.Join(showPath, dirName)
+	// Collect season directories
+	type seasonDir struct {
+		path      string
+		seasonNum int32
+	}
+	var seasonDirs []seasonDir
+	hasVideoInRoot := false
+	for _, se := range entries {
+		if se.IsDir() {
+			dirName := se.Name()
+			seasonNum := extractSeasonNumber(dirName)
+			if seasonNum >= 0 {
+				seasonDirs = append(seasonDirs, seasonDir{path: filepath.Join(showPath, dirName), seasonNum: seasonNum})
+			}
+		} else if IsVideoExt(filepath.Ext(se.Name())) {
+			hasVideoInRoot = true
+		}
+	}
+	// If no season subdirectories found but root has video files, treat root as Season 1
+	if len(seasonDirs) == 0 && hasVideoInRoot {
+		seasonDirs = append(seasonDirs, seasonDir{path: showPath, seasonNum: 1})
+	}
+
+	for _, sd := range seasonDirs {
+		seasonNum := sd.seasonNum
+		seasonPath := sd.path
 		seasonCache := CacheDir(seasonPath)
 		seasonPoster := FindImageCached(seasonCache, posterImagePrefixes)
 		seasonPosterTag := ptrAndThen(seasonPoster, GenerateImageTag)
@@ -1751,6 +1767,11 @@ func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID 
 }
 
 func extractSeasonNumber(dirName string) int32 {
+	lower := strings.ToLower(dirName)
+	// Specials / SP / 特别篇 → Season 0
+	if lower == "specials" || lower == "sp" || lower == "special" || strings.Contains(dirName, "特别篇") || strings.Contains(dirName, "番外") {
+		return 0
+	}
 	if m := seasonRE.FindStringSubmatch(dirName); m != nil {
 		if v, err := strconv.ParseInt(m[1], 10, 32); err == nil {
 			return int32(v)
