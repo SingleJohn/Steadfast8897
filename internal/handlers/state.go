@@ -23,6 +23,7 @@ type AppState struct {
 	ScrapeTask     *services.ScrapeTask
 	HTTPClient     *http.Client
 	Updater        *services.Updater
+	GapScanTask    *services.GapScanTask
 }
 
 func GetState(c *gin.Context) *AppState {

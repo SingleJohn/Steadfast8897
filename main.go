@@ -118,6 +118,8 @@ func main() {
 	updateHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
 
+	gapScanTask := services.NewGapScanTask()
+
 	state := &handlers.AppState{
 		DB:             pool,
 		Cache:          cache,
@@ -131,6 +133,7 @@ func main() {
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
 		Updater:        updater,
+		GapScanTask:    gapScanTask,
 	}
 
 	ctx := context.Background()
@@ -180,6 +183,7 @@ func main() {
 		handlers.RegisterVideoRoutes(group, state, authMW)
 		handlers.RegisterImageRoutes(group, state)
 		handlers.RegisterCompatRoutes(group, state, authMW, adminMW, optAuthMW)
+		handlers.RegisterEmbyCompatRoutes(group, state, adminMW)
 		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
 		handlers.RegisterWebhookRoutes(group, state)
 		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
