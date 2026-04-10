@@ -20,6 +20,8 @@ func RegisterAPIRoutes(r *gin.RouterGroup, store *Store, runtime *Runtime, admin
 	r.GET("/Gateway/Backends", adminMW, handleListBackends(store))
 	r.GET("/Gateway/Health/Emby", adminMW, handleEmbyHealth(store))
 	r.POST("/Gateway/Emby/Check", adminMW, handleEmbyCheck())
+	r.GET("/Gateway/115-Cookie/Credential", adminMW, handleGetCookie115(store))
+	r.POST("/Gateway/115-Cookie/Credential/Upsert", adminMW, handleUpsertCookie115(store, runtime))
 }
 
 func handleGetConfig(store *Store) gin.HandlerFunc {
@@ -229,4 +231,79 @@ func unixTimeQuery(c *gin.Context, key string) *time.Time {
 	}
 	t := time.Unix(sec, 0).UTC()
 	return &t
+}
+
+// --- 115 Cookie Credential ---
+
+func handleGetCookie115(store *Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		backendID := c.Query("backend_id")
+		if backendID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 backend_id"})
+			return
+		}
+		cfg, err := store.LoadConfig(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, b := range cfg.Backends {
+			if b.ID == backendID && b.Type == "115_cookie" {
+				cookie := ""
+				if b.Cookie115 != nil {
+					cookie = b.Cookie115.Cookies
+				}
+				c.JSON(http.StatusOK, gin.H{
+					"backend_id": backendID,
+					"has_cookie": cookie != "",
+					"cookie":     cookie,
+					"expires_at": 0,
+					"last_error": "",
+				})
+				return
+			}
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "115_cookie 后端不存在"})
+	}
+}
+
+func handleUpsertCookie115(store *Store, runtime *Runtime) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			BackendID      string `json:"backend_id"`
+			Cookie         string `json:"cookie"`
+			ExpiresSeconds int    `json:"expires_seconds"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || body.BackendID == "" || body.Cookie == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 backend_id 和 cookie"})
+			return
+		}
+		ctx := c.Request.Context()
+		cfg, err := store.LoadConfig(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		found := false
+		for i := range cfg.Backends {
+			if cfg.Backends[i].ID == body.BackendID && cfg.Backends[i].Type == "115_cookie" {
+				if cfg.Backends[i].Cookie115 == nil {
+					cfg.Backends[i].Cookie115 = &Cookie115BackendConfig{}
+				}
+				cfg.Backends[i].Cookie115.Cookies = body.Cookie
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "115_cookie 后端不存在"})
+			return
+		}
+		if err := store.SaveConfig(ctx, cfg); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		runtime.Rebuild(ctx, cfg)
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
 }

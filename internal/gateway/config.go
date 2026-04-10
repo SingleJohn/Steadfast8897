@@ -163,10 +163,11 @@ type Open115BackendConfig struct {
 }
 
 type Cookie115BackendConfig struct {
-	RootFolderID   string `json:"root_folder_id"`
-	LinkTTLSeconds int    `json:"link_ttl_seconds"`
-	CacheEnabled   bool   `json:"cache_enabled"`
-	CacheTTLSeconds int   `json:"cache_ttl_seconds"`
+	Cookies         string `json:"cookies"`
+	RootFolderID    string `json:"root_folder_id"`
+	LinkTTLSeconds  int    `json:"link_ttl_seconds"`
+	CacheEnabled    bool   `json:"cache_enabled"`
+	CacheTTLSeconds int    `json:"cache_ttl_seconds"`
 }
 
 type Sub115BackendConfig struct {
