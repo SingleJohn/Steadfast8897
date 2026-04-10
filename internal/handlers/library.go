@@ -49,6 +49,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Items/:itemId/Refresh", adminMW, scrapeItem)
 
 	u.GET("/Library/VirtualFolders", authMW, getVirtualFolders)
+	u.GET("/Library/VirtualFolders/Query", authMW, getVirtualFolders)
 	u.GET("/Library/VirtualFolders/:id", authMW, getVirtualFolderDetail)
 	u.POST("/Library/VirtualFolders/Add", adminMW, addLibrary)
 	u.POST("/Library/VirtualFolders/Update", adminMW, updateLibraryInfo)
