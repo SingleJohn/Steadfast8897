@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { NCard, NTag, NDataTable, type DataTableColumns } from 'naive-ui'
 import { getActiveSessions, getRecentPlayback } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
@@ -80,6 +80,17 @@ const recentColumns: DataTableColumns<any> = [
     key: 'item_type',
     width: 80,
     render: (r) => r.item_type === 'Episode' ? '剧集' : r.item_type === 'Movie' ? '电影' : (r.item_type || '-'),
+  },
+  {
+    title: '播放方式',
+    key: 'play_method',
+    width: 90,
+    render: (r) => {
+      const m = r.play_method || 'DirectPlay'
+      if (m === 'Redirect') return h(NTag, { size: 'tiny', type: 'success', bordered: false, round: true }, { default: () => '302直链' })
+      if (m === 'Proxy') return h(NTag, { size: 'tiny', type: 'warning', bordered: false, round: true }, { default: () => '网关中转' })
+      return h(NTag, { size: 'tiny', type: 'info', bordered: false, round: true }, { default: () => '直接播放' })
+    },
   },
   { title: '客户端', key: 'client_name', width: 120, render: (r) => r.client_name || '-' },
   { title: '设备', key: 'device_name', width: 120, render: (r) => r.device_name || '-' },
@@ -201,7 +212,9 @@ onUnmounted(() => {
               </n-tag>
               <n-tag v-if="videoInfo(s)" size="tiny" :bordered="false" round>{{ videoInfo(s) }}</n-tag>
               <n-tag v-if="audioInfo(s)" size="tiny" :bordered="false" round>{{ audioInfo(s) }}</n-tag>
-              <n-tag size="tiny" type="success" :bordered="false" round>直接播放</n-tag>
+              <n-tag size="tiny" :type="s.NowPlayingItem?.PlayMethod === 'Redirect' ? 'success' : s.NowPlayingItem?.PlayMethod === 'Proxy' ? 'warning' : 'info'" :bordered="false" round>
+                {{ s.NowPlayingItem?.PlayMethod === 'Redirect' ? '302直链' : s.NowPlayingItem?.PlayMethod === 'Proxy' ? '网关中转' : '直接播放' }}
+              </n-tag>
             </div>
           </div>
         </div>

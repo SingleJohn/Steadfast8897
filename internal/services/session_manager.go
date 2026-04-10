@@ -28,6 +28,7 @@ type NowPlaying struct {
 	SeasonIndex         *int32  `json:"SeasonIndex,omitempty"`
 	EpisodeIndex        *int32  `json:"EpisodeIndex,omitempty"`
 	PrimaryImageItemID  *string `json:"PrimaryImageItemId,omitempty"`
+	PlayMethod          string  `json:"PlayMethod,omitempty"`
 }
 
 type SessionManager struct {

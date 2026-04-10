@@ -18,8 +18,9 @@ type EmbySourceConfig struct {
 	ListenPort       int    `json:"listen_port"`
 	StreamPathPrefix string `json:"stream_path_prefix"`
 
-	Upstream EmbyUpstreamConfig `json:"upstream"`
-	Routes   []RouteRuleConfig  `json:"routes"`
+	Upstream             EmbyUpstreamConfig `json:"upstream"`
+	Routes               []RouteRuleConfig  `json:"routes"`
+	DisableProxyFallback bool               `json:"disable_proxy_fallback"`
 }
 
 type EmbyUpstreamConfig struct {

@@ -276,9 +276,19 @@ func (rt *Runtime) handleDirectStream(w http.ResponseWriter, r *http.Request, sr
 func (rt *Runtime) handleProxyRequest(w http.ResponseWriter, r *http.Request, src EmbySourceConfig, proxy *httputil.ReverseProxy) {
 	if itemID, ok := matchInterceptItemID(r.URL.Path); ok {
 		if r.Method != http.MethodHead && rt.tryResolvePlaybackRoute(w, r, src, itemID) {
+			// 302 直链成功
+			r.Header.Set("X-Play-Method", "Redirect")
+			return
+		}
+		// 302 失败
+		if src.DisableProxyFallback {
+			rt.logger.Warn("302 failed and proxy fallback disabled", "source_id", src.ID, "item_id", itemID)
+			http.Error(w, "302 直链失败，网关中转已禁用", http.StatusBadGateway)
 			return
 		}
 	}
+	// 网关中转
+	r.Header.Set("X-Play-Method", "Proxy")
 	proxy.ServeHTTP(w, r)
 }
 
