@@ -22,7 +22,6 @@ import (
 	"fyms/internal/gateway"
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
-	"fyms/internal/proxy"
 	"fyms/internal/services"
 )
 
@@ -119,8 +118,6 @@ func main() {
 	updateHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
 
-	proxySvc := proxy.NewService(pool)
-
 	state := &handlers.AppState{
 		DB:             pool,
 		Cache:          cache,
@@ -134,7 +131,6 @@ func main() {
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
 		Updater:        updater,
-		ProxyService:   proxySvc,
 	}
 
 	ctx := context.Background()
@@ -158,9 +154,6 @@ func main() {
 		c.Set("state", state)
 		c.Next()
 	})
-
-	// Proxy download routes (no auth, for direct player access)
-	proxy.RegisterRoutes(r, proxySvc)
 
 	// Gateway (302 redirect engine)
 	gwStore := gateway.NewStore(pool)
