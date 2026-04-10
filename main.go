@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -21,6 +22,7 @@ import (
 	"fyms/internal/gateway"
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
+	"fyms/internal/proxy"
 	"fyms/internal/services"
 )
 
@@ -44,11 +46,19 @@ func main() {
 
 	logBuffer := services.NewLogBuffer(2000)
 
-	textHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	os.MkdirAll("data/logs", 0755)
+
+	// 日志同时写到 stdout 和 data/logs/fyms-YYYY-MM-DD.log
+	logFileName := fmt.Sprintf("data/logs/fyms-%s.log", time.Now().Format("2006-01-02"))
+	logFile, logFileErr := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	var logWriter io.Writer = os.Stdout
+	if logFileErr == nil {
+		logWriter = io.MultiWriter(os.Stdout, logFile)
+	}
+	textHandler := slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})
 	bufHandler := services.NewBufferHandler(textHandler, logBuffer)
 	slog.SetDefault(slog.New(bufHandler))
 
-	os.MkdirAll("data/logs", 0755)
 	go cleanupOldLogs("data/logs", 7)
 
 	slog.Info("FYMS starting", "port", cfg.Port)
@@ -109,6 +119,8 @@ func main() {
 	updateHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
 
+	proxySvc := proxy.NewService(pool)
+
 	state := &handlers.AppState{
 		DB:             pool,
 		Cache:          cache,
@@ -122,6 +134,7 @@ func main() {
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
 		Updater:        updater,
+		ProxyService:   proxySvc,
 	}
 
 	ctx := context.Background()
@@ -145,6 +158,9 @@ func main() {
 		c.Set("state", state)
 		c.Next()
 	})
+
+	// Proxy download routes (no auth, for direct player access)
+	proxy.RegisterRoutes(r, proxySvc)
 
 	// Gateway (302 redirect engine)
 	gwStore := gateway.NewStore(pool)
