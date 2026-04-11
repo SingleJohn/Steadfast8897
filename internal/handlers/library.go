@@ -1285,7 +1285,8 @@ func refreshSingle(c *gin.Context) {
 
 func getVirtualFolders(c *gin.Context) {
 	state := GetState(c)
-	libs, err := models.GetAllLibraries(c.Request.Context(), state.DB)
+	ctx := c.Request.Context()
+	libs, err := models.GetAllLibraries(ctx, state.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -1297,12 +1298,19 @@ func getVirtualFolders(c *gin.Context) {
 		if locations == nil {
 			locations = []string{}
 		}
+
+		var itemCount int64
+		_ = state.DB.QueryRow(ctx,
+			"SELECT COUNT(*) FROM items WHERE library_id = $1::uuid AND type IN ('Movie','Series','Episode')",
+			idStr).Scan(&itemCount)
+
 		entry := gin.H{
-			"Name":           lib.Name,
-			"Locations":      locations,
-			"CollectionType": lib.CollectionType,
-			"ItemId":         idStr,
-			"Guid":           idStr,
+			"Name":               lib.Name,
+			"Locations":          locations,
+			"CollectionType":     lib.CollectionType,
+			"ItemId":             idStr,
+			"Guid":               idStr,
+			"RecursiveItemCount": itemCount,
 		}
 		if lib.PrimaryImageTag != nil {
 			entry["ImageTag"] = *lib.PrimaryImageTag
