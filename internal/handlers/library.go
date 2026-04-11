@@ -353,6 +353,11 @@ func getItems(c *gin.Context) {
 		return
 	}
 
+	// 大批量分页列表：跳过 series_fallback JOIN 提升性能
+	if opts.Recursive && opts.ParentID == nil && opts.UserID == nil && len(opts.GenreIDs) == 0 {
+		opts.LightMode = true
+	}
+
 	// Handle platform virtual library (UUID-based lookup)
 	if opts.ParentID != nil {
 		if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
@@ -377,7 +382,7 @@ func getItems(c *gin.Context) {
 		if i < len(res.UserData) {
 			ud = &res.UserData[i]
 		}
-		items = append(items, dto.FormatItemDto(&res.Items[i], sid, ud))
+		items = append(items, dto.FormatItemDtoList(&res.Items[i], sid, ud))
 	}
 
 	c.JSON(http.StatusOK, gin.H{

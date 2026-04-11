@@ -6,7 +6,16 @@ import (
 	"strings"
 )
 
+// FormatItemDtoList 列表场景：跳过 strm 文件解析（避免大量磁盘 IO）
+func FormatItemDtoList(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
+	return formatItemDto(item, serverID, userData, true)
+}
+
 func FormatItemDto(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
+	return formatItemDto(item, serverID, userData, false)
+}
+
+func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipStrmResolve bool) BaseItemDto {
 	sortName := item.Name
 	if item.SortName != nil {
 		sortName = *item.SortName
@@ -53,7 +62,10 @@ func FormatItemDto(item *ItemRow, serverID string, userData *UserDataRow) BaseIt
 	if item.ResolvedPath != nil {
 		displayPath = item.ResolvedPath
 	} else if item.FilePath != nil {
-		if strings.HasSuffix(*item.FilePath, ".strm") {
+		if skipStrmResolve {
+			// 列表模式：直接用 file_path，跳过磁盘 IO
+			displayPath = item.FilePath
+		} else if strings.HasSuffix(*item.FilePath, ".strm") {
 			if resolved := resolveStrmForDisplay(*item.FilePath); resolved != nil {
 				displayPath = resolved
 			} else {

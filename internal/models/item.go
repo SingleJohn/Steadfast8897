@@ -31,6 +31,7 @@ type ItemQueryOptions struct {
 	GenreIDs         []string
 	Years            []int
 	Studio           *string
+	LightMode        bool // 跳过 series_fallback JOIN，用于大批量列表
 }
 
 type QueryResult struct {
@@ -229,8 +230,14 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		userColumns = "uid.playback_position_ticks, uid.play_count, uid.is_favorite, uid.played, uid.last_played_date"
 	}
 
-	seriesJoin := "LEFT JOIN items series_fallback ON series_fallback.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)"
-	seriesCols := "series_fallback.primary_image_tag as series_primary_image_tag, series_fallback.backdrop_image_tag as series_backdrop_image_tag, series_fallback.id as series_fallback_id"
+	var seriesJoin, seriesCols string
+	if options.LightMode {
+		seriesJoin = ""
+		seriesCols = "NULL::text as series_primary_image_tag, NULL::text as series_backdrop_image_tag, NULL::uuid as series_fallback_id"
+	} else {
+		seriesJoin = "LEFT JOIN items series_fallback ON series_fallback.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)"
+		seriesCols = "series_fallback.primary_image_tag as series_primary_image_tag, series_fallback.backdrop_image_tag as series_backdrop_image_tag, series_fallback.id as series_fallback_id"
+	}
 
 	needDistinct := ""
 	if genreJoin != "" {
@@ -273,12 +280,35 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		return &ItemQueryResult{Items: items, UserData: userData, TotalCount: totalCount}, nil
 	}
 
-	// 非 Random 路径：精确 COUNT
+	// 非 Random 路径：COUNT
+	// 当 StartIndex > 0 时，使用 pg_class 估算值（O(1)）避免全表 COUNT
 	var totalCount int64
-	{
+	if options.StartIndex != nil && *options.StartIndex > 0 && genreJoin == "" && !useRepresentative {
+		// 快速估算：对简单 type 筛选使用 pg_class 统计信息
+		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && options.LibraryID == nil && options.SearchTerm == nil && options.Studio == nil {
+			_ = pool.QueryRow(ctx,
+				"SELECT COALESCE(n_live_tup, 0) FROM pg_stat_user_tables WHERE relname = 'items'").Scan(&totalCount)
+			// 如果估算值明显小于 StartIndex，用精确值
+			if totalCount < *options.StartIndex {
+				countSQL := fmt.Sprintf("SELECT COUNT(*) FROM items i WHERE i.type = $1")
+				_ = pool.QueryRow(ctx, countSQL, options.IncludeItemTypes[0]).Scan(&totalCount)
+			}
+		} else {
+			countTarget := "DISTINCT i.id"
+			countSQL := fmt.Sprintf(
+				"SELECT COUNT(%s) FROM items i %s %s %s",
+				countTarget, genreJoin, userJoin, whereClause)
+			countParams := make([]interface{}, len(params))
+			copy(countParams, params)
+			_ = pool.QueryRow(ctx, countSQL, countParams...).Scan(&totalCount)
+		}
+	} else {
 		countTarget := "DISTINCT i.id"
 		if useRepresentative {
 			countTarget = "DISTINCT " + mergedRepresentativeExpr("i")
+		} else if genreJoin == "" {
+			// 无 JOIN 时 id 本身唯一，COUNT(*) 更快
+			countTarget = "*"
 		}
 		countSQL := fmt.Sprintf(
 			"SELECT COUNT(%s) FROM items i %s %s %s",

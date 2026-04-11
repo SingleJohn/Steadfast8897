@@ -1168,7 +1168,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			udPtr = &ud
 		}
 
-		d := dto.FormatItemDto(&row, state.Config.ServerID, udPtr)
+		d := dto.FormatItemDtoList(&row, state.Config.ServerID, udPtr)
 		result := dtoToMap(d)
 
 		if embyID, ok := m["emby_id"]; ok && embyID != nil {
