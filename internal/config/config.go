@@ -25,6 +25,8 @@ type AppConfig struct {
 	ServerID     string
 	Version      string
 
+	databaseURLArg string // 命令行参数传入的连接字符串（私有字段）
+
 	DBHost     string
 	DBPort     int
 	DBName     string
@@ -46,6 +48,10 @@ type AppConfig struct {
 }
 
 func NewAppConfig() *AppConfig {
+	return NewAppConfigWithArgs(nil)
+}
+
+func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 	godotenv.Load()
 
 	dataDir := envOr("DATA_DIR", "data")
@@ -56,7 +62,7 @@ func NewAppConfig() *AppConfig {
 
 	serverID := loadOrCreateServerID(dataDir)
 
-	return &AppConfig{
+	cfg := &AppConfig{
 		Port:         envInt("PORT", 8961),
 		FrontendPort: envInt("FRONTEND_PORT", 3001),
 		ServerName:   envOr("SERVER_NAME", "FYMS"),
@@ -82,6 +88,12 @@ func NewAppConfig() *AppConfig {
 		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", ""),
 		UpdateDockerSocket: envOr("FYMS_UPDATE_DOCKER_SOCKET", "/var/run/docker.sock"),
 	}
+
+	if databaseURL != nil && *databaseURL != "" {
+		cfg.databaseURLArg = *databaseURL
+	}
+
+	return cfg
 }
 
 func resolveVersion() string {
@@ -95,6 +107,13 @@ func resolveVersion() string {
 }
 
 func (c *AppConfig) DatabaseURL() string {
+	// 优先级：命令行参数 > 环境变量 DATABASE_URL > 独立环境变量拼接
+	if c.databaseURLArg != "" {
+		return c.databaseURLArg
+	}
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		return dbURL
+	}
 	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s",
 		c.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -33,6 +34,10 @@ func init() {
 }
 
 func main() {
+	// 解析命令行参数
+	databaseURL := flag.String("database-url", "", "PostgreSQL connection string (e.g., postgres://user:pass@host:5432/dbname)")
+	flag.Parse()
+
 	if len(os.Args) > 1 && os.Args[1] == services.UpdateRunnerCommandArg() {
 		if err := services.RunUpdaterRunnerFromEnv(); err != nil {
 			slog.Error("Updater runner failed", "error", err)
@@ -41,7 +46,7 @@ func main() {
 		return
 	}
 
-	cfg := config.NewAppConfig()
+	cfg := config.NewAppConfigWithArgs(databaseURL)
 
 	logBuffer := services.NewLogBuffer(2000)
 
