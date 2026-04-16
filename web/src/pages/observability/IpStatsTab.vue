@@ -1,26 +1,28 @@
 <script setup lang="ts">
+import { inject } from 'vue'
 import { NButton, NDatePicker, NDivider, NGrid, NGridItem, NSelect, NSpace, NText } from 'naive-ui'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import PageSectionCard from '@/components/PageSectionCard.vue'
 import IpStatsDistributionGrid from '@/pages/observability/IPStatsDistributionGrid.vue'
-import type { IPStatsSummary } from '@/types'
+import { OBS_KEY } from '@/composables/observabilityContext'
 
-const ipStatsMode = defineModel<'all' | 'redirect302'>('ipStatsMode', { required: true })
-const ipStatsRange = defineModel<[number, number] | null>('ipStatsRange', { required: true })
+const obs = inject(OBS_KEY)
+if (!obs) throw new Error('IpStatsTab must be used within ObservabilityPage')
 
-defineProps<{
-  ipStatsError: string | null
-  ipStatsLoading: boolean
-  ipStatsSummary: IPStatsSummary | null
-  ipStatsScopeLabel: string
-  ipStatsRangeLabel: string
-  ipStatsUseCumulative: boolean
-}>()
+const {
+  ipStatsMode,
+  ipStatsRange,
+  ipStatsError,
+  ipStatsLoading,
+  ipStatsSummary,
+  ipStatsScopeLabel,
+  ipStatsRangeLabel,
+  ipStatsUseCumulative,
+  refreshIPStats,
+} = obs
 
-const emit = defineEmits<{
-  (e: 'refresh'): void
-}>()
+function onRefresh() { void refreshIPStats(true) }
 </script>
 
 <template>
@@ -45,7 +47,7 @@ const emit = defineEmits<{
           </n-grid-item>
           <n-grid-item>
             <n-space align="center">
-              <n-button size="small" :loading="ipStatsLoading" @click="emit('refresh')">刷新</n-button>
+              <n-button size="small" :loading="ipStatsLoading" @click="onRefresh">刷新</n-button>
               <n-divider vertical />
               <n-text depth="3" size="small">Total: {{ ipStatsSummary?.total || 0 }}</n-text>
               <n-divider vertical />

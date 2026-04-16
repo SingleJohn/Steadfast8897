@@ -12,9 +12,11 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  * 菜单由 AdminLayout 根据路由 meta 动态生成：
  *   - section / sectionLabel / sectionOrder / sectionIcon：一级模块归属
  *   - navLabel / icon / order：二级菜单显示
+ *   - sectionSingle：模块下只有一项（如"概览"），菜单不包 submenu
  *   - requiresAdmin：权限过滤
- *   - tab（仅 observability / system 子菜单用）：批次 1 过渡期，告诉 ObservabilityPage /
- *     ToolsPage 组件激活哪个 tab。批次 2 拆掉这两个 Page 后可以移除。
+ *
+ * 观测中心父路由带组件：ObservabilityPage 作为容器持有 useObservability，
+ * 通过 provide/inject 把状态共享给所有子路由（source/tag 过滤器不重置、数据不重复拉取）。
  */
 
 const router = createRouter({
@@ -156,112 +158,109 @@ const router = createRouter({
           },
         },
 
-        // ── 模块 4：观测中心
-        // 批次 1 过渡：6 个子路由都指向 ObservabilityPage.vue，
-        // 由 meta.tab 告诉它激活哪个 n-tab-pane。批次 2 会拆为独立子页面。
+        // ── 模块 4：观测中心（父容器 + 6 个子路由）
         {
-          path: 'observability/traffic',
-          name: 'observability_traffic',
+          path: 'observability',
           component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: '流量',
-            navLabel: '流量',
-            icon: 'traffic',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 1,
-            tab: 'traffic',
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'observability/redirect',
-          name: 'observability_redirect',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: '重定向',
-            navLabel: '重定向',
-            icon: 'redirect',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 2,
-            tab: 'redirect302',
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'observability/ip-stats',
-          name: 'observability_ip_stats',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: 'IP 统计',
-            navLabel: 'IP 统计',
-            icon: 'ipStats',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 3,
-            // 批次 1 过渡：IP 统计目前嵌在重定向 tab 下，暂复用 redirect302 tab；
-            // 批次 2 拆出独立页面后会换成真正的 ip-stats 路由
-            tab: 'redirect302',
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'observability/playback',
-          name: 'observability_playback',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: '播放',
-            navLabel: '播放',
-            icon: 'playback',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 4,
-            tab: 'playback',
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'observability/stats',
-          name: 'observability_stats',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: '统计',
-            navLabel: '统计',
-            icon: 'stats',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 5,
-            tab: 'stats',
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'observability/logs',
-          name: 'observability_logs',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          meta: {
-            title: '系统日志',
-            navLabel: '系统日志',
-            icon: 'logs',
-            section: 'observability',
-            sectionLabel: '观测中心',
-            sectionIcon: 'observability',
-            sectionOrder: 4,
-            order: 6,
-            tab: 'logs',
-            requiresAdmin: true,
-          },
+          redirect: { name: 'observability_traffic' },
+          children: [
+            {
+              path: 'traffic',
+              name: 'observability_traffic',
+              component: () => import('./pages/observability/TrafficTab.vue'),
+              meta: {
+                title: '流量',
+                navLabel: '流量',
+                icon: 'traffic',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 1,
+                requiresAdmin: true,
+              },
+            },
+            {
+              path: 'redirect',
+              name: 'observability_redirect',
+              component: () => import('./pages/observability/RedirectTab.vue'),
+              meta: {
+                title: '重定向',
+                navLabel: '重定向',
+                icon: 'redirect',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 2,
+                requiresAdmin: true,
+              },
+            },
+            {
+              path: 'ip-stats',
+              name: 'observability_ip_stats',
+              component: () => import('./pages/observability/IpStatsTab.vue'),
+              meta: {
+                title: 'IP 统计',
+                navLabel: 'IP 统计',
+                icon: 'ipStats',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 3,
+                requiresAdmin: true,
+              },
+            },
+            {
+              path: 'playback',
+              name: 'observability_playback',
+              component: () => import('./pages/observability/PlaybackTab.vue'),
+              meta: {
+                title: '播放',
+                navLabel: '播放',
+                icon: 'playback',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 4,
+                requiresAdmin: true,
+              },
+            },
+            {
+              path: 'stats',
+              name: 'observability_stats',
+              component: () => import('./pages/observability/StatsTab.vue'),
+              meta: {
+                title: '统计',
+                navLabel: '统计',
+                icon: 'stats',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 5,
+                requiresAdmin: true,
+              },
+            },
+            {
+              path: 'logs',
+              name: 'observability_logs',
+              component: () => import('./pages/observability/SystemLogsTab.vue'),
+              meta: {
+                title: '系统日志',
+                navLabel: '系统日志',
+                icon: 'logs',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 6,
+                requiresAdmin: true,
+              },
+            },
+          ],
         },
 
         // ── 模块 5：系统
@@ -284,7 +283,7 @@ const router = createRouter({
         {
           path: 'system/api-keys',
           name: 'system_api_keys',
-          component: () => import('./pages/ToolsPage.vue'),
+          component: () => import('./pages/tools/ApiKeysTab.vue'),
           meta: {
             title: 'API 密钥',
             navLabel: 'API 密钥',
@@ -294,14 +293,13 @@ const router = createRouter({
             sectionIcon: 'system',
             sectionOrder: 5,
             order: 2,
-            tab: 'api-keys',
             requiresAdmin: true,
           },
         },
         {
           path: 'system/webhook',
           name: 'system_webhook',
-          component: () => import('./pages/ToolsPage.vue'),
+          component: () => import('./pages/tools/WebhookTab.vue'),
           meta: {
             title: 'Webhook',
             navLabel: 'Webhook',
@@ -311,14 +309,13 @@ const router = createRouter({
             sectionIcon: 'system',
             sectionOrder: 5,
             order: 3,
-            tab: 'webhook',
             requiresAdmin: true,
           },
         },
         {
           path: 'system/backup',
           name: 'system_backup',
-          component: () => import('./pages/ToolsPage.vue'),
+          component: () => import('./pages/tools/BackupTab.vue'),
           meta: {
             title: '备份',
             navLabel: '备份',
@@ -328,14 +325,13 @@ const router = createRouter({
             sectionIcon: 'system',
             sectionOrder: 5,
             order: 4,
-            tab: 'backup',
             requiresAdmin: true,
           },
         },
         {
           path: 'system/emby-migrate',
           name: 'system_emby_migrate',
-          component: () => import('./pages/ToolsPage.vue'),
+          component: () => import('./pages/tools/EmbyMigrateTab.vue'),
           meta: {
             title: 'Emby 迁移',
             navLabel: 'Emby 迁移',
@@ -345,7 +341,6 @@ const router = createRouter({
             sectionIcon: 'system',
             sectionOrder: 5,
             order: 5,
-            tab: 'emby-migrate',
             requiresAdmin: true,
           },
         },
@@ -358,8 +353,6 @@ const router = createRouter({
         { path: 'libraries', redirect: { name: 'media_libraries' } },
         { path: 'library-edit/:libraryId', redirect: { name: 'media_libraries' } },
         { path: 'metadata', redirect: { name: 'media_metadata' } },
-        // 观测中心父级默认进入"流量"
-        { path: 'observability', redirect: { name: 'observability_traffic' } },
         // Tools 旧的 query-based 链接重定向
         {
           path: 'tools',
