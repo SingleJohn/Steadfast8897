@@ -20,6 +20,8 @@ import {
   DocumentTextOutline,
 } from '@vicons/ionicons5'
 import { getSystemInfo, getSystemConfig, updateSystemConfig } from '@/api/client'
+import PageShell from '@/components/PageShell.vue'
+import { AppIcons } from '@/icons/appIcons'
 
 const { showToast } = useToast()
 
@@ -99,20 +101,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="webhook-layout">
+  <page-shell
+    title="Webhook"
+    description="配置 CloudDrive2 的文件变动回调，实现文件新增、删除、重命名后的自动入库。"
+    :icon="AppIcons.webhook"
+    body-class="webhook-layout"
+  >
     <n-card :bordered="false" class="glass-card section-card tool-card">
-      <template #header>
-        <div class="card-header-wrap">
-          <div class="icon-box webhook">
-            <n-icon :size="18"><LinkOutline /></n-icon>
-          </div>
-          <div class="header-copy">
-            <div class="header-title">Webhook</div>
-            <div class="header-desc">配置 CloudDrive2 的文件变动回调，实现文件新增、删除、重命名后的自动入库。</div>
-          </div>
-        </div>
-      </template>
-
       <div class="subsection">
         <div class="subsection-title">回调地址</div>
         <div class="code-row">
@@ -207,11 +202,11 @@ onMounted(() => {
         </n-button>
       </div>
     </n-card>
-  </div>
+  </page-shell>
 </template>
 
 <style scoped>
-.webhook-layout {
+:deep(.webhook-layout) {
   display: flex;
   flex-direction: column;
   gap: 16px;

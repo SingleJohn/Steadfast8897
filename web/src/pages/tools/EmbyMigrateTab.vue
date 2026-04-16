@@ -4,6 +4,8 @@ import { useToast } from '@/composables/useToast'
 import { NCard, NButton, NCheckbox, NInputNumber, NIcon, NTag, NAlert } from 'naive-ui'
 import { CloudUploadOutline, CheckmarkCircleOutline, AlertCircleOutline, SwapHorizontalOutline } from '@vicons/ionicons5'
 import { embyMigrate } from '@/api/client'
+import PageShell from '@/components/PageShell.vue'
+import { AppIcons } from '@/icons/appIcons'
 
 const { showToast } = useToast()
 
@@ -124,7 +126,12 @@ function resetFile() {
 </script>
 
 <template>
-  <div class="migrate-layout">
+  <page-shell
+    title="Emby 迁移"
+    description="从 Emby 导出的 users.db 一键迁移用户、权限与播放记录到 FYMS。"
+    :icon="AppIcons.migrate"
+    body-class="migrate-layout"
+  >
     <div class="migrate-top">
       <!-- Left: Upload -->
       <n-card class="glass-card migrate-card" :bordered="false">
@@ -265,11 +272,11 @@ function resetFile() {
         </n-alert>
       </n-card>
     </transition>
-  </div>
+  </page-shell>
 </template>
 
 <style scoped>
-.migrate-layout {
+:deep(.migrate-layout) {
   max-width: 960px;
   margin: 0 auto;
   display: flex;

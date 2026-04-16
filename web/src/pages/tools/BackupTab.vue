@@ -19,6 +19,8 @@ import {
   getBackupDownloadUrl,
   getToken,
 } from '@/api/client'
+import PageShell from '@/components/PageShell.vue'
+import { AppIcons } from '@/icons/appIcons'
 
 const { showToast } = useToast()
 
@@ -128,7 +130,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="backup-layout">
+  <page-shell
+    title="备份"
+    description="按类别创建数据库备份、下载和恢复历史备份。"
+    :icon="AppIcons.backup"
+    body-class="backup-layout"
+  >
     <!-- Create -->
     <n-card class="glass-card backup-card" :bordered="false">
       <template #header>
@@ -220,7 +227,7 @@ onMounted(() => {
         </div>
       </div>
     </n-card>
-  </div>
+  </page-shell>
 
   <!-- Restore Modal -->
   <n-modal
@@ -270,7 +277,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.backup-layout {
+:deep(.backup-layout) {
   max-width: 820px;
   margin: 0 auto;
   display: flex;
