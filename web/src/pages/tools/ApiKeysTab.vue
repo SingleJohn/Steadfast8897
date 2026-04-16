@@ -2,17 +2,18 @@
 import { onMounted, ref } from 'vue'
 import {
   NButton,
-  NCard,
   NEmpty,
   NForm,
   NFormItem,
   NIcon,
   NInput,
 } from 'naive-ui'
-import { AddOutline, CopyOutline, KeyOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, CopyOutline, TrashOutline } from '@vicons/ionicons5'
 
 import { getApiKeys, createApiKey, deleteApiKey } from '@/api/client'
 import { useToast } from '@/composables/useToast'
+import PageShell from '@/components/PageShell.vue'
+import { AppIcons } from '@/icons/appIcons'
 
 const { showToast } = useToast()
 
@@ -73,19 +74,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <n-card :bordered="false" class="glass-card section-card tool-card">
-    <template #header>
-      <div class="card-header-wrap">
-        <div class="icon-box">
-          <n-icon :size="18"><KeyOutline /></n-icon>
-        </div>
-        <div class="header-copy">
-          <div class="header-title">API 密钥</div>
-          <div class="header-desc">管理第三方服务与自动化脚本的接入密钥。密钥拥有管理员权限，请谨慎保管。</div>
-        </div>
-      </div>
-    </template>
-
+  <page-shell
+    title="API 密钥"
+    description="管理第三方服务与自动化脚本的接入密钥。密钥拥有管理员权限，请谨慎保管。"
+    :icon="AppIcons.apikeys"
+  >
     <div class="subsection">
       <div class="subsection-title">创建密钥</div>
       <n-form label-placement="top" size="small">
@@ -137,7 +130,7 @@ onMounted(() => {
         </div>
       </div>
     </div>
-  </n-card>
+  </page-shell>
 </template>
 
 <style scoped>

@@ -38,6 +38,17 @@ const route = useRoute()
 
 type RouteMeta = { title?: string; icon?: string; description?: string }
 
+// 只有消费 source/tag 过滤器的子路由显示过滤器；playback/stats/logs 是独立数据源，隐藏过滤器避免误导
+const ROUTES_WITH_SOURCE_FILTER = new Set([
+  'observability_traffic',
+  'observability_redirect',
+  'observability_ip_stats',
+])
+const showSourceFilter = computed(() => {
+  const name = typeof route.name === 'string' ? route.name : ''
+  return ROUTES_WITH_SOURCE_FILTER.has(name)
+})
+
 const pageTitle = computed(() => {
   const meta = route.meta as RouteMeta
   return meta?.title || '观测中心'
@@ -58,7 +69,7 @@ const pageDescription = computed(() => {
 
 <template>
   <page-shell :title="pageTitle" :icon="pageIcon" :description="pageDescription" :divider="false">
-    <template #actions>
+    <template v-if="showSourceFilter" #actions>
       <n-select
         v-model:value="sourceId"
         :options="sourceOptions"

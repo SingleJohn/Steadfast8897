@@ -279,7 +279,7 @@ onUnmounted(() => {
     </div>
 
     <n-spin :show="loading" style="min-height: 200px">
-      <div class="stat-grid">
+      <div class="kpi-grid overview-kpi">
         <stat-card title="总请求数" :value="totalRequests.toLocaleString()" sub-title="最近 7 天" type="primary" :icon="BarChartOutline" />
         <stat-card title="302 重定向" :value="totalRedirects.toLocaleString()" sub-title="最近 7 天" type="success" :icon="FlashOutline" />
         <stat-card title="活跃源" :value="activeSources" sub-title="已启用的 Emby 源" type="info" :icon="ServerOutline" />
@@ -288,7 +288,13 @@ onUnmounted(() => {
     </n-spin>
 
     <!-- Server Info -->
-    <n-card class="glass-card section-card" title="服务器信息">
+    <n-card class="section-card" title="服务器信息">
+      <template #header-extra>
+        <n-space :size="8">
+          <n-button size="small" secondary type="warning" @click="showRestart = true">重启</n-button>
+          <n-button size="small" secondary type="error" @click="showShutdown = true">关闭</n-button>
+        </n-space>
+      </template>
       <div v-if="serverInfo" class="server-info-grid">
         <div v-for="row in [
           ['名称', serverInfo.ServerName],
@@ -304,7 +310,7 @@ onUnmounted(() => {
       <div v-else class="empty-chart">加载服务器信息中...</div>
     </n-card>
 
-    <n-card class="glass-card section-card" title="应用更新">
+    <n-card class="section-card" title="应用更新">
       <div class="update-header">
         <div>
           <div class="update-current">
@@ -400,7 +406,7 @@ onUnmounted(() => {
     </n-card>
 
     <!-- Active Sessions -->
-    <n-card class="glass-card section-card" title="活动会话">
+    <n-card class="section-card" title="活动会话">
       <div v-if="sessions.length === 0" class="empty-chart">暂无活动会话</div>
       <div v-else style="overflow-x: auto">
         <table class="session-table">
@@ -425,7 +431,7 @@ onUnmounted(() => {
     </n-card>
 
     <!-- Scan Progress -->
-    <n-card v-if="scanProgress.length > 0" class="glass-card section-card" title="扫描进度">
+    <n-card v-if="scanProgress.length > 0" class="section-card" title="扫描进度">
       <div class="scan-progress-grid">
         <div v-for="sp in scanProgress" :key="sp.LibraryId" class="scan-progress-item">
           <div class="scan-progress-name">{{ libNameForScan(sp.LibraryId) }}</div>
@@ -442,14 +448,6 @@ onUnmounted(() => {
       </div>
     </n-card>
 
-    <!-- Server Control -->
-    <n-card class="glass-card section-card" title="服务器控制">
-      <n-space>
-        <n-button type="warning" @click="showRestart = true">重启服务器</n-button>
-        <n-button type="error" @click="showShutdown = true">关闭服务器</n-button>
-      </n-space>
-    </n-card>
-
     <n-modal v-model:show="showRestart" preset="dialog" title="重启服务器" type="warning" positive-text="确认重启" negative-text="取消" @positive-click="handleRestart" @negative-click="showRestart = false">
       确定要重启服务器吗？所有活动连接将被断开。
     </n-modal>
@@ -463,10 +461,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
+.overview-kpi {
   margin-bottom: var(--app-section-gap);
 }
 
@@ -639,9 +634,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
-  .stat-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
   .server-info-grid {
     grid-template-columns: 1fr;
   }

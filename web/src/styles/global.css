@@ -141,10 +141,22 @@ body {
   border-color: var(--app-border);
 }
 
+/*
+ * 全局 n-card 默认视觉：扁平卡片风格（白底/深底 + 淡阴影 + 边框）。
+ * 特殊场景仍可通过 .glass-card 类恢复玻璃拟态（见下方）。
+ */
 .n-card:not(.n-card--embedded) {
+  background: var(--app-card-bg);
+  border-color: var(--app-card-border);
+  box-shadow: var(--app-shadow-1);
+}
+
+/* 显式 .glass-card 保留玻璃效果（覆盖上面的扁平默认） */
+.n-card.glass-card:not(.n-card--embedded) {
   background: var(--app-surface-2);
   backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  box-shadow: var(--app-shadow-0);
 }
 
 .n-drawer .n-drawer-body-content-wrapper {
