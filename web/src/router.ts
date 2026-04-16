@@ -1,5 +1,22 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
+/**
+ * Admin 后台路由结构（5 个一级模块 × N 个二级菜单）
+ *
+ *   概览（单项）       →  /admin/overview
+ *   媒体内容（submenu）→  /admin/media/{libraries|metadata}
+ *   网关（submenu）    →  /admin/gateway/{emby-sources|path-rules|backends}
+ *   观测中心（submenu）→  /admin/observability/{traffic|redirect|ip-stats|playback|stats|logs}
+ *   系统（submenu）    →  /admin/system/{users|api-keys|webhook|backup|emby-migrate}
+ *
+ * 菜单由 AdminLayout 根据路由 meta 动态生成：
+ *   - section / sectionLabel / sectionOrder / sectionIcon：一级模块归属
+ *   - navLabel / icon / order：二级菜单显示
+ *   - requiresAdmin：权限过滤
+ *   - tab（仅 observability / system 子菜单用）：批次 1 过渡期，告诉 ObservabilityPage /
+ *     ToolsPage 组件激活哪个 tab。批次 2 拆掉这两个 Page 后可以移除。
+ */
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -16,36 +33,16 @@ const router = createRouter({
       meta: { requiresAuth: true, title: '播放' },
     },
 
-    // Media browsing layout
+    // Media browsing layout (用户端，未做改动)
     {
       path: '/',
       component: () => import('./layouts/MediaLayout.vue'),
       meta: { requiresAuth: true },
       children: [
-        {
-          path: '',
-          name: 'home',
-          component: () => import('./pages/HomePage.vue'),
-          meta: { title: '首页' },
-        },
-        {
-          path: 'search',
-          name: 'search',
-          component: () => import('./pages/SearchPage.vue'),
-          meta: { title: '搜索' },
-        },
-        {
-          path: 'library/:libraryId',
-          name: 'library',
-          component: () => import('./pages/LibraryPage.vue'),
-          meta: { title: '媒体库' },
-        },
-        {
-          path: 'item/:itemId',
-          name: 'item_detail',
-          component: () => import('./pages/ItemDetailPage.vue'),
-          meta: { title: '详情' },
-        },
+        { path: '', name: 'home', component: () => import('./pages/HomePage.vue'), meta: { title: '首页' } },
+        { path: 'search', name: 'search', component: () => import('./pages/SearchPage.vue'), meta: { title: '搜索' } },
+        { path: 'library/:libraryId', name: 'library', component: () => import('./pages/LibraryPage.vue'), meta: { title: '媒体库' } },
+        { path: 'item/:itemId', name: 'item_detail', component: () => import('./pages/ItemDetailPage.vue'), meta: { title: '详情' } },
       ],
     },
 
@@ -56,6 +53,7 @@ const router = createRouter({
       meta: { requiresAuth: true },
       redirect: { name: 'admin_overview' },
       children: [
+        // ── 模块 1：概览（单项）
         {
           path: 'overview',
           name: 'admin_overview',
@@ -64,17 +62,54 @@ const router = createRouter({
             title: '总览',
             navLabel: '总览',
             icon: 'overview',
-            section: 'core',
-            sectionLabel: '核心',
+            section: 'overview',
+            sectionLabel: '概览',
+            sectionIcon: 'overview',
             sectionOrder: 1,
             order: 1,
+            sectionSingle: true,
+            requiresAdmin: true,
           },
         },
 
-        // -- 网关 --
+        // ── 模块 2：媒体内容
         {
-          path: 'emby-sources',
-          name: 'emby_sources',
+          path: 'media/libraries',
+          name: 'media_libraries',
+          component: () => import('./pages/LibrariesPage.vue'),
+          meta: {
+            title: '媒体库',
+            navLabel: '媒体库',
+            icon: 'library',
+            section: 'media',
+            sectionLabel: '媒体内容',
+            sectionIcon: 'media',
+            sectionOrder: 2,
+            order: 1,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'media/metadata',
+          name: 'media_metadata',
+          component: () => import('./pages/MetadataPage.vue'),
+          meta: {
+            title: '元数据',
+            navLabel: '元数据',
+            icon: 'metadata',
+            section: 'media',
+            sectionLabel: '媒体内容',
+            sectionIcon: 'media',
+            sectionOrder: 2,
+            order: 2,
+            requiresAdmin: true,
+          },
+        },
+
+        // ── 模块 3：网关
+        {
+          path: 'gateway/emby-sources',
+          name: 'gateway_emby_sources',
           component: () => import('./pages/EmbySourcesPage.vue'),
           meta: {
             title: 'Emby 源',
@@ -82,14 +117,15 @@ const router = createRouter({
             icon: 'emby',
             section: 'gateway',
             sectionLabel: '网关',
-            sectionOrder: 2,
+            sectionIcon: 'gateway',
+            sectionOrder: 3,
             order: 1,
             requiresAdmin: true,
           },
         },
         {
-          path: 'path-rules',
-          name: 'path_rule_sets',
+          path: 'gateway/path-rules',
+          name: 'gateway_path_rules',
           component: () => import('./pages/PathRuleSetsPage.vue'),
           meta: {
             title: '路径映射',
@@ -97,14 +133,15 @@ const router = createRouter({
             icon: 'pathMapping',
             section: 'gateway',
             sectionLabel: '网关',
-            sectionOrder: 2,
+            sectionIcon: 'gateway',
+            sectionOrder: 3,
             order: 2,
             requiresAdmin: true,
           },
         },
         {
-          path: 'backends',
-          name: 'backends',
+          path: 'gateway/backends',
+          name: 'gateway_backends',
           component: () => import('./pages/BackendsPage.vue'),
           meta: {
             title: '资源池与后端',
@@ -112,96 +149,236 @@ const router = createRouter({
             icon: 'backends',
             section: 'gateway',
             sectionLabel: '网关',
-            sectionOrder: 2,
+            sectionIcon: 'gateway',
+            sectionOrder: 3,
             order: 3,
             requiresAdmin: true,
           },
         },
 
-        // -- 监控 --
+        // ── 模块 4：观测中心
+        // 批次 1 过渡：6 个子路由都指向 ObservabilityPage.vue，
+        // 由 meta.tab 告诉它激活哪个 n-tab-pane。批次 2 会拆为独立子页面。
         {
-          path: 'observability',
-          name: 'observability',
+          path: 'observability/traffic',
+          name: 'observability_traffic',
           component: () => import('./pages/ObservabilityPage.vue'),
           meta: {
-            title: '观测中心',
-            navLabel: '观测中心',
-            icon: 'observability',
-            section: 'monitor',
-            sectionLabel: '监控',
-            sectionOrder: 3,
+            title: '流量',
+            navLabel: '流量',
+            icon: 'traffic',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
             order: 1,
+            tab: 'traffic',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'observability/redirect',
+          name: 'observability_redirect',
+          component: () => import('./pages/ObservabilityPage.vue'),
+          meta: {
+            title: '重定向',
+            navLabel: '重定向',
+            icon: 'redirect',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
+            order: 2,
+            tab: 'redirect302',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'observability/ip-stats',
+          name: 'observability_ip_stats',
+          component: () => import('./pages/ObservabilityPage.vue'),
+          meta: {
+            title: 'IP 统计',
+            navLabel: 'IP 统计',
+            icon: 'ipStats',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
+            order: 3,
+            // 批次 1 过渡：IP 统计目前嵌在重定向 tab 下，暂复用 redirect302 tab；
+            // 批次 2 拆出独立页面后会换成真正的 ip-stats 路由
+            tab: 'redirect302',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'observability/playback',
+          name: 'observability_playback',
+          component: () => import('./pages/ObservabilityPage.vue'),
+          meta: {
+            title: '播放',
+            navLabel: '播放',
+            icon: 'playback',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
+            order: 4,
+            tab: 'playback',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'observability/stats',
+          name: 'observability_stats',
+          component: () => import('./pages/ObservabilityPage.vue'),
+          meta: {
+            title: '统计',
+            navLabel: '统计',
+            icon: 'stats',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
+            order: 5,
+            tab: 'stats',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'observability/logs',
+          name: 'observability_logs',
+          component: () => import('./pages/ObservabilityPage.vue'),
+          meta: {
+            title: '系统日志',
+            navLabel: '系统日志',
+            icon: 'logs',
+            section: 'observability',
+            sectionLabel: '观测中心',
+            sectionIcon: 'observability',
+            sectionOrder: 4,
+            order: 6,
+            tab: 'logs',
             requiresAdmin: true,
           },
         },
 
-        // -- 管理 --
+        // ── 模块 5：系统
         {
-          path: 'users',
-          name: 'users',
+          path: 'system/users',
+          name: 'system_users',
           component: () => import('./pages/UserManagementPage.vue'),
           meta: {
             title: '用户管理',
             navLabel: '用户管理',
             icon: 'users',
-            section: 'admin',
-            sectionLabel: '管理',
-            sectionOrder: 4,
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
             order: 1,
             requiresAdmin: true,
           },
         },
         {
-          path: 'libraries',
-          name: 'libraries',
-          component: () => import('./pages/LibrariesPage.vue'),
-          meta: {
-            title: '媒体库',
-            navLabel: '媒体库',
-            icon: 'library',
-            section: 'admin',
-            sectionLabel: '管理',
-            sectionOrder: 4,
-            order: 2,
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'metadata',
-          name: 'metadata',
-          component: () => import('./pages/MetadataPage.vue'),
-          meta: {
-            title: '元数据',
-            navLabel: '元数据',
-            icon: 'metadata',
-            section: 'admin',
-            sectionLabel: '管理',
-            sectionOrder: 4,
-            order: 3,
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'tools',
-          name: 'tools',
+          path: 'system/api-keys',
+          name: 'system_api_keys',
           component: () => import('./pages/ToolsPage.vue'),
           meta: {
-            title: '工具',
-            navLabel: '工具',
-            icon: 'tools',
-            section: 'admin',
-            sectionLabel: '管理',
-            sectionOrder: 4,
-            order: 4,
+            title: 'API 密钥',
+            navLabel: 'API 密钥',
+            icon: 'apikeys',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 2,
+            tab: 'api-keys',
             requiresAdmin: true,
           },
         },
-        { path: 'apikeys', redirect: '/admin/tools?tab=api-keys' },
-        { path: 'library-edit/:libraryId', redirect: '/admin/libraries' },
-        { path: 'webhook', redirect: '/admin/tools?tab=webhook' },
-        { path: 'api-keys', redirect: '/admin/tools?tab=api-keys' },
-        { path: 'backup', redirect: '/admin/tools?tab=backup' },
-        { path: 'emby-migrate', redirect: '/admin/tools?tab=emby-migrate' },
+        {
+          path: 'system/webhook',
+          name: 'system_webhook',
+          component: () => import('./pages/ToolsPage.vue'),
+          meta: {
+            title: 'Webhook',
+            navLabel: 'Webhook',
+            icon: 'webhook',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 3,
+            tab: 'webhook',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'system/backup',
+          name: 'system_backup',
+          component: () => import('./pages/ToolsPage.vue'),
+          meta: {
+            title: '备份',
+            navLabel: '备份',
+            icon: 'backup',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 4,
+            tab: 'backup',
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'system/emby-migrate',
+          name: 'system_emby_migrate',
+          component: () => import('./pages/ToolsPage.vue'),
+          meta: {
+            title: 'Emby 迁移',
+            navLabel: 'Emby 迁移',
+            icon: 'migrate',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 5,
+            tab: 'emby-migrate',
+            requiresAdmin: true,
+          },
+        },
+
+        // ── 旧路径兼容：重定向到新路径
+        { path: 'emby-sources', redirect: { name: 'gateway_emby_sources' } },
+        { path: 'path-rules', redirect: { name: 'gateway_path_rules' } },
+        { path: 'backends', redirect: { name: 'gateway_backends' } },
+        { path: 'users', redirect: { name: 'system_users' } },
+        { path: 'libraries', redirect: { name: 'media_libraries' } },
+        { path: 'library-edit/:libraryId', redirect: { name: 'media_libraries' } },
+        { path: 'metadata', redirect: { name: 'media_metadata' } },
+        // 观测中心父级默认进入"流量"
+        { path: 'observability', redirect: { name: 'observability_traffic' } },
+        // Tools 旧的 query-based 链接重定向
+        {
+          path: 'tools',
+          redirect: (to) => {
+            const tab = (to.query.tab as string) || ''
+            const map: Record<string, string> = {
+              'api-keys': 'system_api_keys',
+              webhook: 'system_webhook',
+              backup: 'system_backup',
+              'emby-migrate': 'system_emby_migrate',
+            }
+            return { name: map[tab] || 'system_api_keys' }
+          },
+        },
+        { path: 'apikeys', redirect: { name: 'system_api_keys' } },
+        { path: 'api-keys', redirect: { name: 'system_api_keys' } },
+        { path: 'webhook', redirect: { name: 'system_webhook' } },
+        { path: 'backup', redirect: { name: 'system_backup' } },
+        { path: 'emby-migrate', redirect: { name: 'system_emby_migrate' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

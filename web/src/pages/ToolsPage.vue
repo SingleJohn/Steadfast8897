@@ -12,18 +12,34 @@ import EmbyMigrateTab from '@/pages/tools/EmbyMigrateTab.vue'
 const route = useRoute()
 const router = useRouter()
 
-const activeTab = ref<string>((route.query.tab as string) || 'webhook')
+// 批次 1：tab 由路由 meta 驱动；保留 query.tab 作 fallback。
+const tabToRoute: Record<string, string> = {
+  webhook: 'system_webhook',
+  'api-keys': 'system_api_keys',
+  backup: 'system_backup',
+  'emby-migrate': 'system_emby_migrate',
+}
+
+function pickTabFromRoute(): string {
+  const metaTab = (route.meta as { tab?: string })?.tab
+  if (metaTab) return metaTab
+  const q = route.query.tab
+  return typeof q === 'string' && q ? q : 'webhook'
+}
+
+const activeTab = ref<string>(pickTabFromRoute())
 
 function onTabChange(tab: string) {
   activeTab.value = tab
-  router.replace({ query: { ...route.query, tab } })
+  const targetName = tabToRoute[tab]
+  if (targetName && route.name !== targetName) {
+    void router.push({ name: targetName })
+  }
 }
 
 watch(
-  () => route.query.tab,
-  (tab) => {
-    activeTab.value = typeof tab === 'string' && tab ? tab : 'webhook'
-  },
+  () => route.fullPath,
+  () => { activeTab.value = pickTabFromRoute() },
 )
 </script>
 

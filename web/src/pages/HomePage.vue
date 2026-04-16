@@ -123,12 +123,12 @@ function goBrowseLibrary() {
     return
   }
   if (auth.isAdmin) {
-    router.push({ name: 'libraries' })
+    router.push({ name: 'media_libraries' })
   }
 }
 
 function goManageLibraries() {
-  router.push({ name: 'libraries' })
+  router.push({ name: 'media_libraries' })
 }
 
 onMounted(() => {

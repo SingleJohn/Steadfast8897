@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { NSelect, NTabs, NTabPane, useMessage } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -18,11 +18,36 @@ const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 
-const topTab = ref<string>((route.query.tab as string) || 'traffic')
+// 批次 1：tab 由路由 meta 驱动（路由切换就是 tab 切换）；保留 query.tab 作 fallback。
+// n-tab-pane 的 name 对应的 route：
+const tabToRoute: Record<string, string> = {
+  traffic: 'observability_traffic',
+  redirect302: 'observability_redirect',
+  playback: 'observability_playback',
+  stats: 'observability_stats',
+  logs: 'observability_logs',
+}
+
+function pickTabFromRoute(): string {
+  const metaTab = (route.meta as { tab?: string })?.tab
+  if (metaTab) return metaTab
+  const q = route.query.tab
+  return typeof q === 'string' && q ? q : 'traffic'
+}
+
+const topTab = ref<string>(pickTabFromRoute())
+
+watch(
+  () => route.fullPath,
+  () => { topTab.value = pickTabFromRoute() },
+)
 
 function onTopTabChange(tab: string) {
   topTab.value = tab
-  router.replace({ query: { ...route.query, tab } })
+  const targetName = tabToRoute[tab]
+  if (targetName && route.name !== targetName) {
+    void router.push({ name: targetName })
+  }
 }
 
 const {
