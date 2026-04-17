@@ -126,7 +126,7 @@ async function handleDelete() {
   if (!libraryId.value) return
   try {
     await deleteLibraryById(libraryId.value)
-    router.push({ name: 'libraries' })
+    router.push({ name: 'media_libraries' })
   } catch {
     showToast('删除媒体库失败', 'error')
   }
@@ -197,7 +197,7 @@ async function onDeleteCover() {
   <div v-else style="max-width: 720px; margin: 0 auto">
     <!-- Header -->
     <div style="margin-bottom: 16px">
-      <n-button text size="small" @click="router.push({ name: 'libraries' })">
+      <n-button text size="small" @click="router.push({ name: 'media_libraries' })">
         <template #icon><n-icon :size="18"><ArrowBackOutline /></n-icon></template>
         媒体库
       </n-button>

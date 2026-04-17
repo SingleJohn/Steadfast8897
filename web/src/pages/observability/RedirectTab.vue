@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
+import { computed, h, inject } from 'vue'
 import {
   NButton,
   NCollapse,
@@ -23,46 +23,55 @@ import ErrorBanner from '@/components/ErrorBanner.vue'
 import PageSectionCard from '@/components/PageSectionCard.vue'
 import RedirectTopTables from '@/pages/observability/RedirectTopTables.vue'
 import StatCard from '@/components/StatCard.vue'
-import type { RedirectSummary, RequestLog } from '@/types'
+import { OBS_KEY } from '@/composables/observabilityContext'
 
-const redirectIsLive = defineModel<boolean>('redirectIsLive', { required: true })
-const redirectBackend = defineModel<string>('redirectBackend', { required: true })
-const redirectUserID = defineModel<string>('redirectUserId', { required: true })
-const redirectUserName = defineModel<string>('redirectUserName', { required: true })
-const redirectIP = defineModel<string>('redirectIp', { required: true })
-const redirectUAContains = defineModel<string>('redirectUaContains', { required: true })
-const redirectPathPrefix = defineModel<string>('redirectPathPrefix', { required: true })
-const redirectLimit = defineModel<number>('redirectLimit', { required: true })
-const redirectRange = defineModel<[number, number] | null>('redirectRange', { required: true })
+const obs = inject(OBS_KEY)
+if (!obs) throw new Error('RedirectTab must be used within ObservabilityPage')
 
-const props = defineProps<{
-  redirectSummary: RedirectSummary | null
-  redirectSummaryError: string | null
-  redirectLogsError: string | null
-  redirectSummaryLoading: boolean
-  redirectLogsLoading: boolean
-  redirectLogsItems: RequestLog[]
-  redirectLogsColumns: any[]
-  rowProps: any
-  redirectLogsOffset: number
-  canNextRedirectPage: boolean
-  redirectBackendOptions: Array<{ label: string; value: string }>
-  topRedirectBackends: Array<{ backend: string; count: number }>
-  redirectWindowLabel: string
-  redirectTraceAggLoading: boolean
-  redirectTraceAggError: string | null
-  redirectTraceRequestStages: Array<{ stage: string; count: number; avg_ms: number; p50_ms: number; p95_ms: number; max_ms: number }>
-  redirectTraceAttemptStages: Array<{ stage: string; count: number; avg_ms: number; p50_ms: number; p95_ms: number; max_ms: number }>
-  redirectTraceByBackend: Array<{ backend: string; count: number; success: number; success_rate: number; avg_ms: number; p50_ms: number; p95_ms: number; max_ms: number }>
-  redirectTraceAggMeta: { sampled: number; parsed: number; skipped: number; sample_limit: number }
-}>()
+const {
+  redirectIsLive,
+  redirectBackend,
+  redirectUserID,
+  redirectUserName,
+  redirectIP,
+  redirectUAContains,
+  redirectPathPrefix,
+  redirectLimit,
+  redirectRange,
+  redirectSummary,
+  redirectSummaryError,
+  redirectLogsError,
+  redirectSummaryLoading,
+  redirectLogsLoading,
+  redirectLogsItems,
+  redirectLogsColumns,
+  rowProps,
+  redirectLogsOffset,
+  canNextRedirectPage,
+  redirectBackendOptions,
+  topRedirectBackends,
+  redirectWindowLabel,
+  redirectTraceAggLoading,
+  redirectTraceAggError,
+  redirectTraceRequestStages,
+  redirectTraceAttemptStages,
+  redirectTraceByBackend,
+  redirectTraceAggMeta,
+  refreshRedirectSummary,
+  refreshRedirectLogs,
+  refreshRedirectTraceAgg,
+  resetRedirectFilters,
+  nextRedirectPage,
+} = obs
 
-const emit = defineEmits<{
-  (e: 'refresh-all'): void
-  (e: 'search'): void
-  (e: 'reset'): void
-  (e: 'next-page'): void
-}>()
+function onRefreshAll() {
+  void refreshRedirectSummary()
+  void refreshRedirectLogs(true)
+  void refreshRedirectTraceAgg()
+}
+function onSearch() { onRefreshAll() }
+function onReset() { resetRedirectFilters() }
+function onNext() { void nextRedirectPage() }
 
 const requestStageMeta: Record<string, { name: string; desc: string }> = {
   emby_lookup_ms: { name: 'Emby 路径查询', desc: '向 Emby Items API 查询播放项真实路径。' },
@@ -83,14 +92,14 @@ const attemptStageMeta: Record<string, { name: string; desc: string }> = {
   direct_link_ms: { name: '直链获取', desc: 'Pan123 调 API 获取可下载 URL。' },
 }
 
-const requestStageRows = computed(() => [...props.redirectTraceRequestStages])
+const requestStageRows = computed(() => [...redirectTraceRequestStages.value])
 
-const attemptStageRows = computed(() => [...props.redirectTraceAttemptStages].sort((a: any, b: any) => Number(b.p95_ms || 0) - Number(a.p95_ms || 0)))
+const attemptStageRows = computed(() => [...redirectTraceAttemptStages.value].sort((a: any, b: any) => Number(b.p95_ms || 0) - Number(a.p95_ms || 0)))
 
-const backendRows = computed(() => [...props.redirectTraceByBackend].sort((a: any, b: any) => Number(b.p95_ms || 0) - Number(a.p95_ms || 0)))
+const backendRows = computed(() => [...redirectTraceByBackend.value].sort((a: any, b: any) => Number(b.p95_ms || 0) - Number(a.p95_ms || 0)))
 
 const parseRateText = computed(() => {
-  const meta = props.redirectTraceAggMeta
+  const meta = redirectTraceAggMeta.value
   const sampled = Number(meta?.sampled || 0)
   const parsed = Number(meta?.parsed || 0)
   if (sampled <= 0) return '0%'
@@ -194,7 +203,7 @@ const backendColumns = [
               <n-text depth="3" size="small">实时追踪</n-text>
               <n-switch v-model:value="redirectIsLive" size="small" />
               <n-divider vertical />
-              <n-button quaternary circle size="small" @click="emit('refresh-all')">
+              <n-button quaternary circle size="small" @click="onRefreshAll">
                 <template #icon><n-icon><RefreshOutline /></n-icon></template>
               </n-button>
             </n-space>
@@ -234,8 +243,8 @@ const backendColumns = [
                 </n-grid-item>
               </n-grid>
               <n-space justify="end" style="margin-top: 16px">
-                <n-button size="small" @click="emit('reset')" :disabled="redirectIsLive">重置</n-button>
-                <n-button type="primary" size="small" @click="emit('search')" :disabled="redirectIsLive">查询</n-button>
+                <n-button size="small" @click="onReset" :disabled="redirectIsLive">重置</n-button>
+                <n-button type="primary" size="small" @click="onSearch" :disabled="redirectIsLive">查询</n-button>
               </n-space>
             </div>
           </n-collapse-item>
@@ -259,7 +268,7 @@ const backendColumns = [
         <n-text depth="3" size="small">
           {{ redirectIsLive ? 'Live Mode' : `Offset: ${redirectLogsOffset}` }}
         </n-text>
-        <n-button size="small" :disabled="!canNextRedirectPage" @click="emit('next-page')">加载更多</n-button>
+        <n-button size="small" :disabled="!canNextRedirectPage" @click="onNext">加载更多</n-button>
       </div>
     </page-section-card>
 

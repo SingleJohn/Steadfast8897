@@ -26,6 +26,14 @@ import {
   SaveOutline,
   SwapHorizontalOutline,
   ConstructOutline,
+  PulseOutline,
+  GlobeOutline,
+  FilmOutline,
+  GitNetworkOutline,
+  GridOutline,
+  LayersOutline,
+  ReturnDownBackOutline,
+  PlayCircleOutline,
 } from '@vicons/ionicons5'
 import { PathMappingIcon } from '@/icons/PathMappingIcon'
 
@@ -64,4 +72,19 @@ export const AppIcons = {
   apikeys: KeyOutline,
   webhook: NotificationsOutline,
   tools: ConstructOutline,
+
+  // Section-level icons (一级模块图标)
+  media: FilmOutline,
+  gateway: GitNetworkOutline,
+  system: ConstructOutline,
+
+  // Observability sub-items (观测中心二级菜单图标)
+  traffic: PulseOutline,
+  redirect: ReturnDownBackOutline,
+  ipStats: GlobeOutline,
+  playback: PlayCircleOutline,
+
+  // Misc extras
+  dashboard: GridOutline,
+  layers: LayersOutline,
 } as const

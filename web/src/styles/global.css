@@ -23,8 +23,10 @@
   --app-text: var(--c-slate-900);
   --app-text-muted: var(--c-slate-500);
 
+  --app-radius-sm: 8px;
   --app-radius: 12px;
   --app-radius-card: calc(var(--app-radius) + 4px);
+  --app-radius-xl: 20px;
 
   /* Soft Shadows */
   --app-shadow-0: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
@@ -35,7 +37,14 @@
   /* Primary & Functional Colors */
   --app-primary: #10b981;
   --app-primary-rgb: 16, 185, 129;
+  --app-primary-soft: rgba(16, 185, 129, 0.12);
+  --app-primary-soft-hover: rgba(16, 185, 129, 0.18);
   --app-glass-blur: 12px;
+
+  /* Solid card surface (non-glass) */
+  --app-card-bg: #ffffff;
+  --app-card-bg-subtle: #f8fafc;
+  --app-card-border: var(--c-slate-200);
 
   --app-success: #10b981;
   --app-info: #3b82f6;
@@ -71,6 +80,12 @@ html.app-dark {
 
   --app-modal-glass: rgba(15, 23, 42, 0.75);
   --app-modal-glass-border: rgba(51, 65, 85, 0.6);
+
+  --app-primary-soft: rgba(16, 185, 129, 0.18);
+  --app-primary-soft-hover: rgba(16, 185, 129, 0.26);
+  --app-card-bg: #111c31;
+  --app-card-bg-subtle: #0f172a;
+  --app-card-border: var(--c-slate-800);
 }
 
 html,
@@ -126,10 +141,22 @@ body {
   border-color: var(--app-border);
 }
 
+/*
+ * 全局 n-card 默认视觉：扁平卡片风格（白底/深底 + 淡阴影 + 边框）。
+ * 特殊场景仍可通过 .glass-card 类恢复玻璃拟态（见下方）。
+ */
 .n-card:not(.n-card--embedded) {
+  background: var(--app-card-bg);
+  border-color: var(--app-card-border);
+  box-shadow: var(--app-shadow-1);
+}
+
+/* 显式 .glass-card 保留玻璃效果（覆盖上面的扁平默认） */
+.n-card.glass-card:not(.n-card--embedded) {
   background: var(--app-surface-2);
   backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
   -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.25);
+  box-shadow: var(--app-shadow-0);
 }
 
 .n-drawer .n-drawer-body-content-wrapper {
@@ -321,6 +348,113 @@ html.app-dark .n-tooltip {
   --n-text-color: rgba(248, 250, 252, 0.92) !important;
   color: rgba(248, 250, 252, 0.92) !important;
 }
+
+/* --- Flat Card System --- */
+/*
+ * 扁平卡片：后台主力样式，纯色背景 + 细边框 + 淡阴影。
+ * 和 .glass-card 的区别是：无毛玻璃模糊、背景为不透明白色（或深色），
+ * 更适合长列表、表格、表单等信息密集场景。
+ */
+
+.card {
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-card-border);
+  border-radius: var(--app-radius-card);
+  box-shadow: var(--app-shadow-1);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card.interactive {
+  cursor: pointer;
+}
+.card.interactive:hover {
+  border-color: var(--app-border-hover);
+  box-shadow: var(--app-shadow-card);
+  transform: translateY(-1px);
+}
+.card.flat {
+  box-shadow: none;
+}
+.card.subtle {
+  background: var(--app-card-bg-subtle);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--app-card-border);
+}
+.card-header-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text);
+  line-height: 1.3;
+}
+.card-header-desc {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+.card-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.card-body {
+  padding: 16px 20px;
+}
+.card-body.compact {
+  padding: 12px 16px;
+}
+.card-body.tight {
+  padding: 0;
+}
+.card-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--app-card-border);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* KPI / stat grids */
+.kpi-grid {
+  display: grid;
+  gap: var(--app-section-gap-compact);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.section-grid-2 {
+  display: grid;
+  gap: var(--app-section-gap);
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+.section-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-section-gap);
+}
+.section-stack-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-section-gap-compact);
+}
+
+/* Inline status dot / badge primitives reused by admin pages */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-slate-400);
+  flex-shrink: 0;
+}
+.status-dot.is-online { background: var(--app-success); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15); }
+.status-dot.is-warning { background: var(--app-warning); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15); }
+.status-dot.is-error { background: var(--app-error); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15); }
 
 /* Scrollbar */
 ::-webkit-scrollbar {

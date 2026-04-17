@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inject } from 'vue'
 import {
   NButton,
   NCollapse,
@@ -19,35 +20,35 @@ import { FunnelOutline, RefreshOutline } from '@vicons/ionicons5'
 
 import PageSectionCard from '@/components/PageSectionCard.vue'
 import TrafficSummaryCards from '@/pages/observability/TrafficSummaryCards.vue'
-import type { RequestLog } from '@/types'
+import { OBS_KEY } from '@/composables/observabilityContext'
 
-const isLive = defineModel<boolean>('isLive', { required: true })
-const status = defineModel<number | null>('status', { required: true })
-const ip = defineModel<string>('ip', { required: true })
-const pathPrefix = defineModel<string>('pathPrefix', { required: true })
-const keyword = defineModel<string>('keyword', { required: true })
-const range = defineModel<[number, number] | null>('range', { required: true })
+const obs = inject(OBS_KEY)
+if (!obs) throw new Error('TrafficTab must be used within ObservabilityPage')
 
-defineProps<{
-  statsSummary: {
-    totalRequests: number
-    total4xx: number
-    total5xx: number
-  }
-  logsColumns: any[]
-  logsItems: RequestLog[]
-  logsLoading: boolean
-  rowProps: any
-  logsOffset: number
-  canNextPage: boolean
-}>()
+// 解构 obs 中的 ref 和函数：解构后在 template 中可自动解包 ref
+const {
+  isLive,
+  status,
+  ip,
+  pathPrefix,
+  keyword,
+  range,
+  statsSummary,
+  logsColumns,
+  logsItems,
+  logsLoading,
+  rowProps,
+  logsOffset,
+  canNextPage,
+  refreshLogs,
+  resetFilters,
+  nextPage,
+} = obs
 
-const emit = defineEmits<{
-  (e: 'refresh'): void
-  (e: 'search'): void
-  (e: 'reset'): void
-  (e: 'next-page'): void
-}>()
+function onRefresh() { void refreshLogs(true) }
+function onSearch() { void refreshLogs(true) }
+function onReset() { resetFilters() }
+function onNext() { void nextPage() }
 </script>
 
 <template>
@@ -62,7 +63,7 @@ const emit = defineEmits<{
               <n-text depth="3" size="small">实时追踪</n-text>
               <n-switch v-model:value="isLive" size="small" />
               <n-divider vertical />
-              <n-button quaternary circle size="small" @click="emit('refresh')">
+              <n-button quaternary circle size="small" @click="onRefresh">
                 <template #icon><n-icon><RefreshOutline /></n-icon></template>
               </n-button>
             </n-space>
@@ -93,8 +94,8 @@ const emit = defineEmits<{
                 </n-grid-item>
               </n-grid>
               <n-space justify="end" style="margin-top: 16px">
-                <n-button size="small" @click="emit('reset')" :disabled="isLive">重置</n-button>
-                <n-button type="primary" size="small" @click="emit('search')" :disabled="isLive">查询</n-button>
+                <n-button size="small" @click="onReset" :disabled="isLive">重置</n-button>
+                <n-button type="primary" size="small" @click="onSearch" :disabled="isLive">查询</n-button>
               </n-space>
             </div>
           </n-collapse-item>
@@ -118,7 +119,7 @@ const emit = defineEmits<{
         <n-text depth="3" size="small">
           {{ isLive ? 'Live Mode' : `Offset: ${logsOffset}` }}
         </n-text>
-        <n-button size="small" :disabled="!canNextPage" @click="emit('next-page')">加载更多</n-button>
+        <n-button size="small" :disabled="!canNextPage" @click="onNext">加载更多</n-button>
       </div>
     </page-section-card>
   </n-space>
