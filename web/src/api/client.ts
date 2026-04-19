@@ -270,6 +270,24 @@ export async function getLibraries() {
   return request<any[]>('/Library/VirtualFolders');
 }
 
+export type ItemCounts = {
+  MovieCount: number
+  SeriesCount: number
+  EpisodeCount: number
+  ArtistCount?: number
+  ProgramCount?: number
+  TrailerCount?: number
+  SongCount?: number
+  AlbumCount?: number
+  MusicVideoCount?: number
+  BoxSetCount?: number
+  BookCount?: number
+}
+
+export async function getItemCounts() {
+  return request<ItemCounts>('/Items/Counts');
+}
+
 export async function addLibrary(name: string, collectionType: string, paths: string[]) {
   return request(`/Library/VirtualFolders/Add?name=${encodeURIComponent(name)}&collectionType=${collectionType}`, {
     method: 'POST',

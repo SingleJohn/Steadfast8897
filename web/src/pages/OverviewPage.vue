@@ -13,6 +13,9 @@ import {
   PeopleOutline,
   LibraryOutline,
   CopyOutline,
+  ShieldCheckmarkOutline,
+  HardwareChipOutline,
+  FilmOutline,
 } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
 import MiniSparkline from '@/components/MiniSparkline.vue'
@@ -28,6 +31,7 @@ import {
   getSystemInfo,
   getActiveSessions,
   getLibraries,
+  getItemCounts,
   restartServer,
   shutdownServer,
   getUpdateStatus,
@@ -35,6 +39,7 @@ import {
   applyUpdate,
   setUpdateChannel,
   type UpdateStatus,
+  type ItemCounts,
 } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 
@@ -49,6 +54,7 @@ const gatewayConfig = ref<GatewayConfig | null>(null)
 const serverInfo = ref<any>(null)
 const sessions = ref<any[]>([])
 const libraries = ref<any[]>([])
+const itemCounts = ref<ItemCounts | null>(null)
 
 // scan 进度由 SSE 流驱动；保留旧字段命名，让"扫描进度"卡片与 activeScanCount 无需改动。
 const { snapshots } = useTaskStream()
@@ -110,6 +116,16 @@ const activeSources = computed(() => {
 })
 const totalSources = computed(() => gatewayConfig.value?.sources?.length || 0)
 const totalLibraries = computed(() => libraries.value.length)
+const totalMediaItems = computed(() => {
+  const c = itemCounts.value
+  if (!c) return 0
+  return (c.MovieCount || 0) + (c.SeriesCount || 0) + (c.EpisodeCount || 0)
+})
+const mediaBreakdown = computed(() => {
+  const c = itemCounts.value
+  if (!c) return '电影 0 · 剧集 0 · 单集 0'
+  return `电影 ${c.MovieCount ?? 0} · 剧集 ${c.SeriesCount ?? 0} · 单集 ${c.EpisodeCount ?? 0}`
+})
 
 // ───────── Real-time counts ─────────
 const activeSessionCount = computed(() => sessions.value.length)
@@ -288,16 +304,18 @@ async function loadGatewayData() {
 }
 
 async function loadServerData() {
-  const [info, sess, libs, update] = await Promise.allSettled([
+  const [info, sess, libs, counts, update] = await Promise.allSettled([
     getSystemInfo(),
     getActiveSessions(),
     getLibraries(),
+    getItemCounts(),
     getUpdateStatus(),
   ])
 
   if (info.status === 'fulfilled') serverInfo.value = info.value
   if (sess.status === 'fulfilled' && Array.isArray(sess.value)) sessions.value = sess.value
   if (libs.status === 'fulfilled' && Array.isArray(libs.value)) libraries.value = libs.value
+  if (counts.status === 'fulfilled' && counts.value) itemCounts.value = counts.value
   if (update.status === 'fulfilled') {
     updateStatus.value = update.value
     updateChannel.value = (update.value.channel as 'stable' | 'beta') || 'stable'
@@ -402,106 +420,171 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- ② KPI 6 格 -->
-      <section class="kpi-row">
-        <div
-          class="kpi-cell kpi-clickable"
-          data-type="primary"
-          @click="router.push({ name: 'obs_gw_traffic' })"
-        >
-          <div class="kpi-head">
-            <span class="kpi-title">总请求数</span>
-            <span class="kpi-icon-box"><n-icon :component="BarChartOutline" :size="16" /></span>
+      <!-- ②a 网关观测 -->
+      <section class="kpi-group">
+        <header class="kpi-group-head">
+          <span class="kpi-group-title">
+            <n-icon :component="ShieldCheckmarkOutline" :size="15" />
+            网关观测
+          </span>
+          <n-button
+            text
+            size="tiny"
+            class="kpi-group-more"
+            @click="router.push({ name: 'obs_gw_traffic' })"
+          >
+            查看详情
+            <template #icon><n-icon :component="ArrowForwardOutline" /></template>
+          </n-button>
+        </header>
+        <div class="kpi-row">
+          <div
+            class="kpi-cell kpi-clickable"
+            data-type="primary"
+            @click="router.push({ name: 'obs_gw_traffic' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">总请求数</span>
+              <span class="kpi-icon-box"><n-icon :component="BarChartOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ totalRequests.toLocaleString() }}</div>
+            <div class="kpi-foot">
+              <mini-sparkline :data="requestsSeries" color="var(--app-primary)" :width="76" :height="22" />
+              <span class="kpi-hint">7 天</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="BarChartOutline" /></span>
           </div>
-          <div class="kpi-value">{{ totalRequests.toLocaleString() }}</div>
-          <div class="kpi-foot">
-            <mini-sparkline :data="requestsSeries" color="var(--app-primary)" :width="76" :height="22" />
-            <span class="kpi-hint">7 天</span>
-          </div>
-          <span class="kpi-bg-icon"><n-icon :component="BarChartOutline" /></span>
-        </div>
 
-        <div
-          class="kpi-cell kpi-clickable"
-          data-type="success"
-          @click="router.push({ name: 'obs_gw_redirect' })"
-        >
-          <div class="kpi-head">
-            <span class="kpi-title">302 重定向</span>
-            <span class="kpi-icon-box"><n-icon :component="FlashOutline" :size="16" /></span>
+          <div
+            class="kpi-cell kpi-clickable"
+            data-type="success"
+            @click="router.push({ name: 'obs_gw_redirect' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">302 重定向</span>
+              <span class="kpi-icon-box"><n-icon :component="FlashOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ totalRedirects.toLocaleString() }}</div>
+            <div class="kpi-foot">
+              <mini-sparkline :data="redirectsSeries" color="var(--app-success)" :width="76" :height="22" />
+              <span class="kpi-hint">7 天</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="FlashOutline" /></span>
           </div>
-          <div class="kpi-value">{{ totalRedirects.toLocaleString() }}</div>
-          <div class="kpi-foot">
-            <mini-sparkline :data="redirectsSeries" color="var(--app-success)" :width="76" :height="22" />
-            <span class="kpi-hint">7 天</span>
-          </div>
-          <span class="kpi-bg-icon"><n-icon :component="FlashOutline" /></span>
-        </div>
 
-        <div
-          class="kpi-cell kpi-clickable"
-          data-type="warning"
-          @click="router.push({ name: 'obs_gw_traffic' })"
-        >
-          <div class="kpi-head">
-            <span class="kpi-title">错误数</span>
-            <span class="kpi-icon-box"><n-icon :component="WarningOutline" :size="16" /></span>
+          <div
+            class="kpi-cell kpi-clickable"
+            data-type="warning"
+            @click="router.push({ name: 'obs_gw_traffic' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">错误数</span>
+              <span class="kpi-icon-box"><n-icon :component="WarningOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ totalErrors.toLocaleString() }}</div>
+            <div class="kpi-foot">
+              <mini-sparkline :data="errorsSeries" color="var(--app-warning)" :width="76" :height="22" />
+              <span class="kpi-hint">{{ errorRate }} · 4xx+5xx</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="WarningOutline" /></span>
           </div>
-          <div class="kpi-value">{{ totalErrors.toLocaleString() }}</div>
-          <div class="kpi-foot">
-            <mini-sparkline :data="errorsSeries" color="var(--app-warning)" :width="76" :height="22" />
-            <span class="kpi-hint">{{ errorRate }} · 4xx+5xx</span>
-          </div>
-          <span class="kpi-bg-icon"><n-icon :component="WarningOutline" /></span>
-        </div>
 
-        <div
-          class="kpi-cell kpi-clickable"
-          data-type="info"
-          @click="router.push({ name: 'gateway_emby_sources' })"
-        >
-          <div class="kpi-head">
-            <span class="kpi-title">活跃源</span>
-            <span class="kpi-icon-box"><n-icon :component="ServerOutline" :size="16" /></span>
+          <div
+            class="kpi-cell kpi-clickable"
+            data-type="info"
+            @click="router.push({ name: 'gateway_emby_sources' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">活跃源</span>
+              <span class="kpi-icon-box"><n-icon :component="ServerOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">
+              {{ activeSources }}<span class="kpi-value-sub">/ {{ totalSources }}</span>
+            </div>
+            <div class="kpi-foot">
+              <span class="kpi-hint">已启用 Emby 源</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="ServerOutline" /></span>
           </div>
-          <div class="kpi-value">
-            {{ activeSources }}<span class="kpi-value-sub">/ {{ totalSources }}</span>
-          </div>
-          <div class="kpi-foot">
-            <span class="kpi-hint">已启用 Emby 源</span>
-          </div>
-          <span class="kpi-bg-icon"><n-icon :component="ServerOutline" /></span>
         </div>
+      </section>
 
-        <div class="kpi-cell" data-type="success">
-          <div class="kpi-head">
-            <span class="kpi-title">
-              活跃会话
-              <span class="live-pill">LIVE</span>
-            </span>
-            <span class="kpi-icon-box"><n-icon :component="PeopleOutline" :size="16" /></span>
+      <!-- ②b 服务观测 -->
+      <section class="kpi-group">
+        <header class="kpi-group-head">
+          <span class="kpi-group-title">
+            <n-icon :component="HardwareChipOutline" :size="15" />
+            服务观测
+          </span>
+          <n-button
+            text
+            size="tiny"
+            class="kpi-group-more"
+            @click="router.push({ name: 'obs_svc_playback' })"
+          >
+            查看详情
+            <template #icon><n-icon :component="ArrowForwardOutline" /></template>
+          </n-button>
+        </header>
+        <div class="kpi-row">
+          <div class="kpi-cell" data-type="success">
+            <div class="kpi-head">
+              <span class="kpi-title">
+                活跃会话
+                <span class="live-pill">LIVE</span>
+              </span>
+              <span class="kpi-icon-box"><n-icon :component="PeopleOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ activeSessionCount }}</div>
+            <div class="kpi-foot">
+              <span class="kpi-hint">{{ activeSessionCount > 0 ? '正在播放' : '无活动连接' }}</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="PeopleOutline" /></span>
           </div>
-          <div class="kpi-value">{{ activeSessionCount }}</div>
-          <div class="kpi-foot">
-            <span class="kpi-hint">{{ activeSessionCount > 0 ? '正在播放' : '无活动连接' }}</span>
-          </div>
-          <span class="kpi-bg-icon"><n-icon :component="PeopleOutline" /></span>
-        </div>
 
-        <div
-          class="kpi-cell kpi-clickable"
-          :data-type="activeScanCount > 0 ? 'warning' : 'info'"
-          @click="router.push({ name: 'media_libraries' })"
-        >
-          <div class="kpi-head">
-            <span class="kpi-title">扫描中</span>
-            <span class="kpi-icon-box"><n-icon :component="LibraryOutline" :size="16" /></span>
+          <div
+            class="kpi-cell kpi-clickable"
+            :data-type="activeScanCount > 0 ? 'warning' : 'info'"
+            @click="router.push({ name: 'media_libraries' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">扫描中</span>
+              <span class="kpi-icon-box"><n-icon :component="LibraryOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ activeScanCount }}</div>
+            <div class="kpi-foot">
+              <span class="kpi-hint">{{ activeScanCount > 0 ? '正在扫描媒体库' : '无扫描任务' }}</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="LibraryOutline" /></span>
           </div>
-          <div class="kpi-value">{{ activeScanCount }}</div>
-          <div class="kpi-foot">
-            <span class="kpi-hint">/ {{ totalLibraries }} 个媒体库</span>
+
+          <div
+            class="kpi-cell kpi-clickable"
+            data-type="info"
+            @click="router.push({ name: 'media_libraries' })"
+          >
+            <div class="kpi-head">
+              <span class="kpi-title">媒体库数</span>
+              <span class="kpi-icon-box"><n-icon :component="LibraryOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ totalLibraries }}</div>
+            <div class="kpi-foot">
+              <span class="kpi-hint">已配置媒体库</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="LibraryOutline" /></span>
           </div>
-          <span class="kpi-bg-icon"><n-icon :component="LibraryOutline" /></span>
+
+          <div class="kpi-cell" data-type="primary">
+            <div class="kpi-head">
+              <span class="kpi-title">媒体项总数</span>
+              <span class="kpi-icon-box"><n-icon :component="FilmOutline" :size="16" /></span>
+            </div>
+            <div class="kpi-value">{{ totalMediaItems.toLocaleString() }}</div>
+            <div class="kpi-foot">
+              <span class="kpi-hint">{{ mediaBreakdown }}</span>
+            </div>
+            <span class="kpi-bg-icon"><n-icon :component="FilmOutline" /></span>
+          </div>
         </div>
       </section>
 
@@ -809,12 +892,41 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* ───────── ② KPI grid ───────── */
+/* ───────── ② KPI groups ───────── */
+.kpi-group {
+  margin-bottom: 16px;
+}
+.kpi-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+  margin-bottom: 10px;
+}
+.kpi-group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  letter-spacing: 0.02em;
+}
+.kpi-group-title :deep(.n-icon) {
+  color: var(--app-primary);
+  opacity: 0.85;
+}
+.kpi-group-more :deep(.n-icon) {
+  font-size: 12px;
+}
+.kpi-group-more :deep(.n-button__content) {
+  gap: 4px;
+}
+
 .kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 
 .kpi-cell {
@@ -956,7 +1068,7 @@ onUnmounted(() => {
   box-shadow: 0 3px 10px rgba(var(--app-primary-rgb), 0.22);
 }
 .kpi-cell[data-type="primary"] .kpi-bg-icon { color: var(--app-primary); }
-.kpi-cell[data-type="primary"].kpi-clickable:hover {
+.kpi-cell[data-type="primary"]:hover {
   transform: translateY(-2px);
   border-color: rgba(var(--app-primary-rgb), 0.42);
   box-shadow: 0 12px 22px -6px rgba(var(--app-primary-rgb), 0.18);
@@ -972,7 +1084,7 @@ onUnmounted(() => {
   box-shadow: 0 3px 10px rgba(16, 185, 129, 0.22);
 }
 .kpi-cell[data-type="success"] .kpi-bg-icon { color: var(--app-success); }
-.kpi-cell[data-type="success"].kpi-clickable:hover {
+.kpi-cell[data-type="success"]:hover {
   transform: translateY(-2px);
   border-color: rgba(16, 185, 129, 0.42);
   box-shadow: 0 12px 22px -6px rgba(16, 185, 129, 0.18);
@@ -988,7 +1100,7 @@ onUnmounted(() => {
   box-shadow: 0 3px 10px rgba(245, 158, 11, 0.22);
 }
 .kpi-cell[data-type="warning"] .kpi-bg-icon { color: var(--app-warning); }
-.kpi-cell[data-type="warning"].kpi-clickable:hover {
+.kpi-cell[data-type="warning"]:hover {
   transform: translateY(-2px);
   border-color: rgba(245, 158, 11, 0.42);
   box-shadow: 0 12px 22px -6px rgba(245, 158, 11, 0.18);
@@ -1004,7 +1116,7 @@ onUnmounted(() => {
   box-shadow: 0 3px 10px rgba(59, 130, 246, 0.22);
 }
 .kpi-cell[data-type="info"] .kpi-bg-icon { color: var(--app-info); }
-.kpi-cell[data-type="info"].kpi-clickable:hover {
+.kpi-cell[data-type="info"]:hover {
   transform: translateY(-2px);
   border-color: rgba(59, 130, 246, 0.42);
   box-shadow: 0 12px 22px -6px rgba(59, 130, 246, 0.18);
@@ -1215,7 +1327,7 @@ onUnmounted(() => {
 
 /* ───────── Responsive ───────── */
 @media (max-width: 1200px) {
-  .kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 960px) {
   .main-grid { grid-template-columns: 1fr; }
