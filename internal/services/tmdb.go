@@ -2010,6 +2010,9 @@ func jsonStringPtr(m map[string]interface{}, key string) *string {
 	if !ok {
 		return nil
 	}
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
 	return &s
 }
 

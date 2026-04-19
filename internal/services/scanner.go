@@ -244,7 +244,9 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 		addClause("imdb_id", "", *nfo.ImdbID)
 	}
 	if nfo.Premiered != nil {
-		addClause("premiere_date", "::date", *nfo.Premiered)
+		if premiered := strings.TrimSpace(*nfo.Premiered); premiered != "" {
+			addClause("premiere_date", "::date", premiered)
+		}
 	}
 	if nfo.Year != nil {
 		addClause("production_year", "", *nfo.Year)
@@ -759,7 +761,20 @@ func ScanLibrary(
 	}()
 }
 
+// autoScrapeRunning 保证同一 library 同时只有一个 autoScrapeNewItems 在跑,
+// 避免扫库频繁触发(file_watcher / 手动)时多个 goroutine 抢同一批未刮削 item,
+// 造成 PG 重复 UPDATE / 事务回滚风暴。
+var autoScrapeRunning sync.Map // libraryID -> *atomic.Bool
+
 func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID string) {
+	flagAny, _ := autoScrapeRunning.LoadOrStore(libraryID, &atomic.Bool{})
+	flag := flagAny.(*atomic.Bool)
+	if !flag.CompareAndSwap(false, true) {
+		slog.Debug("[AutoScrape] Already running for library, skip", "library", libraryID)
+		return
+	}
+	defer flag.Store(false)
+
 	var autoEnabled *string
 	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'auto_scrape_enabled'").Scan(&autoEnabled)
 	if autoEnabled == nil || *autoEnabled != "true" {
