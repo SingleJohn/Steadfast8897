@@ -459,5 +459,35 @@ router.beforeEach((to) => {
   if (to.meta.requiresAdmin && localStorage.getItem('isAdmin') !== 'true') return '/'
 })
 
+// 后端热更后旧 index.html 还指向已失效的 chunk 文件名，动态 import 404 会被静默吞掉，
+// 表现为进入页面白屏且 DevTools XHR 面板无任何请求。检测到就触发一次硬刷新拿新 HTML。
+const RELOAD_GUARD_KEY = 'fyms_chunk_reload_ts'
+function isChunkLoadError(err: unknown): boolean {
+  const msg = String((err as { message?: string })?.message ?? err ?? '')
+  return (
+    /Failed to fetch dynamically imported module/i.test(msg) ||
+    /error loading dynamically imported module/i.test(msg) ||
+    /Importing a module script failed/i.test(msg) ||
+    /Loading chunk \S+ failed/i.test(msg) ||
+    /ChunkLoadError/i.test(msg)
+  )
+}
+function reloadOnceForChunkError() {
+  const last = Number(sessionStorage.getItem(RELOAD_GUARD_KEY) || 0)
+  const now = Date.now()
+  if (now - last < 10_000) return
+  sessionStorage.setItem(RELOAD_GUARD_KEY, String(now))
+  window.location.reload()
+}
+router.onError((err) => {
+  if (isChunkLoadError(err)) reloadOnceForChunkError()
+})
+window.addEventListener('error', (ev) => {
+  if (isChunkLoadError(ev.error ?? ev.message)) reloadOnceForChunkError()
+})
+window.addEventListener('unhandledrejection', (ev) => {
+  if (isChunkLoadError(ev.reason)) reloadOnceForChunkError()
+})
+
 export { router }
 export default router

@@ -45,11 +45,7 @@ watchEffect(() => {
   >
     <n-message-provider>
       <n-global-style />
-      <router-view v-slot="{ Component }">
-        <transition name="fade-slide" mode="out-in">
-          <component :is="Component" />
-        </transition>
-      </router-view>
+      <router-view />
     </n-message-provider>
   </n-config-provider>
 </template>
