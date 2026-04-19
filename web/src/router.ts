@@ -6,17 +6,20 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  *   概览（单项）       →  /admin/overview
  *   媒体内容（submenu）→  /admin/media/{libraries|metadata}
  *   网关（submenu）    →  /admin/gateway/{emby-sources|path-rules|backends}
- *   观测中心（submenu）→  /admin/observability/{traffic|redirect|ip-stats|playback|stats|logs}
+ *   观测中心（submenu）→  /admin/observability/gateway/{traffic|redirect|ip-stats}
+ *                         /admin/observability/service/{playback|stats|logs|tasks}
  *   系统（submenu）    →  /admin/system/{users|api-keys|webhook|backup|emby-migrate}
  *
  * 菜单由 AdminLayout 根据路由 meta 动态生成：
  *   - section / sectionLabel / sectionOrder / sectionIcon：一级模块归属
+ *   - subSection / subSectionLabel / subSectionOrder：section 内部的分组（用于观测中心拆网关/服务两组）
  *   - navLabel / icon / order：二级菜单显示
  *   - sectionSingle：模块下只有一项（如"概览"），菜单不包 submenu
  *   - requiresAdmin：权限过滤
  *
- * 观测中心父路由带组件：ObservabilityPage 作为容器持有 useObservability，
- * 通过 provide/inject 把状态共享给所有子路由（source/tag 过滤器不重置、数据不重复拉取）。
+ * 观测中心下有两个父容器：
+ *   - GatewayObsLayout：持有 useGatewayObservability，共享 source/tag 过滤器给网关 3 个子页
+ *   - ServiceObsLayout：纯 router-view 壳，4 个子页各自管理数据
  */
 
 const router = createRouter({
@@ -174,16 +177,20 @@ const router = createRouter({
           },
         },
 
-        // ── 模块 4：观测中心（父容器 + 6 个子路由）
+        // ── 模块 4：观测中心（两个父容器：网关观测 / 服务观测）
         {
           path: 'observability',
-          component: () => import('./pages/ObservabilityPage.vue'),
-          redirect: { name: 'observability_traffic' },
+          redirect: { name: 'obs_gw_traffic' },
+        },
+        {
+          path: 'observability/gateway',
+          component: () => import('./pages/observability/gateway/GatewayObsLayout.vue'),
+          redirect: { name: 'obs_gw_traffic' },
           children: [
             {
               path: 'traffic',
-              name: 'observability_traffic',
-              component: () => import('./pages/observability/TrafficTab.vue'),
+              name: 'obs_gw_traffic',
+              component: () => import('./pages/observability/gateway/TrafficTab.vue'),
               meta: {
                 title: '流量',
                 navLabel: '流量',
@@ -192,14 +199,17 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
+                subSection: 'gateway',
+                subSectionLabel: '网关观测',
+                subSectionOrder: 1,
                 order: 1,
                 requiresAdmin: true,
               },
             },
             {
               path: 'redirect',
-              name: 'observability_redirect',
-              component: () => import('./pages/observability/RedirectTab.vue'),
+              name: 'obs_gw_redirect',
+              component: () => import('./pages/observability/gateway/RedirectTab.vue'),
               meta: {
                 title: '重定向',
                 navLabel: '重定向',
@@ -208,14 +218,17 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
+                subSection: 'gateway',
+                subSectionLabel: '网关观测',
+                subSectionOrder: 1,
                 order: 2,
                 requiresAdmin: true,
               },
             },
             {
               path: 'ip-stats',
-              name: 'observability_ip_stats',
-              component: () => import('./pages/observability/IpStatsTab.vue'),
+              name: 'obs_gw_ip_stats',
+              component: () => import('./pages/observability/gateway/IpStatsTab.vue'),
               meta: {
                 title: 'IP 统计',
                 navLabel: 'IP 统计',
@@ -224,14 +237,24 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
+                subSection: 'gateway',
+                subSectionLabel: '网关观测',
+                subSectionOrder: 1,
                 order: 3,
                 requiresAdmin: true,
               },
             },
+          ],
+        },
+        {
+          path: 'observability/service',
+          component: () => import('./pages/observability/service/ServiceObsLayout.vue'),
+          redirect: { name: 'obs_svc_playback' },
+          children: [
             {
               path: 'playback',
-              name: 'observability_playback',
-              component: () => import('./pages/observability/PlaybackTab.vue'),
+              name: 'obs_svc_playback',
+              component: () => import('./pages/observability/service/PlaybackTab.vue'),
               meta: {
                 title: '播放',
                 navLabel: '播放',
@@ -240,14 +263,17 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
-                order: 4,
+                subSection: 'service',
+                subSectionLabel: '服务观测',
+                subSectionOrder: 2,
+                order: 1,
                 requiresAdmin: true,
               },
             },
             {
               path: 'stats',
-              name: 'observability_stats',
-              component: () => import('./pages/observability/StatsTab.vue'),
+              name: 'obs_svc_stats',
+              component: () => import('./pages/observability/service/StatsTab.vue'),
               meta: {
                 title: '统计',
                 navLabel: '统计',
@@ -256,14 +282,17 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
-                order: 5,
+                subSection: 'service',
+                subSectionLabel: '服务观测',
+                subSectionOrder: 2,
+                order: 2,
                 requiresAdmin: true,
               },
             },
             {
               path: 'logs',
-              name: 'observability_logs',
-              component: () => import('./pages/observability/SystemLogsTab.vue'),
+              name: 'obs_svc_logs',
+              component: () => import('./pages/observability/service/SystemLogsTab.vue'),
               meta: {
                 title: '系统日志',
                 navLabel: '系统日志',
@@ -272,14 +301,17 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
-                order: 6,
+                subSection: 'service',
+                subSectionLabel: '服务观测',
+                subSectionOrder: 2,
+                order: 3,
                 requiresAdmin: true,
               },
             },
             {
               path: 'tasks',
-              name: 'observability_tasks',
-              component: () => import('./pages/observability/TasksTab.vue'),
+              name: 'obs_svc_tasks',
+              component: () => import('./pages/observability/service/TasksTab.vue'),
               meta: {
                 title: '任务中心',
                 navLabel: '任务中心',
@@ -288,12 +320,23 @@ const router = createRouter({
                 sectionLabel: '观测中心',
                 sectionIcon: 'observability',
                 sectionOrder: 4,
-                order: 7,
+                subSection: 'service',
+                subSectionLabel: '服务观测',
+                subSectionOrder: 2,
+                order: 4,
                 requiresAdmin: true,
               },
             },
           ],
         },
+        // 观测中心旧路径 / 旧路由名 → 新路径重定向（保收藏夹 / 外链兼容）
+        { path: 'observability/traffic', redirect: { name: 'obs_gw_traffic' } },
+        { path: 'observability/redirect', redirect: { name: 'obs_gw_redirect' } },
+        { path: 'observability/ip-stats', redirect: { name: 'obs_gw_ip_stats' } },
+        { path: 'observability/playback', redirect: { name: 'obs_svc_playback' } },
+        { path: 'observability/stats', redirect: { name: 'obs_svc_stats' } },
+        { path: 'observability/logs', redirect: { name: 'obs_svc_logs' } },
+        { path: 'observability/tasks', redirect: { name: 'obs_svc_tasks' } },
 
         // ── 模块 5：系统
         {

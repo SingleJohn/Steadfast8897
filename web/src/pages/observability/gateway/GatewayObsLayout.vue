@@ -4,24 +4,22 @@ import { NSelect, useMessage } from 'naive-ui'
 import { useRoute } from 'vue-router'
 
 import { AppIcons } from '@/icons/appIcons'
-import { useObservability } from '@/composables/useObservability'
-import { OBS_KEY } from '@/composables/observabilityContext'
+import { useGatewayObservability } from '@/composables/useGatewayObservability'
+import { GW_OBS_KEY } from '@/composables/observabilityContext'
 import PageShell from '@/components/PageShell.vue'
-import RequestDetailModal from '@/pages/observability/RequestDetailModal.vue'
+import RequestDetailModal from './RequestDetailModal.vue'
 
 /**
- * 观测中心父容器：
- *   - 持有唯一一份 useObservability（source/tag 过滤器、数据、定时器在此生命周期内）
- *   - PageShell 的 title/description 随当前子路由变化
- *   - 子路由通过 inject(OBS_KEY) 消费状态
- *   - RequestDetailModal 在此挂载，因为它会被多个子页面触发
+ * 网关观测父容器：
+ *   - 持有唯一一份 useGatewayObservability（source/tag 过滤器、数据、定时器）
+ *   - 三个子路由（traffic / redirect / ip-stats）共享 source/tag 过滤器
+ *   - RequestDetailModal 在此挂载（所有网关子页共用）
  */
 
 const message = useMessage()
-const obs = useObservability(message)
-provide(OBS_KEY, obs)
+const obs = useGatewayObservability(message)
+provide(GW_OBS_KEY, obs)
 
-// 解构一些父容器直接用到的 ref，避免 template 里 .value 与 v-model 的取舍问题
 const {
   sourceId,
   sourceOptions,
@@ -38,20 +36,9 @@ const route = useRoute()
 
 type RouteMeta = { title?: string; icon?: string; description?: string }
 
-// 只有消费 source/tag 过滤器的子路由显示过滤器；playback/stats/logs 是独立数据源，隐藏过滤器避免误导
-const ROUTES_WITH_SOURCE_FILTER = new Set([
-  'observability_traffic',
-  'observability_redirect',
-  'observability_ip_stats',
-])
-const showSourceFilter = computed(() => {
-  const name = typeof route.name === 'string' ? route.name : ''
-  return ROUTES_WITH_SOURCE_FILTER.has(name)
-})
-
 const pageTitle = computed(() => {
   const meta = route.meta as RouteMeta
-  return meta?.title || '观测中心'
+  return meta?.title || '网关观测'
 })
 
 const pageIcon = computed(() => {
@@ -63,13 +50,13 @@ const pageIcon = computed(() => {
 
 const pageDescription = computed(() => {
   const meta = route.meta as RouteMeta
-  return meta?.description || '流量分析、播放监控与系统日志。'
+  return meta?.description || '网关流量、重定向与 IP 来源分析。'
 })
 </script>
 
 <template>
   <page-shell :title="pageTitle" :icon="pageIcon" :description="pageDescription" :divider="false">
-    <template v-if="showSourceFilter" #actions>
+    <template #actions>
       <n-select
         v-model:value="sourceId"
         :options="sourceOptions"

@@ -4,11 +4,11 @@ import { NButton, NDatePicker, NDivider, NGrid, NGridItem, NSelect, NSpace, NTex
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import PageSectionCard from '@/components/PageSectionCard.vue'
-import IpStatsDistributionGrid from '@/pages/observability/IPStatsDistributionGrid.vue'
-import { OBS_KEY } from '@/composables/observabilityContext'
+import IpStatsDistributionGrid from './IPStatsDistributionGrid.vue'
+import { GW_OBS_KEY } from '@/composables/observabilityContext'
 
-const obs = inject(OBS_KEY)
-if (!obs) throw new Error('IpStatsTab must be used within ObservabilityPage')
+const obs = inject(GW_OBS_KEY)
+if (!obs) throw new Error('IpStatsTab must be used within GatewayObsLayout')
 
 const {
   ipStatsMode,

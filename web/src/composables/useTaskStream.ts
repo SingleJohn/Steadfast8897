@@ -1,6 +1,6 @@
 // 单例的任务中心 SSE 连接 + 响应式快照表。
 //
-// 所有页面（OverviewPage 的 TaskCenterCard / ObservabilityPage 的 TasksTab）共享
+// 所有页面（OverviewPage 的 TaskCenterCard / 服务观测的 TasksTab）共享
 // 同一个 EventSource：引用计数归零时关闭连接，避免多标签页打开多条流。
 //
 // 失败自动重连：指数退避，最大 30s。

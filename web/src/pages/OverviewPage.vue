@@ -407,7 +407,7 @@ onUnmounted(() => {
         <div
           class="kpi-cell kpi-clickable"
           data-type="primary"
-          @click="router.push({ name: 'observability_traffic' })"
+          @click="router.push({ name: 'obs_gw_traffic' })"
         >
           <div class="kpi-head">
             <span class="kpi-title">总请求数</span>
@@ -424,7 +424,7 @@ onUnmounted(() => {
         <div
           class="kpi-cell kpi-clickable"
           data-type="success"
-          @click="router.push({ name: 'observability_redirect' })"
+          @click="router.push({ name: 'obs_gw_redirect' })"
         >
           <div class="kpi-head">
             <span class="kpi-title">302 重定向</span>
@@ -441,7 +441,7 @@ onUnmounted(() => {
         <div
           class="kpi-cell kpi-clickable"
           data-type="warning"
-          @click="router.push({ name: 'observability_traffic' })"
+          @click="router.push({ name: 'obs_gw_traffic' })"
         >
           <div class="kpi-head">
             <span class="kpi-title">错误数</span>

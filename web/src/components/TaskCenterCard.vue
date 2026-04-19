@@ -70,7 +70,7 @@ const headline = computed(() => {
 })
 
 function goTasksTab() {
-  router.push({ name: 'observability_tasks' })
+  router.push({ name: 'obs_svc_tasks' })
 }
 
 function brief(t: TaskSnapshot) {

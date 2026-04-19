@@ -19,11 +19,11 @@ import {
 import { FunnelOutline, RefreshOutline } from '@vicons/ionicons5'
 
 import PageSectionCard from '@/components/PageSectionCard.vue'
-import TrafficSummaryCards from '@/pages/observability/TrafficSummaryCards.vue'
-import { OBS_KEY } from '@/composables/observabilityContext'
+import TrafficSummaryCards from './TrafficSummaryCards.vue'
+import { GW_OBS_KEY } from '@/composables/observabilityContext'
 
-const obs = inject(OBS_KEY)
-if (!obs) throw new Error('TrafficTab must be used within ObservabilityPage')
+const obs = inject(GW_OBS_KEY)
+if (!obs) throw new Error('TrafficTab must be used within GatewayObsLayout')
 
 // 解构 obs 中的 ref 和函数：解构后在 template 中可自动解包 ref
 const {

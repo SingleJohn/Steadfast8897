@@ -1,19 +1,19 @@
 import type { InjectionKey } from 'vue'
-import type { useObservability } from './useObservability'
+import type { useGatewayObservability } from './useGatewayObservability'
 
 /**
- * Observability 父路由容器（ObservabilityPage）持有 useObservability 的结果，
- * 通过 provide 注入给所有子路由（TrafficTab / RedirectTab / IpStatsTab 等）。
+ * 网关观测容器（GatewayObsLayout）持有 useGatewayObservability 的结果，
+ * 通过 provide 注入给 TrafficTab / RedirectTab / IpStatsTab。
  *
  * 使用方式：
  *   // 父容器
- *   const obs = useObservability(message)
- *   provide(OBS_KEY, obs)
+ *   const obs = useGatewayObservability(message)
+ *   provide(GW_OBS_KEY, obs)
  *
  *   // 子组件
- *   const obs = injectObservability()
- *   const { isLive, logsItems, refreshLogs } = obs  // 解构 ref，template 自动解包
+ *   const obs = inject(GW_OBS_KEY)
+ *   const { isLive, logsItems, refreshLogs } = obs!
  */
-export type ObservabilityContext = ReturnType<typeof useObservability>
+export type GatewayObservabilityContext = ReturnType<typeof useGatewayObservability>
 
-export const OBS_KEY: InjectionKey<ObservabilityContext> = Symbol('observability')
+export const GW_OBS_KEY: InjectionKey<GatewayObservabilityContext> = Symbol('gateway-observability')

@@ -4,7 +4,6 @@ import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { ApiError } from '@/api/client'
 import { getConfig } from '@/api/config'
-import { getErrorLogTail, readErrorLog } from '@/api/console'
 import { getIPStatsSummary } from '@/api/ipstats'
 import { listLogs } from '@/api/logs'
 import {
@@ -17,10 +16,6 @@ import {
 import { getDailyStats } from '@/api/stats'
 import type { Config, DailyStat, EmbySourceConfig, IPInfoLite, IPStatsSummary, RedirectSummary, RequestLog } from '@/types'
 
-export type ObservabilityTab = 'traffic' | 'redirect302' | 'ipstats' | 'console'
-
-const OBS_ACTIVE_TAB_KEY = 'observability.activeTab'
-const ALLOWED_TABS: ObservabilityTab[] = ['traffic', 'redirect302', 'ipstats', 'console']
 const DEFAULT_REDIRECT_WINDOW_MS = 24 * 60 * 60 * 1000
 
 function unixSeconds(ms: number | null) {
@@ -50,14 +45,8 @@ function formatWindowLabel(sinceIso: string, untilIso: string) {
   return `${since} ~ ${until}`
 }
 
-export function useObservability(message: MessageApi) {
+export function useGatewayObservability(message: MessageApi) {
   const shownWarnings = new Set<string>()
-
-  const activeTab = ref<ObservabilityTab>('traffic')
-  {
-    const saved = String(localStorage.getItem(OBS_ACTIVE_TAB_KEY) || '') as ObservabilityTab
-    if (ALLOWED_TABS.includes(saved)) activeTab.value = saved
-  }
 
   const tag = ref<'proxy' | 'admin'>('proxy')
   const sourceId = ref<string>('')
@@ -129,15 +118,6 @@ export function useObservability(message: MessageApi) {
   const ipStatsSummary = ref<IPStatsSummary | null>(null)
   const ipStatsMode = ref<'all' | 'redirect302'>('all')
   const ipStatsRange = ref<[number, number] | null>(null)
-
-  const consoleLoading = ref(false)
-  const consoleError = ref<string | null>(null)
-  const consoleText = ref('')
-  const consoleOffset = ref(0)
-  const consoleSize = ref(0)
-  const consoleIsLive = ref(false)
-  const consoleSearch = ref('')
-  let consoleLiveTimer: number | null = null
 
   const selectedIPInfo = computed(() => {
     const clientIP = String(selectedLog.value?.client_ip || '').trim()
@@ -227,13 +207,6 @@ export function useObservability(message: MessageApi) {
       return `${ipStatsSummary.value.since.replace('T', ' ').slice(0, 19)} ~ ${ipStatsSummary.value.until.replace('T', ' ').slice(0, 19)}`
     }
     return '近24小时'
-  })
-
-  const consoleFilteredText = computed(() => {
-    const q = consoleSearch.value.trim().toLowerCase()
-    const lines = consoleText.value.split('\n')
-    const filtered = q ? lines.filter((line) => line.toLowerCase().includes(q)) : lines
-    return filtered.reverse().join('\n')
   })
 
   const logsColumns: DataTableColumns<RequestLog> = [
@@ -477,16 +450,6 @@ export function useObservability(message: MessageApi) {
     }
   }
 
-  function appendConsoleText(chunk: string) {
-    if (!chunk) return
-    const next = consoleText.value ? `${consoleText.value}\n${chunk}` : chunk
-    if (next.length > 1024 * 1024) {
-      consoleText.value = next.slice(next.length - 1024 * 1024)
-      return
-    }
-    consoleText.value = next
-  }
-
   async function refreshIPStats(reset = true) {
     if (ipStatsLoading.value) return
     ipStatsLoading.value = true
@@ -522,46 +485,6 @@ export function useObservability(message: MessageApi) {
       message.error(err.message)
     } finally {
       ipStatsLoading.value = false
-    }
-  }
-
-  async function loadConsoleTail() {
-    consoleLoading.value = true
-    consoleError.value = null
-    try {
-      const resp = await getErrorLogTail(300)
-      consoleText.value = resp.text || ''
-      consoleOffset.value = resp.next_offset || 0
-      consoleSize.value = resp.size || 0
-    } catch (e) {
-      const err = e instanceof ApiError ? e : new ApiError((e as Error).message || '加载失败', 0)
-      consoleError.value = err.message
-      if (!consoleIsLive.value) message.error(err.message)
-    } finally {
-      consoleLoading.value = false
-    }
-  }
-
-  async function loadConsoleIncrement() {
-    if (consoleLoading.value) return
-    consoleLoading.value = true
-    consoleError.value = null
-    try {
-      const resp = await readErrorLog(consoleOffset.value, 128 * 1024)
-      const currentSize = resp.size || 0
-      if (currentSize < consoleOffset.value) {
-        await loadConsoleTail()
-        return
-      }
-      if (resp.text) appendConsoleText(resp.text)
-      consoleOffset.value = resp.next_offset || consoleOffset.value
-      consoleSize.value = currentSize
-    } catch (e) {
-      const err = e instanceof ApiError ? e : new ApiError((e as Error).message || '加载失败', 0)
-      consoleError.value = err.message
-      if (!consoleIsLive.value) message.error(err.message)
-    } finally {
-      consoleLoading.value = false
     }
   }
 
@@ -666,19 +589,6 @@ export function useObservability(message: MessageApi) {
     redirectLiveTimer = null
   }
 
-  function startConsoleLive() {
-    stopConsoleLive()
-    consoleLiveTimer = window.setInterval(() => {
-      void loadConsoleIncrement()
-    }, 1500)
-  }
-
-  function stopConsoleLive() {
-    if (!consoleLiveTimer) return
-    window.clearInterval(consoleLiveTimer)
-    consoleLiveTimer = null
-  }
-
   async function nextPage() {
     await refreshLogs(false)
   }
@@ -739,21 +649,6 @@ export function useObservability(message: MessageApi) {
     }
   })
 
-  watch(consoleIsLive, async (val) => {
-    if (val) {
-      if (!consoleText.value) await loadConsoleTail()
-      startConsoleLive()
-    } else {
-      stopConsoleLive()
-    }
-  })
-
-  watch(activeTab, async (tab) => {
-    if (tab === 'console' && !consoleText.value) {
-      await loadConsoleTail()
-    }
-  })
-
   watch(sourceId, async () => {
     stopLive()
     stopRedirectLive()
@@ -763,10 +658,6 @@ export function useObservability(message: MessageApi) {
     await refreshRedirectLogs(true)
     await refreshRedirectTraceAgg()
     await refreshIPStats(true)
-  })
-
-  watch(activeTab, (v) => {
-    if (ALLOWED_TABS.includes(v)) localStorage.setItem(OBS_ACTIVE_TAB_KEY, v)
   })
 
   onMounted(() => {
@@ -807,11 +698,9 @@ export function useObservability(message: MessageApi) {
   onBeforeUnmount(() => {
     stopLive()
     stopRedirectLive()
-    stopConsoleLive()
   })
 
   return {
-    activeTab,
     tag,
     sourceId,
     sourceOptions,
@@ -863,13 +752,6 @@ export function useObservability(message: MessageApi) {
     ipStatsScopeLabel,
     ipStatsRangeLabel,
     ipStatsUseCumulative,
-    consoleSearch,
-    consoleIsLive,
-    consoleError,
-    consoleLoading,
-    consoleOffset,
-    consoleSize,
-    consoleFilteredText,
     showDetail,
     selectedLog,
     selectedIPLocation,
@@ -885,7 +767,5 @@ export function useObservability(message: MessageApi) {
     resetRedirectFilters,
     nextRedirectPage,
     refreshIPStats,
-    loadConsoleTail,
-    loadConsoleIncrement,
   }
 }

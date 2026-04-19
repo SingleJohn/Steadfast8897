@@ -21,12 +21,12 @@ import { FunnelOutline, RefreshOutline, TimeOutline, GlobeOutline, CheckmarkCirc
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import PageSectionCard from '@/components/PageSectionCard.vue'
-import RedirectTopTables from '@/pages/observability/RedirectTopTables.vue'
+import RedirectTopTables from './RedirectTopTables.vue'
 import StatCard from '@/components/StatCard.vue'
-import { OBS_KEY } from '@/composables/observabilityContext'
+import { GW_OBS_KEY } from '@/composables/observabilityContext'
 
-const obs = inject(OBS_KEY)
-if (!obs) throw new Error('RedirectTab must be used within ObservabilityPage')
+const obs = inject(GW_OBS_KEY)
+if (!obs) throw new Error('RedirectTab must be used within GatewayObsLayout')
 
 const {
   redirectIsLive,

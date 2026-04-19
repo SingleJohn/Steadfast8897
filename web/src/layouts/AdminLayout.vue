@@ -52,6 +52,9 @@ type NavMeta = {
   sectionIcon?: AppIconKey
   sectionOrder?: number
   sectionSingle?: boolean
+  subSection?: string
+  subSectionLabel?: string
+  subSectionOrder?: number
   order?: number
   requiresAdmin?: boolean
 }
@@ -61,6 +64,9 @@ type NavItem = {
   label: string
   icon?: AppIconKey
   order: number
+  subSection?: string
+  subSectionLabel?: string
+  subSectionOrder?: number
 }
 
 type NavSection = {
@@ -131,6 +137,9 @@ const menuOptions = computed<MenuOption[]>(() => {
       label: meta.navLabel,
       icon: meta.icon,
       order: Number(meta.order ?? 99),
+      subSection: meta.subSection,
+      subSectionLabel: meta.subSectionLabel,
+      subSectionOrder: meta.subSectionOrder,
     })
   }
 
@@ -151,15 +160,46 @@ const menuOptions = computed<MenuOption[]>(() => {
       continue
     }
 
+    const hasSubGroups = items.some((it) => !!it.subSection)
+    let children: MenuOption[]
+    if (hasSubGroups) {
+      // 把 items 按 subSection 分桶，保留桶内 order 排序；输出 naive-ui 的 group 菜单项
+      const buckets = new Map<string, { label: string; order: number; items: NavItem[] }>()
+      for (const it of items) {
+        const key = it.subSection || '__ungrouped'
+        if (!buckets.has(key)) {
+          buckets.set(key, {
+            label: it.subSectionLabel || '',
+            order: Number(it.subSectionOrder ?? 99),
+            items: [],
+          })
+        }
+        buckets.get(key)!.items.push(it)
+      }
+      const groups = Array.from(buckets.entries()).sort((a, b) => a[1].order - b[1].order)
+      children = groups.map(([key, bucket]) => ({
+        type: 'group',
+        key: `group:${section.key}:${key}`,
+        label: bucket.label,
+        children: bucket.items.map((item) => ({
+          key: item.key,
+          label: item.label,
+          icon: renderIcon(item.icon ? AppIcons[item.icon] : undefined),
+        })),
+      }))
+    } else {
+      children = items.map((item) => ({
+        key: item.key,
+        label: item.label,
+        icon: renderIcon(item.icon ? AppIcons[item.icon] : undefined),
+      }))
+    }
+
     options.push({
       key: `section:${section.key}`,
       label: section.label,
       icon: renderIcon(section.icon ? AppIcons[section.icon] : undefined),
-      children: items.map((item) => ({
-        key: item.key,
-        label: item.label,
-        icon: renderIcon(item.icon ? AppIcons[item.icon] : undefined),
-      })),
+      children,
     })
   }
 
@@ -172,6 +212,7 @@ const selectedKey = computed(() => {
 
 const currentSection = computed<string | undefined>(() => (route.meta as NavMeta)?.section)
 const currentSectionLabel = computed<string | undefined>(() => (route.meta as NavMeta)?.sectionLabel)
+const currentSubSectionLabel = computed<string | undefined>(() => (route.meta as NavMeta)?.subSectionLabel)
 const currentTitle = computed(() => {
   const title = route.meta?.title
   return typeof title === 'string' && title ? title : '管理后台'
@@ -182,6 +223,11 @@ const breadcrumbShowSection = computed(() => {
   if (!meta.sectionLabel) return false
   if (meta.sectionSingle) return false
   return meta.sectionLabel !== meta.title
+})
+const breadcrumbShowSubSection = computed(() => {
+  const meta = route.meta as NavMeta
+  if (!meta.subSectionLabel) return false
+  return meta.subSectionLabel !== meta.title
 })
 
 // 展开状态：默认展开当前 section；用户手动展开/收起后保留偏好
@@ -269,6 +315,10 @@ watch(() => route.path, () => { mobileMenuOpen.value = false })
             <div class="breadcrumb">
               <span v-if="breadcrumbShowSection" class="breadcrumb-section">{{ currentSectionLabel }}</span>
               <span v-if="breadcrumbShowSection" class="breadcrumb-sep">
+                <n-icon :size="14"><ChevronForwardOutline /></n-icon>
+              </span>
+              <span v-if="breadcrumbShowSubSection" class="breadcrumb-section">{{ currentSubSectionLabel }}</span>
+              <span v-if="breadcrumbShowSubSection" class="breadcrumb-sep">
                 <n-icon :size="14"><ChevronForwardOutline /></n-icon>
               </span>
               <span class="breadcrumb-current">{{ currentTitle }}</span>
