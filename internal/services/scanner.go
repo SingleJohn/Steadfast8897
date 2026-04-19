@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
@@ -276,7 +278,28 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 		query := fmt.Sprintf("UPDATE items SET %s WHERE id = $%d::uuid",
 			strings.Join(setClauses, ", "), argIdx)
 		args = append(args, itemID)
-		pool.Exec(ctx, query, args...)
+		if _, err := pool.Exec(ctx, query, args...); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				// 唯一约束冲突(同库重名等):降级把 item 打成 error 状态,
+				// 让未匹配/异常面板可见;不再 panic 或无声吞掉。
+				_, markErr := pool.Exec(ctx,
+					`UPDATE items
+					    SET platform_scan_status = 'error',
+					        platform_scan_error  = $1,
+					        platform_scanned_at  = NOW(),
+					        updated_at           = NOW()
+					  WHERE id = $2::uuid`,
+					fmt.Sprintf("元数据写入冲突: %s", pgErr.Detail), itemID)
+				if markErr != nil {
+					slog.Warn("[ApplyNfo] mark error status failed", "item_id", itemID, "error", markErr)
+				}
+				slog.Warn("[ApplyNfo] unique constraint conflict",
+					"item_id", itemID, "constraint", pgErr.ConstraintName, "detail", pgErr.Detail)
+			} else {
+				slog.Warn("[ApplyNfo] update items failed", "item_id", itemID, "error", err)
+			}
+		}
 	}
 
 	if len(nfo.Genres) > 0 {

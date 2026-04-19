@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -127,6 +128,7 @@ func listIdentifyCandidatesBatch(ctx context.Context, pool *pgxpool.Pool, itemID
 // 1) provider=tmdb → 用 external_id
 // 2) payload.external_ids.tmdb
 // 3) payload.external_ids.imdb → TmdbClient.FindByExternalID 映射
+// 4) 候选 title+year → TMDB Search 兜底(Movie/Series 按 item.type 分流)
 // 都没有返回友好错误,避免把非 TMDB 候选(如豆瓣)的 external_id 误当 TMDB ID 发请求。
 func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID, candidateID string) (int64, error) {
 	items, err := ListIdentifyCandidates(ctx, pool, itemID)
@@ -147,8 +149,10 @@ func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, ite
 				return id, nil
 			}
 		}
+		var client *TmdbClient
 		if imdb := pickPayloadExternalID(item.Payload, "imdb"); imdb != "" {
-			if client := TmdbClientFromConfig(ctx, pool); client != nil {
+			client = TmdbClientFromConfig(ctx, pool)
+			if client != nil {
 				if pid, ferr := client.FindByExternalID(ctx, "imdb", imdb); ferr == nil {
 					if id, perr := parseInt64(pid); perr == nil && id > 0 {
 						return id, nil
@@ -156,9 +160,48 @@ func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, ite
 				}
 			}
 		}
+		if strings.TrimSpace(item.Title) != "" {
+			if client == nil {
+				client = TmdbClientFromConfig(ctx, pool)
+			}
+			if client != nil {
+				if id := searchTMDBByTitle(ctx, pool, client, itemID, item.Title, item.Year); id > 0 {
+					slog.Info("[identify] resolved via TMDB search fallback",
+						"item_id", itemID, "provider", item.Provider, "title", item.Title, "tmdb_id", id)
+					return id, nil
+				}
+			}
+		}
 		return 0, fmt.Errorf("候选未关联 TMDB ID(provider=%s),请使用「搜索 TMDB」手动选择", item.Provider)
 	}
 	return 0, fmt.Errorf("候选不存在")
+}
+
+// searchTMDBByTitle 最后一级兜底:用候选 title+year 调 TMDB 搜索,取第一条命中。
+// 按 item.type 分流到 SearchMovieMulti/SearchTVMulti;命中失败返回 0。
+// 只在 imdb 映射失败后调用,避免无谓消耗 TMDB 配额。
+func searchTMDBByTitle(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, itemID, title string, year *int32) int64 {
+	var itemType string
+	if err := pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType); err != nil {
+		return 0
+	}
+	var results []map[string]any
+	var err error
+	switch itemType {
+	case "Movie":
+		results, err = client.SearchMovieMulti(ctx, title, year)
+	case "Series":
+		results, err = client.SearchTVMulti(ctx, title)
+	default:
+		return 0
+	}
+	if err != nil || len(results) == 0 {
+		return 0
+	}
+	if id, ok := jsonInt64(results[0], "id"); ok && id > 0 {
+		return id
+	}
+	return 0
 }
 
 // pickPayloadExternalID 从 candidate.payload.external_ids 取指定 kind 的值。
