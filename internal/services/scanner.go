@@ -1469,28 +1469,60 @@ func scanOneShow(
 	posterTag := ptrAndThen(poster, GenerateImageTag)
 	backdropTag := ptrAndThen(backdrop, GenerateImageTag)
 
-	// 查找已有 Series：先按 NFO 名（finalShowName）查，再按目录名（parsed.Name）查。
-	// 这样避免 NFO 中文名和目录英文名产生两个 Series 的问题。
+	// 查找已有 Series:
+	// 1) 优先按 Show 目录路径(file_path)定位 — 唯一、防重名错挂
+	// 2) 未命中再按 name 兜底(兼容历史数据:老 Series 的 file_path 可能为 NULL)
+	//    只有在找到的 Series.file_path 为 NULL 时才复用并惰性回填;若 file_path
+	//    已有值且 ≠ 当前 showPath,视为"同名不同目录"的另一部剧,不复用。
 	var seriesID string
-	findExisting := func(name string) string {
+	findExistingByPath := func(path string) string {
 		var id uuid.UUID
 		if err := pool.QueryRow(ctx,
-			"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Series' AND name = $2 LIMIT 1",
-			libraryID, name).Scan(&id); err == nil {
+			"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Series' AND file_path = $2 LIMIT 1",
+			libraryID, path).Scan(&id); err == nil {
 			return id.String()
 		}
 		return ""
 	}
+	findExistingByName := func(name string) (string, bool) {
+		var id uuid.UUID
+		var fp *string
+		if err := pool.QueryRow(ctx,
+			"SELECT id, file_path FROM items WHERE library_id = $1::uuid AND type = 'Series' AND name = $2 LIMIT 1",
+			libraryID, name).Scan(&id, &fp); err != nil {
+			return "", false
+		}
+		// file_path 已绑定到别的 Show 目录 → 不是同一部剧
+		if fp != nil && *fp != "" && *fp != showPath {
+			return "", false
+		}
+		return id.String(), fp == nil || *fp == ""
+	}
 
-	seriesID = findExisting(finalShowName)
-	if seriesID == "" && finalShowName != parsed.Name {
-		// NFO 名未匹配，尝试目录名（可能旧扫描用目录名创建了 Series）
-		seriesID = findExisting(parsed.Name)
-		if seriesID != "" {
-			// 找到旧的目录名 Series，更新为 NFO 中文名
-			pool.Exec(ctx,
-				"UPDATE items SET name = $1, sort_name = $2, updated_at = NOW() WHERE id = $3::uuid",
-				finalShowName, strings.ToLower(finalShowName), seriesID)
+	seriesID = findExistingByPath(showPath)
+	if seriesID == "" {
+		if id, needBackfill := findExistingByName(finalShowName); id != "" {
+			seriesID = id
+			if needBackfill {
+				pool.Exec(ctx,
+					"UPDATE items SET file_path = $1, updated_at = NOW() WHERE id = $2::uuid AND file_path IS NULL",
+					showPath, seriesID)
+			}
+		} else if finalShowName != parsed.Name {
+			if id, needBackfill := findExistingByName(parsed.Name); id != "" {
+				seriesID = id
+				// 找到旧的目录名 Series,更新为 NFO 中文名并回填 file_path
+				updates := "name = $1, sort_name = $2, updated_at = NOW()"
+				args := []interface{}{finalShowName, strings.ToLower(finalShowName)}
+				if needBackfill {
+					updates += ", file_path = $3"
+					args = append(args, showPath)
+				}
+				args = append(args, seriesID)
+				pool.Exec(ctx,
+					fmt.Sprintf("UPDATE items SET %s WHERE id = $%d::uuid", updates, len(args)),
+					args...)
+			}
 		}
 	}
 
@@ -1500,18 +1532,18 @@ func scanOneShow(
 	} else {
 		var insertedID *uuid.UUID
 		err := pool.QueryRow(ctx,
-			"INSERT INTO items (library_id, type, name, sort_name, production_year, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
-				"VALUES ($1::uuid, 'Series', $2, $3, $4, $5, $6, $7, $8) "+
+			"INSERT INTO items (library_id, type, name, sort_name, production_year, file_path, primary_image_path, primary_image_tag, backdrop_image_path, backdrop_image_tag) "+
+				"VALUES ($1::uuid, 'Series', $2, $3, $4, $5, $6, $7, $8, $9) "+
 				"ON CONFLICT DO NOTHING RETURNING id",
-			libraryID, finalShowName, strings.ToLower(finalShowName), parsed.Year,
+			libraryID, finalShowName, strings.ToLower(finalShowName), parsed.Year, showPath,
 			derefStr(poster), derefStr(posterTag),
 			derefStr(backdrop), derefStr(backdropTag),
 		).Scan(&insertedID)
 		if err == nil && insertedID != nil {
 			seriesID = insertedID.String()
 		} else {
-			// ON CONFLICT → 可能并发插入，再查一次
-			seriesID = findExisting(finalShowName)
+			// ON CONFLICT(多半是并发同路径插入) → 再按 file_path 查一次拿 UUID
+			seriesID = findExistingByPath(showPath)
 			if seriesID == "" {
 				return
 			}
