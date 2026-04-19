@@ -600,7 +600,8 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	base.MediaStreams = streamDtos
 
 	mvRows, err := pool.Query(ctx,
-		`SELECT id::text, name, file_path, COALESCE(container, ''), is_primary, runtime_ticks, bitrate, size, mediainfo
+		`SELECT id::text, name, file_path, COALESCE(container, ''), is_primary, runtime_ticks, bitrate, size, mediainfo,
+		        resolution, hdr_format, video_codec, audio_codec, source, quality_label
 		 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
 		item.ID)
 	if err != nil {
@@ -617,7 +618,9 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		var br *int32
 		var sz *int64
 		var mediaInfoJSON []byte
-		if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON); err != nil {
+		var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
+		if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
+			&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel); err != nil {
 			return base, err
 		}
 		bitrate := (*int64)(nil)
@@ -659,6 +662,12 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, container, idStr),
 			ETag:                  idStr,
 			Formats:               []string{},
+			FymsResolution:        resolution,
+			FymsHdrFormat:         hdrFormat,
+			FymsVideoCodec:        videoCodec,
+			FymsAudioCodec:        audioCodec,
+			FymsSource:            source,
+			FymsQualityLabel:      qualityLabel,
 		}
 		sources = append(sources, ms)
 		mvIdx++
@@ -730,7 +739,8 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
 		mvRows, err := pool.Query(ctx,
-			`SELECT id::text, name, file_path, COALESCE(container,''), is_primary, runtime_ticks, bitrate, size, mediainfo
+			`SELECT id::text, name, file_path, COALESCE(container,''), is_primary, runtime_ticks, bitrate, size, mediainfo,
+			        resolution, hdr_format, video_codec, audio_codec, source, quality_label
 			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
 			sib.ID)
 		if err != nil {
@@ -743,7 +753,9 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 			var br *int32
 			var sz *int64
 			var mediaInfoJSON []byte
-			if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON); err != nil {
+			var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
+			if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
+				&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel); err != nil {
 				continue
 			}
 			bitrate := (*int64)(nil)
@@ -783,6 +795,12 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, container, idStr),
 				ETag:                  idStr,
 				Formats:               []string{},
+				FymsResolution:        resolution,
+				FymsHdrFormat:         hdrFormat,
+				FymsVideoCodec:        videoCodec,
+				FymsAudioCodec:        audioCodec,
+				FymsSource:            source,
+				FymsQualityLabel:      qualityLabel,
 			}
 			merged = append(merged, ms)
 		}

@@ -14,6 +14,7 @@ import {
 import { getItem, getItems, getImageUrl, toggleFavorite, togglePlayed, scrapeItemMetadata, searchTmdbForItem, scrapeItemByTmdbId } from '../api/client'
 import { useAuth } from '../composables/useAuth'
 import { useUiStore } from '../stores/ui'
+import QualityBadge from '@/components/QualityBadge.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -432,6 +433,13 @@ function handleGenreClick(genreId: string) {
             <div class="file-dir">{{ splitPath(src.Path || '').dir }}/</div>
             <div class="file-name">{{ splitPath(src.Path || '').file }}</div>
             <div class="file-meta">
+              <quality-badge
+                :resolution="src.FymsResolution"
+                :hdr="src.FymsHdrFormat"
+                :source="src.FymsSource"
+                :video-codec="src.FymsVideoCodec"
+                :audio-codec="src.FymsAudioCodec"
+              />
               <span v-if="src.Size">{{ formatFileSize(src.Size) }}</span>
               <span v-if="src.Container" class="file-container">{{ src.Container.toUpperCase() }}</span>
             </div>

@@ -1417,7 +1417,8 @@ func searchHints(c *gin.Context, state *AppState) {
 
 func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) []dto.MediaSourceInfo {
 	rows, err := state.DB.Query(ctx,
-		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
+		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
+		        resolution, hdr_format, video_codec, audio_codec, source, quality_label
 		 FROM media_versions WHERE item_id = $1::uuid
 		 ORDER BY is_primary DESC, created_at ASC`, itemID)
 	if err != nil {
@@ -1428,7 +1429,8 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 	var versions []mediaVersionRow
 	for rows.Next() {
 		var v mediaVersionRow
-		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo,
+			&v.Resolution, &v.HDRFormat, &v.VideoCodec, &v.AudioCodec, &v.Source, &v.QualityLabel); err != nil {
 			continue
 		}
 		versions = append(versions, v)
@@ -1517,6 +1519,12 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 			ETag:                 msid,
 			Size:                 mv.Size,
 			Formats:              []string{},
+			FymsResolution:       mv.Resolution,
+			FymsHdrFormat:        mv.HDRFormat,
+			FymsVideoCodec:       mv.VideoCodec,
+			FymsAudioCodec:       mv.AudioCodec,
+			FymsSource:           mv.Source,
+			FymsQualityLabel:     mv.QualityLabel,
 		}
 		if mv.Bitrate != nil {
 			b := int64(*mv.Bitrate)
@@ -1561,14 +1569,16 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
 		mvRows, err := state.DB.Query(ctx,
-			`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
+			`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
+			        resolution, hdr_format, video_codec, audio_codec, source, quality_label
 			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC`, sib.ID)
 		if err != nil {
 			continue
 		}
 		for mvRows.Next() {
 			var mv mediaVersionRow
-			if err := mvRows.Scan(&mv.ID, &mv.Name, &mv.FilePath, &mv.Container, &mv.IsPrimary, &mv.RuntimeTicks, &mv.Bitrate, &mv.Size, &mv.MediaInfo); err != nil {
+			if err := mvRows.Scan(&mv.ID, &mv.Name, &mv.FilePath, &mv.Container, &mv.IsPrimary, &mv.RuntimeTicks, &mv.Bitrate, &mv.Size, &mv.MediaInfo,
+				&mv.Resolution, &mv.HDRFormat, &mv.VideoCodec, &mv.AudioCodec, &mv.Source, &mv.QualityLabel); err != nil {
 				continue
 			}
 			msid := mv.ID.String()
@@ -1624,6 +1634,12 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 				ETag:                 msid,
 				Size:                 mv.Size,
 				Formats:              []string{},
+				FymsResolution:       mv.Resolution,
+				FymsHdrFormat:        mv.HDRFormat,
+				FymsVideoCodec:       mv.VideoCodec,
+				FymsAudioCodec:       mv.AudioCodec,
+				FymsSource:           mv.Source,
+				FymsQualityLabel:     mv.QualityLabel,
 			}
 			if mv.Bitrate != nil {
 				b := int64(*mv.Bitrate)

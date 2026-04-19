@@ -47,11 +47,20 @@ type mediaVersionRow struct {
 	Bitrate      *int64
 	Size         *int64
 	MediaInfo    []byte
+
+	// M7.4 画质字段
+	Resolution   *string
+	HDRFormat    *string
+	VideoCodec   *string
+	AudioCodec   *string
+	Source       *string
+	QualityLabel *string
 }
 
 func loadMediaVersions(ctx context.Context, state *AppState, itemID string) ([]mediaVersionRow, error) {
 	rows, err := state.DB.Query(ctx,
-		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
+		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
+		        resolution, hdr_format, video_codec, audio_codec, source, quality_label
 		 FROM media_versions WHERE item_id = $1::uuid
 		 ORDER BY is_primary DESC, created_at ASC`,
 		itemID)
@@ -63,7 +72,8 @@ func loadMediaVersions(ctx context.Context, state *AppState, itemID string) ([]m
 	var versions []mediaVersionRow
 	for rows.Next() {
 		var v mediaVersionRow
-		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo,
+			&v.Resolution, &v.HDRFormat, &v.VideoCodec, &v.AudioCodec, &v.Source, &v.QualityLabel); err != nil {
 			return nil, err
 		}
 		versions = append(versions, v)
