@@ -19,6 +19,7 @@ import {
 } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
 import MiniSparkline from '@/components/MiniSparkline.vue'
+import SystemMetricsRow from '@/components/SystemMetricsRow.vue'
 import TaskCenterCard from '@/components/TaskCenterCard.vue'
 import { useTaskStream } from '@/composables/useTaskStream'
 import {
@@ -419,6 +420,9 @@ onUnmounted(() => {
           <n-button size="small" secondary type="error" @click="showShutdown = true">关闭</n-button>
         </div>
       </section>
+
+      <!-- ①b 系统资源（CPU / RAM / Network） -->
+      <system-metrics-row />
 
       <!-- ②a 网关观测 -->
       <section class="kpi-group">

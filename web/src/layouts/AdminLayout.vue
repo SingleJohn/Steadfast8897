@@ -25,6 +25,7 @@ import {
   ChevronForwardOutline,
 } from '@vicons/ionicons5'
 
+import SystemMetricsPill from '@/components/SystemMetricsPill.vue'
 import ThemeDrawer from '@/components/ThemeDrawer.vue'
 import { AppIcons, type IconComponent } from '@/icons/appIcons'
 import { useUiStore } from '@/stores/ui'
@@ -325,12 +326,15 @@ watch(() => route.path, () => { mobileMenuOpen.value = false })
             </div>
           </n-space>
 
-          <n-dropdown :options="userMenuOptions" @select="handleUserMenuSelect" placement="bottom-end">
-            <button class="user-chip" aria-label="用户菜单">
-              <span class="user-avatar">{{ auth.userName?.[0]?.toUpperCase() || 'A' }}</span>
-              <span class="user-name">{{ auth.userName || 'Admin' }}</span>
-            </button>
-          </n-dropdown>
+          <n-space align="center" :size="10">
+            <system-metrics-pill />
+            <n-dropdown :options="userMenuOptions" @select="handleUserMenuSelect" placement="bottom-end">
+              <button class="user-chip" aria-label="用户菜单">
+                <span class="user-avatar">{{ auth.userName?.[0]?.toUpperCase() || 'A' }}</span>
+                <span class="user-name">{{ auth.userName || 'Admin' }}</span>
+              </button>
+            </n-dropdown>
+          </n-space>
         </n-space>
       </n-layout-header>
 

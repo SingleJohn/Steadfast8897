@@ -8,6 +8,7 @@ import (
 
 	"fyms/internal/config"
 	"fyms/internal/services"
+	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
 )
 
@@ -28,6 +29,7 @@ type AppState struct {
 	BackfillTask   *services.BackfillTask
 	TaskCenter     *taskcenter.Registry
 	TaskChain      *taskcenter.ChainEngine
+	SysMetrics     *sysmetrics.Collector
 }
 
 func GetState(c *gin.Context) *AppState {

@@ -24,11 +24,12 @@ import (
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
 	"fyms/internal/services"
+	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
 	"fyms/internal/services/taskcenter/adapters"
 )
 
-//go:embed all:web/dist
+
 var embeddedWeb embed.FS
 
 func init() {
@@ -129,6 +130,10 @@ func main() {
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()
 
+	// 系统资源采集：CPU/RAM 走 gopsutil，网络出口由中间件累加 + 会话码率估算。
+	bitrateEstimator := services.NewRedirectBitrateEstimator(pool, sessionManager)
+	sysCollector := sysmetrics.NewCollector(2*time.Second, bitrateEstimator.Estimate)
+
 	state := &handlers.AppState{
 		DB:             pool,
 		Cache:          cache,
@@ -144,7 +149,9 @@ func main() {
 		Updater:        updater,
 		GapScanTask:    gapScanTask,
 		BackfillTask:   backfillTask,
+		SysMetrics:     sysCollector,
 	}
+	sysCollector.Start(context.Background())
 
 	// 任务中心：注册 5 个适配器。M1 只读聚合，M2 才会写 task_runs。
 	taskRegistry := taskcenter.NewRegistry()
@@ -206,6 +213,8 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 	r.Use(requestLogger())
+	// 网络出口字节计数：必须在业务 handler 前挂载，c.Next() 后读取 Writer.Size()。
+	r.Use(sysCollector.ByteCountMiddleware())
 
 	r.Use(func(c *gin.Context) {
 		c.Set("state", state)
@@ -241,6 +250,7 @@ func main() {
 		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
 		handlers.RegisterWebhookRoutes(group, state)
 		handlers.RegisterTaskCenterRoutes(group, state, adminMW)
+		handlers.RegisterSystemMetricsRoutes(group, state, adminMW)
 		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
 	}
 
