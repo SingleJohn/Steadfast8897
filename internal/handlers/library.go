@@ -83,6 +83,15 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 
 	u.POST("/Library/Refresh/Metadata", adminMW, scrapeAll)
 
+	// M7.Backfill: 存量数据回填(画质标签 / Episode 标题 / Episode 缩略图)
+	u.POST("/Library/Backfill/Start", adminMW, func(c *gin.Context) { startBackfill(c, state) })
+	u.POST("/Library/Backfill/Stop", adminMW, func(c *gin.Context) { stopBackfill(c, state) })
+	u.GET("/Library/Backfill/Progress", adminMW, func(c *gin.Context) { getBackfillProgress(c, state) })
+	u.GET("/Library/Backfill/Config", adminMW, func(c *gin.Context) { getBackfillConfig(c, state) })
+	u.POST("/Library/Backfill/Config", adminMW, func(c *gin.Context) { updateBackfillConfig(c, state) })
+	u.POST("/Library/Backfill/Reset/Quality", adminMW, func(c *gin.Context) { resetBackfillQuality(c, state) })
+	u.POST("/Library/Backfill/Reset/EpisodeImage", adminMW, func(c *gin.Context) { resetBackfillEpisodeImage(c, state) })
+
 	u.GET("/Users/:userId/Items/LatestBatch", authMW, getLatestBatch)
 
 	u.GET("/Genres", getGenres)

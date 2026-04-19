@@ -609,4 +609,32 @@ export async function getTaskSummary() {
   return requestJson<any>('/Library/Tasks/Summary');
 }
 
+// ---- M7 Backfill ----
+export type BackfillStage = 'quality' | 'name' | 'image';
+
+export async function startBackfill(stages?: BackfillStage[]) {
+  return request<any>('/Library/Backfill/Start', {
+    method: 'POST',
+    body: JSON.stringify(stages && stages.length > 0 ? { stages } : {}),
+  });
+}
+export async function stopBackfill() {
+  return request<any>('/Library/Backfill/Stop', { method: 'POST' });
+}
+export async function getBackfillProgress() {
+  return requestJson<any>('/Library/Backfill/Progress');
+}
+export async function getBackfillConfig() {
+  return requestJson<any>('/Library/Backfill/Config');
+}
+export async function updateBackfillConfig(body: { enabled_on_startup?: boolean; episode_still_fetch?: boolean }) {
+  return request<any>('/Library/Backfill/Config', { method: 'POST', body: JSON.stringify(body) });
+}
+export async function resetBackfillQuality() {
+  return request<any>('/Library/Backfill/Reset/Quality', { method: 'POST' });
+}
+export async function resetBackfillEpisodeImage() {
+  return request<any>('/Library/Backfill/Reset/EpisodeImage', { method: 'POST' });
+}
+
 export { getToken, getUserId };

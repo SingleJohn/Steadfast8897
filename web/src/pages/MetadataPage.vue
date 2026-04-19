@@ -10,6 +10,10 @@ import {
   getSystemConfig, updateSystemConfig,
   scrapeAllMetadata, stopScrape,
   startProbe, stopProbe, getTaskSummary,
+  startBackfill, stopBackfill, getBackfillProgress,
+  getBackfillConfig, updateBackfillConfig,
+  resetBackfillQuality, resetBackfillEpisodeImage,
+  type BackfillStage,
 } from '@/api/client'
 
 const { showToast } = useToast()
@@ -105,6 +109,79 @@ const probeProgress = ref<any>(null)
 const probeThreads = ref('5')
 const probePathMappings = ref<{ from: string; to: string }[]>([])
 const savingProbe = ref(false)
+
+// ===== M7 Backfill 存量回填 =====
+const backfillProgress = ref<any>(null)
+const backfillConfig = ref<{ enabled_on_startup: boolean; episode_still_fetch: boolean }>({ enabled_on_startup: false, episode_still_fetch: true })
+const backfillBusy = ref(false)
+const stageLabel = (s: string) => ({ quality: '画质标签', name: 'Episode 标题', image: '分集缩略图' } as Record<string, string>)[s] || s
+const backfillRunning = () => ['running', 'stopping'].includes(backfillProgress.value?.status)
+
+async function refreshBackfill() {
+  try {
+    backfillProgress.value = await getBackfillProgress()
+  } catch {}
+}
+async function refreshBackfillConfig() {
+  try {
+    backfillConfig.value = await getBackfillConfig()
+  } catch {}
+}
+async function handleStartBackfill(stages?: BackfillStage[]) {
+  backfillBusy.value = true
+  try {
+    await startBackfill(stages)
+    await refreshBackfill()
+    showToast('回填任务已启动', 'success')
+  } catch (err: any) {
+    showToast(err?.message || '启动回填失败', 'error')
+  } finally {
+    setTimeout(() => { backfillBusy.value = false }, 1500)
+  }
+}
+async function handleStopBackfill() {
+  await stopBackfill()
+  await refreshBackfill()
+  showToast('正在停止回填...', 'success')
+}
+async function handleToggleBackfillStartup(v: boolean) {
+  backfillConfig.value.enabled_on_startup = v
+  try {
+    await updateBackfillConfig({ enabled_on_startup: v })
+  } catch {
+    backfillConfig.value.enabled_on_startup = !v
+    showToast('保存失败', 'error')
+  }
+}
+async function handleToggleEpisodeStill(v: boolean) {
+  backfillConfig.value.episode_still_fetch = v
+  try {
+    await updateBackfillConfig({ episode_still_fetch: v })
+  } catch {
+    backfillConfig.value.episode_still_fetch = !v
+    showToast('保存失败', 'error')
+  }
+}
+async function handleResetQuality() {
+  if (!confirm('将清空全部 media_versions 的画质字段,再跑回填时会重新计算。确定?')) return
+  try {
+    await resetBackfillQuality()
+    showToast('已重置画质标签字段', 'success')
+    await refreshBackfill()
+  } catch (err: any) {
+    showToast(err?.message || '重置失败', 'error')
+  }
+}
+async function handleResetEpisodeImage() {
+  if (!confirm('将清空由 TMDB 下载的 Episode still 封面(本地兜底命中的不受影响)。确定?')) return
+  try {
+    await resetBackfillEpisodeImage()
+    showToast('已重置 Episode 封面', 'success')
+    await refreshBackfill()
+  } catch (err: any) {
+    showToast(err?.message || '重置失败', 'error')
+  }
+}
 
 async function refreshTaskSummary() {
   try {
@@ -250,9 +327,12 @@ onMounted(() => {
     probeThreads.value = cfg.probe_threads || '5'
   }).catch(() => {})
   void refreshTaskSummary()
+  void refreshBackfill()
+  void refreshBackfillConfig()
 
   timers.push(setInterval(() => {
     void refreshTaskSummary()
+    void refreshBackfill()
   }, 3000))
 })
 
@@ -590,6 +670,75 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
           <n-button v-if="probeProgress?.status !== 'running' && probeProgress?.status !== 'stopping'" type="primary" size="small" :loading="savingProbe" :disabled="savingProbe || (probeProgress?.missingCount === 0 && probeProgress?.status === 'idle')" @click="startProbeJob">开始探测</n-button>
           <n-button v-else type="warning" size="small" :disabled="probeProgress?.status === 'stopping'" @click="stopProbeJob">{{ probeProgress?.status === 'stopping' ? '停止中...' : '停止探测' }}</n-button>
           <n-button secondary size="small" :disabled="probeProgress?.status === 'running'" @click="saveProbeSettingsOnly">保存设置</n-button>
+        </div>
+      </n-card>
+
+      <n-card :bordered="false" class="glass-card section-card metadata-card">
+        <template #header>
+          <div class="card-header-wrap">
+            <div class="icon-box tmdb">
+              <n-icon :size="18"><LayersOutline /></n-icon>
+            </div>
+            <div class="header-copy">
+              <div class="header-title">历史数据回填</div>
+              <div class="header-desc">补齐存量库的画质标签、Episode 标题与分集缩略图。按 画质 → 标题 → 封面 顺序执行。</div>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="backfillProgress && backfillProgress.total > 0" class="progress-panel">
+          <div class="progress-row">
+            <n-progress type="line" :percentage="backfillProgress.total > 0 ? Math.floor(backfillProgress.processed * 100 / backfillProgress.total) : 0" :show-indicator="false" :color="backfillProgress.status === 'stopping' ? '#ff9800' : undefined" style="flex: 1" />
+            <span class="pct">{{ backfillProgress.total > 0 ? Math.floor(backfillProgress.processed * 100 / backfillProgress.total) : 0 }}%</span>
+          </div>
+          <div class="panel-meta">
+            <span>阶段:{{ stageLabel(backfillProgress.stage) || '—' }}</span>
+            <span>{{ backfillProgress.processed }}/{{ backfillProgress.total }}</span>
+            <span v-if="backfillProgress.counters?.quality_updated">画质 {{ backfillProgress.counters.quality_updated }}</span>
+            <span v-if="backfillProgress.counters?.name_cleaned">标题 {{ backfillProgress.counters.name_cleaned }}</span>
+            <span v-if="backfillProgress.counters?.image_local_hit">本地封面 {{ backfillProgress.counters.image_local_hit }}</span>
+            <span v-if="backfillProgress.counters?.image_api_hit">TMDB 封面 {{ backfillProgress.counters.image_api_hit }}</span>
+          </div>
+          <div v-if="backfillProgress.last_error" class="panel-error">{{ backfillProgress.last_error }}</div>
+        </div>
+        <div v-else-if="backfillProgress?.status === 'completed'" class="success-note">
+          上次回填完成<span v-if="backfillProgress.last_run_at">于 {{ new Date(backfillProgress.last_run_at).toLocaleString() }}</span>
+        </div>
+        <div v-else-if="backfillProgress?.status === 'stopped'" class="success-note">
+          上次任务被停止
+        </div>
+
+        <n-form label-placement="top" size="small" class="config-form">
+          <div class="subsection">
+            <div class="subsection-title">总开关</div>
+            <div class="switch-row">
+              <n-switch :value="backfillConfig.enabled_on_startup" @update:value="handleToggleBackfillStartup" size="small" />
+              <div class="switch-copy">
+                <div class="switch-title">启动时自动回填</div>
+                <div class="switch-desc">服务启动时按 画质 → 标题 → 封面 顺序跑一次。24h 内不重复触发。</div>
+              </div>
+            </div>
+            <div class="switch-row">
+              <n-switch :value="backfillConfig.episode_still_fetch" @update:value="handleToggleEpisodeStill" size="small" />
+              <div class="switch-copy">
+                <div class="switch-title">拉取 TMDB 分集封面</div>
+                <div class="switch-desc">关闭后,分集封面只读本地 thumb,不再打 TMDB。</div>
+              </div>
+            </div>
+          </div>
+        </n-form>
+
+        <div class="card-actions">
+          <n-button v-if="!backfillRunning()" type="primary" size="small" :loading="backfillBusy" @click="handleStartBackfill()">全部执行</n-button>
+          <n-button v-if="!backfillRunning()" secondary size="small" :disabled="backfillBusy" @click="handleStartBackfill(['quality'])">仅画质(快)</n-button>
+          <n-button v-if="!backfillRunning()" secondary size="small" :disabled="backfillBusy" @click="handleStartBackfill(['name'])">仅 Episode 标题</n-button>
+          <n-button v-if="!backfillRunning()" secondary size="small" :disabled="backfillBusy" @click="handleStartBackfill(['image'])">仅分集封面(慢)</n-button>
+          <n-button v-if="backfillRunning()" type="warning" size="small" :disabled="backfillProgress?.status === 'stopping'" @click="handleStopBackfill">{{ backfillProgress?.status === 'stopping' ? '停止中...' : '停止回填' }}</n-button>
+        </div>
+
+        <div class="card-actions" style="margin-top: 8px">
+          <n-button quaternary size="small" :disabled="backfillRunning()" @click="handleResetQuality">重置画质字段</n-button>
+          <n-button quaternary size="small" :disabled="backfillRunning()" @click="handleResetEpisodeImage">重置 Episode 封面</n-button>
         </div>
       </n-card>
     </div><!-- /two-col -->

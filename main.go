@@ -125,6 +125,7 @@ func main() {
 	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
 
 	gapScanTask := services.NewGapScanTask()
+	backfillTask := services.NewBackfillTask()
 
 	state := &handlers.AppState{
 		DB:             pool,
@@ -140,10 +141,22 @@ func main() {
 		HTTPClient:     httpClient,
 		Updater:        updater,
 		GapScanTask:    gapScanTask,
+		BackfillTask:   backfillTask,
 	}
 
 	ctx := context.Background()
 	fileWatcher.Start(ctx, pool, cache)
+
+	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
+	go func() {
+		if services.ShouldAutoRunOnStartup(ctx, pool) {
+			if err := backfillTask.Start(ctx, pool, nil); err != nil {
+				slog.Info("[Backfill] auto start skipped", "reason", err)
+			} else {
+				slog.Info("[Backfill] auto start triggered on startup")
+			}
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)

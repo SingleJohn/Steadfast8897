@@ -24,6 +24,7 @@ type AppState struct {
 	HTTPClient     *http.Client
 	Updater        *services.Updater
 	GapScanTask    *services.GapScanTask
+	BackfillTask   *services.BackfillTask
 }
 
 func GetState(c *gin.Context) *AppState {
