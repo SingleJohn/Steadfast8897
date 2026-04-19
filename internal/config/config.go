@@ -85,7 +85,7 @@ func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 		CacheDir: cacheDir,
 
 		UpdateImageRepo:    envOr("FYMS_UPDATE_IMAGE_REPO", "eianz/fyms"),
-		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", ""),
+		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", "eianz/fyms"),
 		UpdateDockerSocket: envOr("FYMS_UPDATE_DOCKER_SOCKET", "/var/run/docker.sock"),
 	}
 

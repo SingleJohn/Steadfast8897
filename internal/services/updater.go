@@ -63,6 +63,8 @@ type UpdateStatus struct {
 	Error             *string  `json:"error,omitempty"`
 	Logs              []string `json:"logs,omitempty"`
 	NeedsDockerSocket bool     `json:"needsDockerSocket"`
+	DeploymentMode    string   `json:"deploymentMode"`
+	DownloadURL       string   `json:"downloadUrl,omitempty"`
 }
 
 type UpdateRelease struct {
@@ -72,6 +74,7 @@ type UpdateRelease struct {
 	ReleaseSource    string
 	ReleaseNotesURL  string
 	GitHubReleaseURL string
+	Assets           []gitHubAsset
 }
 
 type Updater struct {
@@ -91,10 +94,17 @@ type dockerHubTagsResponse struct {
 	Next *string `json:"next"`
 }
 
+type gitHubAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
+}
+
 type gitHubRelease struct {
-	TagName    string `json:"tag_name"`
-	HTMLURL    string `json:"html_url"`
-	Prerelease bool   `json:"prerelease"`
+	TagName    string        `json:"tag_name"`
+	HTMLURL    string        `json:"html_url"`
+	Prerelease bool          `json:"prerelease"`
+	Assets     []gitHubAsset `json:"assets"`
 }
 
 func NewUpdater(cfg *config.AppConfig, pool *pgxpool.Pool, httpClient *http.Client, logBuffer *LogBuffer) *Updater {
@@ -113,7 +123,35 @@ func NewUpdater(cfg *config.AppConfig, pool *pgxpool.Pool, httpClient *http.Clie
 		},
 	}
 	u.reloadStateLocked()
+	u.finalizeRestartStateLocked()
 	return u
+}
+
+// finalizeRestartStateLocked 启动时如果 state 处于 "restarting"(上次 apply 后 exec 成功触发了重启),
+// 比较本次运行版本与 TargetVersion:
+// - 匹配 → 标记 completed,当前版本刷新
+// - 不匹配 → 标记 failed,进程管理器把旧进程又拉了起来 / exec 失败 / 用户手动换了二进制
+func (u *Updater) finalizeRestartStateLocked() {
+	if u.status.Status != "restarting" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	u.status.CompletedAt = &now
+	if u.status.TargetVersion != "" && u.cfg.Version == u.status.TargetVersion {
+		u.status.Status = "completed"
+		u.status.Message = "更新完成"
+		u.status.CurrentVersion = u.cfg.Version
+		u.status.Error = nil
+		u.status.HasUpdate = false
+		u.appendLogLocked(fmt.Sprintf("重启成功,当前版本 %s", u.cfg.Version))
+	} else {
+		u.status.Status = "failed"
+		u.status.Message = "重启后版本未更新"
+		msg := fmt.Sprintf("expected %s but running %s", u.status.TargetVersion, u.cfg.Version)
+		u.status.Error = &msg
+		u.appendLogLocked("更新失败: " + msg)
+	}
+	u.persistStateLocked()
 }
 
 func (u *Updater) GetStatus(ctx context.Context) UpdateStatus {
@@ -124,8 +162,38 @@ func (u *Updater) GetStatus(ctx context.Context) UpdateStatus {
 	if channel := u.getConfigValue(ctx, updateChannelKey); channel != "" {
 		u.status.Channel = normalizeUpdateChannel(channel)
 	}
-	u.status.NeedsDockerSocket = true
+	u.applyDeploymentLocked()
 	return cloneUpdateStatus(u.status)
+}
+
+// applyDeploymentLocked 按当前部署模式回填 DeploymentMode / NeedsDockerSocket,
+// 以及 manual 模式的 DownloadURL。调用前需持有 u.mu。
+func (u *Updater) applyDeploymentLocked() {
+	mode := DetectDeploymentMode()
+	u.status.DeploymentMode = string(mode)
+	u.status.NeedsDockerSocket = mode == DeployDocker
+	if mode == DeployManual {
+		u.status.DownloadURL = u.buildManualDownloadURL()
+	} else {
+		u.status.DownloadURL = ""
+	}
+}
+
+// buildManualDownloadURL 给 Windows/未支持平台的用户返回 GitHub Release 的直链。
+// 如果 Check 已经取到精确 asset 名就用精确链接;否则退回到 release 的 HTML 页面。
+func (u *Updater) buildManualDownloadURL() string {
+	if u.status.GitHubReleaseURL != "" {
+		return u.status.GitHubReleaseURL
+	}
+	repo := strings.TrimSpace(u.cfg.UpdateGitHubRepo)
+	if repo == "" {
+		return ""
+	}
+	channel := normalizeUpdateChannel(u.status.Channel)
+	if channel == "nightly" {
+		return fmt.Sprintf("https://github.com/%s/releases/tag/nightly", repo)
+	}
+	return fmt.Sprintf("https://github.com/%s/releases/latest", repo)
 }
 
 func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
@@ -178,6 +246,7 @@ func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
 		u.status.Status = "idle"
 		u.status.Message = "当前已是最新版本"
 	}
+	u.applyDeploymentLocked()
 	_ = u.setConfigValue(ctx, lastUpdateVersionKey, release.Version)
 	_ = u.setConfigValue(ctx, lastUpdateResultKey, "checked")
 	u.persistStateLocked()
@@ -218,6 +287,20 @@ func (u *Updater) MarkBackingUp() UpdateStatus {
 }
 
 func (u *Updater) StartApply(ctx context.Context) (UpdateStatus, error) {
+	mode := DetectDeploymentMode()
+	switch mode {
+	case DeployDocker:
+		return u.startApplyDocker(ctx)
+	case DeployBinary:
+		return u.startApplyBinary(ctx)
+	case DeployManual:
+		return u.GetStatus(ctx), fmt.Errorf("platform does not support auto-update, please download manually")
+	default:
+		return u.GetStatus(ctx), fmt.Errorf("unknown deployment mode")
+	}
+}
+
+func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.mu.Lock()
 	u.reloadStateLocked()
 	if isUpdateTaskActive(u.status.Status) {
@@ -344,18 +427,53 @@ func (u *Updater) resolveLatestRelease(ctx context.Context, channel string) (Upd
 	if latestTag == "" {
 		return UpdateRelease{}, fmt.Errorf("no matching docker tags found")
 	}
-	ghRelease, _ := u.fetchGitHubRelease(ctx, latestTag, channel)
 	release := UpdateRelease{
 		Version:       latestTag,
 		Channel:       channel,
 		Image:         fmt.Sprintf("%s:%s", u.cfg.UpdateImageRepo, latestTag),
 		ReleaseSource: "docker",
 	}
+	var ghRelease *gitHubRelease
+	if channel == "nightly" {
+		// nightly 镜像 tag 每次变化,但 GitHub Release 是固定的滚动 pre-release,tag 恒为 "nightly"。
+		ghRelease, _ = u.fetchGitHubReleaseByTag(ctx, "nightly")
+	} else {
+		ghRelease, _ = u.fetchGitHubRelease(ctx, latestTag, channel)
+	}
 	if ghRelease != nil {
 		release.ReleaseNotesURL = ghRelease.HTMLURL
 		release.GitHubReleaseURL = ghRelease.HTMLURL
+		release.Assets = ghRelease.Assets
 	}
 	return release, nil
+}
+
+func (u *Updater) fetchGitHubReleaseByTag(ctx context.Context, tag string) (*gitHubRelease, error) {
+	if strings.TrimSpace(u.cfg.UpdateGitHubRepo) == "" {
+		return nil, nil
+	}
+	reqURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", u.cfg.UpdateGitHubRepo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github release %s: status %d", tag, resp.StatusCode)
+	}
+	var release gitHubRelease
+	if err := json.Unmarshal(body, &release); err != nil {
+		return nil, err
+	}
+	return &release, nil
 }
 
 func (u *Updater) fetchDockerTags(ctx context.Context) ([]string, error) {
@@ -445,8 +563,8 @@ func normalizeUpdateChannel(channel string) string {
 	switch strings.ToLower(strings.TrimSpace(channel)) {
 	case "", "stable":
 		return "stable"
-	case "beta":
-		return "beta"
+	case "nightly":
+		return "nightly"
 	default:
 		return ""
 	}
@@ -462,15 +580,18 @@ func isPreReleaseTag(tag string) bool {
 }
 
 func selectLatestTag(tags []string, channel string) string {
+	if channel == "nightly" {
+		return selectLatestNightlyTag(tags)
+	}
 	filtered := make([]string, 0, len(tags))
 	for _, tag := range tags {
-		if tag == "" || tag == "latest" {
+		if tag == "" || tag == "latest" || tag == "nightly" {
 			continue
 		}
 		if !versionTagPattern.MatchString(tag) {
 			continue
 		}
-		if channel == "stable" && isPreReleaseTag(tag) {
+		if isPreReleaseTag(tag) {
 			continue
 		}
 		filtered = append(filtered, tag)
@@ -484,7 +605,27 @@ func selectLatestTag(tags []string, channel string) string {
 	return filtered[0]
 }
 
-var versionTagPattern = regexp.MustCompile(`^\d+(?:\.\d+)*(?:-[0-9A-Za-z]+)*$`)
+func selectLatestNightlyTag(tags []string) string {
+	filtered := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if nightlyTagPattern.MatchString(tag) {
+			filtered = append(filtered, tag)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i] > filtered[j]
+	})
+	if len(filtered) == 0 {
+		return ""
+	}
+	return filtered[0]
+}
+
+var versionTagPattern = regexp.MustCompile(`^v?\d+(?:\.\d+)*(?:-[0-9A-Za-z]+)*$`)
+
+// nightlyTagPattern 匹配 CI 生成的 nightly 镜像 tag。
+// 必须与 .github/workflows/docker-publish.yml 中 nightly-$(date -u +'%Y%m%d')-${GITHUB_SHA::7} 的格式保持一致。
+var nightlyTagPattern = regexp.MustCompile(`^nightly-\d{8}-[0-9a-f]{7}$`)
 
 func compareVersions(a, b string) int {
 	if a == b {

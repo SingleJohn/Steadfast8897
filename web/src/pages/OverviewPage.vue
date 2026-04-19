@@ -88,11 +88,11 @@ const showUpdateConfirm = ref(false)
 const checkingUpdate = ref(false)
 const applyingUpdate = ref(false)
 const updateConnectionLost = ref(false)
-const updateChannel = ref<'stable' | 'beta'>('stable')
+const updateChannel = ref<'stable' | 'nightly'>('stable')
 const updateStatus = ref<UpdateStatus | null>(null)
 const updateChannelOptions = [
   { label: '稳定版', value: 'stable' },
-  { label: '测试版', value: 'beta' },
+  { label: '开发版', value: 'nightly' },
 ]
 
 // ───────── Aggregates ─────────
@@ -232,7 +232,7 @@ async function loadUpdateStatus() {
   try {
     const status = await getUpdateStatus()
     updateStatus.value = status
-    updateChannel.value = (status.channel as 'stable' | 'beta') || 'stable'
+    updateChannel.value = (status.channel as 'stable' | 'nightly') || 'stable'
     if (status.status === 'completed' || status.status === 'failed' || status.status === 'idle' || status.status === 'available') {
       updateConnectionLost.value = false
     }
@@ -249,7 +249,7 @@ async function handleCheckUpdate() {
   checkingUpdate.value = true
   try {
     updateStatus.value = await checkForUpdate()
-    updateChannel.value = (updateStatus.value.channel as 'stable' | 'beta') || 'stable'
+    updateChannel.value = (updateStatus.value.channel as 'stable' | 'nightly') || 'stable'
     showToast(updateStatus.value.hasUpdate ? '发现新版本' : '当前已是最新版本', 'success')
   } catch (err: any) {
     showToast(err?.message || '检查更新失败', 'error')
@@ -258,7 +258,7 @@ async function handleCheckUpdate() {
   }
 }
 
-async function handleChangeUpdateChannel(value: 'stable' | 'beta') {
+async function handleChangeUpdateChannel(value: 'stable' | 'nightly') {
   try {
     updateStatus.value = await setUpdateChannel(value)
     updateChannel.value = value
@@ -280,6 +280,24 @@ async function handleApplyUpdate() {
   } finally {
     applyingUpdate.value = false
   }
+}
+
+const deploymentMode = computed(() => updateStatus.value?.deploymentMode || 'docker')
+const isManualUpdate = computed(() => deploymentMode.value === 'manual')
+const updateConfirmText = computed(() => {
+  if (deploymentMode.value === 'binary') {
+    return '更新前会备份当前二进制，然后下载新版本并替换，进程会自动重启。过程中服务会短暂中断。'
+  }
+  return '更新前会自动创建备份，并通过 Docker 拉取新镜像后重建当前容器。过程中服务会短暂中断。'
+})
+
+function openManualDownload() {
+  const url = updateStatus.value?.downloadUrl
+  if (!url) {
+    showToast('未获取到下载链接，请先点击检查更新', 'warning')
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 // ───────── Data loading ─────────
@@ -319,7 +337,7 @@ async function loadServerData() {
   if (counts.status === 'fulfilled' && counts.value) itemCounts.value = counts.value
   if (update.status === 'fulfilled') {
     updateStatus.value = update.value
-    updateChannel.value = (update.value.channel as 'stable' | 'beta') || 'stable'
+    updateChannel.value = (update.value.channel as 'stable' | 'nightly') || 'stable'
   }
 }
 
@@ -406,6 +424,7 @@ onUnmounted(() => {
             检查更新
           </n-button>
           <n-button
+            v-if="!isManualUpdate"
             size="small"
             type="primary"
             :disabled="!updateStatus?.hasUpdate || isUpdateBusy(updateStatus?.status)"
@@ -414,6 +433,16 @@ onUnmounted(() => {
           >
             <template #icon><n-icon :component="CloudDownloadOutline" /></template>
             立即更新
+          </n-button>
+          <n-button
+            v-else
+            size="small"
+            type="primary"
+            :disabled="!updateStatus?.hasUpdate"
+            @click="openManualDownload"
+          >
+            <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+            下载更新包
           </n-button>
           <n-divider vertical />
           <n-button size="small" secondary type="warning" @click="showRestart = true">重启</n-button>
@@ -668,8 +697,11 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <n-alert v-if="updateStatus?.needsDockerSocket" type="warning" size="small" class="update-alert">
+            <n-alert v-if="deploymentMode === 'docker' && updateStatus?.needsDockerSocket" type="warning" size="small" class="update-alert">
               启用应用内自更新需要为容器挂载 Docker Socket，并保证 `/app/data` 为持久化目录。
+            </n-alert>
+            <n-alert v-if="isManualUpdate" type="info" size="small" class="update-alert">
+              当前平台（Windows）暂不支持应用内自动更新。请点击"下载更新包"获取压缩包，停止服务后替换 fyms.exe 再启动。
             </n-alert>
             <n-alert v-if="updateConnectionLost" type="info" size="small" class="update-alert">
               更新过程中连接短暂中断是正常现象，页面会持续轮询服务恢复状态。
@@ -736,7 +768,7 @@ onUnmounted(() => {
       确定要关闭服务器吗？服务器将完全停止运行，您需要手动重新启动。
     </n-modal>
     <n-modal v-model:show="showUpdateConfirm" preset="dialog" title="立即更新" type="warning" positive-text="开始更新" negative-text="取消" @positive-click="handleApplyUpdate" @negative-click="showUpdateConfirm = false">
-      更新前会自动创建备份，并通过 Docker 拉取新镜像后重建当前容器。过程中服务会短暂中断。
+      {{ updateConfirmText }}
     </n-modal>
   </page-shell>
 </template>

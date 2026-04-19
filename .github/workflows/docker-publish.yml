@@ -306,3 +306,61 @@ jobs:
           name: FYMS ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           files: release-assets/*
+
+  release-nightly:
+    if: github.ref == 'refs/heads/main'
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: fyms_*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum *.zip *.tar.gz > checksums.txt
+
+      - name: Generate nightly release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          {
+            echo "## Nightly Build"
+            echo
+            echo "滚动构建。每次 \`main\` 推送都会覆盖本 release 的资产。"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Build time (UTC): \`${BUILD_TIME}\`"
+            echo "- Docker image: \`eianz/fyms:nightly\`"
+            echo
+            echo "## Included Platforms"
+            echo
+            echo "- linux/amd64"
+            echo "- linux/arm64"
+            echo "- windows/amd64"
+            echo "- darwin/amd64"
+            echo "- darwin/arm64"
+            echo "- linux/386"
+            echo "- linux/arm/v7"
+          } > NIGHTLY_NOTES.md
+
+      - name: Publish nightly pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FYMS Nightly
+          tag_name: nightly
+          body_path: NIGHTLY_NOTES.md
+          files: release-assets/*
+          prerelease: true
+          make_latest: false

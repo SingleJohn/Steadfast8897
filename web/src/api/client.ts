@@ -152,6 +152,8 @@ export type UpdateStatus = {
   error?: string
   logs?: string[]
   needsDockerSocket?: boolean
+  deploymentMode?: 'docker' | 'binary' | 'manual'
+  downloadUrl?: string
 }
 
 export async function getUpdateStatus() {
@@ -169,7 +171,7 @@ export async function applyUpdate(categories: string[] = ['settings', 'users', '
   })
 }
 
-export async function setUpdateChannel(channel: 'stable' | 'beta') {
+export async function setUpdateChannel(channel: 'stable' | 'nightly') {
   return requestJson<UpdateStatus>('/System/Update/Channel', {
     method: 'POST',
     body: JSON.stringify({ channel }),
