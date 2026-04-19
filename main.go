@@ -26,7 +26,7 @@ import (
 	"fyms/internal/services"
 )
 
-
+//go:embed all:web/dist
 var embeddedWeb embed.FS
 
 func init() {
