@@ -24,6 +24,7 @@ import (
 	"fyms/internal/middleware"
 	"fyms/internal/models"
 	"fyms/internal/services"
+	"fyms/internal/services/taskcenter"
 )
 
 func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, adminMW, optAuthMW gin.HandlerFunc) {
@@ -1395,6 +1396,17 @@ func startProbe(c *gin.Context) {
 		}
 		threads = n
 	}
+
+	if t := state.TaskCenter.Get(taskcenter.KindProbe); t != nil {
+		_, err := t.Start(c.Request.Context(), taskcenter.StartParams{"threads": threads}, taskcenter.TriggerManual)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, state.ProbeTask.GetProgress())
+		return
+	}
+
 	if err := state.ProbeTask.Start(state.DB, threads); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 		return
@@ -1404,7 +1416,11 @@ func startProbe(c *gin.Context) {
 
 func stopProbe(c *gin.Context) {
 	state := GetState(c)
-	state.ProbeTask.Stop()
+	if t := state.TaskCenter.Get(taskcenter.KindProbe); t != nil {
+		_ = t.Stop()
+	} else {
+		state.ProbeTask.Stop()
+	}
 	c.JSON(http.StatusOK, state.ProbeTask.GetProgress())
 }
 
@@ -1689,6 +1705,14 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 
 func scrapeAll(c *gin.Context) {
 	state := GetState(c)
+	if t := state.TaskCenter.Get(taskcenter.KindScrape); t != nil {
+		if _, err := t.Start(c.Request.Context(), nil, taskcenter.TriggerManual); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
+		return
+	}
 	if err := state.ScrapeTask.Start(c.Request.Context(), state.DB); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 		return
@@ -1698,7 +1722,11 @@ func scrapeAll(c *gin.Context) {
 
 func stopScrape(c *gin.Context) {
 	state := GetState(c)
-	state.ScrapeTask.Stop()
+	if t := state.TaskCenter.Get(taskcenter.KindScrape); t != nil {
+		_ = t.Stop()
+	} else {
+		state.ScrapeTask.Stop()
+	}
 	c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
 }
 

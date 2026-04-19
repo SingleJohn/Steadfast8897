@@ -169,7 +169,7 @@ func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *Cac
 								slog.Warn("[FileWatcher] Cannot get library info", "id", libraryID, "error", err)
 								return
 							}
-							tracker := NewScanProgressTracker()
+							tracker := NewScanProgressTracker(pool)
 							ScanLibrary(context.Background(), pool, cache, tracker, libraryID, colType, paths, name)
 						}(lid, ct)
 					}

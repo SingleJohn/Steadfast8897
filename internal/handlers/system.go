@@ -23,6 +23,7 @@ import (
 	"fyms/internal/config"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/services/taskcenter"
 )
 
 const backupDir = "data/backups"
@@ -608,12 +609,18 @@ func getUpdateStatus(c *gin.Context) {
 
 func checkForUpdate(c *gin.Context) {
 	state := GetState(c)
-	status, err := state.Updater.Check(c.Request.Context())
+	ctx := c.Request.Context()
+	if t := state.TaskCenter.Get(taskcenter.KindUpdate); t != nil {
+		if _, err := t.Start(ctx, taskcenter.StartParams{"action": "check"}, taskcenter.TriggerManual); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"message": err.Error(), "status": state.Updater.GetStatus(ctx)})
+			return
+		}
+		c.JSON(http.StatusOK, state.Updater.GetStatus(ctx))
+		return
+	}
+	status, err := state.Updater.Check(ctx)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{
-			"message": err.Error(),
-			"status":  status,
-		})
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error(), "status": status})
 		return
 	}
 	c.JSON(http.StatusOK, status)
@@ -646,16 +653,23 @@ func applyUpdate(c *gin.Context) {
 		return
 	}
 
-	status, err := state.Updater.StartApply(c.Request.Context())
-	if err != nil {
-		state.Updater.MarkFailure(err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": err.Error(),
-			"status":  status,
-		})
+	ctx := c.Request.Context()
+	if t := state.TaskCenter.Get(taskcenter.KindUpdate); t != nil {
+		if _, err := t.Start(ctx, taskcenter.StartParams{"action": "apply"}, taskcenter.TriggerManual); err != nil {
+			state.Updater.MarkFailure(err)
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": state.Updater.GetStatus(ctx)})
+			return
+		}
+		c.JSON(http.StatusOK, state.Updater.GetStatus(ctx))
 		return
 	}
 
+	status, err := state.Updater.StartApply(ctx)
+	if err != nil {
+		state.Updater.MarkFailure(err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": status})
+		return
+	}
 	c.JSON(http.StatusOK, status)
 }
 

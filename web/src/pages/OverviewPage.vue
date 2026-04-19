@@ -16,6 +16,8 @@ import {
 } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
 import MiniSparkline from '@/components/MiniSparkline.vue'
+import TaskCenterCard from '@/components/TaskCenterCard.vue'
+import { useTaskStream } from '@/composables/useTaskStream'
 import {
   getDailyStats,
   getGatewayConfig,
@@ -25,7 +27,6 @@ import {
 import {
   getSystemInfo,
   getActiveSessions,
-  getScanProgress,
   getLibraries,
   restartServer,
   shutdownServer,
@@ -47,8 +48,33 @@ const gatewayConfig = ref<GatewayConfig | null>(null)
 
 const serverInfo = ref<any>(null)
 const sessions = ref<any[]>([])
-const scanProgress = ref<any[]>([])
 const libraries = ref<any[]>([])
+
+// scan 进度由 SSE 流驱动；保留旧字段命名，让"扫描进度"卡片与 activeScanCount 无需改动。
+const { snapshots } = useTaskStream()
+const scanProgress = computed(() => {
+  const s = snapshots.scan
+  if (!s || !s.children) return [] as any[]
+  return s.children.map((c) => {
+    const libraryId = (c.message ?? '').replace(/^library=/, '')
+    const status =
+      c.status === 'running'   ? 'scanning'  :
+      c.status === 'succeeded' ? 'completed' :
+      c.status === 'failed'    ? 'failed'    : c.status
+    return {
+      LibraryId: libraryId,
+      LibraryName: c.phase ?? '',
+      Status: status,
+      TotalItems: c.total,
+      ProcessedItems: c.processed,
+      Percentage: c.percent,
+      CurrentItem: c.current ?? undefined,
+      StartedAt: c.startedAt ?? 0,
+      CompletedAt: c.completedAt ?? 0,
+      Error: c.error ?? undefined,
+    }
+  })
+})
 const showRestart = ref(false)
 const showShutdown = ref(false)
 const showUpdateConfirm = ref(false)
@@ -262,20 +288,15 @@ async function loadGatewayData() {
 }
 
 async function loadServerData() {
-  const [info, sess, scan, libs, update] = await Promise.allSettled([
+  const [info, sess, libs, update] = await Promise.allSettled([
     getSystemInfo(),
     getActiveSessions(),
-    getScanProgress(),
     getLibraries(),
     getUpdateStatus(),
   ])
 
   if (info.status === 'fulfilled') serverInfo.value = info.value
   if (sess.status === 'fulfilled' && Array.isArray(sess.value)) sessions.value = sess.value
-  if (scan.status === 'fulfilled') {
-    const items = scan.value?.Items
-    scanProgress.value = Array.isArray(items) ? items : []
-  }
   if (libs.status === 'fulfilled' && Array.isArray(libs.value)) libraries.value = libs.value
   if (update.status === 'fulfilled') {
     updateStatus.value = update.value
@@ -299,14 +320,6 @@ onMounted(() => {
         .then((s) => { if (Array.isArray(s)) sessions.value = s })
         .catch(() => {})
     }, 5000),
-    setInterval(() => {
-      getScanProgress()
-        .then((r: any) => {
-          const items = r?.Items
-          scanProgress.value = Array.isArray(items) ? items : []
-        })
-        .catch(() => {})
-    }, 3000),
     setInterval(() => {
       loadUpdateStatus().catch(() => {})
     }, 4000),
@@ -517,6 +530,8 @@ onUnmounted(() => {
               </li>
             </ul>
           </n-card>
+
+          <task-center-card />
 
           <n-card v-if="scanProgress.length > 0" class="section-card" title="扫描进度" size="small">
             <template #header-extra>

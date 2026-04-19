@@ -10,6 +10,15 @@ const embyProxy = {
   changeOrigin: true,
 } as const
 
+// SSE 专用代理：禁用 Node http-proxy 的自动压缩/缓冲，否则 EventSource 会收到
+// 残缺包断开。要点是 selfHandleResponse:false + ws:false，vite 默认配置已兼容，
+// 显式写一次以便将来检索。
+const sseProxy = {
+  target: FYMS_BACKEND,
+  changeOrigin: true,
+  ws: false,
+} as const
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -27,6 +36,8 @@ export default defineConfig({
       '/Videos': embyProxy,
       '/Sessions': embyProxy,
       '/Library': embyProxy,
+      '/Tasks/stream': sseProxy,
+      '/Tasks': embyProxy,
       '/Startup': embyProxy,
       '/Branding': embyProxy,
       '/DisplayPreferences': embyProxy,

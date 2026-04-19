@@ -227,6 +227,21 @@ func ReadEpisodeStillFetch(ctx context.Context, pool *pgxpool.Pool) bool {
 	return readEpisodeStillFetchEnabled(ctx, pool)
 }
 
+// ReadBoolSystemConfig 导出给 handlers / 任务链，读取布尔配置项，未设置时返回 def。
+func ReadBoolSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, def bool) bool {
+	return readBoolSystemConfig(ctx, pool, key, def)
+}
+
+// ReadSystemConfigValue 导出：读取任意字符串配置项，未设置返回空串。
+func ReadSystemConfigValue(ctx context.Context, pool *pgxpool.Pool, key string) string {
+	return readSystemConfigValue(ctx, pool, key)
+}
+
+// WriteSystemConfigValue 导出：写任意字符串配置项。
+func WriteSystemConfigValue(ctx context.Context, pool *pgxpool.Pool, key, value string) error {
+	return setSystemConfigValue(ctx, pool, key, value)
+}
+
 // WriteBoolSystemConfig 导出给 handlers,用 "true"/"false" 文本存。
 func WriteBoolSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, value bool) error {
 	v := "false"

@@ -276,6 +276,22 @@ const router = createRouter({
                 requiresAdmin: true,
               },
             },
+            {
+              path: 'tasks',
+              name: 'observability_tasks',
+              component: () => import('./pages/observability/TasksTab.vue'),
+              meta: {
+                title: '任务中心',
+                navLabel: '任务中心',
+                icon: 'tasks',
+                section: 'observability',
+                sectionLabel: '观测中心',
+                sectionIcon: 'observability',
+                sectionOrder: 4,
+                order: 7,
+                requiresAdmin: true,
+              },
+            },
           ],
         },
 

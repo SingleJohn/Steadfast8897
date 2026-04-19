@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { NButton, NCard, NCheckbox, NCheckboxGroup, NEmpty, NForm, NFormItem, NGrid, NGridItem, NIcon, NInput, NInputNumber, NProgress, NSelect, NSlider, NSwitch } from 'naive-ui'
@@ -9,12 +9,13 @@ import { SearchOutline, VideocamOutline, AddOutline, CloseOutline, ArrowForwardO
 import {
   getSystemConfig, updateSystemConfig,
   scrapeAllMetadata, stopScrape,
-  startProbe, stopProbe, getTaskSummary,
-  startBackfill, stopBackfill, getBackfillProgress,
+  startProbe, stopProbe,
+  startBackfill, stopBackfill,
   getBackfillConfig, updateBackfillConfig,
   resetBackfillQuality, resetBackfillEpisodeImage,
   type BackfillStage,
 } from '@/api/client'
+import { useTaskStream } from '@/composables/useTaskStream'
 
 const { showToast } = useToast()
 const router = useRouter()
@@ -39,7 +40,28 @@ const autoScrape = ref(false)
 const showApiKey = ref(false)
 const savingConfig = ref(false)
 const scraping = ref(false)
-const scrapeProgress = ref<any>(null)
+
+// 任务进度改由 SSE 流驱动（useTaskStream 单例），替代以前的 setInterval 轮询。
+// 下面的 computed 把统一的 TaskSnapshot 反向映射到模板沿用的旧字段名，
+// 避免大面积改模板；等后续页面重构再收敛字段命名。
+const { snapshots } = useTaskStream()
+
+const scrapeProgress = computed(() => {
+  const s = snapshots.scrape
+  if (!s) return null
+  return {
+    status: s.status === 'succeeded' ? 'completed' : s.status,
+    total_items: s.total,
+    processed_items: s.processed,
+    success_items: s.success ?? 0,
+    failed_items: s.failed ?? 0,
+    current_item: s.current ?? '',
+    last_error: s.error ?? '',
+    percentage: s.percent,
+    missing_count: s.counters?.missing ?? 0,
+    items_total: s.counters?.itemsTotal ?? 0,
+  }
+})
 
 const providerOptions = [
   { label: 'TMDB (基准源)', value: 'tmdb' },
@@ -105,23 +127,54 @@ const tvdbPin = ref('')
 const fanartApiKey = ref('')
 const savingScrapeSources = ref(false)
 
-const probeProgress = ref<any>(null)
+const probeProgress = computed(() => {
+  const s = snapshots.probe
+  if (!s) return null
+  return {
+    status: s.status === 'succeeded' ? 'completed' : s.status,
+    totalItems: s.total,
+    processedItems: s.processed,
+    successItems: s.success ?? 0,
+    failedItems: s.failed ?? 0,
+    currentItem: s.current ?? '',
+    percentage: s.percent,
+    missingCount: s.counters?.missing ?? 0,
+    versionsTotal: s.counters?.versionsTotal ?? 0,
+  }
+})
 const probeThreads = ref('5')
 const probePathMappings = ref<{ from: string; to: string }[]>([])
 const savingProbe = ref(false)
 
 // ===== M7 Backfill 存量回填 =====
-const backfillProgress = ref<any>(null)
+const backfillProgress = computed(() => {
+  const s = snapshots.backfill
+  if (!s) return null
+  // 旧模板里的 "completed" / "stopped" 由 TaskStatus 反向映射。
+  const status =
+    s.status === 'succeeded' ? 'completed' :
+    s.status === 'cancelled' ? 'stopped' :
+    s.status === 'failed'    ? 'error'   : s.status
+  return {
+    status,
+    stage: s.stage ?? '',
+    processed: s.processed,
+    total: s.total,
+    last_error: s.error ?? '',
+    counters: s.counters ?? {},
+    started_at: s.startedAt ?? 0,
+    completed_at: s.completedAt ?? 0,
+    // 适配旧模板：completed/stopped 状态下 last_run_at = completedAt。
+    last_run_at: s.completedAt ?? 0,
+  }
+})
 const backfillConfig = ref<{ enabled_on_startup: boolean; episode_still_fetch: boolean }>({ enabled_on_startup: false, episode_still_fetch: true })
 const backfillBusy = ref(false)
 const stageLabel = (s: string) => ({ quality: '画质标签', name: 'Episode 标题', image: '分集缩略图' } as Record<string, string>)[s] || s
-const backfillRunning = () => ['running', 'stopping'].includes(backfillProgress.value?.status)
+const backfillRunning = () => ['running', 'stopping'].includes(backfillProgress.value?.status ?? '')
 
-async function refreshBackfill() {
-  try {
-    backfillProgress.value = await getBackfillProgress()
-  } catch {}
-}
+// 保留签名以减少调用点改动：进度由 SSE 自动更新，这里是 no-op。
+async function refreshBackfill() {}
 async function refreshBackfillConfig() {
   try {
     backfillConfig.value = await getBackfillConfig()
@@ -183,13 +236,8 @@ async function handleResetEpisodeImage() {
   }
 }
 
-async function refreshTaskSummary() {
-  try {
-    const summary = await getTaskSummary()
-    scrapeProgress.value = summary.scrape
-    probeProgress.value = summary.probe
-  } catch {}
-}
+// 保留签名以减少调用点改动：进度由 SSE 自动更新，这里是 no-op。
+async function refreshTaskSummary() {}
 
 async function handleSaveConfig() {
   savingConfig.value = true
@@ -280,8 +328,6 @@ async function stopProbeJob() {
   showToast('正在停止探测...', 'success')
 }
 
-const timers: ReturnType<typeof setInterval>[] = []
-
 onMounted(() => {
   getSystemConfig().then((cfg: any) => {
     const keys = (cfg.tmdb_api_key || '').split(',').map((k: string) => k.trim()).filter((k: string) => k)
@@ -326,17 +372,8 @@ onMounted(() => {
     try { probePathMappings.value = cfg.probe_path_mappings ? JSON.parse(cfg.probe_path_mappings) : [] } catch { probePathMappings.value = [] }
     probeThreads.value = cfg.probe_threads || '5'
   }).catch(() => {})
-  void refreshTaskSummary()
-  void refreshBackfill()
   void refreshBackfillConfig()
-
-  timers.push(setInterval(() => {
-    void refreshTaskSummary()
-    void refreshBackfill()
-  }, 3000))
 })
-
-onUnmounted(() => timers.forEach((t) => clearInterval(t)))
 </script>
 
 <template>

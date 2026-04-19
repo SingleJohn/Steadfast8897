@@ -24,6 +24,8 @@ import (
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
 	"fyms/internal/services"
+	"fyms/internal/services/taskcenter"
+	"fyms/internal/services/taskcenter/adapters"
 )
 
 //go:embed all:web/dist
@@ -95,7 +97,7 @@ func main() {
 	services.SetScrapeCache(cache)
 	sessionManager := services.NewSessionManager()
 	progressBuffer := services.NewProgressBuffer(pool)
-	scanProgress := services.NewScanProgressTracker()
+	scanProgress := services.NewScanProgressTracker(pool)
 	probeTask := services.NewProbeTask()
 	fileWatcher := services.NewFileWatcher()
 	scrapeTask := services.NewScrapeTask()
@@ -144,17 +146,50 @@ func main() {
 		BackfillTask:   backfillTask,
 	}
 
+	// 任务中心：注册 5 个适配器。M1 只读聚合，M2 才会写 task_runs。
+	taskRegistry := taskcenter.NewRegistry()
+	taskRegistry.Register(adapters.NewScanAdapter(scanProgress))
+	taskRegistry.Register(adapters.NewScrapeAdapter(scrapeTask, pool))
+	taskRegistry.Register(adapters.NewProbeAdapter(probeTask, pool))
+	taskRegistry.Register(adapters.NewBackfillAdapter(backfillTask, pool))
+	taskRegistry.Register(adapters.NewUpdateAdapter(updater, pool))
+	state.TaskCenter = taskRegistry
+	// SSE 广播：每秒扫描快照，仅在关键字段变化时推送。
+	taskRegistry.StartBroadcaster(context.Background(), time.Second)
+
+	// 任务链：scan → probe → backfill(image)。默认关闭，DB 里可切换。
+	chainEngine := taskcenter.NewChainEngine(taskRegistry, nil)
+	chainCtx := context.Background()
+	if enabled := services.ReadBoolSystemConfig(chainCtx, pool, "task_chain_enabled", false); enabled {
+		chainEngine.SetEnabled(true)
+	}
+	if raw := services.ReadSystemConfigValue(chainCtx, pool, "task_chain_rules"); raw != "" {
+		if err := chainEngine.LoadRulesJSON(raw); err != nil {
+			slog.Warn("task chain: failed to load persisted rules, using defaults", "error", err)
+		}
+	}
+	chainEngine.Start(chainCtx)
+	state.TaskChain = chainEngine
+
 	ctx := context.Background()
+	// 启动时收尾上次崩溃/重启前遗留的 running/queued/stopping 行。
+	if err := taskcenter.ReconcileOnStartup(ctx, pool); err != nil {
+		slog.Warn("task_runs reconcile on startup failed", "error", err)
+	}
 	fileWatcher.Start(ctx, pool, cache)
 
 	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
+	// 走任务中心以便 task_runs 记录 trigger=startup。
 	go func() {
-		if services.ShouldAutoRunOnStartup(ctx, pool) {
-			if err := backfillTask.Start(ctx, pool, nil); err != nil {
+		if !services.ShouldAutoRunOnStartup(ctx, pool) {
+			return
+		}
+		if t := taskRegistry.Get(taskcenter.KindBackfill); t != nil {
+			if _, err := t.Start(ctx, nil, taskcenter.TriggerStartup); err != nil {
 				slog.Info("[Backfill] auto start skipped", "reason", err)
-			} else {
-				slog.Info("[Backfill] auto start triggered on startup")
+				return
 			}
+			slog.Info("[Backfill] auto start triggered on startup")
 		}
 	}()
 
@@ -205,6 +240,7 @@ func main() {
 		handlers.RegisterEmbyCompatRoutes(group, state, adminMW)
 		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
 		handlers.RegisterWebhookRoutes(group, state)
+		handlers.RegisterTaskCenterRoutes(group, state, adminMW)
 		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
 	}
 
@@ -243,7 +279,8 @@ func main() {
 				strings.HasPrefix(p, "/Stats") ||
 				strings.HasPrefix(p, "/Plugins") ||
 				strings.HasPrefix(p, "/Shows") ||
-				strings.HasPrefix(p, "/Search")
+				strings.HasPrefix(p, "/Search") ||
+				strings.HasPrefix(p, "/Tasks")
 			if isAPI {
 				c.JSON(404, gin.H{"message": "Not found"})
 				return

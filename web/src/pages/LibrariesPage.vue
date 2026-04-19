@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
   NButton, NInput, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
@@ -12,9 +12,10 @@ import { AppIcons } from '@/icons/appIcons'
 import { getPlatformIcon } from '@/icons/PlatformIcons'
 import {
   getLibraries, addLibrary, refreshLibrary,
-  getSystemConfig, updateSystemConfig, getScanProgress, browseDirectories,
+  getSystemConfig, updateSystemConfig, browseDirectories,
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
 } from '@/api/client'
+import { useTaskStream } from '@/composables/useTaskStream'
 
 const { showToast } = useToast()
 
@@ -25,7 +26,33 @@ const libTypeOptions = [
 ]
 
 const libraries = ref<any[]>([])
-const scanProgress = ref<any[]>([])
+
+// 扫描进度由 SSE 流驱动（ScanAdapter 把多库聚合为 children 数组）。
+// 这里把 Snapshot.children 反向映射回旧模板期望的字段名，避免改模板。
+const { snapshots } = useTaskStream()
+const scanProgress = computed(() => {
+  const s = snapshots.scan
+  if (!s || !s.children) return [] as any[]
+  return s.children.map((c) => {
+    const libraryId = (c.message ?? '').replace(/^library=/, '')
+    const status =
+      c.status === 'running'   ? 'scanning'  :
+      c.status === 'succeeded' ? 'completed' :
+      c.status === 'failed'    ? 'failed'    : c.status
+    return {
+      LibraryId: libraryId,
+      LibraryName: c.phase ?? '',
+      Status: status,
+      TotalItems: c.total,
+      ProcessedItems: c.processed,
+      Percentage: c.percent,
+      CurrentItem: c.current ?? undefined,
+      StartedAt: c.startedAt ?? 0,
+      CompletedAt: c.completedAt ?? 0,
+      Error: c.error ?? undefined,
+    }
+  })
+})
 const scanThreads = ref('3')
 const fileWatcherEnabled = ref(true)
 const scanning = ref(false)
@@ -277,7 +304,6 @@ const timers: ReturnType<typeof setInterval>[] = []
 
 onMounted(() => {
   getLibraries().then((l) => (libraries.value = l)).catch(() => {})
-  getScanProgress().then((r: any) => (scanProgress.value = r.Items || [])).catch(() => {})
   getSystemConfig().then((cfg: any) => {
     scanThreads.value = cfg.scan_threads || '3'
     fileWatcherEnabled.value = cfg.file_watcher_enabled !== 'false'
@@ -291,10 +317,8 @@ onMounted(() => {
       rescrapeTimer = setInterval(pollRescrapeProgress, 2000)
     }
   }).catch(() => {})
-  timers.push(setInterval(() => {
-    getScanProgress().then((r: any) => (scanProgress.value = r.Items || [])).catch(() => {})
-    void loadTaskSummary()
-  }, 3000))
+  // platform rescrape 的 task summary 不在任务中心范围内，保留独立轮询。
+  timers.push(setInterval(() => { void loadTaskSummary() }, 3000))
 })
 
 onUnmounted(() => {

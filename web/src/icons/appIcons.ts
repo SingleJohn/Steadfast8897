@@ -83,6 +83,7 @@ export const AppIcons = {
   redirect: ReturnDownBackOutline,
   ipStats: GlobeOutline,
   playback: PlayCircleOutline,
+  tasks: LayersOutline,
 
   // Misc extras
   dashboard: GridOutline,
