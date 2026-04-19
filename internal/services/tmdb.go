@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +23,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/services/scraper"
 )
+
+// sharedScrapeCache 在 main.go 启动时通过 SetScrapeCache 注入；
+// 用于 Matcher 的搜索结果缓存。未注入时 Matcher 自动退化为无缓存。
+var sharedScrapeCache scraper.Cache
+
+func SetScrapeCache(c scraper.Cache) {
+	sharedScrapeCache = c
+}
+
+// identifyFailureCooldown 是识别失败后重试的冷却时长。
+const identifyFailureCooldown = 24 * time.Hour
 
 const (
 	TMDB_BASE       = "https://api.themoviedb.org/3"
@@ -39,6 +53,24 @@ type scrapeSaveTargets struct {
 	PosterPath   string
 	BackdropPath string
 	NfoPath      string
+}
+
+type externalIDRecord struct {
+	Provider string
+	Value    string
+}
+
+type identifyCandidateRecord struct {
+	ID         string                 `json:"id"`
+	ItemID     string                 `json:"item_id"`
+	Provider   string                 `json:"provider"`
+	ExternalID string                 `json:"external_id"`
+	Title      string                 `json:"title"`
+	Year       *int32                 `json:"year,omitempty"`
+	PosterURL  string                 `json:"poster_url"`
+	Score      float64                `json:"score"`
+	Payload    map[string]interface{} `json:"payload,omitempty"`
+	CreatedAt  time.Time              `json:"created_at"`
 }
 
 func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
@@ -435,7 +467,10 @@ func (c *TmdbClient) GetSeasonImages(ctx context.Context, tmdbID int64, seasonNu
 
 func (c *TmdbClient) DownloadImage(ctx context.Context, imgPath, savePath, size string) bool {
 	imgURL := fmt.Sprintf("%s/%s%s", TMDB_IMAGE_BASE, size, imgPath)
+	return c.downloadImageURL(ctx, imgURL, savePath)
+}
 
+func (c *TmdbClient) downloadImageURL(ctx context.Context, imgURL, savePath string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imgURL, nil)
 	if err != nil {
 		return false
@@ -474,13 +509,15 @@ type scrapeItemMeta struct {
 	Name     string
 	Year     *int32
 	TmdbID   *int32
+	ImdbID   *string
+	FilePath *string
 }
 
 func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) (*scrapeItemMeta, error) {
 	meta := &scrapeItemMeta{}
 	err := pool.QueryRow(ctx,
-		"SELECT type, name, production_year, tmdb_id FROM items WHERE id = $1::uuid", itemID,
-	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID)
+		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path FROM items WHERE id = $1::uuid", itemID,
+	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("item not found")
 	}
@@ -488,6 +525,164 @@ func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) 
 		return nil, fmt.Errorf("query item: %w", err)
 	}
 	return meta, nil
+}
+
+// setIdentifyCooldown 在识别失败后把 item 标记为冷却中，避免短期重试。
+func setIdentifyCooldown(ctx context.Context, pool *pgxpool.Pool, itemID string, d time.Duration) {
+	interval := fmt.Sprintf("%d seconds", int(d.Seconds()))
+	_, err := pool.Exec(ctx,
+		"UPDATE items SET identify_attempted_at = NOW(), identify_cooldown_until = NOW() + $1::interval WHERE id = $2::uuid",
+		interval, itemID)
+	if err != nil {
+		slog.Debug("[TMDB] set identify cooldown failed", "item_id", itemID, "error", err)
+	}
+}
+
+// clearIdentifyCooldown 识别成功后清除冷却。
+func clearIdentifyCooldown(ctx context.Context, pool *pgxpool.Pool, itemID string) {
+	_, err := pool.Exec(ctx,
+		"UPDATE items SET identify_attempted_at = NOW(), identify_cooldown_until = NULL WHERE id = $1::uuid",
+		itemID)
+	if err != nil {
+		slog.Debug("[TMDB] clear identify cooldown failed", "item_id", itemID, "error", err)
+	}
+}
+
+// buildParsedName 从 item meta + 文件路径构造 ParsedName，给 Matcher 使用。
+func buildParsedName(meta *scrapeItemMeta) scraper.ParsedName {
+	basis := meta.Name
+	if meta.FilePath != nil && *meta.FilePath != "" {
+		basis = filepath.Base(*meta.FilePath)
+	}
+	mode := scraper.ModeMovie
+	if meta.ItemType == "Series" {
+		mode = scraper.ModeSeries
+	}
+	parsed := scraper.Parse(basis, mode)
+
+	// DB 侧的 year 最可信，覆盖解析结果
+	if meta.Year != nil && *meta.Year > 0 {
+		parsed.Year = meta.Year
+	}
+	if parsed.IDs == nil {
+		parsed.IDs = map[string]string{}
+	}
+	if meta.TmdbID != nil && *meta.TmdbID > 0 && parsed.IDs["tmdb"] == "" {
+		parsed.IDs["tmdb"] = strconv.Itoa(int(*meta.TmdbID))
+	}
+	if meta.ImdbID != nil && strings.TrimSpace(*meta.ImdbID) != "" && parsed.IDs["imdb"] == "" {
+		parsed.IDs["imdb"] = strings.TrimSpace(*meta.ImdbID)
+	}
+	// Title 兜底：若归一化后 Title/OriginalTitle 都为空，用 items.name
+	if parsed.Title == "" && parsed.OriginalTitle == "" {
+		parsed.Title = meta.Name
+	}
+	return parsed
+}
+
+func upsertExternalIDs(ctx context.Context, pool *pgxpool.Pool, itemID string, ids []externalIDRecord) {
+	if pool == nil || len(ids) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(ids))
+	providerMap := make(map[string]string, len(ids))
+	for _, rec := range ids {
+		provider := strings.ToLower(strings.TrimSpace(rec.Provider))
+		value := strings.TrimSpace(rec.Value)
+		if provider == "" || value == "" {
+			continue
+		}
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		providerMap[provider] = value
+		_, err := pool.Exec(ctx,
+			`INSERT INTO item_external_ids (item_id, provider, external_id, updated_at)
+			 VALUES ($1::uuid, $2, $3, NOW())
+			 ON CONFLICT (item_id, provider)
+			 DO UPDATE SET external_id = EXCLUDED.external_id,
+			               updated_at = EXCLUDED.updated_at`,
+			itemID, provider, value)
+		if err != nil {
+			slog.Warn("[Scraper] upsert item_external_ids failed", "item_id", itemID, "provider", provider, "error", err)
+			continue
+		}
+	}
+	if len(providerMap) == 0 {
+		return
+	}
+	if raw, err := json.Marshal(providerMap); err == nil {
+		_, err = pool.Exec(ctx,
+			"UPDATE items SET provider_ids = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
+			string(raw), itemID)
+		if err != nil {
+			slog.Warn("[Scraper] update provider_ids failed", "item_id", itemID, "error", err)
+		}
+	}
+}
+
+func replaceIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID string, candidates []scraper.ScoredCandidate) error {
+	if _, err := pool.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID); err != nil {
+		return err
+	}
+	for _, cand := range candidates {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"provider":       cand.Provider,
+			"provider_id":    cand.ProviderID,
+			"external_ids":   cand.ExternalIDs,
+			"original_title": cand.OriginalTitle,
+			"source":         cand.Source,
+			"popularity":     cand.Popularity,
+			"poster_url":     cand.PosterURL,
+		})
+		var year interface{}
+		if cand.Year != nil {
+			year = *cand.Year
+		}
+		_, err := pool.Exec(ctx,
+			`INSERT INTO identify_candidates (item_id, provider, external_id, title, year, poster_url, score, payload)
+			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+			itemID,
+			cand.Provider,
+			cand.ProviderID,
+			cand.Title,
+			year,
+			strings.TrimSpace(cand.PosterURL),
+			float32(cand.Score),
+			string(payload),
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ListIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]identifyCandidateRecord, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT id::text, item_id::text, provider, external_id, COALESCE(title, ''), year, COALESCE(poster_url, ''), COALESCE(score, 0), payload, created_at
+		   FROM identify_candidates
+		  WHERE item_id = $1::uuid
+		  ORDER BY score DESC, created_at DESC`,
+		itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []identifyCandidateRecord
+	for rows.Next() {
+		var rec identifyCandidateRecord
+		var payload []byte
+		if err := rows.Scan(&rec.ID, &rec.ItemID, &rec.Provider, &rec.ExternalID, &rec.Title, &rec.Year, &rec.PosterURL, &rec.Score, &payload, &rec.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(payload) > 0 {
+			_ = json.Unmarshal(payload, &rec.Payload)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 func fetchTMDBDetailsByID(ctx context.Context, client *TmdbClient, itemType string, tmdbID int64) (map[string]interface{}, error) {
@@ -501,39 +696,460 @@ func fetchTMDBDetailsByID(ctx context.Context, client *TmdbClient, itemType stri
 	}
 }
 
-func searchTMDBDetails(ctx context.Context, client *TmdbClient, itemType, name string, year *int32) (int64, map[string]interface{}, error) {
-	switch itemType {
-	case "Movie":
-		search, err := client.SearchMovie(ctx, name, year)
-		if err != nil {
-			return 0, nil, fmt.Errorf("movie not found on TMDB: %w", err)
-		}
-		tid, ok := jsonInt64(search, "id")
-		if !ok {
-			return 0, nil, fmt.Errorf("no TMDB ID")
-		}
-		details, err := client.GetMovieDetails(ctx, tid)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get movie details: %w", err)
-		}
-		return tid, details, nil
-	case "Series":
-		search, err := client.SearchTV(ctx, name)
-		if err != nil {
-			return 0, nil, fmt.Errorf("TV show not found on TMDB: %w", err)
-		}
-		tid, ok := jsonInt64(search, "id")
-		if !ok {
-			return 0, nil, fmt.Errorf("no TMDB ID")
-		}
-		details, err := client.GetTVDetails(ctx, tid)
-		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get TV details: %w", err)
-		}
-		return tid, details, nil
-	default:
-		return 0, nil, fmt.Errorf("cannot scrape type: %s", itemType)
+// =========== scraper.Provider 实现 ===========
+
+func (c *TmdbClient) Name() string { return "tmdb" }
+
+// Priority 数字越小越优先。TMDB 作为基准源置为 1。
+func (c *TmdbClient) Priority() int { return 1 }
+
+func (c *TmdbClient) Supports(t scraper.MediaType) bool {
+	return t == scraper.MediaMovie || t == scraper.MediaSeries
+}
+
+func (c *TmdbClient) Search(ctx context.Context, t scraper.MediaType, q scraper.Query) ([]scraper.Candidate, error) {
+	query := q.Title
+	if query == "" {
+		query = q.OriginalTitle
 	}
+	if query == "" {
+		return nil, nil
+	}
+	switch t {
+	case scraper.MediaMovie:
+		results, err := c.SearchMovieMulti(ctx, query, q.Year)
+		if err != nil {
+			if isNoResultsErr(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return candidatesFromTMDB(results, "movie"), nil
+	case scraper.MediaSeries:
+		results, err := c.SearchTVMulti(ctx, query)
+		if err != nil {
+			if isNoResultsErr(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return candidatesFromTMDB(results, "tv"), nil
+	default:
+		return nil, fmt.Errorf("unsupported media type: %s", t)
+	}
+}
+
+// GetByID 返回统一的 Details 结构，供 Aggregator.Fill（M4）消费。
+// 现阶段 applyTMDBDetails 仍直接吃 raw map；Details 路径并行存在，
+// 等 M4 字段级合并落地后，raw 路径再逐步切换过去。
+func (c *TmdbClient) GetByID(ctx context.Context, t scraper.MediaType, id string) (*scraper.Details, error) {
+	tmdbID, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil || tmdbID <= 0 {
+		return nil, fmt.Errorf("invalid tmdb id: %q", id)
+	}
+	raw, err := c.fetchRawByID(ctx, t, tmdbID)
+	if err != nil {
+		return nil, err
+	}
+	return tmdbDetailsFromRaw(raw, t, tmdbID), nil
+}
+
+func (c *TmdbClient) fetchRawByID(ctx context.Context, t scraper.MediaType, id int64) (map[string]interface{}, error) {
+	switch t {
+	case scraper.MediaMovie:
+		return c.GetMovieDetails(ctx, id)
+	case scraper.MediaSeries:
+		return c.GetTVDetails(ctx, id)
+	default:
+		return nil, fmt.Errorf("unsupported media type: %s", t)
+	}
+}
+
+func (c *TmdbClient) FindByExternalID(ctx context.Context, kind, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", nil
+	}
+	var source string
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "imdb":
+		source = "imdb_id"
+	case "tmdb":
+		return id, nil
+	default:
+		return "", nil
+	}
+	u := fmt.Sprintf("%s/find/%s?api_key={API_KEY}&language=%s&external_source=%s",
+		TMDB_BASE, url.PathEscape(id), c.language, source)
+	data, err := c.tmdbGet(ctx, u)
+	if err != nil {
+		return "", err
+	}
+	for _, key := range []string{"movie_results", "tv_results"} {
+		arr, ok := data[key].([]interface{})
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		if m, ok := arr[0].(map[string]interface{}); ok {
+			if id, ok := jsonInt64(m, "id"); ok && id > 0 {
+				return strconv.FormatInt(id, 10), nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func isNoResultsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "未找到结果") || strings.Contains(s, "no results")
+}
+
+// tmdbDetailsFromRaw 把 TMDB 详情 raw map 转为 scraper.Details。
+// 提取策略与 applyTMDBDetails 保持一致，便于 M4 切换到 Details 流程时
+// 行为不变；actors 上限 20 与现有逻辑一致。
+func tmdbDetailsFromRaw(details map[string]interface{}, t scraper.MediaType, id int64) *scraper.Details {
+	if details == nil {
+		return nil
+	}
+	titleKey, origKey, dateKey := "title", "original_title", "release_date"
+	if t == scraper.MediaSeries {
+		titleKey, origKey, dateKey = "name", "original_name", "first_air_date"
+	}
+
+	d := &scraper.Details{
+		Provider:    "tmdb",
+		ProviderID:  strconv.FormatInt(id, 10),
+		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(id, 10)},
+	}
+	if s, ok := details[titleKey].(string); ok {
+		d.Title = s
+	}
+	if s, ok := details[origKey].(string); ok {
+		d.OriginalTitle = s
+	}
+	if s, ok := details["overview"].(string); ok {
+		d.Overview = s
+	}
+	if s, ok := details["tagline"].(string); ok {
+		d.Tagline = s
+	}
+	if s, ok := details[dateKey].(string); ok {
+		d.Premiered = s
+		if len(s) >= 4 {
+			if y := parseYearPrefix(s); y > 0 {
+				v := int32(y)
+				d.Year = &v
+			}
+		}
+	}
+	if r := jsonFloat64(details, "vote_average"); r != nil {
+		d.Rating = r
+	}
+	if imdb, ok := details["imdb_id"].(string); ok && imdb != "" {
+		d.ExternalIDs["imdb"] = imdb
+	}
+	if platform := ExtractPlatform(details, map[scraper.MediaType]string{
+		scraper.MediaMovie:  "Movie",
+		scraper.MediaSeries: "Series",
+	}[t]); platform != nil {
+		d.Platforms = append(d.Platforms, *platform)
+	}
+
+	if arr, ok := details["genres"].([]interface{}); ok {
+		for _, g := range arr {
+			if gm, ok := g.(map[string]interface{}); ok {
+				if n, ok := gm["name"].(string); ok && n != "" {
+					d.Genres = append(d.Genres, n)
+				}
+			}
+		}
+	}
+
+	// Studios 先不做归一，原样返回；Aggregator 后续调用 ExtractPlatform 统一。
+	if arr, ok := details["production_companies"].([]interface{}); ok {
+		for _, c := range arr {
+			if cm, ok := c.(map[string]interface{}); ok {
+				if n, ok := cm["name"].(string); ok && n != "" {
+					d.Studios = append(d.Studios, n)
+				}
+			}
+		}
+	}
+
+	if credits, ok := details["credits"].(map[string]interface{}); ok {
+		if castArr, ok := credits["cast"].([]interface{}); ok {
+			limit := min(len(castArr), 20)
+			for i, c := range castArr[:limit] {
+				cm, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				name, _ := cm["name"].(string)
+				if strings.TrimSpace(name) == "" {
+					continue
+				}
+				role, _ := cm["character"].(string)
+				actor := scraper.Actor{Name: name, Role: role, Order: i}
+				if aid, ok := jsonInt64(cm, "id"); ok {
+					v := int32(aid)
+					actor.TmdbID = &v
+				}
+				if pp, ok := cm["profile_path"].(string); ok && pp != "" {
+					u := fmt.Sprintf("%s/w185%s", TMDB_IMAGE_BASE, pp)
+					actor.ImageURL = &u
+				}
+				d.Actors = append(d.Actors, actor)
+			}
+		}
+		if crewArr, ok := credits["crew"].([]interface{}); ok {
+			for _, c := range crewArr {
+				cm, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if job, _ := cm["job"].(string); job == "Director" {
+					if dn, ok := cm["name"].(string); ok && dn != "" {
+						d.Directors = append(d.Directors, dn)
+					}
+				}
+			}
+		}
+	}
+
+	if pp, ok := details["poster_path"].(string); ok && pp != "" {
+		d.PosterURLs = []string{fmt.Sprintf("%s/w500%s", TMDB_IMAGE_BASE, pp)}
+	}
+	if bp, ok := details["backdrop_path"].(string); ok && bp != "" {
+		d.BackdropURLs = []string{fmt.Sprintf("%s/w1280%s", TMDB_IMAGE_BASE, bp)}
+	}
+
+	return d
+}
+
+func candidatesFromTMDB(results []map[string]interface{}, kind string) []scraper.Candidate {
+	titleKey, origKey, dateKey := "title", "original_title", "release_date"
+	if kind == "tv" {
+		titleKey, origKey, dateKey = "name", "original_name", "first_air_date"
+	}
+	out := make([]scraper.Candidate, 0, len(results))
+	for _, r := range results {
+		cand := scraper.Candidate{}
+		if id, ok := jsonInt64(r, "id"); ok && id > 0 {
+			cand.ProviderID = strconv.FormatInt(id, 10)
+			cand.ExternalIDs = map[string]string{"tmdb": cand.ProviderID}
+		}
+		if cand.ProviderID == "" {
+			continue
+		}
+		if t, ok := r[titleKey].(string); ok {
+			cand.Title = t
+		}
+		if t, ok := r[origKey].(string); ok {
+			cand.OriginalTitle = t
+		}
+		if d, ok := r[dateKey].(string); ok && len(d) >= 4 {
+			if y := parseYearPrefix(d); y > 0 {
+				v := int32(y)
+				cand.Year = &v
+			}
+		}
+		if pp := jsonFloat64(r, "popularity"); pp != nil {
+			cand.Popularity = *pp
+		}
+		if posterPath, ok := r["poster_path"].(string); ok && strings.TrimSpace(posterPath) != "" {
+			cand.PosterURL = fmt.Sprintf("%s/w500%s", TMDB_IMAGE_BASE, posterPath)
+		}
+		out = append(out, cand)
+	}
+	return out
+}
+
+func mergedToNfoData(merged *scraper.MergedDetails, tmdbID int64, studio *string) NfoData {
+	var title *string
+	if s := strings.TrimSpace(merged.Title); s != "" {
+		title = &s
+	}
+	var originalTitle *string
+	if s := strings.TrimSpace(merged.OriginalTitle); s != "" {
+		originalTitle = &s
+	}
+	var plot *string
+	if s := strings.TrimSpace(merged.Overview); s != "" {
+		plot = &s
+	}
+	var premiered *string
+	if s := strings.TrimSpace(merged.Premiered); s != "" {
+		premiered = &s
+	}
+	var tagline *string
+	if s := strings.TrimSpace(merged.Tagline); s != "" {
+		tagline = &s
+	}
+	var imdbID *string
+	if merged.ExternalIDs != nil {
+		if s := strings.TrimSpace(merged.ExternalIDs["imdb"]); s != "" {
+			imdbID = &s
+		}
+	}
+	var tmdbIDi32 *int32
+	if tmdbID > 0 {
+		v := int32(tmdbID)
+		tmdbIDi32 = &v
+	}
+	var rating *float64
+	if merged.Rating != nil {
+		v := *merged.Rating
+		rating = &v
+	}
+	actors := make([]NfoActor, 0, len(merged.Actors))
+	for _, actor := range merged.Actors {
+		actors = append(actors, NfoActor{
+			Name:     actor.Name,
+			Role:     actor.Role,
+			TmdbID:   actor.TmdbID,
+			ImageURL: actor.ImageURL,
+		})
+	}
+	return NfoData{
+		Title:         title,
+		OriginalTitle: originalTitle,
+		Plot:          plot,
+		Year:          merged.Year,
+		Rating:        rating,
+		TmdbID:        tmdbIDi32,
+		ImdbID:        imdbID,
+		Genres:        append([]string(nil), merged.Genres...),
+		Actors:        actors,
+		Directors:     append([]string(nil), merged.Directors...),
+		Premiered:     premiered,
+		Tagline:       tagline,
+		Studio:        studio,
+	}
+}
+
+func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient, itemType string, tmdbID int64, merged *scraper.MergedDetails, updateTMDBID bool, source models.PlatformScanSource) (map[string]interface{}, error) {
+	if merged == nil {
+		return nil, fmt.Errorf("merged details is nil")
+	}
+	saveMode := getScrapeSaveMode(ctx, pool)
+	var studio *string
+	if len(merged.Platforms) > 0 {
+		candidate := strings.TrimSpace(merged.Platforms[0])
+		if candidate != "" {
+			studio = &candidate
+		}
+	}
+	nfo := mergedToNfoData(merged, tmdbID, studio)
+	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, &nfo, source)
+
+	var externalIDs []externalIDRecord
+	for provider, value := range merged.ExternalIDs {
+		externalIDs = append(externalIDs, externalIDRecord{Provider: provider, Value: value})
+	}
+	if len(externalIDs) == 0 && tmdbID > 0 {
+		externalIDs = append(externalIDs, externalIDRecord{Provider: "tmdb", Value: strconv.FormatInt(tmdbID, 10)})
+	}
+	upsertExternalIDs(ctx, pool, itemID, externalIDs)
+
+	if studio != nil {
+		if err := models.MarkPlatformScanMatched(ctx, pool, itemID, *studio, source); err != nil {
+			return nil, err
+		}
+		if itemType == "Series" {
+			if err := models.PropagateStudioToChildren(ctx, pool, itemID, *studio); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if err := models.MarkPlatformScanNoMatch(ctx, pool, itemID, source, "no platform matched from merged details"); err != nil {
+			return nil, err
+		}
+	}
+
+	targets := resolveScrapeSaveTargets(ctx, pool, itemID, itemType)
+	saveToData := saveMode == "database" || saveMode == "both"
+	saveToMedia := saveMode == "media_dir" || saveMode == "both"
+
+	if saveToMedia && targets.NfoPath != "" {
+		if ok := writeNfoFile(targets.NfoPath, itemType, &nfo); !ok {
+			slog.Warn("[Scraper] Failed to write NFO to media directory", "item_id", itemID, "path", targets.NfoPath)
+		}
+	}
+
+	if updateTMDBID && tmdbID > 0 {
+		_, err := pool.Exec(ctx,
+			"UPDATE items SET tmdb_id = $1, imdb_id = COALESCE(NULLIF($2, ''), imdb_id), updated_at = NOW() WHERE id = $3::uuid",
+			int32(tmdbID), derefStr(nfo.ImdbID), itemID)
+		if err != nil {
+			return nil, fmt.Errorf("update ids: %w", err)
+		}
+	}
+
+	if len(merged.PosterURLs) > 0 {
+		posterURL := merged.PosterURLs[0]
+		var dbPosterPath string
+		var dbPosterTag *string
+		mediaSaved := false
+		if saveToMedia && targets.PosterPath != "" {
+			if client.downloadImageURL(ctx, posterURL, targets.PosterPath) {
+				dbPosterPath = targets.PosterPath
+				dbPosterTag = GenerateImageTag(targets.PosterPath)
+				mediaSaved = true
+			}
+		}
+		if saveToData || (saveToMedia && !mediaSaved) {
+			dataPath := fmt.Sprintf("data/metadata/%s/poster.jpg", itemID)
+			if client.downloadImageURL(ctx, posterURL, dataPath) && dbPosterPath == "" {
+				dbPosterPath = dataPath
+				dbPosterTag = GenerateImageTag(dataPath)
+			}
+		}
+		if dbPosterPath != "" {
+			_, _ = pool.Exec(ctx,
+				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
+				dbPosterPath, dbPosterTag, itemID)
+		}
+	}
+
+	if len(merged.BackdropURLs) > 0 {
+		backdropURL := merged.BackdropURLs[0]
+		var dbBackdropPath string
+		var dbBackdropTag *string
+		mediaSaved := false
+		if saveToMedia && targets.BackdropPath != "" {
+			if client.downloadImageURL(ctx, backdropURL, targets.BackdropPath) {
+				dbBackdropPath = targets.BackdropPath
+				dbBackdropTag = GenerateImageTag(targets.BackdropPath)
+				mediaSaved = true
+			}
+		}
+		if saveToData || (saveToMedia && !mediaSaved) {
+			dataPath := fmt.Sprintf("data/metadata/%s/backdrop.jpg", itemID)
+			if client.downloadImageURL(ctx, backdropURL, dataPath) && dbBackdropPath == "" {
+				dbBackdropPath = dataPath
+				dbBackdropTag = GenerateImageTag(dataPath)
+			}
+		}
+		if dbBackdropPath != "" {
+			_, _ = pool.Exec(ctx,
+				"UPDATE items SET backdrop_image_path = $1, backdrop_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
+				dbBackdropPath, dbBackdropTag, itemID)
+		}
+	}
+
+	if itemType == "Series" && tmdbID > 0 {
+		scrapeSeasonPosters(ctx, pool, client, itemID, tmdbID, saveMode)
+		scrapeEpisodeMetadata(ctx, pool, client, itemID, tmdbID)
+	}
+
+	return map[string]interface{}{
+		"success": true,
+		"tmdb_id": tmdbID,
+		"name":    nfo.Title,
+	}, nil
 }
 
 func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient, itemType string, itemName string, tmdbID int64, details map[string]interface{}, updateTMDBID bool, source models.PlatformScanSource) (map[string]interface{}, error) {
@@ -674,6 +1290,13 @@ func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, cl
 
 	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, &nfo, source)
 
+	var externalIDs []externalIDRecord
+	externalIDs = append(externalIDs, externalIDRecord{Provider: "tmdb", Value: strconv.FormatInt(tmdbID, 10)})
+	if imdbID := jsonStringNonEmpty(details, "imdb_id"); imdbID != nil {
+		externalIDs = append(externalIDs, externalIDRecord{Provider: "imdb", Value: *imdbID})
+	}
+	upsertExternalIDs(ctx, pool, itemID, externalIDs)
+
 	// Set studio and propagate to children for Series
 	if studio != nil {
 		if err := models.MarkPlatformScanMatched(ctx, pool, itemID, *studio, source); err != nil {
@@ -793,7 +1416,14 @@ func RefreshItemMetadataByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID
 	if err != nil {
 		return nil, err
 	}
-	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, int64(*meta.TmdbID), details, false, models.PlatformScanSourceTMDB)
+	merged := scraper.MergeDetails(&scraper.Identity{
+		Provider:    "tmdb",
+		ProviderID:  strconv.FormatInt(int64(*meta.TmdbID), 10),
+		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(int64(*meta.TmdbID), 10)},
+		Score:       1,
+		Source:      "tmdb_id_refresh",
+	}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), int64(*meta.TmdbID)))
+	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
 }
 
 func RefreshPlatformOnlyByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (*string, error) {
@@ -841,7 +1471,14 @@ func ScrapeItemByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 	if err != nil {
 		return nil, fmt.Errorf("获取 TMDB 详情失败: %w", err)
 	}
-	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, tmdbID, details, true, models.PlatformScanSourceSearch)
+	merged := scraper.MergeDetails(&scraper.Identity{
+		Provider:    "tmdb",
+		ProviderID:  strconv.FormatInt(tmdbID, 10),
+		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(tmdbID, 10)},
+		Score:       1,
+		Source:      "manual_tmdb_id",
+	}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), tmdbID))
+	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, true, models.PlatformScanSourceSearch)
 }
 
 // SearchTMDBForItem searches TMDB for an item by custom query, returning multiple results.
@@ -869,14 +1506,118 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	if err != nil {
 		return nil, err
 	}
-	tmdbID, details, err := searchTMDBDetails(ctx, client, meta.ItemType, meta.Name, meta.Year)
+
+	// 已经带 TMDB ID 的 item 走直达，节省搜索阶段
+	if meta.TmdbID != nil && *meta.TmdbID > 0 {
+		details, ferr := fetchTMDBDetailsByID(ctx, client, meta.ItemType, int64(*meta.TmdbID))
+		if ferr != nil {
+			return nil, fmt.Errorf("fetch tmdb details: %w", ferr)
+		}
+		merged := scraper.MergeDetails(&scraper.Identity{
+			Provider:    "tmdb",
+			ProviderID:  strconv.FormatInt(int64(*meta.TmdbID), 10),
+			ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(int64(*meta.TmdbID), 10)},
+			Score:       1,
+			Source:      "tmdb_id_direct",
+		}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), int64(*meta.TmdbID)))
+		clearIdentifyCooldown(ctx, pool, itemID)
+		return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
+	}
+
+	mediaType, ok := mediaTypeFor(meta.ItemType)
+	if !ok {
+		return nil, fmt.Errorf("cannot scrape type: %s", meta.ItemType)
+	}
+
+	parsed := buildParsedName(meta)
+	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
+	agg := BuildScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+
+	ident, err := agg.Identify(ctx, parsed, mediaType)
 	if err != nil {
-		if markErr := models.MarkPlatformScanError(ctx, pool, itemID, models.PlatformScanSourceSearch, err.Error()); markErr != nil {
+		reason := err.Error()
+		source := models.PlatformScanSourceSearch
+		if errors.Is(err, scraper.ErrNoMatch) {
+			if !runtimeCfg.AutoApply {
+				candidates, candErr := agg.Candidates(ctx, parsed, mediaType)
+				if candErr == nil && len(candidates) > 0 {
+					_ = replaceIdentifyCandidates(ctx, pool, itemID, candidates)
+					setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+					if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, "identify queued for manual confirmation"); markErr != nil {
+						slog.Warn("[TMDB] mark manual identify queue failed", "item_id", itemID, "error", markErr)
+					}
+					return nil, fmt.Errorf("identify queued for manual confirmation")
+				}
+			}
+			setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+			reason = "identify failed: no confident match"
+			if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, reason); markErr != nil {
+				slog.Warn("[TMDB] mark platform scan unidentified failed", "item_id", itemID, "error", markErr)
+			}
+			return nil, err
+		}
+		if markErr := models.MarkPlatformScanError(ctx, pool, itemID, source, reason); markErr != nil {
 			slog.Warn("[TMDB] mark platform scan error failed", "item_id", itemID, "error", markErr)
 		}
 		return nil, err
 	}
-	return applyTMDBDetails(ctx, pool, itemID, client, meta.ItemType, meta.Name, tmdbID, details, true, models.PlatformScanSourceSearch)
+
+	tmdbID := resolveTMDBIDFromIdentity(ident)
+	if tmdbID <= 0 {
+		// 非 TMDB 源命中且无法映射到 tmdb_id:落人工确认,避免脏写 items.tmdb_id。
+		if candidates, candErr := agg.Candidates(ctx, parsed, mediaType); candErr == nil && len(candidates) > 0 {
+			_ = replaceIdentifyCandidates(ctx, pool, itemID, candidates)
+		}
+		setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+		reason := fmt.Sprintf("identified by %s but no tmdb id", ident.Provider)
+		if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, models.PlatformScanSourceSearch, reason); markErr != nil {
+			slog.Warn("[TMDB] mark platform scan unidentified failed", "item_id", itemID, "error", markErr)
+		}
+		return nil, fmt.Errorf(reason)
+	}
+	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
+	if fillErr != nil {
+		return nil, fmt.Errorf("fill details: %w", fillErr)
+	}
+	clearIdentifyCooldown(ctx, pool, itemID)
+	slog.Debug("[Matcher] matched",
+		"item_id", itemID, "provider", ident.Provider, "provider_id", ident.ProviderID, "source", ident.Source, "score", ident.Score)
+	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, true, models.PlatformScanSourceSearch)
+}
+
+// resolveTMDBIDFromIdentity 从 Identity 提取 tmdb_id;兼容 Provider=tmdb 的直达
+// 与辅源 winner(ExternalIDs["tmdb"]) 两种情况。返回 0 表示无法获取。
+func resolveTMDBIDFromIdentity(ident *scraper.Identity) int64 {
+	if ident == nil {
+		return 0
+	}
+	if ident.Provider == "tmdb" {
+		if id, err := strconv.ParseInt(strings.TrimSpace(ident.ProviderID), 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	if v := strings.TrimSpace(ident.ExternalIDs["tmdb"]); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+func mediaTypeMust(itemType string) scraper.MediaType {
+	t, _ := mediaTypeFor(itemType)
+	return t
+}
+
+func mediaTypeFor(itemType string) (scraper.MediaType, bool) {
+	switch itemType {
+	case "Movie":
+		return scraper.MediaMovie, true
+	case "Series":
+		return scraper.MediaSeries, true
+	default:
+		return "", false
+	}
 }
 
 func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seriesID string, tmdbID int64, saveMode string) {
@@ -1073,7 +1814,9 @@ func (t *ScrapeTask) Stop() {
 	}
 }
 
-const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '') AND type IN ('Movie', 'Series')`
+const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '')
+    AND type IN ('Movie', 'Series')
+    AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW())`
 
 func GetMissingScrapeCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	var count int64

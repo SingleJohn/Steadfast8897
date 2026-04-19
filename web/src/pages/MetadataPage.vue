@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
-import { NButton, NCard, NEmpty, NForm, NFormItem, NGrid, NGridItem, NIcon, NInput, NProgress, NSelect, NSwitch } from 'naive-ui'
+import { NButton, NCard, NCheckbox, NCheckboxGroup, NEmpty, NForm, NFormItem, NGrid, NGridItem, NIcon, NInput, NInputNumber, NProgress, NSelect, NSlider, NSwitch } from 'naive-ui'
 import PageShell from '@/components/PageShell.vue'
 import { AppIcons } from '@/icons/appIcons'
-import { SearchOutline, VideocamOutline, AddOutline, CloseOutline, ArrowForwardOutline } from '@vicons/ionicons5'
+import { SearchOutline, VideocamOutline, AddOutline, CloseOutline, ArrowForwardOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, ReorderFourOutline } from '@vicons/ionicons5'
 import {
   getSystemConfig, updateSystemConfig,
   scrapeAllMetadata, stopScrape,
@@ -12,6 +13,7 @@ import {
 } from '@/api/client'
 
 const { showToast } = useToast()
+const router = useRouter()
 
 const tmdbLanguageOptions = [
   { label: 'zh-CN (简体中文)', value: 'zh-CN' },
@@ -34,6 +36,70 @@ const showApiKey = ref(false)
 const savingConfig = ref(false)
 const scraping = ref(false)
 const scrapeProgress = ref<any>(null)
+
+const providerOptions = [
+  { label: 'TMDB (基准源)', value: 'tmdb' },
+  { label: 'TVDB (剧集/季海报)', value: 'tvdb' },
+  { label: 'Bangumi (动画)', value: 'bangumi' },
+  { label: '豆瓣 (中文补全)', value: 'douban' },
+  { label: 'Fanart.tv (图片)', value: 'fanart' },
+]
+const defaultProviders = providerOptions.map((o) => o.value)
+const providerLabel = (name: string) => providerOptions.find((o) => o.value === name)?.label || name
+const providersEnabled = ref<string[]>([...defaultProviders])
+const providerOrder = ref<string[]>([...defaultProviders])
+
+function moveProvider(index: number, delta: number) {
+  const target = index + delta
+  if (target < 0 || target >= providerOrder.value.length) return
+  const next = [...providerOrder.value]
+  ;[next[index], next[target]] = [next[target], next[index]]
+  providerOrder.value = next
+}
+
+const draggingIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+
+function onDragStart(index: number, e: DragEvent) {
+  draggingIndex.value = index
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要 setData 才会触发 drag
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onDragOver(index: number, e: DragEvent) {
+  if (draggingIndex.value === null) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  if (dragOverIndex.value !== index) dragOverIndex.value = index
+}
+
+function onDrop(index: number, e: DragEvent) {
+  e.preventDefault()
+  const from = draggingIndex.value
+  draggingIndex.value = null
+  dragOverIndex.value = null
+  if (from === null || from === index) return
+  const next = [...providerOrder.value]
+  const [moved] = next.splice(from, 1)
+  next.splice(index, 0, moved)
+  providerOrder.value = next
+}
+
+function onDragEnd() {
+  draggingIndex.value = null
+  dragOverIndex.value = null
+}
+const confidenceThreshold = ref<number>(0.72)
+const autoApplyEnabled = ref(true)
+const doubanEnabled = ref(true)
+const bangumiUA = ref('')
+const tvdbApiKey = ref('')
+const tvdbPin = ref('')
+const fanartApiKey = ref('')
+const savingScrapeSources = ref(false)
 
 const probeProgress = ref<any>(null)
 const probeThreads = ref('5')
@@ -63,6 +129,30 @@ async function handleSaveConfig() {
     showToast('保存设置失败', 'error')
   } finally {
     savingConfig.value = false
+  }
+}
+
+async function handleSaveScrapeSources() {
+  savingScrapeSources.value = true
+  try {
+    const priorityObj: Record<string, number> = {}
+    providerOrder.value.forEach((name, i) => { priorityObj[name] = i + 1 })
+    await updateSystemConfig({
+      scrape_providers_enabled: JSON.stringify(providersEnabled.value),
+      scrape_provider_priority: JSON.stringify(priorityObj),
+      scrape_confidence_threshold: String(confidenceThreshold.value),
+      scrape_auto_apply: String(autoApplyEnabled.value),
+      douban_enabled: String(doubanEnabled.value),
+      bangumi_ua: bangumiUA.value,
+      tvdb_api_key: tvdbApiKey.value,
+      tvdb_pin: tvdbPin.value,
+      fanart_api_key: fanartApiKey.value,
+    })
+    showToast('刮削源设置已保存', 'success')
+  } catch {
+    showToast('保存失败', 'error')
+  } finally {
+    savingScrapeSources.value = false
   }
 }
 
@@ -123,6 +213,39 @@ onMounted(() => {
     autoScrape.value = cfg.auto_scrape_enabled === true || cfg.auto_scrape_enabled === 'true'
     tmdbProxy.value = cfg.tmdb_proxy || ''
     scrapeSaveMode.value = cfg.scrape_save_mode || 'database'
+    try {
+      const names = cfg.scrape_providers_enabled ? JSON.parse(cfg.scrape_providers_enabled) : null
+      providersEnabled.value = Array.isArray(names) && names.length > 0
+        ? names
+        : [...defaultProviders]
+    } catch {
+      providersEnabled.value = [...defaultProviders]
+    }
+    try {
+      const savedPriority = cfg.scrape_provider_priority ? JSON.parse(cfg.scrape_provider_priority) : null
+      if (savedPriority && typeof savedPriority === 'object') {
+        const sorted = Object.keys(savedPriority)
+          .filter((k) => typeof savedPriority[k] === 'number')
+          .sort((a, b) => savedPriority[a] - savedPriority[b])
+        const merged = [...sorted]
+        for (const name of defaultProviders) {
+          if (!merged.includes(name)) merged.push(name)
+        }
+        providerOrder.value = merged
+      } else {
+        providerOrder.value = [...defaultProviders]
+      }
+    } catch {
+      providerOrder.value = [...defaultProviders]
+    }
+    const threshold = parseFloat(cfg.scrape_confidence_threshold)
+    confidenceThreshold.value = Number.isFinite(threshold) && threshold > 0 && threshold <= 1 ? threshold : 0.72
+    autoApplyEnabled.value = cfg.scrape_auto_apply !== 'false'
+    doubanEnabled.value = cfg.douban_enabled !== 'false'
+    bangumiUA.value = cfg.bangumi_ua || ''
+    tvdbApiKey.value = cfg.tvdb_api_key || ''
+    tvdbPin.value = cfg.tvdb_pin || ''
+    fanartApiKey.value = cfg.fanart_api_key || ''
     try { probePathMappings.value = cfg.probe_path_mappings ? JSON.parse(cfg.probe_path_mappings) : [] } catch { probePathMappings.value = [] }
     probeThreads.value = cfg.probe_threads || '5'
   }).catch(() => {})
@@ -237,6 +360,131 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
           <n-button type="primary" size="small" :loading="savingConfig" @click="handleSaveConfig">保存设置</n-button>
           <n-button v-if="scrapeProgress?.status !== 'running' && scrapeProgress?.status !== 'stopping'" secondary size="small" :loading="scraping" :disabled="scraping || (scrapeProgress?.missing_count === 0 && scrapeProgress?.status === 'idle')" @click="handleScrapeAll">刮削缺失元数据</n-button>
           <n-button v-else type="warning" size="small" :disabled="scrapeProgress?.status === 'stopping'" @click="async () => { await stopScrape(); await refreshTaskSummary() }">{{ scrapeProgress?.status === 'stopping' ? '停止中...' : '停止刮削' }}</n-button>
+        </div>
+      </n-card>
+
+      <n-card :bordered="false" class="glass-card section-card metadata-card">
+        <template #header>
+          <div class="card-header-wrap">
+            <div class="icon-box tmdb">
+              <n-icon :size="18"><LayersOutline /></n-icon>
+            </div>
+            <div class="header-copy">
+              <div class="header-title">刮削源</div>
+              <div class="header-desc">多源聚合识别与字段填充。启用的源并发搜索并投票,命中阈值后按 Priority 合并字段。</div>
+            </div>
+          </div>
+        </template>
+
+        <n-form label-placement="top" size="small" class="config-form">
+          <div class="subsection">
+            <div class="subsection-title">启用的源</div>
+            <n-checkbox-group v-model:value="providersEnabled">
+              <div class="provider-grid">
+                <n-checkbox v-for="opt in providerOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
+              </div>
+            </n-checkbox-group>
+            <div class="hint-text">未配置 API Key 的源会自动跳过。至少保留 TMDB,否则无法写入 items.tmdb_id。</div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">优先级排序</div>
+            <div class="priority-list">
+              <div
+                v-for="(name, idx) in providerOrder"
+                :key="name"
+                class="priority-row"
+                :class="{
+                  dragging: draggingIndex === idx,
+                  'drag-over': dragOverIndex === idx && draggingIndex !== idx,
+                }"
+                draggable="true"
+                @dragstart="onDragStart(idx, $event)"
+                @dragover="onDragOver(idx, $event)"
+                @drop="onDrop(idx, $event)"
+                @dragend="onDragEnd"
+                @dragleave="dragOverIndex === idx ? (dragOverIndex = null) : null"
+              >
+                <n-icon class="priority-handle"><ReorderFourOutline /></n-icon>
+                <span class="priority-index">{{ idx + 1 }}</span>
+                <span class="priority-label">{{ providerLabel(name) }}</span>
+                <div class="priority-actions">
+                  <n-button quaternary circle size="tiny" :disabled="idx === 0" @click="moveProvider(idx, -1)">
+                    <template #icon><n-icon><ArrowUpOutline /></n-icon></template>
+                  </n-button>
+                  <n-button quaternary circle size="tiny" :disabled="idx === providerOrder.length - 1" @click="moveProvider(idx, 1)">
+                    <template #icon><n-icon><ArrowDownOutline /></n-icon></template>
+                  </n-button>
+                </div>
+              </div>
+            </div>
+            <div class="hint-text">拖拽或使用箭头调整顺序。数字越小越优先,决定识别互投的主源与字段合并的回落顺序。</div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">识别阈值</div>
+            <n-grid cols="1 m:3" x-gap="12" responsive="screen">
+              <n-grid-item :span="2">
+                <n-slider v-model:value="confidenceThreshold" :min="0.5" :max="1" :step="0.01" :tooltip="true" />
+              </n-grid-item>
+              <n-grid-item>
+                <n-input-number v-model:value="confidenceThreshold" :min="0.5" :max="1" :step="0.01" size="small" />
+              </n-grid-item>
+            </n-grid>
+            <div class="hint-text">单源候选 ≥ 阈值直接采纳;多源互投(≥2)可低于阈值。推荐 0.72。</div>
+          </div>
+
+          <div class="subsection switch-section">
+            <div class="switch-copy">
+              <div class="switch-title">自动采纳</div>
+              <div class="hint-text">关闭后低于阈值的候选进入人工确认队列,不写 items。</div>
+            </div>
+            <n-switch v-model:value="autoApplyEnabled" :round="false" />
+          </div>
+
+          <div class="subsection switch-section">
+            <div class="switch-copy">
+              <div class="switch-title">豆瓣补全</div>
+              <div class="hint-text">非官方 API,仅作中文补全。触发风控会自动熔断 10 分钟。</div>
+            </div>
+            <n-switch v-model:value="doubanEnabled" :round="false" />
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">TVDB 凭证</div>
+            <n-grid cols="1 m:2" x-gap="12" responsive="screen">
+              <n-grid-item>
+                <n-form-item label="API Key">
+                  <n-input v-model:value="tvdbApiKey" type="password" placeholder="订阅 TVDB 后填入,留空则禁用" size="small" show-password-on="click" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="Pin (可选)">
+                  <n-input v-model:value="tvdbPin" placeholder="TVDB 用户 Pin" size="small" />
+                </n-form-item>
+              </n-grid-item>
+            </n-grid>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">Fanart.tv API Key</div>
+            <n-input v-model:value="fanartApiKey" type="password" placeholder="留空则禁用图片补充" size="small" show-password-on="click" />
+            <div class="hint-text">只参与图片补充(poster / backdrop / seasonposter),不参与识别。</div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">Bangumi UA</div>
+            <n-input v-model:value="bangumiUA" placeholder="留空使用默认 fyms/1.0" size="small" />
+            <div class="hint-text">Bangumi 要求请求带 UA 注明来源。</div>
+          </div>
+        </n-form>
+
+        <div class="card-actions">
+          <n-button type="primary" size="small" :loading="savingScrapeSources" @click="handleSaveScrapeSources">保存刮削源设置</n-button>
+          <n-button secondary size="small" @click="router.push({ name: 'media_unmatched' })">
+            <template #icon><n-icon><ArrowForwardOutline /></n-icon></template>
+            未匹配面板
+          </n-button>
         </div>
       </n-card>
 
@@ -480,6 +728,74 @@ onUnmounted(() => timers.forEach((t) => clearInterval(t)))
   gap: 8px;
   margin-top: 6px;
   flex-wrap: wrap;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px;
+  margin-top: 4px;
+}
+
+.priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.priority-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+  cursor: grab;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  user-select: none;
+}
+.priority-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.priority-row:active {
+  cursor: grabbing;
+}
+.priority-row.dragging {
+  opacity: 0.4;
+}
+.priority-row.drag-over {
+  border-color: var(--app-primary);
+  background: rgba(var(--app-primary-rgb), 0.08);
+}
+.priority-handle {
+  color: var(--app-text-muted);
+  opacity: 0.6;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.priority-row:hover .priority-handle {
+  opacity: 1;
+}
+.priority-index {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  width: 18px;
+  text-align: right;
+}
+.priority-label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--app-text);
+}
+.priority-actions {
+  display: flex;
+  gap: 2px;
+}
+.priority-actions :deep(.n-button) {
+  cursor: pointer;
 }
 
 .switch-section {

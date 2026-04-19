@@ -24,10 +24,11 @@ type PlatformLibrary struct {
 type PlatformScanStatus string
 
 const (
-	PlatformScanPending PlatformScanStatus = "pending"
-	PlatformScanMatched PlatformScanStatus = "matched"
-	PlatformScanNoMatch PlatformScanStatus = "no_match"
-	PlatformScanError   PlatformScanStatus = "error"
+	PlatformScanPending      PlatformScanStatus = "pending"
+	PlatformScanMatched      PlatformScanStatus = "matched"
+	PlatformScanNoMatch      PlatformScanStatus = "no_match"
+	PlatformScanUnidentified PlatformScanStatus = "unidentified"
+	PlatformScanError        PlatformScanStatus = "error"
 )
 
 type PlatformScanSource string
@@ -380,6 +381,23 @@ func MarkPlatformScanNoMatch(ctx context.Context, pool *pgxpool.Pool, itemID str
 	return err
 }
 
+func MarkPlatformScanUnidentified(ctx context.Context, pool *pgxpool.Pool, itemID string, source PlatformScanSource, errMsg string) error {
+	var errorVal interface{}
+	if strings.TrimSpace(errMsg) != "" {
+		errorVal = strings.TrimSpace(errMsg)
+	}
+	_, err := pool.Exec(ctx,
+		`UPDATE items
+		    SET studio = NULL,
+		        platform_scan_status = 'unidentified',
+		        platform_scan_source = $1,
+		        platform_scan_error = $2,
+		        platform_scanned_at = NOW()
+		  WHERE id = $3::uuid`,
+		string(source), errorVal, itemID)
+	return err
+}
+
 func MarkPlatformScanError(ctx context.Context, pool *pgxpool.Pool, itemID string, source PlatformScanSource, errMsg string) error {
 	_, err := pool.Exec(ctx,
 		`UPDATE items
@@ -393,7 +411,7 @@ func MarkPlatformScanError(ctx context.Context, pool *pgxpool.Pool, itemID strin
 }
 
 func GetItemsPendingPlatformScan(ctx context.Context, pool *pgxpool.Pool, limit int, requireTMDB bool, includeNoMatch bool) ([]PlatformScanItem, error) {
-	statuses := []string{string(PlatformScanPending), string(PlatformScanError)}
+	statuses := []string{string(PlatformScanPending), string(PlatformScanUnidentified), string(PlatformScanError)}
 	if includeNoMatch {
 		statuses = append(statuses, string(PlatformScanNoMatch))
 	}
@@ -440,7 +458,7 @@ func GetItemsPendingPlatformScan(ctx context.Context, pool *pgxpool.Pool, limit 
 }
 
 func CountItemsPendingPlatformScan(ctx context.Context, pool *pgxpool.Pool, requireTMDB bool, includeNoMatch bool) (int64, error) {
-	statuses := []string{string(PlatformScanPending), string(PlatformScanError)}
+	statuses := []string{string(PlatformScanPending), string(PlatformScanUnidentified), string(PlatformScanError)}
 	if includeNoMatch {
 		statuses = append(statuses, string(PlatformScanNoMatch))
 	}
@@ -460,6 +478,6 @@ func CountItemsPendingPlatformMetadataScrape(ctx context.Context, pool *pgxpool.
 		`SELECT COUNT(*) FROM items
 		  WHERE type IN ('Movie', 'Series')
 		    AND tmdb_id IS NULL
-		    AND platform_scan_status IN ('pending', 'error')`).Scan(&count)
+		    AND platform_scan_status IN ('pending', 'unidentified', 'error')`).Scan(&count)
 	return count, err
 }

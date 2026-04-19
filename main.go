@@ -26,7 +26,7 @@ import (
 	"fyms/internal/services"
 )
 
-//go:embed all:web/dist
+
 var embeddedWeb embed.FS
 
 func init() {
@@ -92,6 +92,7 @@ func main() {
 	}
 
 	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
+	services.SetScrapeCache(cache)
 	sessionManager := services.NewSessionManager()
 	progressBuffer := services.NewProgressBuffer(pool)
 	scanProgress := services.NewScanProgressTracker()

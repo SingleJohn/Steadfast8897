@@ -107,6 +107,22 @@ const router = createRouter({
             requiresAdmin: true,
           },
         },
+        {
+          path: 'media/unmatched',
+          name: 'media_unmatched',
+          component: () => import('./pages/UnmatchedPage.vue'),
+          meta: {
+            title: '未匹配',
+            navLabel: '未匹配',
+            icon: 'metadata',
+            section: 'media',
+            sectionLabel: '媒体内容',
+            sectionIcon: 'media',
+            sectionOrder: 2,
+            order: 3,
+            requiresAdmin: true,
+          },
+        },
 
         // ── 模块 3：网关
         {

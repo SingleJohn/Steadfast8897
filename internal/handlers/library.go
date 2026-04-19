@@ -66,6 +66,10 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Items/:itemId/Scrape", adminMW, scrapeItem)
 	u.POST("/Items/:itemId/SearchTmdb", adminMW, searchTmdbForItem)
 	u.POST("/Items/:itemId/ScrapeByTmdbId", adminMW, scrapeItemByTmdbId)
+	u.GET("/Items/:itemId/IdentifyCandidates", adminMW, getIdentifyCandidates)
+	u.POST("/Items/:itemId/IdentifyCandidates/:candidateId/Apply", adminMW, applyIdentifyCandidate)
+	u.GET("/Library/Scrape/Unmatched", adminMW, listUnmatchedItems)
+	u.POST("/Library/Scrape/Unmatched/Apply", adminMW, batchApplyIdentifyCandidates)
 	u.POST("/Library/Scrape/All", adminMW, scrapeAll)
 	u.POST("/Library/Scrape/Stop", adminMW, stopScrape)
 	u.GET("/Library/Scrape/Progress", getScrapeProgress)
@@ -1542,6 +1546,120 @@ func scrapeItemByTmdbId(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+func getIdentifyCandidates(c *gin.Context) {
+	state := GetState(c)
+	itemID := c.Param("itemId")
+	items, err := services.ListIdentifyCandidates(c.Request.Context(), state.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func applyIdentifyCandidate(c *gin.Context) {
+	state := GetState(c)
+	itemID := c.Param("itemId")
+	candidateID := c.Param("candidateId")
+	items, err := services.ListIdentifyCandidates(c.Request.Context(), state.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	for _, item := range items {
+		if item.ID != candidateID {
+			continue
+		}
+		tmdbExternalID := item.ExternalID
+		if item.Provider != "tmdb" && item.Payload != nil {
+			if externalIDsRaw, ok := item.Payload["external_ids"]; ok {
+				switch externalIDs := externalIDsRaw.(type) {
+				case map[string]interface{}:
+					if tmdbVal, ok := externalIDs["tmdb"].(string); ok && strings.TrimSpace(tmdbVal) != "" {
+						tmdbExternalID = tmdbVal
+					}
+				case map[string]string:
+					if tmdbVal := strings.TrimSpace(externalIDs["tmdb"]); tmdbVal != "" {
+						tmdbExternalID = tmdbVal
+					}
+				}
+			}
+		}
+		tmdbID, convErr := strconv.ParseInt(strings.TrimSpace(tmdbExternalID), 10, 64)
+		if convErr != nil || tmdbID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "候选暂不支持直接采纳"})
+			return
+		}
+		if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, itemID, tmdbID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	c.JSON(http.StatusNotFound, gin.H{"message": "候选不存在"})
+}
+
+func listUnmatchedItems(c *gin.Context) {
+	state := GetState(c)
+	limit := 200
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	itemType := strings.TrimSpace(c.Query("type"))
+	items, err := services.ListUnmatchedItems(c.Request.Context(), state.DB, itemType, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "count": len(items)})
+}
+
+func batchApplyIdentifyCandidates(c *gin.Context) {
+	state := GetState(c)
+	var body struct {
+		Items []struct {
+			ItemID      string `json:"item_id"`
+			CandidateID string `json:"candidate_id"`
+		} `json:"items"`
+	}
+	if err := c.BindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	if len(body.Items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "items is required"})
+		return
+	}
+	type applyResult struct {
+		ItemID  string `json:"item_id"`
+		OK      bool   `json:"ok"`
+		Message string `json:"message,omitempty"`
+	}
+	results := make([]applyResult, 0, len(body.Items))
+	for _, pair := range body.Items {
+		res := applyResult{ItemID: pair.ItemID}
+		tmdbID, err := services.ResolveIdentifyCandidateTMDBID(c.Request.Context(), state.DB, pair.ItemID, pair.CandidateID)
+		if err != nil {
+			res.Message = err.Error()
+			results = append(results, res)
+			continue
+		}
+		if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, pair.ItemID, tmdbID); err != nil {
+			res.Message = err.Error()
+			results = append(results, res)
+			continue
+		}
+		_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", pair.ItemID)
+		res.OK = true
+		results = append(results, res)
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results})
+}
+
 func scrapeAll(c *gin.Context) {
 	state := GetState(c)
 	if err := state.ScrapeTask.Start(c.Request.Context(), state.DB); err != nil {
@@ -2230,7 +2348,7 @@ func scanPlatformByFilename(c *gin.Context, state *AppState) {
 			        platform_scan_error = NULL,
 			        platform_scanned_at = NOW()
 			  WHERE type IN ('Movie', 'Series', 'Season', 'Episode')
-			    AND platform_scan_status IN ('pending', 'error', 'no_match')
+			    AND platform_scan_status IN ('pending', 'unidentified', 'error', 'no_match')
 			    AND (%s)`,
 			p.sql), models.CanonicalPlatformName(p.platform))
 		if err != nil {
@@ -2362,9 +2480,12 @@ func rescrapeMissingStudio(c *gin.Context, state *AppState) {
 					}
 					if err != nil {
 						errMsg := err.Error()
-						if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "no TMDB ID") || strings.Contains(errMsg, "no results") {
+						if strings.Contains(errMsg, "no platform matched") {
 							atomic.AddInt64(&rescrapeProgress.NotFound, 1)
 							_ = models.MarkPlatformScanNoMatch(bgCtx, state.DB, scanItem.ID, models.PlatformScanSourceSearch, errMsg)
+						} else if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "no TMDB ID") || strings.Contains(errMsg, "no results") || strings.Contains(errMsg, "no match") || strings.Contains(errMsg, "identify failed") {
+							atomic.AddInt64(&rescrapeProgress.NotFound, 1)
+							_ = models.MarkPlatformScanUnidentified(bgCtx, state.DB, scanItem.ID, models.PlatformScanSourceSearch, errMsg)
 						} else {
 							atomic.AddInt64(&rescrapeProgress.FetchError, 1)
 							_ = models.MarkPlatformScanError(bgCtx, state.DB, scanItem.ID, models.PlatformScanSourceSearch, errMsg)

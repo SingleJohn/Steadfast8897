@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/services/scraper"
 )
 
 const scanConcurrency = 10
@@ -340,35 +341,21 @@ type ParsedMovie struct {
 	Year *int32
 }
 
-var (
-	movieRE1 = regexp.MustCompile(`^(.+?)\s*\((\d{4})\)`)
-	movieRE2 = regexp.MustCompile(`^\[(.+?)\s+(\d{4})\]`)
-	movieRE3 = regexp.MustCompile(`^(.+?)\s+(\d{4})(?:\s|$|\.)`)
-)
-
 func ParseMovieName(name string) ParsedMovie {
-	if m := movieRE1.FindStringSubmatch(name); m != nil {
-		year := parseYear(m[2])
-		return ParsedMovie{Name: strings.TrimSpace(m[1]), Year: year}
-	}
-	if m := movieRE2.FindStringSubmatch(name); m != nil {
-		year := parseYear(m[2])
-		return ParsedMovie{Name: strings.TrimSpace(m[1]), Year: year}
-	}
-	if m := movieRE3.FindStringSubmatch(name); m != nil {
-		year := parseYear(m[2])
-		return ParsedMovie{Name: strings.TrimSpace(m[1]), Year: year}
-	}
-	return ParsedMovie{Name: name}
+	p := scraper.Parse(name, scraper.ModeMovie)
+	title := preferTitle(p, name)
+	return ParsedMovie{Name: title, Year: p.Year}
 }
 
-func parseYear(s string) *int32 {
-	v, err := strconv.ParseInt(s, 10, 32)
-	if err != nil {
-		return nil
+// preferTitle 在 Title 为空时回落到 OriginalTitle 或原始名。
+func preferTitle(p scraper.ParsedName, raw string) string {
+	if p.Title != "" {
+		return p.Title
 	}
-	i := int32(v)
-	return &i
+	if p.OriginalTitle != "" {
+		return p.OriginalTitle
+	}
+	return raw
 }
 
 type ParsedEpisode struct {
@@ -377,45 +364,16 @@ type ParsedEpisode struct {
 	Title   *string
 }
 
-var (
-	epRE1 = regexp.MustCompile(`(?i)[Ss](\d+)[Ee](\d+)`)
-	epRE2 = regexp.MustCompile(`(\d+)x(\d+)`)
-	epRE3 = regexp.MustCompile(`(?i)[Ee](\d+)`)
-)
-
 func ParseEpisodeInfo(filename string) *ParsedEpisode {
-	if m := epRE1.FindStringSubmatch(filename); m != nil {
-		s := parseInt32(m[1], 1)
-		e := parseInt32Ptr(m[2])
-		return &ParsedEpisode{Season: s, Episode: e}
-	}
-	if m := epRE2.FindStringSubmatch(filename); m != nil {
-		s := parseInt32(m[1], 1)
-		e := parseInt32Ptr(m[2])
-		return &ParsedEpisode{Season: s, Episode: e}
-	}
-	if m := epRE3.FindStringSubmatch(filename); m != nil {
-		e := parseInt32Ptr(m[1])
-		return &ParsedEpisode{Season: 1, Episode: e}
-	}
-	return nil
-}
-
-func parseInt32(s string, fallback int32) int32 {
-	v, err := strconv.ParseInt(s, 10, 32)
-	if err != nil {
-		return fallback
-	}
-	return int32(v)
-}
-
-func parseInt32Ptr(s string) *int32 {
-	v, err := strconv.ParseInt(s, 10, 32)
-	if err != nil {
+	p := scraper.Parse(filename, scraper.ModeEpisode)
+	if p.Episode == nil {
 		return nil
 	}
-	i := int32(v)
-	return &i
+	season := int32(1)
+	if p.Season != nil {
+		season = *p.Season
+	}
+	return &ParsedEpisode{Season: season, Episode: p.Episode}
 }
 
 // ============ Directory Utilities ============
@@ -617,24 +575,40 @@ func extractShowNameFromEpisodes(showPath string) *string {
 	if err != nil {
 		return nil
 	}
+	counts := make(map[string]int)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
-		if !IsVideoExt("." + ext) {
+		ext := strings.ToLower(filepath.Ext(name))
+		if !IsVideoExt(ext) {
 			continue
 		}
-		if loc := epRE1.FindStringIndex(name); loc != nil {
-			before := name[:loc[0]]
-			cleaned := strings.TrimSpace(strings.NewReplacer(".", " ", "-", " ").Replace(before))
-			if cleaned != "" {
-				return &cleaned
-			}
+		p := scraper.Parse(name, scraper.ModeEpisode)
+		candidate := p.Title
+		if candidate == "" {
+			candidate = p.OriginalTitle
+		}
+		if candidate != "" {
+			counts[candidate]++
 		}
 	}
-	return nil
+	if len(counts) == 0 {
+		return nil
+	}
+	var best string
+	var bestCount int
+	for k, v := range counts {
+		if v > bestCount || (v == bestCount && len(k) > len(best)) {
+			best = k
+			bestCount = v
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	return &best
 }
 
 // ============ Scan Libraries ============
@@ -749,7 +723,9 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 	for batch := 0; ; batch++ {
 		rows, err := pool.Query(ctx,
 			"SELECT id::text, name FROM items WHERE library_id = $1::uuid AND type IN ('Movie', 'Series') "+
-				"AND (overview IS NULL OR overview = '') ORDER BY created_at DESC LIMIT 50",
+				"AND (overview IS NULL OR overview = '') "+
+				"AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW()) "+
+				"ORDER BY created_at DESC LIMIT 50",
 			libraryID)
 		if err != nil {
 			break

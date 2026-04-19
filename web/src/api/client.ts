@@ -400,6 +400,31 @@ export async function scrapeItemByTmdbId(itemId: string, tmdbId: number) {
   });
 }
 
+export async function listUnmatchedItems(params?: { type?: string; limit?: number }) {
+  const qs = new URLSearchParams();
+  if (params?.type) qs.set('type', params.type);
+  if (params?.limit) qs.set('limit', String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return requestJson<{ items: any[]; count: number }>(`/Library/Scrape/Unmatched${suffix}`);
+}
+
+export async function batchApplyIdentifyCandidates(items: { item_id: string; candidate_id: string }[]) {
+  return requestJson<{ results: { item_id: string; ok: boolean; message?: string }[] }>(
+    '/Library/Scrape/Unmatched/Apply',
+    { method: 'POST', body: JSON.stringify({ items }) },
+  );
+}
+
+export async function getItemIdentifyCandidates(itemId: string) {
+  return requestJson<{ items: any[] }>(`/Items/${itemId}/IdentifyCandidates`);
+}
+
+export async function applyItemIdentifyCandidate(itemId: string, candidateId: string) {
+  return requestJson<{ ok: boolean }>(`/Items/${itemId}/IdentifyCandidates/${candidateId}/Apply`, {
+    method: 'POST',
+  });
+}
+
 // Genres
 export async function getGenres() {
   return request<any>('/Genres');
