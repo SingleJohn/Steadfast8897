@@ -29,7 +29,7 @@ import (
 	"fyms/internal/services/taskcenter/adapters"
 )
 
-
+//go:embed all:web/dist
 var embeddedWeb embed.FS
 
 func init() {
