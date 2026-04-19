@@ -942,10 +942,14 @@ func backfillMediaVersions(ctx context.Context, pool *pgxpool.Pool) {
 				size = getJSONInt64(mi, "Size")
 			}
 
+			q, qLabel := ComputeMediaVersionQuality(filepath.Base(item.filePath), mi)
+
 			pool.Exec(ctx,
-				"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
-					"VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
-				item.id, name, item.filePath, vfContainer, nullableJSON(miJSON), runtimeTicks, bitrate, size)
+				"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label) "+
+					"VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT DO NOTHING",
+				item.id, name, item.filePath, vfContainer, nullableJSON(miJSON), runtimeTicks, bitrate, size,
+				NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
+				NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel))
 			count.Add(1)
 		}(item)
 	}
@@ -1255,10 +1259,14 @@ func ensureMovieMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uu
 			size = getJSONInt64(mi, "Size")
 		}
 
+		q, qLabel := ComputeMediaVersionQuality(filepath.Base(fpath), mi)
+
 		pool.Exec(ctx,
-			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
-				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
-			itemID, verName, fpath, container, isPrimary, nullableJSON(miJSON), runtimeTicks, bitrate, size)
+			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label) "+
+				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT DO NOTHING",
+			itemID, verName, fpath, container, isPrimary, nullableJSON(miJSON), runtimeTicks, bitrate, size,
+			NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
+			NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel))
 	}
 }
 
@@ -1676,8 +1684,8 @@ func mergeDuplicateEpisodeIntoCanonical(ctx context.Context, pool *pgxpool.Pool,
 	}
 
 	pool.Exec(ctx,
-		`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size)
-		 SELECT $1, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size
+		`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
+		 SELECT $1, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label
 		 FROM media_versions
 		 WHERE item_id = $2
 		 ON CONFLICT (item_id, file_path) DO NOTHING`,
@@ -1734,11 +1742,15 @@ func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID 
 			size = getJSONInt64(mi, "Size")
 		}
 
+		q, qLabel := ComputeMediaVersionQuality(f.name, mi)
+
 		pool.Exec(ctx,
-			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size) "+
-				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
+			"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label) "+
+				"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT DO NOTHING",
 			itemID, verName, f.path, container, isPrimary,
-			nullableJSON(miJSON), runtimeTicks, bitrate, size)
+			nullableJSON(miJSON), runtimeTicks, bitrate, size,
+			NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
+			NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel))
 	}
 }
 
@@ -1785,6 +1797,24 @@ func nullableJSON(data []byte) interface{} {
 		return nil
 	}
 	return string(data)
+}
+
+// NullableStr 为空字符串时返回 nil,保证对应列写入 NULL。
+func NullableStr(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// ComputeMediaVersionQuality 组合 mediainfo(优先)与文件名 NameParser(兜底)推导 QualityTags,
+// 并给出短标签(如 "4K HDR BluRay")。是所有 media_versions INSERT 路径的共用入口。
+func ComputeMediaVersionQuality(fileName string, mi map[string]interface{}) (scraper.QualityTags, string) {
+	q := scraper.MergeQualityTags(
+		scraper.QualityFromMediainfo(mi),
+		scraper.QualityFromParsed(scraper.Parse(fileName, scraper.ModeEpisode)),
+	)
+	return q, scraper.QualityLabel(q)
 }
 
 func ptrAndThen(p *string, f func(string) *string) *string {

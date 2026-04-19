@@ -25,6 +25,23 @@ type ParsedName struct {
 	IDs           map[string]string
 	MediaHint     string
 	Junk          []string
+	Quality       QualityTags
+}
+
+// QualityTags 聚合从文件名解析出的画质信息。
+// 字段取值均为归一化后的短 token(便于前端直接渲染胶囊)。
+type QualityTags struct {
+	Resolution string // "4k" / "1440p" / "1080p" / "720p" / "sd" / ""
+	HDRFormat  string // "hdr10+" / "hdr10" / "dv" / "sdr" / ""
+	VideoCodec string // "x265" / "x264" / "av1" / ""
+	AudioCodec string // "atmos" / "truehd" / "dts-hd" / "dts" / "ac3" / "eac3" / "flac" / "aac" / ""
+	Source     string // "remux" / "bluray" / "bdrip" / "web-dl" / "webrip" / "hdtv" / "dvdrip" / ""
+}
+
+// Empty 表示该 QualityTags 所有字段都为空字符串。
+func (q QualityTags) Empty() bool {
+	return q.Resolution == "" && q.HDRFormat == "" && q.VideoCodec == "" &&
+		q.AudioCodec == "" && q.Source == ""
 }
 
 var (
@@ -206,8 +223,118 @@ func stripNoise(work string, p *ParsedName) string {
 	hits := reNoise.FindAllString(work, -1)
 	if len(hits) > 0 {
 		p.Junk = append(p.Junk, hits...)
+		for _, raw := range hits {
+			classifyQualityToken(raw, &p.Quality)
+		}
 	}
 	return reNoise.ReplaceAllString(work, " ")
+}
+
+// classifyQualityToken 把单个噪声 token 归一到 QualityTags 的对应字段。
+// 同字段多次命中时,按 tokenPriority 给出的 rank 取高值(如 remux > bluray > bdrip)。
+func classifyQualityToken(raw string, q *QualityTags) {
+	t := strings.ToLower(strings.TrimSpace(raw))
+	if t == "" {
+		return
+	}
+	// 统一分隔符
+	norm := strings.NewReplacer(".", "", "_", "", "-", "", " ", "").Replace(t)
+
+	// Resolution
+	switch {
+	case norm == "2160p" || norm == "4k":
+		assignIfStronger(&q.Resolution, "4k", resolutionRank)
+	case norm == "8k":
+		assignIfStronger(&q.Resolution, "8k", resolutionRank)
+	case norm == "1440p":
+		assignIfStronger(&q.Resolution, "1440p", resolutionRank)
+	case norm == "1080p":
+		assignIfStronger(&q.Resolution, "1080p", resolutionRank)
+	case norm == "720p":
+		assignIfStronger(&q.Resolution, "720p", resolutionRank)
+	case norm == "480p" || norm == "576p":
+		assignIfStronger(&q.Resolution, "sd", resolutionRank)
+	}
+
+	// HDR
+	switch {
+	case norm == "hdr10+":
+		assignIfStronger(&q.HDRFormat, "hdr10+", hdrRank)
+	case norm == "hdr" || norm == "hdr10":
+		assignIfStronger(&q.HDRFormat, "hdr10", hdrRank)
+	case norm == "dv" || norm == "dolbyvision":
+		assignIfStronger(&q.HDRFormat, "dv", hdrRank)
+	case norm == "sdr":
+		assignIfStronger(&q.HDRFormat, "sdr", hdrRank)
+	}
+
+	// Video codec
+	switch {
+	case norm == "x265" || norm == "hevc" || norm == "h265":
+		assignIfStronger(&q.VideoCodec, "x265", codecRank)
+	case norm == "x264" || norm == "avc" || norm == "h264":
+		assignIfStronger(&q.VideoCodec, "x264", codecRank)
+	case norm == "av1":
+		assignIfStronger(&q.VideoCodec, "av1", codecRank)
+	}
+
+	// Audio codec (atmos > truehd > dtshd > dts > eac3 > ac3 > flac > aac)
+	switch {
+	case strings.Contains(norm, "atmos"):
+		assignIfStronger(&q.AudioCodec, "atmos", audioRank)
+	case strings.Contains(norm, "truehd"):
+		assignIfStronger(&q.AudioCodec, "truehd", audioRank)
+	case norm == "dtshd" || norm == "dtshdma" || norm == "dts hd":
+		assignIfStronger(&q.AudioCodec, "dts-hd", audioRank)
+	case norm == "dts":
+		assignIfStronger(&q.AudioCodec, "dts", audioRank)
+	case norm == "eac3":
+		assignIfStronger(&q.AudioCodec, "eac3", audioRank)
+	case norm == "ac3":
+		assignIfStronger(&q.AudioCodec, "ac3", audioRank)
+	case norm == "flac":
+		assignIfStronger(&q.AudioCodec, "flac", audioRank)
+	case norm == "aac":
+		assignIfStronger(&q.AudioCodec, "aac", audioRank)
+	}
+
+	// Source (remux 优先于 bluray/bdrip;web-dl 优先于 webrip)
+	switch {
+	case norm == "remux" || norm == "bdremux":
+		assignIfStronger(&q.Source, "remux", sourceRank)
+	case norm == "bluray" || norm == "bdmv":
+		assignIfStronger(&q.Source, "bluray", sourceRank)
+	case norm == "bdrip":
+		assignIfStronger(&q.Source, "bdrip", sourceRank)
+	case norm == "webdl" || norm == "web dl":
+		assignIfStronger(&q.Source, "web-dl", sourceRank)
+	case norm == "webrip":
+		assignIfStronger(&q.Source, "webrip", sourceRank)
+	case norm == "hdtv":
+		assignIfStronger(&q.Source, "hdtv", sourceRank)
+	case norm == "dvdrip" || norm == "dvd":
+		assignIfStronger(&q.Source, "dvdrip", sourceRank)
+	}
+}
+
+var (
+	resolutionRank = map[string]int{"sd": 1, "720p": 2, "1080p": 3, "1440p": 4, "4k": 5, "8k": 6}
+	hdrRank        = map[string]int{"sdr": 1, "hdr10": 2, "hdr10+": 3, "dv": 4}
+	codecRank      = map[string]int{"x264": 1, "x265": 2, "av1": 3}
+	audioRank      = map[string]int{"aac": 1, "flac": 2, "ac3": 3, "eac3": 4, "dts": 5, "dts-hd": 6, "truehd": 7, "atmos": 8}
+	sourceRank     = map[string]int{"dvdrip": 1, "hdtv": 2, "webrip": 3, "web-dl": 4, "bdrip": 5, "bluray": 6, "remux": 7}
+)
+
+func assignIfStronger(dst *string, candidate string, rank map[string]int) {
+	if *dst == "" {
+		*dst = candidate
+		return
+	}
+	cur := rank[*dst]
+	next := rank[candidate]
+	if next > cur {
+		*dst = candidate
+	}
 }
 
 func inferMediaHint(raw string, p *ParsedName) string {

@@ -172,9 +172,11 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 			}
 		}
 
+		q, qLabel := services.ComputeMediaVersionQuality(filepath.Base(filePath), mi)
+
 		if _, err := state.DB.Exec(ctx,
-			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size)
-			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
+			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
+			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			 ON CONFLICT (item_id, file_path) DO UPDATE SET
 			 	name = EXCLUDED.name,
 			 	container = EXCLUDED.container,
@@ -182,8 +184,16 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 			 	mediainfo = COALESCE(EXCLUDED.mediainfo, media_versions.mediainfo),
 			 	runtime_ticks = COALESCE(EXCLUDED.runtime_ticks, media_versions.runtime_ticks),
 			 	bitrate = COALESCE(EXCLUDED.bitrate, media_versions.bitrate),
-			 	size = COALESCE(EXCLUDED.size, media_versions.size)`,
+			 	size = COALESCE(EXCLUDED.size, media_versions.size),
+			 	resolution = COALESCE(EXCLUDED.resolution, media_versions.resolution),
+			 	hdr_format = COALESCE(EXCLUDED.hdr_format, media_versions.hdr_format),
+			 	video_codec = COALESCE(EXCLUDED.video_codec, media_versions.video_codec),
+			 	audio_codec = COALESCE(EXCLUDED.audio_codec, media_versions.audio_codec),
+			 	source = COALESCE(EXCLUDED.source, media_versions.source),
+			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)`,
 			itemID, versionName, filePath, container, i == 0, mediaInfoValue, runtimeTicks, bitrate, size,
+			services.NullableStr(q.Resolution), services.NullableStr(q.HDRFormat), services.NullableStr(q.VideoCodec),
+			services.NullableStr(q.AudioCodec), services.NullableStr(q.Source), services.NullableStr(qLabel),
 		); err != nil {
 			slog.Warn("playback backfill insert failed", "itemId", itemID, "filePath", filePath, "error", err)
 			return nil, err
