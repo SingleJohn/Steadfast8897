@@ -1629,9 +1629,10 @@ func ensureCanonicalEpisodeItem(
 		return canonicalID, false
 	}
 
-	epTitle := strings.TrimSuffix(filepath.Base(primary.name), filepath.Ext(primary.name))
-	if epTitle == "" {
-		epTitle = "Episode"
+	// M7.1:写入占位符标题,避免文件名污染;后续 scrapeEpisodeMetadata 会识别为占位符并用 TMDB 真实标题覆盖。
+	epTitle := fmt.Sprintf("Episode %d", epNum)
+	if seasonNum == 0 {
+		epTitle = fmt.Sprintf("Special %d", epNum)
 	}
 	mi := ReadMediainfoJSONCached(primary.path, seasonCache)
 	var runtimeTicks *int64

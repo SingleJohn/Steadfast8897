@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -142,8 +143,9 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	return nil
 }
 
-// isEpisodePlaceholderName 判断当前 name 是否为扫库自动生成的占位符(第X集/Episode X)。
+// isEpisodePlaceholderName 判断当前 name 是否为扫库自动生成的占位符(Episode N / Special N / 第X集 / S01E02)。
 // 这些名字没有信息量,可以安全被 TMDB 的真实 episode title 覆盖。
+// 注意:判定要严格,避免误把用户编辑过的真实标题当成占位符再次覆盖。
 func isEpisodePlaceholderName(name *string) bool {
 	if name == nil {
 		return true
@@ -152,19 +154,11 @@ func isEpisodePlaceholderName(name *string) bool {
 	if s == "" {
 		return true
 	}
-	lower := strings.ToLower(s)
-	if strings.HasPrefix(lower, "episode ") {
-		return true
-	}
-	if strings.HasPrefix(s, "第") && (strings.HasSuffix(s, "集") || strings.HasSuffix(s, "话")) {
-		return true
-	}
-	// "S01E02" 样式也是占位符
-	if strings.HasPrefix(lower, "s") && strings.Contains(lower, "e") {
-		return true
-	}
-	return false
+	return episodePlaceholderRE.MatchString(s)
 }
+
+// Episode N / Special N(M7.1 扫库写入) / 第X集|话 / 第X回 / S01E02 / 01x02
+var episodePlaceholderRE = regexp.MustCompile(`^(?i)(?:episode\s+\d+|special\s+\d+|s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3}|第\s*\d+\s*[集话回])$`)
 
 func deref(s *string) string {
 	if s == nil {
