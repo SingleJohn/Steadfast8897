@@ -124,8 +124,10 @@ func listIdentifyCandidatesBatch(ctx context.Context, pool *pgxpool.Pool, itemID
 
 // ResolveIdentifyCandidateTMDBID 从一个候选记录反查实际可用的 tmdb_id。
 // 批量采纳的公共路径,保持与 applyIdentifyCandidate 单条采纳相同的语义:
-// provider=tmdb 时直接用 external_id;否则查 payload.external_ids.tmdb。
-// 查不到则返回错误,避免脏写 items.tmdb_id。
+// 1) provider=tmdb → 用 external_id
+// 2) payload.external_ids.tmdb
+// 3) payload.external_ids.imdb → TmdbClient.FindByExternalID 映射
+// 都没有返回友好错误,避免把非 TMDB 候选(如豆瓣)的 external_id 误当 TMDB ID 发请求。
 func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID, candidateID string) (int64, error) {
 	items, err := ListIdentifyCandidates(ctx, pool, itemID)
 	if err != nil {
@@ -135,28 +137,49 @@ func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, ite
 		if item.ID != candidateID {
 			continue
 		}
-		external := item.ExternalID
-		if item.Provider != "tmdb" && item.Payload != nil {
-			if externalIDsRaw, ok := item.Payload["external_ids"]; ok {
-				switch eids := externalIDsRaw.(type) {
-				case map[string]any:
-					if v, ok := eids["tmdb"].(string); ok && strings.TrimSpace(v) != "" {
-						external = v
-					}
-				case map[string]string:
-					if v := strings.TrimSpace(eids["tmdb"]); v != "" {
-						external = v
+		if tmdb := pickPayloadExternalID(item.Payload, "tmdb"); tmdb != "" {
+			if id, err := parseInt64(tmdb); err == nil && id > 0 {
+				return id, nil
+			}
+		}
+		if item.Provider == "tmdb" {
+			if id, err := parseInt64(item.ExternalID); err == nil && id > 0 {
+				return id, nil
+			}
+		}
+		if imdb := pickPayloadExternalID(item.Payload, "imdb"); imdb != "" {
+			if client := TmdbClientFromConfig(ctx, pool); client != nil {
+				if pid, ferr := client.FindByExternalID(ctx, "imdb", imdb); ferr == nil {
+					if id, perr := parseInt64(pid); perr == nil && id > 0 {
+						return id, nil
 					}
 				}
 			}
 		}
-		id, err := parseInt64(external)
-		if err != nil || id <= 0 {
-			return 0, fmt.Errorf("候选缺少 tmdb_id")
-		}
-		return id, nil
+		return 0, fmt.Errorf("候选未关联 TMDB ID(provider=%s),请使用「搜索 TMDB」手动选择", item.Provider)
 	}
 	return 0, fmt.Errorf("候选不存在")
+}
+
+// pickPayloadExternalID 从 candidate.payload.external_ids 取指定 kind 的值。
+// payload 反序列化后有 map[string]any / map[string]string 两种形态,都要兼容。
+func pickPayloadExternalID(payload map[string]any, kind string) string {
+	if payload == nil {
+		return ""
+	}
+	raw, ok := payload["external_ids"]
+	if !ok {
+		return ""
+	}
+	switch m := raw.(type) {
+	case map[string]any:
+		if v, ok := m[kind].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	case map[string]string:
+		return strings.TrimSpace(m[kind])
+	}
+	return ""
 }
 
 func parseInt64(s string) (int64, error) {

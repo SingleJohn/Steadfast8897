@@ -1604,44 +1604,17 @@ func applyIdentifyCandidate(c *gin.Context) {
 	state := GetState(c)
 	itemID := c.Param("itemId")
 	candidateID := c.Param("candidateId")
-	items, err := services.ListIdentifyCandidates(c.Request.Context(), state.DB, itemID)
+	tmdbID, err := services.ResolveIdentifyCandidateTMDBID(c.Request.Context(), state.DB, itemID, candidateID)
 	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, itemID, tmdbID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	for _, item := range items {
-		if item.ID != candidateID {
-			continue
-		}
-		tmdbExternalID := item.ExternalID
-		if item.Provider != "tmdb" && item.Payload != nil {
-			if externalIDsRaw, ok := item.Payload["external_ids"]; ok {
-				switch externalIDs := externalIDsRaw.(type) {
-				case map[string]interface{}:
-					if tmdbVal, ok := externalIDs["tmdb"].(string); ok && strings.TrimSpace(tmdbVal) != "" {
-						tmdbExternalID = tmdbVal
-					}
-				case map[string]string:
-					if tmdbVal := strings.TrimSpace(externalIDs["tmdb"]); tmdbVal != "" {
-						tmdbExternalID = tmdbVal
-					}
-				}
-			}
-		}
-		tmdbID, convErr := strconv.ParseInt(strings.TrimSpace(tmdbExternalID), 10, 64)
-		if convErr != nil || tmdbID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "候选暂不支持直接采纳"})
-			return
-		}
-		if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, itemID, tmdbID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
-		_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-		return
-	}
-	c.JSON(http.StatusNotFound, gin.H{"message": "候选不存在"})
+	_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func listUnmatchedItems(c *gin.Context) {
