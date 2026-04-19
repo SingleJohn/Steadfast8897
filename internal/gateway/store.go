@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -80,24 +81,28 @@ func (s *Store) InsertRequestLogs(ctx context.Context, logs []RequestLog) error 
 	if len(logs) == 0 {
 		return nil
 	}
-	for _, l := range logs {
-		_, err := s.pool.Exec(ctx, `
-			INSERT INTO gateway_request_logs
-			(tag, source_id, client_ip, method, path, query, status, latency_ms, bytes_in, bytes_out,
-			 emby_user_id, emby_user_name, redirect_backend, redirect_source, redirect_location,
-			 redirect_trace, object_key, route_id, pool_id, user_agent, referer, headers)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-			l.Tag, l.SourceID, l.ClientIP, l.Method, l.Path, l.Query,
-			l.Status, l.LatencyMs, l.BytesIn, l.BytesOut,
-			l.EmbyUserID, l.EmbyUserName, l.RedirectBackend, l.RedirectSource,
-			l.RedirectLocation, l.RedirectTrace, l.ObjectKey, l.RouteID, l.PoolID,
-			l.UserAgent, l.Referer, l.Headers,
-		)
-		if err != nil {
-			return err
-		}
+	cols := []string{
+		"tag", "source_id", "client_ip", "method", "path", "query",
+		"status", "latency_ms", "bytes_in", "bytes_out",
+		"emby_user_id", "emby_user_name", "redirect_backend", "redirect_source",
+		"redirect_location", "redirect_trace", "object_key", "route_id", "pool_id",
+		"user_agent", "referer", "headers",
 	}
-	return nil
+	_, err := s.pool.CopyFrom(ctx,
+		pgx.Identifier{"gateway_request_logs"},
+		cols,
+		pgx.CopyFromSlice(len(logs), func(i int) ([]any, error) {
+			l := logs[i]
+			return []any{
+				l.Tag, l.SourceID, l.ClientIP, l.Method, l.Path, l.Query,
+				l.Status, l.LatencyMs, l.BytesIn, l.BytesOut,
+				l.EmbyUserID, l.EmbyUserName, l.RedirectBackend, l.RedirectSource,
+				l.RedirectLocation, l.RedirectTrace, l.ObjectKey, l.RouteID, l.PoolID,
+				l.UserAgent, l.Referer, l.Headers,
+			}, nil
+		}),
+	)
+	return err
 }
 
 type LogQueryParams struct {

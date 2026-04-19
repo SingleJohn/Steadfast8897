@@ -43,19 +43,22 @@ func scrapeEpisodeMetadata(ctx context.Context, pool *pgxpool.Pool, client *Tmdb
 	}
 	rows.Close()
 
+	// stillEnabled 在整个 Series 刮削里只读一次,避免每季重复查 system_config。
+	stillEnabled := readEpisodeStillFetchEnabled(ctx, pool)
+
 	for _, s := range seasons {
 		num := int32(1)
 		if s.indexNum != nil {
 			num = *s.indexNum
 		}
-		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, num); err != nil {
+		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, num, stillEnabled); err != nil {
 			slog.Debug("[TMDB] episode fetch failed", "season_id", s.id, "tmdb_id", tmdbID, "season", num, "error", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonItemID string, tmdbID int64, seasonNum int32) error {
+func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonItemID string, tmdbID int64, seasonNum int32, stillFetchEnabled bool) error {
 	endpoint := fmt.Sprintf("%s/tv/%d/season/%d?api_key={API_KEY}&language=%s", TMDB_BASE, tmdbID, seasonNum, client.language)
 	data, err := client.tmdbGet(ctx, endpoint)
 	if err != nil {
@@ -100,8 +103,6 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 		return nil
 	}
 
-	stillFetchEnabled := readEpisodeStillFetchEnabled(ctx, pool)
-
 	// 拉出本季所有 Episode items。
 	epRows, err := pool.Query(ctx,
 		"SELECT id::text, index_number, name, overview, primary_image_path FROM items WHERE parent_id = $1::uuid AND type = 'Episode'",
@@ -109,8 +110,19 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	if err != nil {
 		return err
 	}
-	defer epRows.Close()
 
+	// 第一轮:先把 name/overview 需要改的攒起来一次性 UPDATE。
+	// still 下载因为涉及网络 I/O,不应该占着批量事务,单独在第二轮做。
+	type stillTarget struct {
+		id        string
+		stillPath string
+	}
+	var (
+		updIDs        []string
+		updNames      []*string
+		updOverviews  []*string
+		stillTargets  []stillTarget
+	)
 	for epRows.Next() {
 		var id string
 		var indexNum *int32
@@ -128,29 +140,50 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 
 		shouldUpdateName := isEpisodePlaceholderName(currentName) && meta.name != ""
 		shouldUpdateOverview := strings.TrimSpace(deref(currentOverview)) == "" && meta.overview != ""
-		if shouldUpdateName && shouldUpdateOverview {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET name = $1, overview = $2, updated_at = NOW() WHERE id = $3::uuid",
-				meta.name, meta.overview, id)
-		} else if shouldUpdateName {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET name = $1, updated_at = NOW() WHERE id = $2::uuid",
-				meta.name, id)
-		} else if shouldUpdateOverview {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET overview = $1, updated_at = NOW() WHERE id = $2::uuid",
-				meta.overview, id)
+		if shouldUpdateName || shouldUpdateOverview {
+			var nn, no *string
+			if shouldUpdateName {
+				n := meta.name
+				nn = &n
+			}
+			if shouldUpdateOverview {
+				o := meta.overview
+				no = &o
+			}
+			updIDs = append(updIDs, id)
+			updNames = append(updNames, nn)
+			updOverviews = append(updOverviews, no)
 		}
 
-		// M7.2: 拉分集封面 —— 仅当当前 primary_image_path 为空且 TMDB 提供 still_path 且总开关开启。
 		if stillFetchEnabled && meta.stillPath != "" && strings.TrimSpace(deref(currentImagePath)) == "" {
-			savePath := fmt.Sprintf("data/metadata/%s/still.jpg", id)
-			if client.DownloadImage(ctx, meta.stillPath, savePath, "w300") {
-				tag := GenerateImageTag(savePath)
-				_, _ = pool.Exec(ctx,
-					"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-					savePath, tag, id)
-			}
+			stillTargets = append(stillTargets, stillTarget{id: id, stillPath: meta.stillPath})
+		}
+	}
+	epRows.Close()
+
+	// 一次 UPDATE 收尾所有 name/overview 变更,用 COALESCE 保留未指定字段的原值。
+	if len(updIDs) > 0 {
+		_, uerr := pool.Exec(ctx, `
+			UPDATE items SET
+				name = COALESCE(v.new_name, items.name),
+				overview = COALESCE(v.new_overview, items.overview),
+				updated_at = NOW()
+			FROM unnest($1::uuid[], $2::text[], $3::text[]) AS v(id, new_name, new_overview)
+			WHERE items.id = v.id`,
+			updIDs, updNames, updOverviews)
+		if uerr != nil {
+			slog.Warn("[TMDB] batch update episodes failed", "season_id", seasonItemID, "error", uerr)
+		}
+	}
+
+	// still 图下载 + 回写 primary_image_path;串行保持原有节奏避免压爆 TMDB CDN。
+	for _, t := range stillTargets {
+		savePath := fmt.Sprintf("data/metadata/%s/still.jpg", t.id)
+		if client.DownloadImage(ctx, t.stillPath, savePath, "w300") {
+			tag := GenerateImageTag(savePath)
+			_, _ = pool.Exec(ctx,
+				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
+				savePath, tag, t.id)
 		}
 	}
 	return nil

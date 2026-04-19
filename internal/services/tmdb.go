@@ -1043,7 +1043,7 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 		}
 	}
 	nfo := mergedToNfoData(merged, tmdbID, studio)
-	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, &nfo, source)
+	ApplyNfoDataWithType(ctx, pool, itemID, itemType, &nfo, source)
 
 	var externalIDs []externalIDRecord
 	for provider, value := range merged.ExternalIDs {

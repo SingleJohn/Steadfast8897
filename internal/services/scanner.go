@@ -213,15 +213,35 @@ func ParseNfo(nfoPath string) *NfoData {
 // ============ Apply NFO data to DB ============
 
 func ApplyNfoData(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *NfoData) {
-	ApplyNfoDataWithPlatformSource(ctx, pool, itemID, nfo, "")
+	ApplyNfoDataWithType(ctx, pool, itemID, "", nfo, "")
 }
 
 func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *NfoData, source models.PlatformScanSource) {
+	ApplyNfoDataWithType(ctx, pool, itemID, "", nfo, source)
+}
+
+// ApplyNfoDataWithType 单 item 元数据落库。整个 Apply 包一个事务,
+// 避免原先 20~40 次独立 pool.Exec 带来的 round-trip + WAL sync 风暴。
+// itemType 为空时内部会 fallback 查一次 items.type(仅影响 sort_name 是否写入);
+// 调用方已知 itemType(比如 applyMergedDetails)应直接传入,省掉这次往返。
+func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string, itemType string, nfo *NfoData, source models.PlatformScanSource) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("[ApplyNfo] begin tx failed", "item_id", itemID, "error", err)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
 	setClauses := make([]string, 0, 10)
-	args := make([]interface{}, 0, 10)
+	args := make([]any, 0, 10)
 	argIdx := 1
 
-	addClause := func(column, castSuffix string, value interface{}) {
+	addClause := func(column, castSuffix string, value any) {
 		if castSuffix != "" {
 			setClauses = append(setClauses, fmt.Sprintf("%s = $%d%s", column, argIdx, castSuffix))
 		} else {
@@ -253,9 +273,11 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 	}
 	if nfo.Title != nil {
 		addClause("name", "", *nfo.Title)
-		var itemType string
-		_ = pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType)
-		if itemType != "Episode" {
+		effType := itemType
+		if effType == "" {
+			_ = tx.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&effType)
+		}
+		if effType != "Episode" {
 			addClause("sort_name", "", strings.ToLower(*nfo.Title))
 		}
 	}
@@ -280,11 +302,13 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 		query := fmt.Sprintf("UPDATE items SET %s WHERE id = $%d::uuid",
 			strings.Join(setClauses, ", "), argIdx)
 		args = append(args, itemID)
-		if _, err := pool.Exec(ctx, query, args...); err != nil {
+		if _, err := tx.Exec(ctx, query, args...); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				// 唯一约束冲突(同库重名等):降级把 item 打成 error 状态,
-				// 让未匹配/异常面板可见;不再 panic 或无声吞掉。
+				// 唯一约束冲突(同库重名等):回滚主事务,用独立连接把 item
+				// 打成 error 状态,让未匹配/异常面板可见。
+				_ = tx.Rollback(ctx)
+				committed = true
 				_, markErr := pool.Exec(ctx,
 					`UPDATE items
 					    SET platform_scan_status = 'error',
@@ -298,53 +322,75 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 				}
 				slog.Warn("[ApplyNfo] unique constraint conflict",
 					"item_id", itemID, "constraint", pgErr.ConstraintName, "detail", pgErr.Detail)
-			} else {
-				slog.Warn("[ApplyNfo] update items failed", "item_id", itemID, "error", err)
+				return
 			}
+			slog.Warn("[ApplyNfo] update items failed", "item_id", itemID, "error", err)
+			return
 		}
 	}
 
 	if len(nfo.Genres) > 0 {
-		pool.Exec(ctx, "DELETE FROM item_genres WHERE item_id = $1::uuid", itemID)
-		for _, genre := range nfo.Genres {
-			pool.Exec(ctx, "INSERT INTO genres (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", genre)
-			pool.Exec(ctx,
-				"INSERT INTO item_genres (item_id, genre_id) SELECT $1::uuid, id FROM genres WHERE name = $2 ON CONFLICT DO NOTHING",
-				itemID, genre)
+		if _, err := tx.Exec(ctx, "DELETE FROM item_genres WHERE item_id = $1::uuid", itemID); err != nil {
+			slog.Warn("[ApplyNfo] delete item_genres failed", "item_id", itemID, "error", err)
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			"INSERT INTO genres (name) SELECT unnest($1::text[]) ON CONFLICT (name) DO NOTHING",
+			nfo.Genres); err != nil {
+			slog.Warn("[ApplyNfo] upsert genres failed", "item_id", itemID, "error", err)
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO item_genres (item_id, genre_id)
+			   SELECT $1::uuid, id FROM genres WHERE name = ANY($2::text[])
+			 ON CONFLICT DO NOTHING`,
+			itemID, nfo.Genres); err != nil {
+			slog.Warn("[ApplyNfo] link item_genres failed", "item_id", itemID, "error", err)
+			return
 		}
 	}
 
 	if len(nfo.Actors) > 0 || len(nfo.Directors) > 0 {
-		type existingCastImage struct {
-			Name     string
-			Role     string
-			ImageURL string
-		}
 		existingImages := make(map[string]string)
-		rows, err := pool.Query(ctx,
+		rows, qerr := tx.Query(ctx,
 			"SELECT name, role, image_url FROM cast_members WHERE item_id = $1::uuid AND image_url IS NOT NULL AND image_url <> ''",
 			itemID)
-		if err == nil {
+		if qerr == nil {
 			for rows.Next() {
-				var ec existingCastImage
-				if rows.Scan(&ec.Name, &ec.Role, &ec.ImageURL) == nil {
-					existingImages[ec.Name+"|"+ec.Role] = ec.ImageURL
+				var name, role, imageURL string
+				if rows.Scan(&name, &role, &imageURL) == nil {
+					existingImages[name+"|"+role] = imageURL
 				}
 			}
 			rows.Close()
 		}
 
-		pool.Exec(ctx, "DELETE FROM cast_members WHERE item_id = $1::uuid", itemID)
+		if _, err := tx.Exec(ctx, "DELETE FROM cast_members WHERE item_id = $1::uuid", itemID); err != nil {
+			slog.Warn("[ApplyNfo] delete cast_members failed", "item_id", itemID, "error", err)
+			return
+		}
+
+		itemUUID, perr := uuid.Parse(itemID)
+		if perr != nil {
+			slog.Warn("[ApplyNfo] parse item uuid failed", "item_id", itemID, "error", perr)
+			return
+		}
+
+		type castRow struct {
+			name, character, role string
+			orderIndex            int32
+			tmdbID                *int32
+			imageURL              *string
+		}
+		actorLimit := len(nfo.Actors)
+		if actorLimit > 20 {
+			actorLimit = 20
+		}
+		castRows := make([]castRow, 0, len(nfo.Directors)+actorLimit)
 		for _, dir := range nfo.Directors {
-			pool.Exec(ctx,
-				"INSERT INTO cast_members (item_id, name, character, role, order_index) VALUES ($1::uuid, $2, '', 'Director', 0)",
-				itemID, dir)
+			castRows = append(castRows, castRow{name: dir, role: "Director"})
 		}
-		limit := len(nfo.Actors)
-		if limit > 20 {
-			limit = 20
-		}
-		for i := 0; i < limit; i++ {
+		for i := 0; i < actorLimit; i++ {
 			a := nfo.Actors[i]
 			imageURL := a.ImageURL
 			if imageURL == nil || *imageURL == "" {
@@ -352,11 +398,32 @@ func ApplyNfoDataWithPlatformSource(ctx context.Context, pool *pgxpool.Pool, ite
 					imageURL = &existing
 				}
 			}
-			pool.Exec(ctx,
-				"INSERT INTO cast_members (item_id, name, character, role, order_index, tmdb_id, image_url) VALUES ($1::uuid, $2, $3, 'Actor', $4, $5, $6)",
-				itemID, a.Name, a.Role, int32(i), a.TmdbID, imageURL)
+			castRows = append(castRows, castRow{
+				name: a.Name, character: a.Role, role: "Actor",
+				orderIndex: int32(i), tmdbID: a.TmdbID, imageURL: imageURL,
+			})
+		}
+
+		if len(castRows) > 0 {
+			if _, err := tx.CopyFrom(ctx,
+				pgx.Identifier{"cast_members"},
+				[]string{"item_id", "name", "character", "role", "order_index", "tmdb_id", "image_url"},
+				pgx.CopyFromSlice(len(castRows), func(i int) ([]any, error) {
+					r := castRows[i]
+					return []any{itemUUID, r.name, r.character, r.role, r.orderIndex, r.tmdbID, r.imageURL}, nil
+				}),
+			); err != nil {
+				slog.Warn("[ApplyNfo] copy cast_members failed", "item_id", itemID, "error", err)
+				return
+			}
 		}
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("[ApplyNfo] commit failed", "item_id", itemID, "error", err)
+		return
+	}
+	committed = true
 }
 
 // ============ Filename Parsing ============
