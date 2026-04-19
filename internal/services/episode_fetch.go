@@ -70,6 +70,7 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 		episodeNumber int32
 		name          string
 		overview      string
+		stillPath     string // M7.2: TMDB episode still_path (e.g. "/abc.jpg")
 	}
 	metas := make(map[int32]episodeMeta, len(episodesRaw))
 	const maxEpisodes = 50
@@ -87,19 +88,23 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 		}
 		name, _ := m["name"].(string)
 		overview, _ := m["overview"].(string)
+		stillPath, _ := m["still_path"].(string)
 		metas[int32(ep)] = episodeMeta{
 			episodeNumber: int32(ep),
 			name:          strings.TrimSpace(name),
 			overview:      strings.TrimSpace(overview),
+			stillPath:     strings.TrimSpace(stillPath),
 		}
 	}
 	if len(metas) == 0 {
 		return nil
 	}
 
+	stillFetchEnabled := readEpisodeStillFetchEnabled(ctx, pool)
+
 	// 拉出本季所有 Episode items。
 	epRows, err := pool.Query(ctx,
-		"SELECT id::text, index_number, name, overview FROM items WHERE parent_id = $1::uuid AND type = 'Episode'",
+		"SELECT id::text, index_number, name, overview, primary_image_path FROM items WHERE parent_id = $1::uuid AND type = 'Episode'",
 		seasonItemID)
 	if err != nil {
 		return err
@@ -109,8 +114,8 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	for epRows.Next() {
 		var id string
 		var indexNum *int32
-		var currentName, currentOverview *string
-		if err := epRows.Scan(&id, &indexNum, &currentName, &currentOverview); err != nil {
+		var currentName, currentOverview, currentImagePath *string
+		if err := epRows.Scan(&id, &indexNum, &currentName, &currentOverview, &currentImagePath); err != nil {
 			continue
 		}
 		if indexNum == nil {
@@ -123,9 +128,6 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 
 		shouldUpdateName := isEpisodePlaceholderName(currentName) && meta.name != ""
 		shouldUpdateOverview := strings.TrimSpace(deref(currentOverview)) == "" && meta.overview != ""
-		if !shouldUpdateName && !shouldUpdateOverview {
-			continue
-		}
 		if shouldUpdateName && shouldUpdateOverview {
 			_, _ = pool.Exec(ctx,
 				"UPDATE items SET name = $1, overview = $2, updated_at = NOW() WHERE id = $3::uuid",
@@ -134,13 +136,40 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 			_, _ = pool.Exec(ctx,
 				"UPDATE items SET name = $1, updated_at = NOW() WHERE id = $2::uuid",
 				meta.name, id)
-		} else {
+		} else if shouldUpdateOverview {
 			_, _ = pool.Exec(ctx,
 				"UPDATE items SET overview = $1, updated_at = NOW() WHERE id = $2::uuid",
 				meta.overview, id)
 		}
+
+		// M7.2: 拉分集封面 —— 仅当当前 primary_image_path 为空且 TMDB 提供 still_path 且总开关开启。
+		if stillFetchEnabled && meta.stillPath != "" && strings.TrimSpace(deref(currentImagePath)) == "" {
+			savePath := fmt.Sprintf("data/metadata/%s/still.jpg", id)
+			if client.DownloadImage(ctx, meta.stillPath, savePath, "w300") {
+				tag := GenerateImageTag(savePath)
+				_, _ = pool.Exec(ctx,
+					"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
+					savePath, tag, id)
+			}
+		}
 	}
 	return nil
+}
+
+// readEpisodeStillFetchEnabled 读 system_config.episode_still_fetch,默认 true。
+func readEpisodeStillFetchEnabled(ctx context.Context, pool *pgxpool.Pool) bool {
+	var val *string
+	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'episode_still_fetch'").Scan(&val); err != nil {
+		return true
+	}
+	if val == nil {
+		return true
+	}
+	s := strings.ToLower(strings.TrimSpace(*val))
+	if s == "" {
+		return true
+	}
+	return s == "1" || s == "true" || s == "yes" || s == "on"
 }
 
 // isEpisodePlaceholderName 判断当前 name 是否为扫库自动生成的占位符(Episode N / Special N / 第X集 / S01E02)。

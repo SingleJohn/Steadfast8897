@@ -419,6 +419,41 @@ func FindImageCached(cache DirCache, prefixes []string) *string {
 	return nil
 }
 
+// FindEpisodeThumbCached 在同目录(seasonCache)内查找 Episode 的本地分集封面,
+// 约定顺序(参考 Emby / Jellyfin 文件命名):
+//  1. <basename>-thumb.(jpg|png|webp|jpeg)
+//  2. <basename>.thumb.(jpg|png|webp|jpeg)
+//  3. <basename>.(jpg|png|webp|jpeg)(要求文件茎必须等于视频名,避免误命中 poster/fanart)
+func FindEpisodeThumbCached(cache DirCache, videoBasename string) *string {
+	if cache == nil || videoBasename == "" {
+		return nil
+	}
+	stem := strings.ToLower(strings.TrimSuffix(videoBasename, filepath.Ext(videoBasename)))
+	if stem == "" {
+		return nil
+	}
+	imageExts := map[string]bool{"jpg": true, "jpeg": true, "png": true, "webp": true}
+	candidates := []string{
+		stem + "-thumb",
+		stem + ".thumb",
+		stem,
+	}
+	for _, want := range candidates {
+		for _, entry := range cache {
+			name, path := entry[0], entry[1]
+			ext := strings.TrimPrefix(filepath.Ext(name), ".")
+			if !imageExts[ext] {
+				continue
+			}
+			s := strings.TrimSuffix(name, filepath.Ext(name))
+			if s == want {
+				return &path
+			}
+		}
+	}
+	return nil
+}
+
 func FindNfo(dir string) *string {
 	return FindNfoCached(CacheDir(dir))
 }
@@ -1640,16 +1675,24 @@ func ensureCanonicalEpisodeItem(
 		runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
 	}
 
+	// M7.2:新扫时兜底本地分集封面(<basename>-thumb.jpg 等)。
+	var thumbPath, thumbTag *string
+	if tp := FindEpisodeThumbCached(seasonCache, primary.name); tp != nil {
+		thumbPath = tp
+		thumbTag = GenerateImageTag(*tp)
+	}
+
 	var insertedEpID *uuid.UUID
 	err = pool.QueryRow(ctx,
-		"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id, created_at) "+
-			"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid, COALESCE($13, NOW())) "+
+		"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, parent_index_number, runtime_ticks, file_path, container, series_id, series_name, season_id, primary_image_path, primary_image_tag, created_at) "+
+			"VALUES ($1::uuid, $2::uuid, 'Episode', $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12::uuid, $13, $14, COALESCE($15, NOW())) "+
 			"ON CONFLICT DO NOTHING RETURNING id",
 		libraryID, seasonID, epTitle,
 		fmt.Sprintf("episode %04d", epNum),
 		epNum, seasonNum, runtimeTicks,
 		primary.path, primary.ext,
 		seriesID, finalShowName, seasonID,
+		derefStr(thumbPath), derefStr(thumbTag),
 		fileMtimeOrNil(primary.path),
 	).Scan(&insertedEpID)
 	if err == nil && insertedEpID != nil {
