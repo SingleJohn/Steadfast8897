@@ -282,6 +282,13 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 	if pid := strings.TrimSpace(queryAny(c, "ParentId", "parentId", "parentid")); pid != "" {
 		opts.ParentID = &pid
 	}
+	if s := strings.TrimSpace(queryAny(c, "ParentIds", "parentIds", "parentids")); s != "" {
+		for _, id := range strings.Split(s, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				opts.ParentIDs = append(opts.ParentIDs, id)
+			}
+		}
+	}
 	if s := strings.TrimSpace(queryAny(c, "IncludeItemTypes", "includeItemTypes", "includeitemtypes")); s != "" {
 		for _, t := range strings.Split(s, ",") {
 			t = strings.TrimSpace(t)

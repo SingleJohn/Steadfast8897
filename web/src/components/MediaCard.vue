@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useIntersectionObserver } from '@vueuse/core'
 import { getImageUrl } from '../api/client'
 import { getPlatformIcon, platformIconMap } from '../icons/PlatformIcons'
 
@@ -41,6 +42,20 @@ const imgSrc = computed(() => {
   const id = props.item.SeriesPrimaryImageItemId || props.item.Id
   return getImageUrl(id, 'Primary', 300)
 })
+
+const cardRef = ref<HTMLElement | null>(null)
+const imgVisible = ref(false)
+const { stop: stopObserve } = useIntersectionObserver(
+  cardRef,
+  ([entry]) => {
+    if (entry?.isIntersecting) {
+      imgVisible.value = true
+      stopObserve()
+    }
+  },
+  { rootMargin: '200px' },
+)
+const lazyImgSrc = computed(() => (imgVisible.value ? imgSrc.value : ''))
 
 const progress = computed(() => props.item.UserData?.PlayedPercentage || 0)
 const rating = computed(() => props.item.CommunityRating)
@@ -129,13 +144,14 @@ const linkTarget = computed(() => {
 </script>
 
 <template>
-  <div class="card-box">
+  <div ref="cardRef" class="card-box">
     <router-link :to="linkTarget" class="card-link">
       <div :class="shapeClass" class="card-surface elevation-2">
         <div
           v-if="hasImage"
           class="card-content"
-          :style="{ backgroundImage: `url(${imgSrc})` }"
+          :class="{ 'card-content-loading': !imgVisible }"
+          :style="lazyImgSrc ? { backgroundImage: `url(${lazyImgSrc})` } : {}"
         />
         <div v-else-if="isPlatformLib" class="card-content card-platform" :style="{ background: platformGradient }">
           <img v-if="platformLogoSrc" :src="platformLogoSrc" class="platform-logo-img" alt="" />
@@ -254,6 +270,22 @@ const linkTarget = computed(() => {
 
 .card-link:hover .card-content {
   transform: scale(1.05);
+}
+
+.card-content-loading {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 200%;
+  animation: card-content-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes card-content-shimmer {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 200%; }
 }
 
 .card-noimg {

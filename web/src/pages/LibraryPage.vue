@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NEmpty, NIcon, NSelect, NTag } from 'naive-ui'
 import { FunnelOutline, PlayOutline, ChevronUpOutline, GridOutline } from '@vicons/ionicons5'
-import { getGenres, getItem, getItems, getImageUrl } from '../api/client'
+import { getGenres, getItem, getItems, getImageUrl, getViews } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
 import ItemGrid from '../components/ItemGrid.vue'
 
@@ -29,6 +29,12 @@ const PAGE_SIZE = 50
 const route = useRoute()
 const router = useRouter()
 const libraryId = computed(() => route.params.libraryId as string)
+const aggregateMode = computed<'movies' | 'tvshows' | null>(() => {
+  if (route.name === 'movies') return 'movies'
+  if (route.name === 'tvshows') return 'tvshows'
+  return null
+})
+const aggregateParentIds = ref<string[] | null>(null)
 const routeGenreIds = computed<string[]>(() => {
   const value = route.query.genre
   if (typeof value === 'string' && value) return value.split(',').filter(Boolean)
@@ -70,13 +76,18 @@ function syncGenreQuery(genres: string[]) {
 
 function buildParams(startIndex: number): Record<string, string> {
   const params: Record<string, string> = {
-    ParentId: libraryId.value || '',
     SortBy: sortBy.value,
     SortOrder: sortOrder.value,
     Limit: String(PAGE_SIZE),
     StartIndex: String(startIndex),
     Recursive: 'true',
-    IncludeItemTypes: 'Movie,Series',
+  }
+  if (aggregateMode.value) {
+    params.ParentIds = (aggregateParentIds.value || []).join(',')
+    params.IncludeItemTypes = aggregateMode.value === 'movies' ? 'Movie' : 'Series'
+  } else {
+    params.ParentId = libraryId.value || ''
+    params.IncludeItemTypes = 'Movie,Series'
   }
   if (selectedGenres.value.length > 0) params.GenreIds = selectedGenres.value.join(',')
   if (statusFilter.value === 'unplayed') params.Filters = 'IsUnplayed'
@@ -111,7 +122,17 @@ function clearFilters() {
 }
 
 function loadInitial() {
-  if (!libraryId.value) return
+  if (aggregateMode.value) {
+    if (aggregateParentIds.value === null) return // 还在等 getViews
+    if (aggregateParentIds.value.length === 0) {
+      items.value = []
+      totalCount.value = 0
+      initialLoading.value = false
+      return
+    }
+  } else if (!libraryId.value) {
+    return
+  }
   initialLoading.value = true
   items.value = []
   totalCount.value = 0
@@ -127,7 +148,12 @@ function loadInitial() {
 }
 
 function loadMore() {
-  if (!libraryId.value || loadingLock.value || items.value.length >= totalCount.value) return
+  if (loadingLock.value || items.value.length >= totalCount.value) return
+  if (aggregateMode.value) {
+    if (!aggregateParentIds.value || aggregateParentIds.value.length === 0) return
+  } else if (!libraryId.value) {
+    return
+  }
   loadingLock.value = true
   loadingMore.value = true
   getItems(buildParams(items.value.length))
@@ -154,13 +180,38 @@ watch(routeGenreIds, (ids) => {
   selectedGenres.value = ids
 }, { immediate: true })
 
-watch([libraryId, selectedGenres, statusFilter, sortBy, sortOrder], () => {
+watch(aggregateMode, async (mode) => {
+  aggregateParentIds.value = null // 标记 pending,避免切换时旧 ids 触发脏查询
+  if (!mode) return
+  try {
+    const res = await getViews()
+    if (aggregateMode.value !== mode) return // 切得比 getViews 还快,丢弃过期结果
+    const ct = mode === 'movies' ? 'movies' : 'tvshows'
+    aggregateParentIds.value = (res.Items || [])
+      .filter((v: any) => v.CollectionType === ct && !v.PlatformLibrary)
+      .map((v: any) => v.Id)
+  } catch {
+    if (aggregateMode.value === mode) aggregateParentIds.value = []
+  }
+}, { immediate: true })
+
+watch([libraryId, aggregateMode, aggregateParentIds, selectedGenres, statusFilter, sortBy, sortOrder], () => {
   loadInitial()
 }, { deep: true, immediate: true })
 
-watch(libraryId, (id) => {
+watch([libraryId, aggregateMode], ([id, mode]) => {
+  if (mode === 'movies') {
+    libraryName.value = '电影'
+    libraryItem.value = null
+    return
+  }
+  if (mode === 'tvshows') {
+    libraryName.value = '剧集'
+    libraryItem.value = null
+    return
+  }
   if (!id) return
-  getItem(id).then((item) => {
+  getItem(id as string).then((item) => {
     libraryName.value = item.Name
     libraryItem.value = item
   }).catch(() => {})
@@ -277,7 +328,7 @@ onMounted(() => {
       />
 
       <template v-else>
-        <ItemGrid :items="items" />
+        <ItemGrid :items="items" density="compact" />
         <div v-if="loadingMore" class="library-loading-more">
           <CardSkeleton :count="6" />
         </div>

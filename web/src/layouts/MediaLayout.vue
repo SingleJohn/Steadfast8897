@@ -26,8 +26,8 @@ const scrolled = ref(false)
 const backdropUrl = ref('')
 const themeOpen = ref(false)
 
-const moviesLibId = ref<string>('')
-const tvshowsLibId = ref<string>('')
+const hasMovies = ref(false)
+const hasTvshows = ref(false)
 
 function setBackdrop(url: string) {
   backdropUrl.value = url
@@ -77,20 +77,13 @@ const userMenuOptions = computed(() => {
 const transparentShell = computed(() => route.name === 'home' && !scrolled.value)
 const showBackdrop = computed(() => !!backdropUrl.value && route.name !== 'home')
 
-const moviesRoute = computed(() =>
-  moviesLibId.value ? { name: 'library', params: { libraryId: moviesLibId.value } } : null,
-)
-const tvshowsRoute = computed(() =>
-  tvshowsLibId.value ? { name: 'library', params: { libraryId: tvshowsLibId.value } } : null,
-)
+const moviesRoute = computed(() => (hasMovies.value ? { name: 'movies' } : null))
+const tvshowsRoute = computed(() => (hasTvshows.value ? { name: 'tvshows' } : null))
 
 const activeNav = computed<'home' | 'movies' | 'tvshows' | ''>(() => {
   if (route.name === 'home') return 'home'
-  if (route.name === 'library') {
-    const id = route.params.libraryId
-    if (id === moviesLibId.value) return 'movies'
-    if (id === tvshowsLibId.value) return 'tvshows'
-  }
+  if (route.name === 'movies') return 'movies'
+  if (route.name === 'tvshows') return 'tvshows'
   return ''
 })
 
@@ -136,10 +129,8 @@ async function loadLibraryNav() {
   try {
     const res = await getViews()
     const items = (res.Items || []) as any[]
-    const movies = items.find((i) => i.CollectionType === 'movies' && !i.PlatformLibrary)
-    const tvshows = items.find((i) => i.CollectionType === 'tvshows' && !i.PlatformLibrary)
-    moviesLibId.value = movies?.Id || ''
-    tvshowsLibId.value = tvshows?.Id || ''
+    hasMovies.value = items.some((i) => i.CollectionType === 'movies' && !i.PlatformLibrary)
+    hasTvshows.value = items.some((i) => i.CollectionType === 'tvshows' && !i.PlatformLibrary)
   } catch {
     // 未登录或网络异常时静默,nav 只显示"首页"
   }

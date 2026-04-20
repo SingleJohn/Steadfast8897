@@ -18,6 +18,7 @@ import (
 
 type ItemQueryOptions struct {
 	ParentID         *string
+	ParentIDs        []string // 多库聚合;非空时覆盖 ParentID 单值
 	IncludeItemTypes []string
 	SortBy           *string
 	SortOrder        *string
@@ -116,7 +117,7 @@ func shouldUseLibraryRepresentative(options *ItemQueryOptions) bool {
 	if options == nil || options.Studio != nil {
 		return false
 	}
-	return options.ParentID != nil || options.LibraryID != nil
+	return options.ParentID != nil || len(options.ParentIDs) > 0 || options.LibraryID != nil
 }
 
 func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptions) (*ItemQueryResult, error) {
@@ -124,7 +125,15 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	var params []interface{}
 	paramIdx := 1
 
-	if options.ParentID != nil {
+	if len(options.ParentIDs) > 0 {
+		col := "i.parent_id"
+		if options.Recursive {
+			col = "i.library_id"
+		}
+		conditions = append(conditions, fmt.Sprintf("%s = ANY($%d::uuid[])", col, paramIdx))
+		params = append(params, options.ParentIDs)
+		paramIdx++
+	} else if options.ParentID != nil {
 		if options.Recursive {
 			conditions = append(conditions, fmt.Sprintf("i.library_id = $%d::uuid", paramIdx))
 		} else {
@@ -285,7 +294,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	var totalCount int64
 	if options.StartIndex != nil && *options.StartIndex > 0 && genreJoin == "" && !useRepresentative {
 		// 快速估算：对简单 type 筛选使用 pg_class 统计信息
-		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && options.LibraryID == nil && options.SearchTerm == nil && options.Studio == nil {
+		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && len(options.ParentIDs) == 0 && options.LibraryID == nil && options.SearchTerm == nil && options.Studio == nil {
 			_ = pool.QueryRow(ctx,
 				"SELECT COALESCE(n_live_tup, 0) FROM pg_stat_user_tables WHERE relname = 'items'").Scan(&totalCount)
 			// 如果估算值明显小于 StartIndex，用精确值

@@ -12,6 +12,7 @@ import {
 } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
 import HeroCarousel from '../components/HeroCarousel.vue'
+import LibraryTabs from '../components/LibraryTabs.vue'
 import SwiperRow from '../components/SwiperRow.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -211,10 +212,10 @@ onUnmounted(() => {
       </section>
 
       <div class="home-rows">
-        <SwiperRow
+        <LibraryTabs
           v-if="libraryViews.length > 0"
-          title="我的媒体"
           :items="libraryViews"
+          title="媒体库"
           shape="thumb"
         />
         <SwiperRow
@@ -222,15 +223,22 @@ onUnmounted(() => {
           title="继续观看"
           :items="resumeItems"
           shape="thumb"
+          density="compact"
           :show-progress="true"
         />
-        <SwiperRow v-if="favoriteItems.length > 0" title="我的收藏" :items="favoriteItems" />
+        <SwiperRow
+          v-if="favoriteItems.length > 0"
+          title="我的收藏"
+          :items="favoriteItems"
+          density="compact"
+        />
         <SwiperRow
           v-for="{ id, name, items } in latestByLibrary"
           :key="id"
           :title="`最新 ${name}${scanLabelSuffix(id)}`"
           :items="items"
           :link-to="`/library/${id}`"
+          density="compact"
         />
       </div>
     </div>
@@ -337,7 +345,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 38px;
+  gap: 18px;
 }
 
 .scan-banner {

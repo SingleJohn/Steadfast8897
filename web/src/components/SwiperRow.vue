@@ -15,9 +15,11 @@ const props = withDefaults(defineProps<{
   showProgress?: boolean
   linkTo?: string
   shape?: 'portrait' | 'thumb'
+  density?: 'default' | 'compact'
 }>(), {
   showProgress: false,
   shape: 'portrait',
+  density: 'default',
 })
 
 const uid = useId()
@@ -34,6 +36,13 @@ const thumbBreakpoints: Record<number, any> = {
   1904: { slidesPerView: 4, slidesPerGroup: 4, spaceBetween: 16 },
 }
 
+const thumbBreakpointsCompact: Record<number, any> = {
+  0: { slidesPerView: 2.2, slidesPerGroup: 2, spaceBetween: 10 },
+  600: { slidesPerView: 3, slidesPerGroup: 3, spaceBetween: 12 },
+  960: { slidesPerView: 5, slidesPerGroup: 5, spaceBetween: 12 },
+  1904: { slidesPerView: 6, slidesPerGroup: 6, spaceBetween: 12 },
+}
+
 const portraitBreakpoints: Record<number, any> = {
   0: { slidesPerView: 2.5, slidesPerGroup: 2, spaceBetween: 12 },
   600: { slidesPerView: 4, slidesPerGroup: 3, spaceBetween: 16 },
@@ -41,7 +50,19 @@ const portraitBreakpoints: Record<number, any> = {
   1904: { slidesPerView: 8, slidesPerGroup: 6, spaceBetween: 16 },
 }
 
-const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : portraitBreakpoints)
+const portraitBreakpointsCompact: Record<number, any> = {
+  0: { slidesPerView: 3.5, slidesPerGroup: 3, spaceBetween: 10 },
+  600: { slidesPerView: 6, slidesPerGroup: 5, spaceBetween: 12 },
+  960: { slidesPerView: 9, slidesPerGroup: 7, spaceBetween: 12 },
+  1904: { slidesPerView: 11, slidesPerGroup: 8, spaceBetween: 12 },
+}
+
+const breakpoints = computed(() => {
+  if (props.shape === 'thumb') {
+    return props.density === 'compact' ? thumbBreakpointsCompact : thumbBreakpoints
+  }
+  return props.density === 'compact' ? portraitBreakpointsCompact : portraitBreakpoints
+})
 </script>
 
 <template>
@@ -85,7 +106,7 @@ const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : 
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   padding: 0 8px;
 }
 
@@ -158,7 +179,7 @@ const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : 
   min-width: 0;
   overflow: hidden;
   /* 下边给 hover scale 和环境阴影留一点空间,避免被 swiper 的 overflow clip 切掉 */
-  padding: 4px 8px 20px;
+  padding: 4px 8px 10px;
 }
 .sr-swiper :deep(.swiper-slide) { height: auto; }
 </style>
