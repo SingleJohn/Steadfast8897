@@ -133,7 +133,6 @@ func scanOneShow(
 	libraryID string,
 	showNameRaw string,
 	showPath string,
-	existingEps map[string]bool,
 ) {
 	parsed := ParseMovieName(showNameRaw)
 	showCache := CacheDir(showPath)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,6 +35,11 @@ type ScrapeWorker struct {
 
 	mu      sync.Mutex
 	running bool
+
+	// cachedClient 是 worker 生命周期内复用的 TmdbClient,配合 GetScrapeAggregator
+	// 的 key=client 缓存命中 —— 原先每个任务都重建 aggregator + http.Transport,
+	// 4 并发 worker 高频 identify 时开销显著。Admin 改 tmdb_* 配置后需重启生效。
+	cachedClient atomic.Pointer[TmdbClient]
 }
 
 // NewScrapeWorker 构造。limiter 由 main 创建并设入 TmdbClient 共享,
@@ -154,7 +160,7 @@ func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
 func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 	switch t.TaskType {
 	case ScrapeTaskIdentify, ScrapeTaskRefresh:
-		client := TmdbClientFromConfig(ctx, w.pool)
+		client := w.tmdbClient(ctx)
 		if client == nil {
 			return fmt.Errorf("tmdb client unavailable (api key not configured)")
 		}
@@ -165,7 +171,7 @@ func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 		return processBackfillQualityTask(ctx, w.pool, t.ItemID)
 
 	case ScrapeTaskBackfillEpisodeName:
-		client := TmdbClientFromConfig(ctx, w.pool)
+		client := w.tmdbClient(ctx)
 		if client == nil {
 			return fmt.Errorf("tmdb client unavailable")
 		}
@@ -177,13 +183,38 @@ func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 		if !readEpisodeStillFetchEnabled(ctx, w.pool) {
 			return nil
 		}
-		client := TmdbClientFromConfig(ctx, w.pool)
+		client := w.tmdbClient(ctx)
 		if client == nil {
 			return fmt.Errorf("tmdb client unavailable")
 		}
 		return processBackfillEpisodeImageTask(ctx, w.pool, client, t.ItemID)
 	}
 	return fmt.Errorf("unknown task_type: %s", t.TaskType)
+}
+
+// tmdbClient 返回 worker 级缓存的 TmdbClient(lazy init)。
+// 配合 GetScrapeAggregator 的 key=client 缓存,让同 worker 内所有 identify/name/image
+// 任务共享同一个 Aggregator + http.Transport 连接池。
+func (w *ScrapeWorker) tmdbClient(ctx context.Context) *TmdbClient {
+	if c := w.cachedClient.Load(); c != nil {
+		return c
+	}
+	c := TmdbClientFromConfig(ctx, w.pool)
+	if c == nil {
+		return nil
+	}
+	if !w.cachedClient.CompareAndSwap(nil, c) {
+		// 被别的 goroutine 先赢 —— 用它设的值,丢弃自己 build 的
+		return w.cachedClient.Load()
+	}
+	return c
+}
+
+// InvalidateCachedClient 让下一次 tmdbClient 重建,同时失效 Aggregator 缓存。
+// Admin 改 tmdb_* 配置后调。
+func (w *ScrapeWorker) InvalidateCachedClient() {
+	w.cachedClient.Store(nil)
+	InvalidateScrapeAggregator()
 }
 
 func sleepOrCancel(ctx context.Context, d time.Duration) {

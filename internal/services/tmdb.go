@@ -316,7 +316,14 @@ func (c *TmdbClient) nextKey() string {
 	return c.apiKeys[idx%uint64(len(c.apiKeys))]
 }
 
+// tmdbRequestCount 统计 tmdbGet 的总调用数(Phase 4 metrics 观测用)。
+var tmdbRequestCount atomic.Int64
+
+// TmdbRequestCount 返回 tmdbGet 的累计调用次数。
+func TmdbRequestCount() int64 { return tmdbRequestCount.Load() }
+
 func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[string]interface{}, error) {
+	tmdbRequestCount.Add(1)
 	if sharedTmdbLimiter != nil {
 		if err := sharedTmdbLimiter.Wait(ctx); err != nil {
 			return nil, fmt.Errorf("rate limiter wait: %w", err)
@@ -1547,7 +1554,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 
 	parsed := buildParsedName(meta)
 	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
-	agg := BuildScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
 
 	ident, err := agg.Identify(ctx, parsed, mediaType)
 	if err != nil {

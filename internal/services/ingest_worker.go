@@ -85,8 +85,11 @@ func (w *IngestWorker) enqueue(e IngestEvent) {
 	}
 }
 
-// OverflowCount 供观测/管理面板查询 channel 溢出总数(Phase 4 会接到 metrics)。
+// OverflowCount 供观测/管理面板查询 channel 溢出总数。
 func (w *IngestWorker) OverflowCount() int64 { return w.overflow.Load() }
+
+// ChannelDepth 返回当前 channel 待处理事件数(供 metrics 打点)。
+func (w *IngestWorker) ChannelDepth() int { return len(w.ch) }
 
 // Run 启动 Worker:加载 library 映射 + 启动定时刷新 + N 个消费 goroutine。
 // 传入的 ctx 结束后所有 goroutine 停止。
@@ -200,8 +203,7 @@ func (w *IngestWorker) processTvCreate(ctx context.Context, libID string, e Inge
 		slog.Debug("[Ingest] Tv create skipped: no show dir found", "path", e.Path)
 		return nil
 	}
-	existing := map[string]bool{}
-	scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath, existing)
+	scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
 	go autoScrapeNewItems(ctx, w.pool, libID)
 	return nil
 }

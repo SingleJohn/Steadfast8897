@@ -193,6 +193,7 @@ func main() {
 	}
 	go ingestWorker.Run(ctx)
 	go scrapeWorker.Run(ctx)
+	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)
 	fileWatcher.Start(ctx, pool, cache)
 
 	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
