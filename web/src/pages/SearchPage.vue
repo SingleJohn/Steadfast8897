@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { NInput, NIcon, NEmpty } from 'naive-ui'
-import { SearchOutline } from '@vicons/ionicons5'
+import { useRoute } from 'vue-router'
+import { NEmpty } from 'naive-ui'
 import { getItems } from '../api/client'
 import ItemGrid from '../components/ItemGrid.vue'
 import CardSkeleton from '../components/CardSkeleton.vue'
@@ -17,7 +16,6 @@ const tabs: { key: FilterType; label: string }[] = [
 ]
 
 const route = useRoute()
-const router = useRouter()
 
 function qFromRoute(): string {
   const q = route.query.q
@@ -31,7 +29,6 @@ const results = ref<any[]>([])
 const loading = ref(false)
 const searched = ref(false)
 const activeTab = ref<FilterType>('all')
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
 async function doSearch(term: string) {
   if (!term.trim()) { results.value = []; searched.value = false; return }
@@ -48,21 +45,12 @@ async function doSearch(term: string) {
 
 watch(() => route.query.q, (q) => {
   const s = typeof q === 'string' ? q : Array.isArray(q) ? q[0] || '' : ''
-  if (s && s !== query.value) { query.value = s; doSearch(s) }
+  query.value = s
+  if (s) doSearch(s)
+  else { results.value = []; searched.value = false }
 })
 
 onMounted(() => { if (query.value) doSearch(query.value) })
-
-function handleInput(value: string) {
-  query.value = value
-  if (debounceTimer !== null) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => {
-    if (value.trim()) {
-      router.push({ path: '/search', query: { q: value.trim() } })
-      doSearch(value.trim())
-    } else { results.value = []; searched.value = false }
-  }, 300)
-}
 
 const filtered = computed(() =>
   activeTab.value === 'all' ? results.value : results.value.filter(r => r.Type === activeTab.value)
@@ -79,25 +67,14 @@ const tabCounts = computed(() => {
 
 <template>
   <div class="search-page">
-    <div class="search-toolbar">
-      <div class="search-toolbar-main">
-        <div class="search-heading">搜索</div>
-        <n-input
-          :value="query"
-          placeholder="搜索电影、剧集、单集..."
-          size="large"
-          round
-          clearable
-          class="search-input"
-          @update:value="handleInput"
-        >
-          <template #prefix>
-            <n-icon :size="20"><SearchOutline /></n-icon>
-          </template>
-        </n-input>
-      </div>
+    <n-empty
+      v-if="!searched && !loading"
+      description="请在顶部搜索框输入关键词"
+      style="padding: 80px 20px"
+    />
 
-      <div v-if="searched" class="search-tabs">
+    <div v-if="searched" class="search-toolbar">
+      <div class="search-tabs">
         <button
           v-for="tab in tabs"
           :key="tab.key"
@@ -131,36 +108,18 @@ const tabCounts = computed(() => {
 
 .search-toolbar {
   position: sticky;
-  top: 56px;
+  top: 68px;
   z-index: 8;
-  padding: 12px 8px 16px;
-  margin: 0 -8px 24px;
+  padding: 12px 8px;
+  margin: 0 -8px 20px;
   background: var(--app-surface-1);
   backdrop-filter: blur(24px);
   border-bottom: 1px solid var(--app-border);
 }
 
-.search-toolbar-main {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-}
-
-.search-heading {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--app-text);
-}
-
-.search-input {
-  width: min(560px, 100%);
-}
-
 .search-tabs {
   display: flex;
   gap: 8px;
-  margin-top: 14px;
   overflow-x: auto;
 }
 
@@ -213,9 +172,14 @@ const tabCounts = computed(() => {
 
 @media (max-width: 959px) {
   .search-toolbar {
-    top: 56px;
     margin-left: -4px;
     margin-right: -4px;
+  }
+}
+
+@media (max-width: 599px) {
+  .search-toolbar {
+    top: 60px;
   }
 }
 </style>

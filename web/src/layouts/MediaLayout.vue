@@ -77,6 +77,9 @@ const userMenuOptions = computed(() => {
 const transparentShell = computed(() => route.name === 'home' && !scrolled.value)
 const showBackdrop = computed(() => !!backdropUrl.value && route.name !== 'home')
 
+const topLevelRoutes = new Set(['home', 'movies', 'tvshows', 'search'])
+const showBackButton = computed(() => !topLevelRoutes.has(String(route.name)))
+
 const moviesRoute = computed(() => (hasMovies.value ? { name: 'movies' } : null))
 const tvshowsRoute = computed(() => (hasTvshows.value ? { name: 'tvshows' } : null))
 
@@ -159,7 +162,7 @@ onUnmounted(() => {
       <header class="media-topbar" :class="{ 'media-topbar-transparent': transparentShell }">
         <div class="topbar-left">
           <button
-            v-if="route.name !== 'home'"
+            v-if="showBackButton"
             class="icon-button back-button"
             @click="goBack"
             aria-label="返回"
