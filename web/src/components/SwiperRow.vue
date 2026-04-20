@@ -90,29 +90,32 @@ const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : 
 }
 
 .sr-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--app-text);
-  margin: 0;
   display: flex;
   align-items: center;
-  gap: 0.5em;
+  gap: 14px;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--app-text);
+  margin: 0;
 }
 
 .sr-title::before {
   content: '';
   display: inline-block;
-  width: 1.25em;
-  height: 1px;
-  border-radius: 0.1em;
-  background: var(--app-border-hover);
+  width: 4px;
+  height: 1.1em;
+  border-radius: 2px;
+  background: var(--app-primary, #e50914);
   flex-shrink: 0;
 }
 
 .sr-nav {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .sr-viewall {
@@ -120,25 +123,33 @@ const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : 
   color: var(--app-primary);
   text-decoration: none;
   font-weight: 500;
-  margin-right: 4px;
+  margin-right: 6px;
+  letter-spacing: 0.02em;
 }
-.sr-viewall:hover { opacity: 0.9; }
+.sr-viewall:hover { opacity: 0.85; }
 
 .sr-arrow {
-  width: 32px; height: 32px;
-  border-radius: var(--app-radius);
-  border: 1px solid var(--app-border);
-  background: var(--app-surface-2);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--app-text);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: all 0.2s; padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  transition: background 0.2s ease, transform 0.2s ease;
 }
 .sr-arrow:hover {
-  background: rgba(var(--app-primary-rgb), 0.08);
-  border-color: var(--app-border-hover);
+  background: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
 }
 .sr-arrow-disabled {
-  opacity: 0.3;
+  opacity: 0.25;
   pointer-events: none;
 }
 
@@ -146,7 +157,8 @@ const breakpoints = computed(() => props.shape === 'thumb' ? thumbBreakpoints : 
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  padding: 0 8px 4px;
+  /* 下边给 hover scale 和环境阴影留一点空间,避免被 swiper 的 overflow clip 切掉 */
+  padding: 4px 8px 20px;
 }
 .sr-swiper :deep(.swiper-slide) { height: auto; }
 </style>

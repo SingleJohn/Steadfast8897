@@ -176,7 +176,7 @@ const linkTarget = computed(() => {
 
         <div class="card-hover-overlay">
           <span class="card-play-icon">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
           </span>
         </div>
 
@@ -213,31 +213,30 @@ const linkTarget = computed(() => {
   position: relative;
   padding-bottom: 150%;
   contain: strict;
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius-xl, 24px);
 }
 
 .thumb-card {
   position: relative;
   padding-bottom: 56.25%;
   contain: strict;
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius-xl, 24px);
 }
 
 .square-card {
   position: relative;
   padding-bottom: 100%;
   contain: strict;
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius-xl, 24px);
 }
 
 .elevation-2 {
   box-shadow: none;
-  transition: opacity 0.2s ease;
+  transition: box-shadow 400ms ease-out;
 }
 
 .card-link:hover .elevation-2 {
-  box-shadow: none;
-  transform: none;
+  box-shadow: var(--app-shadow-ambient, 0 24px 48px rgba(0, 0, 0, 0.55));
 }
 
 .card-content {
@@ -250,6 +249,11 @@ const linkTarget = computed(() => {
   background-position: center center;
   -webkit-tap-highlight-color: transparent;
   border-radius: inherit;
+  transition: transform 400ms ease-out;
+}
+
+.card-link:hover .card-content {
+  transform: scale(1.05);
 }
 
 .card-noimg {
@@ -362,25 +366,27 @@ const linkTarget = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, rgba(0,0,0,0.06), rgba(0,0,0,0.55));
+  background: linear-gradient(180deg, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.55) 100%);
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity 0.25s ease;
   border-radius: inherit;
-  z-index: 1;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .card-link:hover .card-hover-overlay { opacity: 1; }
 
 .card-play-icon {
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: rgba(255,255,255,0.18);
-  backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .card-progress {
@@ -388,22 +394,23 @@ const linkTarget = computed(() => {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 4px;
-  background: rgba(0,0,0,0.5);
+  height: 3px;
+  background: rgba(0, 0, 0, 0.55);
   z-index: 3;
-  border-radius: 0 0 var(--app-radius) var(--app-radius);
+  border-radius: 0 0 var(--app-radius-xl, 24px) var(--app-radius-xl, 24px);
 }
 
 .card-progress-fill {
   height: 100%;
   background: var(--app-primary, #10b981);
+  border-radius: inherit;
 }
 
 .card-text {
-  margin-top: 0.55em;
+  margin-top: 0.7em;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 0 0.15em;
+  padding: 0 0.2em;
 }
 
 .card-title {
@@ -411,6 +418,7 @@ const linkTarget = computed(() => {
   font-weight: 600;
   font-size: 13px;
   line-height: 1.35;
+  letter-spacing: -0.005em;
   color: var(--app-text);
   overflow: hidden;
   text-overflow: ellipsis;
