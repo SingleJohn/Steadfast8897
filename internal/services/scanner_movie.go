@@ -20,6 +20,9 @@ type movieEntry struct {
 	name     string
 	fullPath string
 	isDir    bool
+	// videoPaths 在 isDir=true 时给出目录内所有视频文件的绝对路径(含 BDMV/STREAM),
+	// 供 prune 阶段把 DB 里的 primary file_path 也识别为"本次扫到",避免被误删。
+	videoPaths []string
 }
 
 func looksLikeSeasonDir(name string) bool {
@@ -48,6 +51,69 @@ func looksLikeShowDir(path string) bool {
 	return false
 }
 
+// 结构化光盘目录名,这些目录名本身不应被当作电影/剧集的标题。
+var structuralDiscDirNames = map[string]bool{
+	"BDMV": true, "STREAM": true, "VIDEO_TS": true, "AUDIO_TS": true, "CERTIFICATE": true,
+}
+
+func isStructuralDiscDirName(name string) bool {
+	return structuralDiscDirNames[strings.ToUpper(name)]
+}
+
+// isBdmvMovieDir 判断 dir 是否为 BDMV 布局的电影根(含 BDMV/STREAM 且内有视频文件)。
+func isBdmvMovieDir(dir string) bool {
+	entries, err := os.ReadDir(filepath.Join(dir, "BDMV", "STREAM"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if IsVideoExt(strings.ToLower(filepath.Ext(e.Name()))) {
+			return true
+		}
+	}
+	return false
+}
+
+// collectBdmvVideos 返回 BDMV/STREAM 下的视频文件(DirCache 格式),按文件名排序。
+func collectBdmvVideos(movieDir string) [][2]string {
+	streamDir := filepath.Join(movieDir, "BDMV", "STREAM")
+	entries, err := os.ReadDir(streamDir)
+	if err != nil {
+		return nil
+	}
+	var result [][2]string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !IsVideoExt(ext) {
+			continue
+		}
+		result = append(result, [2]string{strings.ToLower(e.Name()), filepath.Join(streamDir, e.Name())})
+	}
+	return result
+}
+
+// findBdmvMovieRoot 从视频文件路径向上查找 BDMV 布局的电影根目录。
+// 匹配结构: <root>/BDMV/STREAM/<file>;非 BDMV 布局返回空字符串。
+func findBdmvMovieRoot(filePath string) string {
+	cur := filepath.Dir(filePath)
+	for depth := 0; depth < 4 && cur != filepath.Dir(cur); depth++ {
+		if strings.EqualFold(filepath.Base(cur), "BDMV") {
+			parent := filepath.Dir(cur)
+			if isBdmvMovieDir(parent) {
+				return parent
+			}
+		}
+		cur = filepath.Dir(cur)
+	}
+	return ""
+}
+
 func collectMovieEntries(dir string, results *[]movieEntry) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -66,19 +132,31 @@ func collectMovieEntries(dir string, results *[]movieEntry) {
 			if looksLikeShowDir(fullPath) {
 				continue
 			}
-			hasVideo := false
+			// BDMV 布局整目录作为一部电影,name 取电影根目录名,避免把 STREAM 当成电影名。
+			if isBdmvMovieDir(fullPath) {
+				vids := collectBdmvVideos(fullPath)
+				paths := make([]string, 0, len(vids))
+				for _, v := range vids {
+					paths = append(paths, v[1])
+				}
+				*results = append(*results, movieEntry{name: name, fullPath: fullPath, isDir: true, videoPaths: paths})
+				continue
+			}
+			var videoPaths []string
 			subEntries, err := os.ReadDir(fullPath)
 			if err == nil {
 				for _, se := range subEntries {
+					if se.IsDir() {
+						continue
+					}
 					ext := strings.ToLower(filepath.Ext(se.Name()))
 					if IsVideoExt(ext) {
-						hasVideo = true
-						break
+						videoPaths = append(videoPaths, filepath.Join(fullPath, se.Name()))
 					}
 				}
 			}
-			if hasVideo {
-				*results = append(*results, movieEntry{name: name, fullPath: fullPath, isDir: true})
+			if len(videoPaths) > 0 {
+				*results = append(*results, movieEntry{name: name, fullPath: fullPath, isDir: true, videoPaths: videoPaths})
 			} else {
 				collectMovieEntries(fullPath, results)
 			}
@@ -115,6 +193,12 @@ func scanOneMovie(
 				videoFiles = append(videoFiles, entry)
 			}
 		}
+		// BDMV 布局的电影根目录自身没有视频,视频在 BDMV/STREAM 下。
+		if len(videoFiles) == 0 {
+			if vids := collectBdmvVideos(fullPath); len(vids) > 0 {
+				videoFiles = vids
+			}
+		}
 		if len(videoFiles) == 0 {
 			return
 		}
@@ -125,12 +209,20 @@ func scanOneMovie(
 		if ext == "" {
 			ext = "mkv"
 		}
+		sortName := strings.ToLower(parsed.Name)
 
 		if existing[primaryPath] {
 			var itemID uuid.UUID
+			var existingName string
 			if err := pool.QueryRow(ctx,
-				"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = $2 LIMIT 1",
-				libraryID, primaryPath).Scan(&itemID); err == nil {
+				"SELECT id, name FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = $2 LIMIT 1",
+				libraryID, primaryPath).Scan(&itemID, &existingName); err == nil {
+				// 旧数据 name 被识别成 STREAM/BDMV 等结构化目录名时,一次性修正为当前电影名。
+				if isStructuralDiscDirName(existingName) && existingName != parsed.Name {
+					pool.Exec(ctx,
+						"UPDATE items SET name = $1, sort_name = $2, production_year = COALESCE($3, production_year), updated_at = NOW() WHERE id = $4",
+						parsed.Name, sortName, parsed.Year, itemID)
+				}
 				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
 				ensureMovieMediaVersions(ctx, pool, itemID, videoFiles, dirCache)
 				// race 场景兜底:NFO 比 video 晚到时,首次 Create 事件没读到 nfo 就 INSERT 了,
@@ -145,7 +237,6 @@ func scanOneMovie(
 		}
 
 		mi := ReadMediainfoJSONCached(primaryPath, dirCache)
-		sortName := strings.ToLower(parsed.Name)
 		var runtimeTicks *int64
 		if mi != nil {
 			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
@@ -171,7 +262,21 @@ func scanOneMovie(
 				}
 			}
 		} else if err == pgx.ErrNoRows {
-			if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, primaryPath); existingID != nil {
+			// CONFLICT 唯一来源是 idx_items_filepath_unique(同 file_path),优先按 file_path 查;
+			// 同时一次性修正旧数据里被识别为 STREAM/BDMV 的错误 name。
+			var conflictID uuid.UUID
+			var conflictName string
+			if err := pool.QueryRow(ctx,
+				"SELECT id, name FROM items WHERE file_path = $1 LIMIT 1",
+				primaryPath).Scan(&conflictID, &conflictName); err == nil {
+				if isStructuralDiscDirName(conflictName) && conflictName != parsed.Name {
+					pool.Exec(ctx,
+						"UPDATE items SET name = $1, sort_name = $2, production_year = COALESCE($3, production_year), updated_at = NOW() WHERE id = $4",
+						parsed.Name, sortName, parsed.Year, conflictID)
+				}
+				syncItemArtwork(ctx, pool, conflictID, poster, posterTag, backdrop, backdropTag)
+				ensureMovieMediaVersions(ctx, pool, conflictID, videoFiles, dirCache)
+			} else if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, primaryPath); existingID != nil {
 				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)
 				ensureMovieMediaVersions(ctx, pool, *existingID, videoFiles, dirCache)
 			}

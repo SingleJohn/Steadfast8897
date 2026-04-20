@@ -117,6 +117,11 @@ func ScanLibrary(
 			for _, e := range entries {
 				full := filepath.Clean(e.fullPath)
 				seenPaths[full] = struct{}{}
+				// 目录级 entry 的 DB file_path 是内部 primary 视频文件,
+				// 必须把视频路径也算作本次扫到,避免 prune 误删刚入库的电影。
+				for _, v := range e.videoPaths {
+					seenPaths[filepath.Clean(v)] = struct{}{}
+				}
 				ingest.Submit(IngestEvent{
 					Kind: EventCreate, Path: full, IsDir: e.isDir,
 					Source: "scan", Tag: libraryID, DetectedAt: time.Now(),

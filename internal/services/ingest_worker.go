@@ -347,9 +347,19 @@ func waitFileStable(ctx context.Context, path string) bool {
 }
 
 func (w *IngestWorker) processMovieCreate(ctx context.Context, libID string, e IngestEvent) error {
-	name := filepath.Base(e.Path)
+	path := e.Path
+	isDir := e.IsDir
+	// BDMV 布局:/<movie>/BDMV/STREAM/*.strm|m2ts 事件,改用电影根目录整目录入库,
+	// 否则 name 会被解析成 "STREAM"/"00000" 之类的无意义名字。
+	if !isDir {
+		if root := findBdmvMovieRoot(path); root != "" {
+			path = root
+			isDir = true
+		}
+	}
+	name := filepath.Base(path)
 	existing := map[string]bool{}
-	scanOneMovie(ctx, w.pool, libID, name, e.Path, e.IsDir, existing)
+	scanOneMovie(ctx, w.pool, libID, name, path, isDir, existing)
 	go autoScrapeNewItems(ctx, w.pool, libID)
 	return nil
 }
