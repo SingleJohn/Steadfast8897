@@ -85,6 +85,50 @@ function formatFileSize(bytes: number | null | undefined) {
   return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(bytes / 1024 / 1024).toFixed(0)} MB`
 }
 
+function formatBitrate(bps: number | null | undefined): string {
+  if (!bps || bps <= 0) return ''
+  const mbps = bps / 1_000_000
+  if (mbps >= 1) return `${mbps.toFixed(mbps >= 10 ? 0 : 1)} Mbps`
+  const kbps = bps / 1000
+  return `${Math.round(kbps)} Kbps`
+}
+
+function streamTypeLabel(type: string): string {
+  if (type === 'Video') return '视频'
+  if (type === 'Audio') return '音频'
+  if (type === 'Subtitle') return '字幕'
+  return type
+}
+
+function formatStream(s: any): string {
+  if (s?.DisplayTitle) return s.DisplayTitle
+  const parts: string[] = []
+  if (s?.Codec) parts.push(String(s.Codec).toUpperCase())
+  if (s?.Type === 'Video') {
+    if (s.Width && s.Height) parts.push(`${s.Width}×${s.Height}`)
+    if (s.BitDepth) parts.push(`${s.BitDepth}-bit`)
+    if (s.PixelFormat) parts.push(s.PixelFormat)
+    if (s.BitRate) parts.push(formatBitrate(s.BitRate))
+  } else if (s?.Type === 'Audio') {
+    if (s.Channels) parts.push(`${s.Channels} 声道`)
+    if (s.SampleRate) parts.push(`${Math.round(s.SampleRate / 1000)} kHz`)
+    if (s.Language) parts.push(s.Language)
+    if (s.BitRate) parts.push(formatBitrate(s.BitRate))
+  } else if (s?.Type === 'Subtitle') {
+    if (s.Language) parts.push(s.Language)
+    if (s.Title) parts.push(s.Title)
+  }
+  return parts.join(' · ')
+}
+
+function groupedStreams(src: any): { type: string; streams: any[] }[] {
+  const streams = (src?.MediaStreams || []) as any[]
+  const order = ['Video', 'Audio', 'Subtitle']
+  return order
+    .map((type) => ({ type, streams: streams.filter((s) => s.Type === type) }))
+    .filter((g) => g.streams.length > 0)
+}
+
 function formatRuntime(ticks: number): string {
   const min = Math.round(ticks / 10_000_000 / 60)
   const hr = Math.floor(min / 60)
@@ -400,21 +444,22 @@ function handleGenreClick(genreId: string) {
         </div>
       </div>
 
-      <!-- ═══ 文件信息 (仅管理员) ═══ -->
-      <div v-if="auth.isAdmin && (item.Path || item.MediaSources?.length)" class="files-section">
-        <h3 class="section-heading section-heading-light">
-          <n-icon :size="18" style="vertical-align: -3px; margin-right: 6px"><FolderOpenOutline /></n-icon>文件信息
-        </h3>
-        <div class="file-list">
-          <div v-if="item.Path && !item.MediaSources?.length" class="file-entry">
-            <div class="file-dir">{{ splitPath(item.Path).dir }}/</div>
-            <div class="file-name">{{ splitPath(item.Path).file }}</div>
-          </div>
-          <div v-for="(src, idx) in (item.MediaSources || [])" :key="src.Id || idx" class="file-entry">
-            <div class="file-version" v-if="(item.MediaSources?.length || 0) > 1">{{ src.Name || `版本 ${idx + 1}` }}</div>
-            <div class="file-dir">{{ splitPath(src.Path || '').dir }}/</div>
-            <div class="file-name">{{ splitPath(src.Path || '').file }}</div>
-            <div class="file-meta">
+      <!-- ═══ 媒体信息(所有用户可见:画质/编码/码率/流;路径仅管理员) ═══ -->
+      <div v-if="item.MediaSources?.length" class="media-info-section">
+        <h3 class="section-heading">媒体信息</h3>
+        <div class="ms-list">
+          <article
+            v-for="(src, idx) in item.MediaSources"
+            :key="src.Id || idx"
+            class="ms-card"
+          >
+            <header class="ms-header">
+              <div class="ms-title">
+                <strong v-if="(item.MediaSources?.length || 0) > 1">
+                  {{ src.Name || `版本 ${idx + 1}` }}
+                </strong>
+                <span v-if="src.Container" class="ms-container">{{ src.Container.toUpperCase() }}</span>
+              </div>
               <quality-badge
                 :resolution="src.FymsResolution"
                 :hdr="src.FymsHdrFormat"
@@ -422,9 +467,55 @@ function handleGenreClick(genreId: string) {
                 :video-codec="src.FymsVideoCodec"
                 :audio-codec="src.FymsAudioCodec"
               />
-              <span v-if="src.Size">{{ formatFileSize(src.Size) }}</span>
-              <span v-if="src.Container" class="file-container">{{ src.Container.toUpperCase() }}</span>
+            </header>
+
+            <div class="ms-facts">
+              <div v-if="src.Bitrate" class="ms-fact">
+                <span class="ms-fact-label">总码率</span>
+                <span class="ms-fact-value">{{ formatBitrate(src.Bitrate) }}</span>
+              </div>
+              <div v-if="src.Size" class="ms-fact">
+                <span class="ms-fact-label">大小</span>
+                <span class="ms-fact-value">{{ formatFileSize(src.Size) }}</span>
+              </div>
+              <div v-if="auth.isAdmin && src.Path" class="ms-fact ms-fact-path">
+                <span class="ms-fact-label">
+                  <n-icon :size="13" style="vertical-align: -2px"><FolderOpenOutline /></n-icon>
+                  路径
+                </span>
+                <code class="ms-path">{{ src.Path }}</code>
+              </div>
             </div>
+
+            <div
+              v-for="group in groupedStreams(src)"
+              :key="group.type"
+              class="ms-stream-group"
+            >
+              <h4 class="ms-stream-type">{{ streamTypeLabel(group.type) }}</h4>
+              <ul class="ms-stream-list">
+                <li
+                  v-for="(s, si) in group.streams"
+                  :key="`${group.type}-${si}`"
+                  class="ms-stream"
+                >
+                  <span class="ms-stream-text">{{ formatStream(s) }}</span>
+                  <span v-if="s.IsDefault" class="ms-stream-flag">默认</span>
+                  <span v-if="s.IsForced" class="ms-stream-flag">强制</span>
+                </li>
+              </ul>
+            </div>
+          </article>
+        </div>
+
+        <!-- 兜底:无 MediaSources 但有 item.Path(旧数据,仅 admin) -->
+        <div v-if="auth.isAdmin && item.Path && !item.MediaSources?.length" class="ms-card ms-fallback">
+          <div class="ms-fact ms-fact-path">
+            <span class="ms-fact-label">
+              <n-icon :size="13" style="vertical-align: -2px"><FolderOpenOutline /></n-icon>
+              路径
+            </span>
+            <code class="ms-path">{{ item.Path }}</code>
           </div>
         </div>
       </div>
@@ -1178,26 +1269,157 @@ function handleGenreClick(genreId: string) {
   .genre-row { justify-content: center; }
 }
 
-/* ═══ 文件信息 ═══ */
-.files-section {
+/* ═══ 媒体信息(画质/编码/流,路径仅 admin)═══ */
+.media-info-section {
   margin-top: 32px;
-  padding-top: 28px;
-  border-top: 0;
+  margin-bottom: 48px;
 }
-.file-list { display: flex; flex-direction: column; gap: 12px; }
-.file-entry {
+
+.ms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ms-card {
   background: var(--app-surface-solid, #1c1b1b);
-  border-radius: var(--app-radius, 16px);
-  padding: 14px 18px;
-  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  border: 0;
+  border-radius: var(--app-radius-card, 20px);
+  padding: 22px 24px;
 }
-.file-version { font-family: inherit; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; font-size: 14px; }
-.file-dir { color: #888; word-break: break-all; }
-.file-name { color: #fff; font-weight: 500; word-break: break-all; }
-.file-meta { margin-top: 4px; color: #666; font-size: 12px; display: flex; gap: 12px; }
-.file-container { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 3px; }
+
+.ms-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.ms-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ms-title strong {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--app-text);
+}
+
+.ms-container {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+
+.ms-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  margin-bottom: 8px;
+}
+
+.ms-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.ms-fact-label {
+  color: var(--app-text-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.ms-fact-value {
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.ms-fact-path {
+  flex: 1 1 100%;
+  align-items: flex-start;
+  margin-top: 4px;
+}
+
+.ms-path {
+  flex: 1;
+  min-width: 0;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.72);
+  word-break: break-all;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 6px 10px;
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.ms-stream-group {
+  margin-top: 16px;
+}
+
+.ms-stream-type {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+  margin: 0 0 8px;
+}
+
+.ms-stream-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ms-stream {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13.5px;
+  color: rgba(255, 255, 255, 0.82);
+  line-height: 1.5;
+}
+
+.ms-stream-text {
+  min-width: 0;
+}
+
+.ms-stream-flag {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.ms-fallback {
+  margin-top: 4px;
+}
 
 /* ═══ 自定义刮削弹窗 ═══ */
 .tmdb-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
