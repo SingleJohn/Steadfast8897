@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,10 @@ type IngestWorker struct {
 	libs     *libraryIndex
 	renames  *renameBuffer
 	workers  int
+
+	// inflight 记录 Tag 对应的在处理事件数,Barrier 轮询等待归零。
+	// 只对设了 Tag 的 scan 事件计数;FileWatcher/Webhook 事件 Tag 为空,不进入计数。
+	inflight sync.Map // key: Tag(string) → *atomic.Int64
 }
 
 func NewIngestWorker(pool *pgxpool.Pool, cache *CacheService) *IngestWorker {
@@ -59,9 +64,19 @@ func (w *IngestWorker) Submit(e IngestEvent) {
 }
 
 func (w *IngestWorker) enqueue(e IngestEvent) {
+	if e.Tag != "" {
+		cnt, _ := w.inflight.LoadOrStore(e.Tag, new(atomic.Int64))
+		cnt.(*atomic.Int64).Add(1)
+	}
 	select {
 	case w.ch <- e:
 	default:
+		// channel 满,事件丢弃。若之前加了 inflight 计数要对冲,否则 Barrier 永不返回。
+		if e.Tag != "" {
+			if cnt, ok := w.inflight.Load(e.Tag); ok {
+				cnt.(*atomic.Int64).Add(-1)
+			}
+		}
 		prev := w.overflow.Add(1)
 		if prev%100 == 1 {
 			slog.Warn("[Ingest] channel overflow, event dropped",
@@ -103,12 +118,45 @@ func (w *IngestWorker) consume(ctx context.Context, id int) {
 			}
 			w.cache.Del(ctx, "views:all")
 			w.cache.DelPattern(ctx, "latest:*")
+			if e.Tag != "" {
+				if cnt, ok := w.inflight.Load(e.Tag); ok {
+					cnt.(*atomic.Int64).Add(-1)
+				}
+			}
 			if dur := time.Since(start); dur > 2*time.Second {
 				slog.Info("[Ingest] Slow event",
 					"worker", id, "kind", e.Kind.String(), "path", e.Path, "duration", dur)
 			}
 		}
 	}
+}
+
+// Barrier 阻塞直到指定 Tag 的所有 inflight 事件都处理完成。
+// 用于 scan 场景:遍历产完事件后等 worker drain,再做差集 Delete。
+// 采用 100ms 轮询,简单可靠;Barrier 通常一次 scan 只调 1~2 次。
+func (w *IngestWorker) Barrier(ctx context.Context, tag string) {
+	if tag == "" {
+		return
+	}
+	for {
+		if w.InflightCount(tag) <= 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// InflightCount 返回指定 Tag 当前在处理的事件数,供 scan 进度轮询。
+func (w *IngestWorker) InflightCount(tag string) int64 {
+	cnt, ok := w.inflight.Load(tag)
+	if !ok {
+		return 0
+	}
+	return cnt.(*atomic.Int64).Load()
 }
 
 func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {

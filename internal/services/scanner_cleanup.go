@@ -4,98 +4,88 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ============ Cleanup ============
+// ============ Pruning (Phase 3 差集) ============
 
-func cleanupMissingItems(ctx context.Context, pool *pgxpool.Pool, libraryID string) {
+// pruneMissingPaths 对比 DB 里本 library 的 items.file_path 和本次扫到的 seenPaths,
+// 对每个"DB 里有但本次没见"的 item 产一条 Delete IngestEvent(由 ingest worker 处理级联)。
+//
+// 误删保护:只对 trustedRoots 下的 items 做差集——os.Stat 失败的 library.path
+// 下属 items 不动,防止挂断导致整库记录被误删。
+func pruneMissingPaths(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	ingest *IngestWorker,
+	libraryID string,
+	collectionType string,
+	trustedRoots []string,
+	seenPaths map[string]struct{},
+) int {
+	itemType := "Movie"
+	isDirEvent := false
+	if collectionType == "tvshows" {
+		itemType = "Series"
+		isDirEvent = true
+	}
+
 	rows, err := pool.Query(ctx,
-		"SELECT id, type, file_path FROM items WHERE library_id = $1::uuid AND file_path IS NOT NULL AND type IN ('Movie', 'Episode')",
-		libraryID)
+		`SELECT id::text, file_path FROM items
+		  WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL`,
+		libraryID, itemType)
 	if err != nil {
-		return
+		slog.Warn("[Prune] query failed", "library", libraryID, "error", err)
+		return 0
 	}
-	defer rows.Close()
-
-	type itemRow struct {
-		id       uuid.UUID
-		itemType string
-		filePath string
-	}
-	var items []itemRow
+	type row struct{ id, fp string }
+	var candidates []row
 	for rows.Next() {
-		var r itemRow
-		if err := rows.Scan(&r.id, &r.itemType, &r.filePath); err != nil {
-			continue
+		var r row
+		if rows.Scan(&r.id, &r.fp) == nil {
+			candidates = append(candidates, r)
 		}
-		items = append(items, r)
 	}
 	rows.Close()
 
-	var removed int64
-	for _, item := range items {
-		if _, err := os.Stat(item.filePath); os.IsNotExist(err) {
-			pool.Exec(ctx, "DELETE FROM items WHERE id = $1", item.id)
-			removed++
+	var count int
+	for _, c := range candidates {
+		cleaned := filepath.Clean(c.fp)
+		if !pathInTrustedRoots(cleaned, trustedRoots) {
+			continue
 		}
+		if _, ok := seenPaths[cleaned]; ok {
+			continue
+		}
+		ingest.Submit(IngestEvent{
+			Kind: EventDelete, Path: cleaned, IsDir: isDirEvent,
+			Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+		})
+		count++
 	}
+	return count
+}
 
-	if removed == 0 {
-		return
+// pathInTrustedRoots 判断 cleaned 路径是否落在任一 trustedRoot 之下。
+func pathInTrustedRoots(cleaned string, trustedRoots []string) bool {
+	for _, tr := range trustedRoots {
+		rel, err := filepath.Rel(tr, cleaned)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return true
 	}
-	slog.Info("[Cleanup] Removed items with missing files", "count", removed, "library", libraryID)
-
-	// Remove empty Seasons
-	seasonRows, err := pool.Query(ctx,
-		"SELECT s.id FROM items s WHERE s.library_id = $1::uuid AND s.type = 'Season' "+
-			"AND NOT EXISTS (SELECT 1 FROM items e WHERE e.parent_id = s.id AND e.type = 'Episode')",
-		libraryID)
-	if err == nil {
-		var emptySeasons []uuid.UUID
-		for seasonRows.Next() {
-			var id uuid.UUID
-			if seasonRows.Scan(&id) == nil {
-				emptySeasons = append(emptySeasons, id)
-			}
-		}
-		seasonRows.Close()
-		for _, id := range emptySeasons {
-			pool.Exec(ctx, "DELETE FROM items WHERE id = $1", id)
-		}
-		if len(emptySeasons) > 0 {
-			slog.Info("[Cleanup] Removed empty seasons", "count", len(emptySeasons))
-		}
-	}
-
-	// Remove empty Series
-	seriesRows, err := pool.Query(ctx,
-		"SELECT s.id FROM items s WHERE s.library_id = $1::uuid AND s.type = 'Series' "+
-			"AND NOT EXISTS (SELECT 1 FROM items c WHERE c.parent_id = s.id)",
-		libraryID)
-	if err == nil {
-		var emptySeries []uuid.UUID
-		for seriesRows.Next() {
-			var id uuid.UUID
-			if seriesRows.Scan(&id) == nil {
-				emptySeries = append(emptySeries, id)
-			}
-		}
-		seriesRows.Close()
-		for _, id := range emptySeries {
-			pool.Exec(ctx, "DELETE FROM items WHERE id = $1", id)
-		}
-		if len(emptySeries) > 0 {
-			slog.Info("[Cleanup] Removed empty series", "count", len(emptySeries))
-		}
-	}
+	return false
 }
 
 // ============ Backfill ============

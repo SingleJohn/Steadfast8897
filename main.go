@@ -150,6 +150,7 @@ func main() {
 		ScanProgress:   scanProgress,
 		ProbeTask:      probeTask,
 		FileWatcher:    fileWatcher,
+		Ingest:         ingestWorker,
 		LogBuffer:      logBuffer,
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,

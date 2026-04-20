@@ -3,12 +3,9 @@ package services
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -92,47 +89,6 @@ func collectMovieEntries(dir string, results *[]movieEntry) {
 			}
 		}
 	}
-}
-
-func scanMoviesWithEntries(
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	libraryID string,
-	allEntries []movieEntry,
-	tracker *ScanProgressTracker,
-) error {
-	existing := make(map[string]bool)
-	rows, err := pool.Query(ctx,
-		"SELECT file_path FROM items WHERE library_id = $1::uuid AND type = 'Movie'", libraryID)
-	if err != nil {
-		return fmt.Errorf("load existing: %w", err)
-	}
-	for rows.Next() {
-		var fp string
-		if rows.Scan(&fp) == nil {
-			existing[fp] = true
-		}
-	}
-	rows.Close()
-
-	sem := make(chan struct{}, scanConcurrency)
-	var wg sync.WaitGroup
-	var processed atomic.Int64
-
-	for _, entry := range allEntries {
-		wg.Add(1)
-		go func(entry movieEntry) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			scanOneMovie(ctx, pool, libraryID, entry.name, entry.fullPath, entry.isDir, existing)
-			p := processed.Add(1)
-			tracker.UpdateScan(libraryID, p, &entry.name)
-		}(entry)
-	}
-	wg.Wait()
-	return nil
 }
 
 func scanOneMovie(

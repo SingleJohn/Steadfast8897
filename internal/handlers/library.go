@@ -1287,7 +1287,7 @@ func refreshAll(c *gin.Context) {
 	state := GetState(c)
 	go func() {
 		ctx := context.Background()
-		services.ScanAllLibraries(ctx, state.DB, state.Cache, state.ScanProgress)
+		services.ScanAllLibraries(ctx, state.DB, state.Cache, state.ScanProgress, state.Ingest)
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }
@@ -1315,7 +1315,7 @@ func refreshSingle(c *gin.Context) {
 
 	go func() {
 		bg := context.Background()
-		services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
+		services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }
@@ -1865,7 +1865,7 @@ func refreshSingleLibrary(c *gin.Context) {
 	}
 	go func() {
 		bg := context.Background()
-		services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
+		services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }

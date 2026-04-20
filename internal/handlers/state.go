@@ -21,6 +21,7 @@ type AppState struct {
 	ScanProgress   *services.ScanProgressTracker
 	ProbeTask      *services.ProbeTask
 	FileWatcher    *services.FileWatcher
+	Ingest         *services.IngestWorker
 	LogBuffer      *services.LogBuffer
 	ScrapeTask     *services.ScrapeTask
 	HTTPClient     *http.Client

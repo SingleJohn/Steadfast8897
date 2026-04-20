@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,49 +125,6 @@ func collectShowDirs(dir string, results *[][2]string) {
 			collectShowDirs(fullPath, results)
 		}
 	}
-}
-
-func scanTvShowsWithEntries(
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	libraryID string,
-	showDirs [][2]string,
-	tracker *ScanProgressTracker,
-) error {
-	existingEps := make(map[string]bool)
-	rows, err := pool.Query(ctx,
-		"SELECT file_path FROM items WHERE library_id = $1::uuid AND type = 'Episode' AND file_path IS NOT NULL",
-		libraryID)
-	if err != nil {
-		return fmt.Errorf("load existing episodes: %w", err)
-	}
-	for rows.Next() {
-		var fp string
-		if rows.Scan(&fp) == nil {
-			existingEps[fp] = true
-		}
-	}
-	rows.Close()
-
-	sem := make(chan struct{}, scanConcurrency)
-	var wg sync.WaitGroup
-	var processed atomic.Int64
-
-	for _, sd := range showDirs {
-		wg.Add(1)
-		go func(showNameRaw, showPath string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			scanOneShow(ctx, pool, libraryID, showNameRaw, showPath, existingEps)
-
-			p := processed.Add(1)
-			tracker.UpdateScan(libraryID, p, &showNameRaw)
-		}(sd[0], sd[1])
-	}
-	wg.Wait()
-	return nil
 }
 
 func scanOneShow(

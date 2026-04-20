@@ -30,11 +30,15 @@ func (k EventKind) String() string {
 
 // IngestEvent 是 ingest Worker 的唯一事件数据结构。
 // OldPath 仅在 Rename 时有意义;其他场景下为空。
+//
+// Tag 用于 Barrier 等待:scan(Phase 3)每事件设 Tag=libraryID,
+// 处理完成后计数归零 Barrier 可返回。FileWatcher / Webhook 不设 Tag(不参与计数)。
 type IngestEvent struct {
 	Kind       EventKind
 	Path       string
 	OldPath    string
 	IsDir      bool
 	Source     string // "fsnotify" / "webhook" / "scan"
+	Tag        string
 	DetectedAt time.Time
 }
