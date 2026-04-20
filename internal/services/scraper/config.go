@@ -11,6 +11,7 @@ import (
 
 const (
 	defaultBangumiUA = "fyms/1.0 (github.com/ffoocn/fyms)"
+	defaultDoubanUA  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 type RuntimeConfig struct {
@@ -20,6 +21,8 @@ type RuntimeConfig struct {
 	ConfidenceThreshold float64
 	AutoApply           bool
 	DoubanEnabled       bool
+	DoubanUA            string
+	DoubanCookie        string
 	BangumiUA           string
 	TVDBAPIKey          string
 	TVDBPin             string
@@ -32,6 +35,7 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 		ConfidenceThreshold: DefaultThreshold,
 		AutoApply:           true,
 		DoubanEnabled:       true,
+		DoubanUA:            defaultDoubanUA,
 		BangumiUA:           defaultBangumiUA,
 	}
 
@@ -68,6 +72,13 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 	if v := loadConfigValue(ctx, pool, "douban_enabled"); v != "" {
 		cfg.DoubanEnabled = parseBool(v, true)
 	}
+	if v := loadConfigValue(ctx, pool, "douban_ua"); v != "" {
+		cfg.DoubanUA = strings.TrimSpace(v)
+	}
+	if cfg.DoubanUA == "" {
+		cfg.DoubanUA = defaultDoubanUA
+	}
+	cfg.DoubanCookie = strings.TrimSpace(loadConfigValue(ctx, pool, "douban_cookie"))
 	if v := loadConfigValue(ctx, pool, "bangumi_ua"); v != "" {
 		cfg.BangumiUA = strings.TrimSpace(v)
 	}

@@ -49,7 +49,7 @@ func BuildScrapeAggregator(cache scraper.Cache, cfg scraper.RuntimeConfig, tmdb 
 			register(providers.NewBangumiProvider(httpClient, cfg.BangumiUA))
 		}
 		if cfg.DoubanEnabled && hasProvider(enabled, "douban") {
-			register(providers.NewDoubanProvider(httpClient))
+			register(providers.NewDoubanProvider(httpClient, cfg.DoubanUA, cfg.DoubanCookie))
 		}
 		if cfg.TVDBAPIKey != "" && hasProvider(enabled, "tvdb") {
 			register(providers.NewTVDBProvider(httpClient, cfg.TVDBAPIKey, cfg.TVDBPin))

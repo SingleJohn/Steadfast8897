@@ -13,6 +13,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	golang.org/x/crypto v0.31.0
 	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8
+	golang.org/x/net v0.25.0
 	golang.org/x/time v0.15.0
 )
 
@@ -51,7 +52,6 @@ require (
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
