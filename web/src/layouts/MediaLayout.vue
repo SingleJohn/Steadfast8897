@@ -13,7 +13,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import ThemeDrawer from '@/components/ThemeDrawer.vue'
-import { logout as apiLogout } from '@/api/client'
+import { getViews, logout as apiLogout } from '@/api/client'
 
 const router = useRouter()
 const route = useRoute()
@@ -25,6 +25,9 @@ const searchTerm = ref('')
 const scrolled = ref(false)
 const backdropUrl = ref('')
 const themeOpen = ref(false)
+
+const moviesLibId = ref<string>('')
+const tvshowsLibId = ref<string>('')
 
 function setBackdrop(url: string) {
   backdropUrl.value = url
@@ -74,6 +77,23 @@ const userMenuOptions = computed(() => {
 const transparentShell = computed(() => route.name === 'home' && !scrolled.value)
 const showBackdrop = computed(() => !!backdropUrl.value && route.name !== 'home')
 
+const moviesRoute = computed(() =>
+  moviesLibId.value ? { name: 'library', params: { libraryId: moviesLibId.value } } : null,
+)
+const tvshowsRoute = computed(() =>
+  tvshowsLibId.value ? { name: 'library', params: { libraryId: tvshowsLibId.value } } : null,
+)
+
+const activeNav = computed<'home' | 'movies' | 'tvshows' | ''>(() => {
+  if (route.name === 'home') return 'home'
+  if (route.name === 'library') {
+    const id = route.params.libraryId
+    if (id === moviesLibId.value) return 'movies'
+    if (id === tvshowsLibId.value) return 'tvshows'
+  }
+  return ''
+})
+
 function handleScroll() {
   scrolled.value = window.scrollY > 10
 }
@@ -83,6 +103,10 @@ function handleSearch(event: Event) {
   const q = searchTerm.value.trim()
   if (!q) return
   router.push({ name: 'search', query: { q } })
+}
+
+function goSearch() {
+  router.push({ name: 'search' })
 }
 
 async function handleLogout() {
@@ -108,10 +132,24 @@ function goBack() {
   else router.push({ name: 'home' })
 }
 
+async function loadLibraryNav() {
+  try {
+    const res = await getViews()
+    const items = (res.Items || []) as any[]
+    const movies = items.find((i) => i.CollectionType === 'movies' && !i.PlatformLibrary)
+    const tvshows = items.find((i) => i.CollectionType === 'tvshows' && !i.PlatformLibrary)
+    moviesLibId.value = movies?.Id || ''
+    tvshowsLibId.value = tvshows?.Id || ''
+  } catch {
+    // 未登录或网络异常时静默,nav 只显示"首页"
+  }
+}
+
 onMounted(() => {
   ui.forceDark = true
   window.addEventListener('scroll', handleScroll, { passive: true })
   handleScroll()
+  void loadLibraryNav()
 })
 
 onUnmounted(() => {
@@ -129,12 +167,39 @@ onUnmounted(() => {
     <div class="media-main">
       <header class="media-topbar" :class="{ 'media-topbar-transparent': transparentShell }">
         <div class="topbar-left">
-          <button class="icon-button" @click="goBack" aria-label="返回">
-            <n-icon :size="20"><ArrowBackOutline /></n-icon>
+          <button
+            v-if="route.name !== 'home'"
+            class="icon-button back-button"
+            @click="goBack"
+            aria-label="返回"
+          >
+            <n-icon :size="18"><ArrowBackOutline /></n-icon>
           </button>
+          <router-link class="brand-mark" :to="{ name: 'home' }" aria-label="FYMS 首页">
+            FYMS
+          </router-link>
+          <nav class="topbar-nav" aria-label="主导航">
+            <router-link
+              :to="{ name: 'home' }"
+              class="nav-link"
+              :class="{ active: activeNav === 'home' }"
+            >首页</router-link>
+            <router-link
+              v-if="moviesRoute"
+              :to="moviesRoute"
+              class="nav-link"
+              :class="{ active: activeNav === 'movies' }"
+            >电影</router-link>
+            <router-link
+              v-if="tvshowsRoute"
+              :to="tvshowsRoute"
+              class="nav-link"
+              :class="{ active: activeNav === 'tvshows' }"
+            >剧集</router-link>
+          </nav>
         </div>
 
-        <div class="topbar-center">
+        <div class="topbar-right">
           <form class="search-form" @submit="handleSearch">
             <n-input
               v-model:value="searchTerm"
@@ -148,9 +213,9 @@ onUnmounted(() => {
               </template>
             </n-input>
           </form>
-        </div>
-
-        <div class="topbar-right">
+          <button class="icon-button search-icon-only" @click="goSearch" aria-label="打开搜索">
+            <n-icon :size="18"><SearchOutline /></n-icon>
+          </button>
           <n-dropdown :options="userMenuOptions" @select="handleUserMenuSelect" placement="bottom-end">
             <button class="user-chip" aria-label="用户菜单">
               <span class="user-avatar">{{ auth.userName?.[0]?.toUpperCase() || 'A' }}</span>
@@ -186,6 +251,11 @@ onUnmounted(() => {
   background: var(--app-bg);
 }
 
+/* 前台强制 cinematic 深色,背景由 .cinematic token 驱动 */
+.media-shell.cinematic {
+  background: var(--app-bg);
+}
+
 .media-main {
   min-width: 0;
   flex: 1;
@@ -207,57 +277,121 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* ============== Topbar ============== */
 .media-topbar {
   position: sticky;
   top: 0;
   z-index: 20;
-  height: 56px;
-  display: grid;
-  grid-template-columns: auto minmax(260px, 520px) 1fr;
+  height: 68px;
+  display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 0 24px;
-  background: var(--app-surface-1);
-  backdrop-filter: blur(var(--app-glass-blur));
-  -webkit-backdrop-filter: blur(var(--app-glass-blur));
-  border-bottom: 1px solid var(--app-border);
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 32px;
+  background: rgba(14, 14, 14, 0.92);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-bottom: 0;
+  transition: background 0.3s ease, backdrop-filter 0.3s ease;
 }
 
 .media-topbar-transparent {
-  background: transparent;
-  border-bottom-color: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background: rgba(14, 14, 14, 0.4);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
 
-.topbar-left,
-.topbar-right {
+.topbar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.topbar-right {
-  justify-content: flex-end;
-}
-
-.topbar-center {
+  gap: 28px;
   min-width: 0;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---- Brand mark ---- */
+.brand-mark {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--app-accent-red, #e50914);
+  text-decoration: none;
+  text-transform: uppercase;
+}
+.brand-mark:hover {
+  filter: brightness(1.15);
+}
+
+/* ---- Nav links ---- */
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.nav-link {
+  position: relative;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  color: rgba(255, 255, 255, 0.55);
+  text-decoration: none;
+  padding: 10px 2px;
+  transition: color 0.2s ease;
+}
+.nav-link:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+.nav-link.active {
+  color: #fff;
+}
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--app-accent-red, #e50914);
+}
+
+/* ---- Search form ---- */
 .search-form {
   display: flex;
 }
 
 .topbar-search {
-  width: 100%;
+  width: 260px;
 }
 
 .topbar-search :deep(.n-input) {
-  background: var(--app-surface-2);
-  border-radius: var(--app-radius);
+  background: rgba(255, 255, 255, 0.06);
+  border: 0;
+  border-radius: 999px;
+}
+.topbar-search :deep(.n-input:hover),
+.topbar-search :deep(.n-input--focus) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.topbar-search :deep(.n-input__border),
+.topbar-search :deep(.n-input__state-border) {
+  border: 0 !important;
 }
 
+.search-icon-only {
+  display: none;
+}
+
+/* ---- Icon button & user chip ---- */
 .icon-button {
   width: 36px;
   height: 36px;
@@ -265,36 +399,36 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: var(--app-radius);
-  color: var(--app-text);
-  background: var(--app-surface-2);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.06);
   cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
 }
-
 .icon-button:hover {
-  background: rgba(var(--app-primary-rgb), 0.12);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 .user-chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 12px 4px 4px;
+  padding: 4px 14px 4px 4px;
   border: 0;
   border-radius: 999px;
-  background: var(--app-surface-2);
-  color: var(--app-text);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.2s ease;
 }
-
 .user-chip:hover {
-  background: rgba(var(--app-primary-rgb), 0.12);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .user-avatar {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -308,8 +442,10 @@ onUnmounted(() => {
 .user-name {
   font-size: 13px;
   font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
+/* ============== Main content ============== */
 .media-content {
   position: relative;
   z-index: 1;
@@ -345,40 +481,47 @@ onUnmounted(() => {
   transform: translateY(-8px);
 }
 
-/* 前台强制 cinematic 深色,背景由 .cinematic token 驱动 */
-.media-shell.cinematic {
-  background: var(--app-bg);
-}
-
-:global(.app-dark) .media-topbar {
-  background: rgba(14, 14, 14, 0.92);
-  border-bottom-color: transparent;
-}
-
-:global(.app-dark) .icon-button,
-:global(.app-dark) .user-chip,
-:global(.app-dark) .topbar-search :deep(.n-input) {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.9);
-}
-
+/* ============== Responsive ============== */
 @media (max-width: 959px) {
   .media-topbar {
-    grid-template-columns: auto 1fr auto;
-    padding: 0 16px;
+    padding: 0 20px;
+    gap: 16px;
   }
-
+  .topbar-left {
+    gap: 18px;
+  }
+  .topbar-nav {
+    gap: 18px;
+  }
+  .topbar-search {
+    width: 200px;
+  }
   .media-page-inner {
     padding: 0 16px 24px;
   }
 }
 
+@media (max-width: 719px) {
+  .topbar-nav {
+    display: none;
+  }
+}
+
 @media (max-width: 599px) {
   .media-topbar {
-    grid-template-columns: auto 1fr auto;
+    padding: 0 14px;
     gap: 10px;
+    height: 60px;
   }
-
+  .brand-mark {
+    font-size: 19px;
+  }
+  .search-form {
+    display: none;
+  }
+  .search-icon-only {
+    display: inline-flex;
+  }
   .user-name {
     display: none;
   }
