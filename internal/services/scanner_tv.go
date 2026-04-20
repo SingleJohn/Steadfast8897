@@ -86,6 +86,12 @@ func withEpisodeScanLock(key string, fn func()) {
 }
 
 func isShowDir(path string) bool {
+	// 目录名本身就是 Season/Specials/S01/第一季 这类 → 它是 season 目录,不是 show 根。
+	// 否则 findShowRoot 从 episode 文件向上查找时会停在 Season 目录,
+	// 把 "Season 1" 当作剧名创建错误 Series(scanOneShow 会用 dir basename 做 name)。
+	if looksLikeSeasonDir(filepath.Base(path)) {
+		return false
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return false
