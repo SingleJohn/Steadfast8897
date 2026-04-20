@@ -21,7 +21,14 @@ const auth = useAuthStore()
 const ui = useUiStore()
 const message = useMessage()
 
-const searchTerm = ref('')
+function qFromRoute(): string {
+  const q = route.query.q
+  if (typeof q === 'string') return q
+  if (Array.isArray(q)) return q[0] || ''
+  return ''
+}
+
+const searchTerm = ref(qFromRoute())
 const scrolled = ref(false)
 const backdropUrl = ref('')
 const themeOpen = ref(false)
@@ -38,6 +45,10 @@ provide('setBackdrop', setBackdrop)
 watch(() => route.fullPath, () => {
   backdropUrl.value = ''
   window.scrollTo({ top: 0, behavior: 'auto' })
+})
+
+watch(() => route.query.q, () => {
+  searchTerm.value = qFromRoute()
 })
 
 const userMenuOptions = computed(() => {
@@ -94,15 +105,19 @@ function handleScroll() {
   scrolled.value = window.scrollY > 10
 }
 
-function handleSearch(event: Event) {
-  event.preventDefault()
+function handleSearch(event?: Event) {
+  event?.preventDefault()
   const q = searchTerm.value.trim()
-  if (!q) return
+  if (!q) {
+    if (route.name !== 'search') router.push({ name: 'search' })
+    return
+  }
+  if (route.name === 'search' && route.query.q === q) return
   router.push({ name: 'search', query: { q } })
 }
 
 function goSearch() {
-  router.push({ name: 'search' })
+  handleSearch()
 }
 
 async function handleLogout() {
@@ -194,13 +209,14 @@ onUnmounted(() => {
         </div>
 
         <div class="topbar-right">
-          <form class="search-form" @submit="handleSearch">
+          <form class="search-form" @submit.prevent="handleSearch">
             <n-input
               v-model:value="searchTerm"
               clearable
               size="small"
               class="topbar-search"
               placeholder="搜索媒体..."
+              @keyup.enter="handleSearch"
             >
               <template #prefix>
                 <n-icon :size="16"><SearchOutline /></n-icon>
