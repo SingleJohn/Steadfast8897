@@ -251,7 +251,7 @@ onBeforeUnmount(() => {
               保存
             </NButton>
           </div>
-          <span class="metric-sub">[1, 64] · 扫库/监控并发</span>
+          <span class="metric-sub">[1, 64] · 扫库/监控并发(根据数据库性能合理控制数量,会导致数据库CPU占用增加)</span>
         </div>
       </div>
     </NCard>
