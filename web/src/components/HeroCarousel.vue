@@ -1,29 +1,50 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMediaQuery } from '@vueuse/core'
 import { Swiper, SwiperSlide } from 'swiper/vue'
 import { Autoplay, Pagination } from 'swiper/modules'
 // @ts-ignore
 import 'swiper/css'
 // @ts-ignore
 import 'swiper/css/pagination'
-import { getImageUrl } from '../api/client'
+import { getImageUrl, toggleFavorite } from '../api/client'
 
-const props = defineProps<{ items: any[] }>()
+defineProps<{ items: any[] }>()
 const router = useRouter()
-const activeIndex = ref(0)
 const modules = [Autoplay, Pagination]
-const isDesktop = useMediaQuery('(min-width: 600px)')
-
-const current = computed(() => props.items[activeIndex.value])
-
-function onSlideChange(swiper: any) {
-  activeIndex.value = swiper.realIndex
-}
 
 function formatRating(r?: number) {
   return r ? r.toFixed(1) : null
+}
+
+function topGenres(item: any): string[] {
+  return (item?.Genres || []).slice(0, 2)
+}
+
+function metaExtra(item: any): string {
+  if (item.Type === 'Series' && item.ChildCount) return `${item.ChildCount} 集`
+  if (item.RunTimeTicks) {
+    const min = Math.round(item.RunTimeTicks / 10_000_000 / 60)
+    if (min < 60) return `${min}分钟`
+    const h = Math.floor(min / 60)
+    const m = min % 60
+    return m > 0 ? `${h}小时 ${m}分钟` : `${h}小时`
+  }
+  return ''
+}
+
+function isFavorite(item: any): boolean {
+  return !!item?.UserData?.IsFavorite
+}
+
+async function toggleFav(item: any) {
+  const next = !isFavorite(item)
+  try {
+    await toggleFavorite(item.Id, next)
+    if (!item.UserData) item.UserData = {}
+    item.UserData.IsFavorite = next
+  } catch {
+    // 静默失败,不打扰用户(Hero 是展示区)
+  }
 }
 
 function goPlay(item: any) {
@@ -32,6 +53,10 @@ function goPlay(item: any) {
 
 function goDetail(item: any) {
   router.push(`/item/${item.Id}`)
+}
+
+function backdropId(item: any): string {
+  return item.ParentBackdropItemId || item.Id
 }
 </script>
 
@@ -43,38 +68,74 @@ function goDetail(item: any) {
       :autoplay="{ delay: 8000, disableOnInteraction: false }"
       :pagination="{ clickable: true, el: '.hero-pagination' }"
       loop
-      @slide-change="onSlideChange"
       class="hero-swiper"
     >
       <SwiperSlide v-for="item in items" :key="item.Id">
-        <div class="slide-backdrop" :class="{ 'sm-and-up': isDesktop }">
+        <article class="hero-slide">
           <img
-            :src="getImageUrl(item.ParentBackdropItemId || item.Id, 'Backdrop', 1920)"
+            :src="getImageUrl(backdropId(item), 'Backdrop', 1920)"
             :alt="item.Name"
-            class="slide-backdrop-img"
+            class="hero-backdrop"
           />
-        </div>
-        <div class="slide-content" :class="{ 'sm-and-up': isDesktop }">
-          <div class="slide-container">
-            <div class="slide-info">
-              <p class="slide-overline">最近添加</p>
-              <h1 class="slide-title">{{ item.Name }}</h1>
-              <p v-if="item.Overview" class="slide-overview">{{ item.Overview }}</p>
-              <div class="slide-meta">
-                <span v-if="item.ProductionYear">{{ item.ProductionYear }}</span>
-                <span v-if="item.CommunityRating" class="slide-rating">★ {{ formatRating(item.CommunityRating) }}</span>
-                <span v-if="item.RunTimeTicks">{{ Math.round(item.RunTimeTicks / 10_000_000 / 60) }}分钟</span>
+          <div class="hero-shade" />
+
+          <div class="hero-inner">
+            <div class="hero-content">
+              <div class="hero-meta-row">
+                <span
+                  v-for="(g, i) in topGenres(item)"
+                  :key="g"
+                  class="pill"
+                  :class="i === 0 ? 'pill-accent' : 'pill-glass'"
+                >{{ g }}</span>
+                <span v-if="item.CommunityRating" class="hero-rating">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="#f5c518" aria-hidden="true">
+                    <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+                  </svg>
+                  <strong>{{ formatRating(item.CommunityRating) }}</strong>
+                  <span class="hero-rating-label">IMDb</span>
+                </span>
+                <template v-if="item.ProductionYear">
+                  <span class="hero-dot">•</span>
+                  <span>{{ item.ProductionYear }}</span>
+                </template>
+                <template v-if="metaExtra(item)">
+                  <span class="hero-dot">•</span>
+                  <span>{{ metaExtra(item) }}</span>
+                </template>
               </div>
-              <div class="slide-buttons">
-                <button class="btn-play" @click.prevent="goPlay(item)">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                  播放
+
+              <h1 class="hero-title">{{ item.Name }}</h1>
+
+              <p v-if="item.Overview" class="hero-overview">{{ item.Overview }}</p>
+
+              <div class="hero-actions">
+                <button class="hero-btn hero-btn-primary" @click.prevent="goPlay(item)">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  <span>播放</span>
                 </button>
-                <button class="btn-detail" @click.prevent="goDetail(item)">查看详情</button>
+                <button class="hero-btn hero-btn-glass" @click.prevent="goDetail(item)">
+                  <span>查看详情</span>
+                </button>
+                <button
+                  class="hero-btn hero-btn-square"
+                  :aria-pressed="isFavorite(item)"
+                  :title="isFavorite(item) ? '取消收藏' : '加入收藏'"
+                  @click.prevent="toggleFav(item)"
+                >
+                  <svg v-if="isFavorite(item)" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 21s-7-4.35-7-10a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 5.65-7 10-7 10z"/>
+                  </svg>
+                  <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
-        </div>
+        </article>
       </SwiperSlide>
     </Swiper>
     <div class="hero-pagination" />
@@ -85,10 +146,10 @@ function goDetail(item: any) {
 .hero-carousel {
   position: relative;
   width: 100%;
-  margin: 12px 0 0;
+  margin: 0;
   overflow: hidden;
-  border-radius: var(--app-radius);
-  box-shadow: var(--app-shadow-card);
+  border-radius: var(--app-radius-xl, 24px);
+  box-shadow: var(--app-shadow-ambient, 0 24px 48px rgba(0, 0, 0, 0.55));
 }
 
 .hero-swiper {
@@ -98,201 +159,263 @@ function goDetail(item: any) {
 .hero-swiper :deep(.swiper-slide) {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(180deg, #09101c, #0f172a);
-  min-height: 420px;
+  background: #0e0e0e;
+  height: clamp(480px, 72vh, 720px);
 }
 
-.slide-backdrop {
+.hero-slide {
   position: relative;
   width: 100%;
-  padding-bottom: 56.25%;
-  z-index: 1;
-  mask-image: linear-gradient(180deg, rgba(37,18,18,0.75) 0%, rgba(0,0,0,0) 100%);
+  height: 100%;
+  overflow: hidden;
 }
 
-.slide-backdrop.sm-and-up {
-  width: 80%;
-  margin-left: auto;
-  margin-right: 0;
-  padding-bottom: 45%;
-  mask-image:
-    linear-gradient(
-      to right,
-      hsla(0,0%,0%,0) 0%,
-      hsla(0,0%,0%,0.182) 5.6%,
-      hsla(0,0%,0%,0.34) 9.9%,
-      hsla(0,0%,0%,0.476) 13.1%,
-      hsla(0,0%,0%,0.593) 15.7%,
-      hsla(0,0%,0%,0.69) 17.9%,
-      hsla(0,0%,0%,0.771) 20.2%,
-      hsla(0,0%,0%,0.836) 22.9%,
-      hsla(0,0%,0%,0.888) 26.3%,
-      hsla(0,0%,0%,0.927) 30.8%,
-      hsla(0,0%,0%,0.956) 36.7%,
-      hsla(0,0%,0%,0.976) 44.4%,
-      hsla(0,0%,0%,0.989) 54.3%,
-      hsla(0,0%,0%,0.996) 66.6%,
-      hsla(0,0%,0%,0.999) 81.7%,
-      hsl(0,0%,0%) 100%
-    ),
-    linear-gradient(
-      to top,
-      hsla(0,0%,0%,0) 0%,
-      hsla(0,0%,0%,0.182) 5.6%,
-      hsla(0,0%,0%,0.34) 9.9%,
-      hsla(0,0%,0%,0.476) 13.1%,
-      hsla(0,0%,0%,0.593) 15.7%,
-      hsla(0,0%,0%,0.69) 17.9%,
-      hsla(0,0%,0%,0.771) 20.2%,
-      hsla(0,0%,0%,0.836) 22.9%,
-      hsla(0,0%,0%,0.888) 26.3%,
-      hsla(0,0%,0%,0.927) 30.8%,
-      hsla(0,0%,0%,0.956) 36.7%,
-      hsla(0,0%,0%,0.976) 44.4%,
-      hsla(0,0%,0%,0.989) 54.3%,
-      hsla(0,0%,0%,0.996) 66.6%,
-      hsla(0,0%,0%,0.999) 81.7%,
-      hsl(0,0%,0%) 100%
-    );
-  mask-composite: intersect;
-  -webkit-mask-composite: source-in;
-}
-
-.slide-backdrop-img {
+.hero-backdrop {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center 20%;
+  z-index: 1;
 }
 
-.slide-content {
+.hero-shade {
   position: absolute;
   inset: 0;
   z-index: 2;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(14, 14, 14, 0) 0%,
+      rgba(14, 14, 14, 0) 35%,
+      rgba(14, 14, 14, 0.5) 65%,
+      rgba(14, 14, 14, 0.92) 90%,
+      #0e0e0e 100%
+    ),
+    linear-gradient(
+      to right,
+      rgba(14, 14, 14, 0.55) 0%,
+      rgba(14, 14, 14, 0.28) 35%,
+      rgba(14, 14, 14, 0) 65%
+    );
+}
+
+.hero-inner {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
   display: flex;
-  align-items: end;
+  align-items: flex-end;
+  padding: 0 48px 72px;
 }
 
-.slide-content.sm-and-up {
-  top: 56px;
-  align-items: center;
-}
-
-.slide-container {
+.hero-content {
   width: 100%;
   max-width: 1480px;
   margin: 0 auto;
-  padding: 0 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  color: #fff;
 }
 
-.slide-content.sm-and-up .slide-container {
-  padding: 0 32px;
+/* Meta row:类型 pill + IMDb 评分 + 年份 + 时长 */
+.hero-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.88);
 }
 
-.slide-info {
-  max-width: min(44rem, 48%);
-  padding: 32px 0;
+.hero-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-@media (max-width: 599px) {
-  .slide-info { max-width: 100%; }
-  .slide-container { padding: 0 20px 24px; }
-}
-
-.slide-overline {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: rgba(255,255,255,0.6);
-  margin: 0 0 8px;
-}
-
-.slide-title {
-  font-size: clamp(2rem, 4vw, 3.4rem);
+.hero-rating strong {
   font-weight: 700;
   color: #fff;
-  margin: 0 0 12px;
-  line-height: 1.15;
-  text-shadow: 0 2px 12px rgba(0,0,0,0.5);
 }
 
-.slide-overview {
-  margin: 0 0 18px;
-  max-width: 52ch;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 14px;
+.hero-rating-label {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.hero-dot {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Title:Manrope 巨幅 editorial */
+.hero-title {
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: clamp(2.25rem, 6.5vw, 5.5rem);
+  font-weight: 900;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  text-transform: none;
+  margin: 0;
+  max-width: 20ch;
+  color: #fff;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+}
+
+.hero-overview {
+  max-width: 56ch;
+  margin: 0;
+  font-size: 15px;
   line-height: 1.7;
+  color: rgba(255, 255, 255, 0.78);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.slide-meta {
+/* Actions */
+.hero-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-bottom: 20px;
-  font-size: 14px;
-  color: rgba(255,255,255,0.7);
+  margin-top: 8px;
 }
 
-.slide-rating { color: #ffd700; }
-
-.slide-buttons {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+.hero-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 14px 26px;
+  border-radius: 14px;
+  transition: transform 0.2s ease, background 0.2s ease, filter 0.2s ease;
+}
+.hero-btn:active {
+  transform: translateY(1px);
 }
 
-.btn-play {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 24px; border-radius: var(--app-radius);
-  background: rgba(255,255,255,0.92); color: #0f172a;
-  font-size: 15px; font-weight: 600;
-  border: none; cursor: pointer; transition: filter 0.2s;
+.hero-btn-primary {
+  background: var(--app-primary, #e50914);
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
 }
-.btn-play:hover { filter: brightness(1.15); }
-
-.btn-detail {
-  display: inline-flex; align-items: center;
-  padding: 10px 24px; border-radius: var(--app-radius);
-  background: rgba(255,255,255,0.08); color: #fff;
-  font-size: 15px; font-weight: 600;
-  border: 1px solid rgba(255,255,255,0.18);
-  cursor: pointer; transition: background 0.2s;
-  min-width: 11em; justify-content: center;
+.hero-btn-primary:hover {
+  filter: brightness(1.1);
 }
-.btn-detail:hover { background: rgba(255,255,255,0.16); }
 
+.hero-btn-glass {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  min-width: 140px;
+}
+.hero-btn-glass:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.hero-btn-square {
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+}
+.hero-btn-square:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.hero-btn-square[aria-pressed='true'] {
+  color: var(--app-accent-red-soft, #ffb4aa);
+}
+
+/* Pagination:右下胶囊 */
 .hero-pagination {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 12px;
+  right: 32px;
+  bottom: 28px;
   z-index: 10;
   display: flex;
-  justify-content: center;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .hero-carousel :deep(.swiper-pagination-bullet) {
-  width: 8px; height: 8px;
-  background: rgba(255,255,255,0.4);
-  opacity: 1; transition: all 0.3s;
+  width: 8px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.32);
+  opacity: 1;
+  border-radius: 999px;
+  transition: width 0.3s ease, background 0.3s ease;
 }
 .hero-carousel :deep(.swiper-pagination-bullet-active) {
-  background: #fff; width: 24px; border-radius: var(--app-radius);
+  background: #fff;
+  width: 28px;
+}
+
+@media (max-width: 959px) {
+  .hero-swiper :deep(.swiper-slide) {
+    height: clamp(440px, 66vh, 620px);
+  }
+  .hero-inner {
+    padding: 0 28px 56px;
+  }
+  .hero-pagination {
+    right: 20px;
+    bottom: 20px;
+  }
 }
 
 @media (max-width: 599px) {
   .hero-carousel {
-    margin: 8px 0 0;
-    width: 100%;
-    border-radius: var(--app-radius);
+    border-radius: var(--app-radius, 16px);
   }
-  .slide-title { font-size: 24px; }
-  .slide-overview { -webkit-line-clamp: 2; }
+  .hero-swiper :deep(.swiper-slide) {
+    height: clamp(400px, 62vh, 520px);
+  }
+  .hero-inner {
+    padding: 0 20px 40px;
+  }
+  .hero-content {
+    gap: 14px;
+  }
+  .hero-title {
+    font-size: clamp(1.9rem, 8vw, 2.6rem);
+    max-width: 100%;
+  }
+  .hero-overview {
+    -webkit-line-clamp: 2;
+    font-size: 13px;
+  }
+  .hero-btn {
+    padding: 12px 20px;
+    font-size: 14px;
+  }
+  .hero-btn-glass {
+    min-width: 0;
+  }
+  .hero-btn-square {
+    width: 46px;
+    height: 46px;
+  }
+  .hero-pagination {
+    right: 16px;
+    bottom: 14px;
+  }
 }
 </style>
