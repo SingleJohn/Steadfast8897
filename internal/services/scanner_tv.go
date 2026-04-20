@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -278,6 +279,11 @@ func scanOneShow(
 		seasonDirs = append(seasonDirs, seasonDir{path: showPath, seasonNum: 1})
 	}
 
+	// 已刮削 Series 下新增 Episode 的增量补全:收集本次新建 Episode 所在的 seasonID。
+	// scanOneShow 结束时,若 Series.tmdb_id 存在,就针对这些 season 入队
+	// backfill_episode_name / backfill_episode_image,避免新集停在占位符名/无缩略图状态。
+	newEpisodeSeasonIDs := map[string]struct{}{}
+
 	for _, sd := range seasonDirs {
 		seasonNum := sd.seasonNum
 		seasonPath := sd.path
@@ -349,6 +355,7 @@ func scanOneShow(
 				}
 
 				if createdEpisode {
+					newEpisodeSeasonIDs[seasonID] = struct{}{}
 					nfoStem := strings.TrimSuffix(primary.name, filepath.Ext(primary.name))
 					epNfoName := nfoStem + ".nfo"
 					for _, entry := range seasonCache {
@@ -366,6 +373,28 @@ func scanOneShow(
 		}
 
 		pool.Exec(ctx, "UPDATE items SET updated_at = NOW() WHERE id = $1::uuid AND type = 'Series'", seriesID)
+	}
+
+	// 已刮削 Series 下有新 Episode → 入队 backfill,避免新集/新季停在占位符。
+	// Series 已识别过(tmdb_id 非空)时,autoScrapeNewItems 不会重入队它,
+	// BackfillTask 又只在用户手动触发或启动 24h 后跑,所以这里必须主动入队。
+	if len(newEpisodeSeasonIDs) > 0 {
+		var seriesTmdbID *int64
+		_ = pool.QueryRow(ctx,
+			"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Series'",
+			seriesID,
+		).Scan(&seriesTmdbID)
+		if seriesTmdbID != nil && *seriesTmdbID > 0 {
+			queue := NewScrapeQueue(pool)
+			_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
+			seasonIDs := make([]string, 0, len(newEpisodeSeasonIDs))
+			for sid := range newEpisodeSeasonIDs {
+				seasonIDs = append(seasonIDs, sid)
+			}
+			_, _ = queue.EnqueueBatch(ctx, seasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
+			slog.Info("[Scan] New episodes under scraped series, enqueued backfill",
+				"series", seriesID, "show", finalShowName, "seasons", len(seasonIDs))
+		}
 	}
 }
 

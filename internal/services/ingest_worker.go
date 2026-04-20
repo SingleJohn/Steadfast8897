@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +19,15 @@ import (
 const (
 	ingestChannelBuffer = 10000
 	ingestWorkers       = 4
+
+	// fsnotify 对下载中的视频文件会持续推 Write 事件,首次读到的 mediainfo/size 可能不完整;
+	// processCreate 入口对视频文件做"写入稳定"判定 —— 两次 stat 间隔 fileStableInterval,
+	// size+mtime 连续 fileStableChecks 次不变才算稳定;总 stat 次数上限 fileStableMaxAttempts,
+	// 防下载中的文件把 worker 永久挂住。不稳定就丢弃事件,fsnotify 后续 Write(或下载完成的
+	// close → IN_CLOSE_WRITE)会再次触发。
+	fileStableInterval    = 2 * time.Second
+	fileStableChecks      = 2
+	fileStableMaxAttempts = 5
 )
 
 // IngestWorker 是扫描/监控/Webhook 统一的事件消费端。
@@ -42,6 +52,11 @@ type IngestWorker struct {
 	// inflight 记录 Tag 对应的在处理事件数,Barrier 轮询等待归零。
 	// 只对设了 Tag 的 scan 事件计数;FileWatcher/Webhook 事件 Tag 为空,不进入计数。
 	inflight sync.Map // key: Tag(string) → *atomic.Int64
+
+	// stabilizing 正在做"文件写入稳定性检查"的路径集合。
+	// fsnotify 对下载中视频文件高频推 Write,若每个事件都挂住一个 worker 做 2s 稳定性检查,
+	// 4 个 worker 会被打满。这里做去重:同路径已在等就直接丢当前事件,首次等完后才释放。
+	stabilizing sync.Map // key: path(string) → struct{}{}
 }
 
 func NewIngestWorker(pool *pgxpool.Pool, cache *CacheService) *IngestWorker {
@@ -261,6 +276,23 @@ func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 }
 
 func (w *IngestWorker) processCreate(ctx context.Context, e IngestEvent) error {
+	// 只对 fsnotify 来源的视频文件做稳定性检查:
+	//   - scan 源产的事件文件已在磁盘静止
+	//   - webhook 源通常是下载完成通知
+	//   - 目录 Create 不涉及文件内容,无需等
+	//   - 非视频文件(nfo/jpg/mediainfo.json)体积小,写入瞬时,无害
+	if e.Source == "fsnotify" && !e.IsDir && IsVideoExt(strings.ToLower(filepath.Ext(e.Path))) {
+		if _, loaded := w.stabilizing.LoadOrStore(e.Path, struct{}{}); loaded {
+			slog.Debug("[Ingest] Skip event: path already stabilizing", "path", e.Path)
+			return nil
+		}
+		defer w.stabilizing.Delete(e.Path)
+		if !waitFileStable(ctx, e.Path) {
+			slog.Debug("[Ingest] Skip event: file still being written", "path", e.Path)
+			return nil
+		}
+	}
+
 	libID, colType, ok := w.libs.Match(e.Path)
 	if !ok {
 		slog.Debug("[Ingest] Create skipped: path outside any library", "path", e.Path)
@@ -273,6 +305,42 @@ func (w *IngestWorker) processCreate(ctx context.Context, e IngestEvent) error {
 		return w.processTvCreate(ctx, libID, e)
 	}
 	return nil
+}
+
+// waitFileStable 两次 stat 间隔 fileStableInterval,size+mtime 连续 fileStableChecks 次
+// 不变才算稳定。总 stat 次数上限 fileStableMaxAttempts,防下载中的大文件永久挂住 worker。
+// 文件不存在、期间 stat 失败、ctx 取消、超过尝试次数 → 返回 false(丢弃事件)。
+func waitFileStable(ctx context.Context, path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	lastSize := info.Size()
+	lastMtime := info.ModTime()
+
+	stable := 0
+	for attempts := 0; attempts < fileStableMaxAttempts; attempts++ {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(fileStableInterval):
+		}
+		info, err = os.Stat(path)
+		if err != nil {
+			return false
+		}
+		if info.Size() == lastSize && info.ModTime().Equal(lastMtime) {
+			stable++
+			if stable >= fileStableChecks {
+				return true
+			}
+			continue
+		}
+		lastSize = info.Size()
+		lastMtime = info.ModTime()
+		stable = 0
+	}
+	return false
 }
 
 func (w *IngestWorker) processMovieCreate(ctx context.Context, libID string, e IngestEvent) error {
