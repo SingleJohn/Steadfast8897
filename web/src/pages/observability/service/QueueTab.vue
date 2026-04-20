@@ -44,7 +44,7 @@ const POLL_INTERVAL = 5000
 const expandedId = ref<number | null>(null)
 const detailCache = reactive<Record<number, ScrapeQueueTaskDetail>>({})
 const detailLoading = ref<number | null>(null)
-const detailError = ref<Record<number, string>>({})
+const detailError = reactive<Record<number, string>>({})
 
 async function refresh() {
   loading.value = true
