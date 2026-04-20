@@ -11,6 +11,7 @@ import (
 //
 //	GET  /Admin/ScrapeQueue/Stats             → pending/running/done/failed 计数
 //	GET  /Admin/ScrapeQueue/Recent?limit=20   → 最近 failed+running 任务(含 item_name/error)
+//	GET  /Admin/ScrapeQueue/Task/:id          → 单条任务详情(含 request_url / response_status / response_sample)
 //	POST /Admin/ScrapeQueue/Retry/:id         → 重置单个 failed 任务为 pending
 //	POST /Admin/ScrapeQueue/RetryAllFailed    → 重置所有 failed 任务
 //	GET  /Admin/Metrics/Snapshot              → ingest/scrape/tmdb 的当前快照
@@ -20,6 +21,7 @@ func RegisterAdminQueueRoutes(group *gin.RouterGroup, state *AppState, adminMW g
 	_ = state
 	group.GET("/Admin/ScrapeQueue/Stats", adminMW, getScrapeQueueStats)
 	group.GET("/Admin/ScrapeQueue/Recent", adminMW, getScrapeQueueRecent)
+	group.GET("/Admin/ScrapeQueue/Task/:id", adminMW, getScrapeQueueTaskDetail)
 	group.POST("/Admin/ScrapeQueue/Retry/:id", adminMW, retryScrapeQueueTask)
 	group.POST("/Admin/ScrapeQueue/RetryAllFailed", adminMW, retryAllFailedTasks)
 	group.GET("/Admin/Metrics/Snapshot", adminMW, getMetricsSnapshot)
@@ -64,6 +66,25 @@ func getScrapeQueueRecent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+func getScrapeQueueTaskDetail(c *gin.Context) {
+	state := GetState(c)
+	if state.ScrapeQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "scrape queue not initialized"})
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid id"})
+		return
+	}
+	t, err := state.ScrapeQueue.GetTaskDetail(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, t)
 }
 
 func retryScrapeQueueTask(c *gin.Context) {

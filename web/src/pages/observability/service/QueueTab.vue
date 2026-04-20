@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import {
   NCard,
   NButton,
@@ -15,6 +15,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import {
   getScrapeQueueStats,
   getScrapeQueueRecent,
+  getScrapeQueueTaskDetail,
   retryScrapeQueueTask,
   retryAllFailedScrapeQueueTasks,
   getMetricsSnapshot,
@@ -22,6 +23,7 @@ import {
   setIngestWorkerCount,
   type ScrapeQueueStats,
   type ScrapeQueueTask,
+  type ScrapeQueueTaskDetail,
   type MetricsSnapshot,
 } from '@/api/client'
 
@@ -38,6 +40,11 @@ const workerCountSaving = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 5000
+
+const expandedId = ref<number | null>(null)
+const detailCache = reactive<Record<number, ScrapeQueueTaskDetail>>({})
+const detailLoading = ref<number | null>(null)
+const detailError = ref<Record<number, string>>({})
 
 async function refresh() {
   loading.value = true
@@ -66,9 +73,50 @@ async function handleRetry(id: number) {
   try {
     await retryScrapeQueueTask(id)
     showToast('已重置为 pending', 'success')
+    delete detailCache[id]
+    delete detailError[id]
+    if (expandedId.value === id) expandedId.value = null
     await refresh()
   } catch (e: any) {
     showToast(e.message || '重试失败', 'error')
+  }
+}
+
+async function fetchDetail(id: number) {
+  detailLoading.value = id
+  delete detailError[id]
+  try {
+    detailCache[id] = await getScrapeQueueTaskDetail(id)
+  } catch (e: any) {
+    detailError[id] = e?.message || '加载失败'
+  } finally {
+    if (detailLoading.value === id) detailLoading.value = null
+  }
+}
+
+async function toggleExpand(id: number) {
+  if (expandedId.value === id) {
+    expandedId.value = null
+    return
+  }
+  expandedId.value = id
+  if (!detailCache[id]) await fetchDetail(id)
+}
+
+function statusTagType(status?: number): 'success' | 'warning' | 'error' | 'default' {
+  if (!status) return 'default'
+  if (status >= 200 && status < 300) return 'success'
+  if (status >= 400 && status < 500) return 'warning'
+  if (status >= 500) return 'error'
+  return 'default'
+}
+
+function formatResponseBody(s?: string): string {
+  if (!s) return ''
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return s
   }
 }
 
@@ -224,33 +272,68 @@ onBeforeUnmount(() => {
       <NSpin :show="loading && !firstLoaded">
         <EmptyState v-if="firstLoaded && recent.length === 0" description="暂无 failed / running 任务" />
         <div v-else class="task-list">
-          <div
-            v-for="t in recent"
-            :key="t.id"
-            class="task-row"
-            :class="`status-${t.status}`"
-          >
-            <div class="task-main">
-              <NTag :type="statusColor(t.status)" size="small">{{ t.status }}</NTag>
-              <NTag size="small" class="type-tag">{{ taskTypeLabel(t.task_type) }}</NTag>
-              <span class="task-name">{{ t.item_name || t.item_id }}</span>
-              <span class="task-type-hint">{{ t.item_type }}</span>
+          <div v-for="t in recent" :key="t.id" class="task-item">
+            <div
+              class="task-row"
+              :class="[`status-${t.status}`, { expanded: expandedId === t.id }]"
+              @click="toggleExpand(t.id)"
+            >
+              <div class="task-main">
+                <NTag :type="statusColor(t.status)" size="small">{{ t.status }}</NTag>
+                <NTag size="small" class="type-tag">{{ taskTypeLabel(t.task_type) }}</NTag>
+                <span class="task-name">{{ t.item_name || t.item_id }}</span>
+                <span class="task-type-hint">{{ t.item_type }}</span>
+                <span class="expand-caret">{{ expandedId === t.id ? '▾' : '▸' }}</span>
+              </div>
+              <div class="task-meta" @click.stop>
+                <span v-if="t.retry_count > 0" class="meta-pill">重试 {{ t.retry_count }}</span>
+                <span class="meta-pill">下次 {{ formatDate(t.next_run_at) }}</span>
+                <span v-if="t.last_error" class="meta-pill err" :title="t.last_error">
+                  {{ t.last_error.length > 80 ? t.last_error.slice(0, 80) + '…' : t.last_error }}
+                </span>
+                <NButton
+                  v-if="t.status === 'failed'"
+                  size="tiny"
+                  type="primary"
+                  ghost
+                  @click.stop="handleRetry(t.id)"
+                >
+                  重试
+                </NButton>
+              </div>
             </div>
-            <div class="task-meta">
-              <span v-if="t.retry_count > 0" class="meta-pill">重试 {{ t.retry_count }}</span>
-              <span class="meta-pill">下次 {{ formatDate(t.next_run_at) }}</span>
-              <span v-if="t.last_error" class="meta-pill err" :title="t.last_error">
-                {{ t.last_error.length > 80 ? t.last_error.slice(0, 80) + '…' : t.last_error }}
-              </span>
-              <NButton
-                v-if="t.status === 'failed'"
-                size="tiny"
-                type="primary"
-                ghost
-                @click="handleRetry(t.id)"
-              >
-                重试
-              </NButton>
+            <div v-if="expandedId === t.id" class="task-detail">
+              <NSpin :show="detailLoading === t.id && !detailCache[t.id]">
+                <div v-if="detailError[t.id]" class="detail-error">
+                  加载详情失败:{{ detailError[t.id] }}
+                </div>
+                <div v-else-if="detailCache[t.id]" class="detail-body">
+                  <div class="detail-row" v-if="detailCache[t.id].request_url">
+                    <div class="detail-label">Request URL</div>
+                    <code class="detail-url">{{ detailCache[t.id].request_url }}</code>
+                  </div>
+                  <div class="detail-row" v-if="detailCache[t.id].response_status">
+                    <div class="detail-label">HTTP Status</div>
+                    <NTag :type="statusTagType(detailCache[t.id].response_status)" size="small">
+                      {{ detailCache[t.id].response_status }}
+                    </NTag>
+                  </div>
+                  <div class="detail-row" v-if="detailCache[t.id].last_error">
+                    <div class="detail-label">Error</div>
+                    <pre class="detail-pre err-pre">{{ detailCache[t.id].last_error }}</pre>
+                  </div>
+                  <div class="detail-row" v-if="detailCache[t.id].response_sample">
+                    <div class="detail-label">Response Body</div>
+                    <pre class="detail-pre">{{ formatResponseBody(detailCache[t.id].response_sample) }}</pre>
+                  </div>
+                  <div
+                    v-if="!detailCache[t.id].request_url && !detailCache[t.id].response_sample && !detailCache[t.id].last_error"
+                    class="detail-empty"
+                  >
+                    无诊断信息(本地任务或尚未失败)
+                  </div>
+                </div>
+              </NSpin>
             </div>
           </div>
         </div>
@@ -337,6 +420,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
 }
+.task-item {
+  display: flex;
+  flex-direction: column;
+}
 .task-row {
   display: flex;
   justify-content: space-between;
@@ -347,6 +434,21 @@ onBeforeUnmount(() => {
   border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
   gap: 12px;
   flex-wrap: wrap;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.task-row:hover {
+  background: var(--n-color, rgba(0, 0, 0, 0.04));
+}
+.task-row.expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.expand-caret {
+  font-size: 11px;
+  color: var(--n-text-color-3, #999);
+  margin-left: 4px;
+  user-select: none;
 }
 .task-row.status-failed {
   border-left: 3px solid #f56c6c;
@@ -395,5 +497,66 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.task-detail {
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
+  border-top: none;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  background: var(--n-color, rgba(0, 0, 0, 0.015));
+}
+.detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.detail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--n-text-color-3, #888);
+  letter-spacing: 0.04em;
+}
+.detail-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  background: var(--n-card-color, rgba(0, 0, 0, 0.04));
+  border-radius: 4px;
+  word-break: break-all;
+  user-select: all;
+}
+.detail-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--n-card-color, rgba(0, 0, 0, 0.04));
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.detail-pre.err-pre {
+  color: #f56c6c;
+  background: rgba(245, 108, 108, 0.08);
+}
+.detail-empty {
+  font-size: 12px;
+  color: var(--n-text-color-3, #888);
+  font-style: italic;
+}
+.detail-error {
+  font-size: 12px;
+  color: #f56c6c;
 }
 </style>

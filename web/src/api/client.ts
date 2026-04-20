@@ -680,6 +680,12 @@ export type ScrapeQueueTask = {
   updated_at: string;
 };
 
+export type ScrapeQueueTaskDetail = ScrapeQueueTask & {
+  request_url?: string;
+  response_status?: number;
+  response_sample?: string;
+};
+
 export type MetricsSnapshot = {
   ingest_channel_depth?: number;
   ingest_overflow_total?: number;
@@ -697,6 +703,10 @@ export async function getScrapeQueueStats() {
 
 export async function getScrapeQueueRecent(limit = 20) {
   return requestJson<{ tasks: ScrapeQueueTask[] }>(`/Admin/ScrapeQueue/Recent?limit=${limit}`);
+}
+
+export async function getScrapeQueueTaskDetail(id: number) {
+  return requestJson<ScrapeQueueTaskDetail>(`/Admin/ScrapeQueue/Task/${id}`);
 }
 
 export async function retryScrapeQueueTask(id: number) {

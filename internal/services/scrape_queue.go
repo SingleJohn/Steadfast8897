@@ -140,21 +140,41 @@ func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error)
 }
 
 // Done 标记成功完成。保留一段时间供审计,后续由 PruneDone 清理。
+// 同时清空诊断三列,避免前端偶然看到过时的 URL/body。
 func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
 	_, _ = q.pool.Exec(ctx,
-		`UPDATE scrape_queue SET status = 'done', last_error = NULL, updated_at = NOW() WHERE id = $1`,
+		`UPDATE scrape_queue
+		    SET status = 'done', last_error = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        updated_at = NOW()
+		  WHERE id = $1`,
 		id)
 }
 
 // Fail 标记失败并按指数退避排下次运行。超过 maxRetry 就落成 failed。
-func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string) {
+// diag 允许为 nil(非 HTTP 任务或上游没注入时三列写 NULL)。
+func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string, diag *ScrapeDiag) {
+	var reqURL, respBody interface{}
+	var respStatus interface{}
+	if diag != nil && diag.Attempts > 0 {
+		reqURL = diag.URL
+		if diag.Status > 0 {
+			respStatus = diag.Status
+		}
+		if diag.Body != "" {
+			respBody = diag.Body
+		}
+	}
+
 	if retryCount+1 >= maxRetry {
 		_, _ = q.pool.Exec(ctx,
 			`UPDATE scrape_queue
 			    SET status = 'failed', retry_count = retry_count + 1,
-			        last_error = $2, updated_at = NOW()
+			        last_error = $2,
+			        request_url = $3, response_status = $4, response_sample = $5,
+			        updated_at = NOW()
 			  WHERE id = $1`,
-			id, truncateError(errMsg))
+			id, truncateError(errMsg), reqURL, respStatus, respBody)
 		return
 	}
 	backoff := retryBackoff(retryCount + 1)
@@ -162,9 +182,11 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 		`UPDATE scrape_queue
 		    SET status = 'pending', retry_count = retry_count + 1,
 		        last_error = $2, next_run_at = NOW() + $3::interval,
+		        request_url = $4, response_status = $5, response_sample = $6,
 		        updated_at = NOW()
 		  WHERE id = $1`,
-		id, truncateError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())))
+		id, truncateError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())),
+		reqURL, respStatus, respBody)
 }
 
 // RecentTask 给前端队列面板用:最近失败任务(含 item 名 / error / retry)。
@@ -219,11 +241,14 @@ func (q *ScrapeQueue) Recent(ctx context.Context, limit int) ([]RecentTask, erro
 }
 
 // RetryTask 把单个 failed 任务重置为 pending(立即重试)。
+// 同时清诊断三列,下次失败时由 worker 重新写入。
 func (q *ScrapeQueue) RetryTask(ctx context.Context, id int64) error {
 	_, err := q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL, updated_at = NOW()
+		        last_error = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        updated_at = NOW()
 		  WHERE id = $1 AND status = 'failed'`,
 		id)
 	return err
@@ -234,12 +259,56 @@ func (q *ScrapeQueue) RetryAllFailed(ctx context.Context) (int64, error) {
 	tag, err := q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL, updated_at = NOW()
+		        last_error = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        updated_at = NOW()
 		  WHERE status = 'failed'`)
 	if err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// TaskDetail 是 Recent 单行 + 诊断三列,详情接口专用。
+// response_sample 可能几十 KB,列表接口不返回这个,只在点开时按 id 拉取。
+type TaskDetail struct {
+	RecentTask
+	RequestURL     string `json:"request_url,omitempty"`
+	ResponseStatus *int   `json:"response_status,omitempty"`
+	ResponseSample string `json:"response_sample,omitempty"`
+}
+
+// GetTaskDetail 按 id 拉一条任务的完整信息(含 response_sample)。
+func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail, error) {
+	var t TaskDetail
+	var tt string
+	var reqURL, respSample *string
+	var respStatus *int
+	err := q.pool.QueryRow(ctx,
+		`SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
+		        sq.task_type, sq.status, sq.priority, sq.retry_count,
+		        COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at,
+		        sq.request_url, sq.response_status, sq.response_sample
+		   FROM scrape_queue sq
+		   LEFT JOIN items i ON i.id = sq.item_id
+		  WHERE sq.id = $1`,
+		id,
+	).Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
+		&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
+		&t.NextRunAt, &t.UpdatedAt,
+		&reqURL, &respStatus, &respSample)
+	if err != nil {
+		return nil, err
+	}
+	t.TaskType = ScrapeTaskType(tt)
+	if reqURL != nil {
+		t.RequestURL = *reqURL
+	}
+	t.ResponseStatus = respStatus
+	if respSample != nil {
+		t.ResponseSample = *respSample
+	}
+	return &t, nil
 }
 
 // ReconcileOnStartup 把崩溃前遗留的 running 任务(updated_at 超过 10 分钟)重置为 pending,

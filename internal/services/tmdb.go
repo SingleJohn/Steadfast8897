@@ -338,6 +338,7 @@ func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[strin
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			DiagFrom(ctx).Record(reqURL, 0, nil, false)
 			slog.Debug("[TMDB] Request error", "error", err)
 			return nil, err
 		}
@@ -345,10 +346,14 @@ func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[strin
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			DiagFrom(ctx).Record(reqURL, resp.StatusCode, nil, false)
 			return nil, fmt.Errorf("read body: %w", err)
 		}
 
+		diag := DiagFrom(ctx)
+
 		if resp.StatusCode == http.StatusTooManyRequests {
+			diag.Record(reqURL, resp.StatusCode, body, false)
 			if attempt < maxRetries {
 				suffix := key
 				if len(suffix) > 6 {
@@ -363,14 +368,17 @@ func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[strin
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			diag.Record(reqURL, resp.StatusCode, body, false)
 			slog.Debug("[TMDB] HTTP error", "status", resp.StatusCode)
 			return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
 
 		var result map[string]interface{}
 		if err := json.Unmarshal(body, &result); err != nil {
+			diag.Record(reqURL, resp.StatusCode, body, false)
 			return nil, fmt.Errorf("json decode: %w", err)
 		}
+		diag.Record(reqURL, resp.StatusCode, body, true)
 		return result, nil
 	}
 	return nil, fmt.Errorf("exhausted retries")

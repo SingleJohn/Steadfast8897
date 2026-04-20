@@ -135,6 +135,7 @@ func (w *ScrapeWorker) consume(ctx context.Context, id int) {
 }
 
 func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
+	ctx, diag := WithDiag(ctx)
 	start := time.Now()
 	err := w.dispatch(ctx, t)
 	dur := time.Since(start)
@@ -143,7 +144,7 @@ func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
 		slog.Info("[ScrapeWorker] task failed",
 			"worker", workerID, "type", t.TaskType, "item", t.ItemID,
 			"retry", t.RetryCount, "error", err, "duration", dur)
-		w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error())
+		w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error(), diag)
 		return
 	}
 
