@@ -11,12 +11,14 @@ import {
   SettingsOutline,
 } from '@vicons/ionicons5'
 import { useAuthStore } from '@/stores/auth'
+import { useUiStore } from '@/stores/ui'
 import ThemeDrawer from '@/components/ThemeDrawer.vue'
 import { logout as apiLogout } from '@/api/client'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const ui = useUiStore()
 const message = useMessage()
 
 const searchTerm = ref('')
@@ -107,17 +109,19 @@ function goBack() {
 }
 
 onMounted(() => {
+  ui.forceDark = true
   window.addEventListener('scroll', handleScroll, { passive: true })
   handleScroll()
 })
 
 onUnmounted(() => {
+  ui.forceDark = false
   window.removeEventListener('scroll', handleScroll)
 })
 </script>
 
 <template>
-  <div class="media-shell" :class="{ 'media-shell-transparent': transparentShell }">
+  <div class="media-shell cinematic" :class="{ 'media-shell-transparent': transparentShell }">
     <transition name="backdrop-fade">
       <div v-if="showBackdrop" class="page-backdrop" :style="{ backgroundImage: `url(${backdropUrl})` }" />
     </transition>
@@ -166,7 +170,7 @@ onUnmounted(() => {
         </div>
       </main>
     </div>
-    <theme-drawer v-model:show="themeOpen" />
+    <theme-drawer v-model:show="themeOpen" :hide-color-mode="true" />
   </div>
 </template>
 
@@ -341,15 +345,14 @@ onUnmounted(() => {
   transform: translateY(-8px);
 }
 
-:global(.app-dark) .media-shell {
-  background:
-    radial-gradient(circle at top left, rgba(100, 181, 246, 0.12), transparent 24%),
-    linear-gradient(180deg, rgba(16, 24, 40, 0.98), rgba(12, 18, 32, 0.98));
+/* 前台强制 cinematic 深色,背景由 .cinematic token 驱动 */
+.media-shell.cinematic {
+  background: var(--app-bg);
 }
 
 :global(.app-dark) .media-topbar {
-  background: rgba(8, 15, 28, 0.92);
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+  background: rgba(14, 14, 14, 0.92);
+  border-bottom-color: transparent;
 }
 
 :global(.app-dark) .icon-button,

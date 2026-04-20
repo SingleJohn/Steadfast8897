@@ -477,3 +477,134 @@ html.app-dark ::-webkit-scrollbar-thumb {
 html.app-dark ::-webkit-scrollbar-thumb:hover {
   background: var(--c-slate-600);
 }
+
+/* ============================================================
+ * Cinematic Sub-Theme (用户前台 / MediaLayout)
+ * ------------------------------------------------------------
+ * 通过挂在 MediaLayout 根节点的 .cinematic 类覆写 token。
+ * 策略:
+ *   - surface / text / radius / shadow 全部换成"影院"深黑分层
+ *   - 不覆写 --app-primary,继续尊重 ThemeDrawer 里的用户主色
+ *   - 新增 --app-accent-red 固定电影锚色,仅用于选中态、类型徽章
+ *   - 禁用 1px 实线边框(No-Line Rule),改用 tonal shift + 环境阴影
+ * ============================================================ */
+.cinematic {
+  --app-bg: #0e0e0e;
+  --app-surface-1: rgba(28, 27, 27, 0.72);
+  --app-surface-2: rgba(42, 42, 42, 0.55);
+  --app-surface-solid: #1c1b1b;
+  --app-surface-solid-2: #2a2a2a;
+  --app-surface-solid-3: #353534;
+
+  --app-border: rgba(94, 63, 59, 0.18);
+  --app-border-hover: rgba(94, 63, 59, 0.32);
+  --app-card-border: transparent;
+  --app-card-bg: #1c1b1b;
+  --app-card-bg-subtle: #201f1f;
+
+  --app-text: #e5e2e1;
+  --app-text-muted: #e9bcb6;
+
+  --app-radius-sm: 10px;
+  --app-radius: 16px;
+  --app-radius-card: 20px;
+  --app-radius-xl: 24px;
+
+  --app-shadow-0: 0 2px 6px rgba(0, 0, 0, 0.45);
+  --app-shadow-1: 0 8px 16px rgba(0, 0, 0, 0.45);
+  --app-shadow-card: 0 16px 32px rgba(0, 0, 0, 0.5);
+  --app-shadow-hover: 0 24px 48px rgba(0, 0, 0, 0.55);
+  --app-shadow-ambient: 0 24px 48px rgba(0, 0, 0, 0.55);
+
+  --app-accent-red: #e50914;
+  --app-accent-red-soft: #ffb4aa;
+  --app-accent-gradient: linear-gradient(135deg, #ffb4aa 0%, #e50914 100%);
+  --app-font-display: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  color: var(--app-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.cinematic ::selection {
+  background: var(--app-accent-red);
+  color: #fff7f6;
+}
+
+/* ---- Typography utilities ---- */
+.cinematic .font-display,
+.cinematic .headline {
+  font-family: var(--app-font-display);
+  letter-spacing: -0.02em;
+}
+
+/* ---- 段标题:左侧 4px 竖条(用户 primary 色) ---- */
+.cinematic .section-title-accent {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--app-font-display);
+  font-weight: 800;
+  font-size: 1.375rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--app-text);
+  margin: 0;
+}
+.cinematic .section-title-accent::before {
+  content: '';
+  width: 4px;
+  height: 1.2em;
+  background: var(--app-primary, #e50914);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* ---- No-Line Rule: cinematic scope 内的卡片去边框 ---- */
+.cinematic .n-card:not(.n-card--embedded) {
+  background: var(--app-card-bg);
+  border: none;
+  box-shadow: var(--app-shadow-1);
+}
+.cinematic .card {
+  border: none;
+  box-shadow: var(--app-shadow-1);
+}
+.cinematic .card.flat,
+.cinematic .card.subtle {
+  box-shadow: none;
+}
+.cinematic .card-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.cinematic .card-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ---- 环境阴影 utility(卡片 hover / 悬浮层用) ---- */
+.shadow-ambient {
+  box-shadow: var(--app-shadow-ambient);
+}
+
+/* ---- Pill / Chip 原语(后续 Hero、详情页复用) ---- */
+.cinematic .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  background: var(--app-surface-solid-3);
+  color: var(--app-text);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.cinematic .pill.pill-accent {
+  background: var(--app-accent-red);
+  color: #fff7f6;
+}
+.cinematic .pill.pill-glass {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}

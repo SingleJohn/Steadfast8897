@@ -14,9 +14,13 @@ import {
 
 import { useUiStore, type ColorMode } from '@/stores/ui'
 
-defineProps<{
-  show: boolean
-}>()
+withDefaults(
+  defineProps<{
+    show: boolean
+    hideColorMode?: boolean
+  }>(),
+  { hideColorMode: false },
+)
 
 const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
@@ -38,18 +42,20 @@ function close() {
   <n-drawer :show="show" placement="right" :width="360" @update:show="emit('update:show', $event)">
     <n-drawer-content title="主题设置" :closable="true" @close="close">
       <n-space vertical :size="16">
-        <n-form-item label="模式">
-          <n-radio-group v-model:value="ui.mode">
-            <n-radio-button
-              v-for="opt in modeOptions"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </n-radio-group>
-        </n-form-item>
+        <template v-if="!hideColorMode">
+          <n-form-item label="模式">
+            <n-radio-group v-model:value="ui.mode">
+              <n-radio-button
+                v-for="opt in modeOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </n-radio-group>
+          </n-form-item>
 
-        <n-divider />
+          <n-divider />
+        </template>
 
         <n-form-item label="主色">
           <n-color-picker v-model:value="ui.primaryColor" :show-alpha="false" />
