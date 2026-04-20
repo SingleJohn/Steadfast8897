@@ -100,7 +100,8 @@ func main() {
 	progressBuffer := services.NewProgressBuffer(pool)
 	scanProgress := services.NewScanProgressTracker(pool)
 	probeTask := services.NewProbeTask()
-	fileWatcher := services.NewFileWatcher()
+	ingestWorker := services.NewIngestWorker(pool, cache)
+	fileWatcher := services.NewFileWatcher(ingestWorker)
 	scrapeTask := services.NewScrapeTask()
 
 	var proxyURL *string
@@ -183,6 +184,7 @@ func main() {
 	if err := taskcenter.ReconcileOnStartup(ctx, pool); err != nil {
 		slog.Warn("task_runs reconcile on startup failed", "error", err)
 	}
+	go ingestWorker.Run(ctx)
 	fileWatcher.Start(ctx, pool, cache)
 
 	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
