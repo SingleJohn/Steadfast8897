@@ -242,6 +242,13 @@ function humanBytes(b: number): string {
 .sysmet-net-spark :deep(.mini-sparkline:first-child) { color: #f97316; }
 .sysmet-net-spark :deep(.mini-sparkline:last-child) { color: #fbbf24; }
 
+/* sparkline 横向填满卡片,不再被写死的 width=260 约束;
+   viewBox 仍用组件 props 的数值作为坐标系,preserveAspectRatio="none" +
+   non-scaling-stroke 确保拉伸时线形正确、线粗稳定。 */
+.sysmet-card :deep(.mini-sparkline) {
+  width: 100%;
+}
+
 @media (max-width: 1200px) {
   .sysmet-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sysmet-net { grid-column: 1 / -1; }

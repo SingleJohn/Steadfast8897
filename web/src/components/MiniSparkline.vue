@@ -75,7 +75,15 @@ const areaPath = computed(() => {
   >
     <template v-if="hasData">
       <path :d="areaPath" fill="currentColor" fill-opacity="0.18" />
-      <path :d="linePath" stroke="currentColor" :stroke-width="strokeWidth" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+      <path
+        :d="linePath"
+        stroke="currentColor"
+        :stroke-width="strokeWidth"
+        fill="none"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        vector-effect="non-scaling-stroke"
+      />
     </template>
     <line
       v-else
