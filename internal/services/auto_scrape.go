@@ -32,15 +32,14 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 		return
 	}
 
-	// 仅扫没刮过的 Movie/Series,且不在 identify_cooldown 内。
-	// identify_cooldown_until 字段保留(Phase 4 删除),和 scrape_queue.next_run_at
-	// 是两套退避机制:前者是"单次刮削失败后的整块冷却",后者是队列调度里的指数退避。
+	// 仅扫没刮过的 Movie/Series。Phase 5 后不再过滤 identify_cooldown_until
+	// —— 退避完全由 scrape_queue.next_run_at 接管,UNIQUE(item_id, task_type)
+	// 防重复入队,worker.Claim 只取 next_run_at <= NOW() 的任务。
 	rows, err := pool.Query(ctx,
 		`SELECT id::text FROM items
 		  WHERE library_id = $1::uuid
 		    AND type IN ('Movie', 'Series')
 		    AND (overview IS NULL OR overview = '')
-		    AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW())
 		  ORDER BY created_at DESC`,
 		libraryID)
 	if err != nil {

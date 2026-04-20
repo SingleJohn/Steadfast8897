@@ -45,9 +45,6 @@ func SetTmdbLimiter(l *rate.Limiter) {
 	sharedTmdbLimiter = l
 }
 
-// identifyFailureCooldown 是识别失败后重试的冷却时长。
-const identifyFailureCooldown = 24 * time.Hour
-
 const (
 	TMDB_BASE       = "https://api.themoviedb.org/3"
 	TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
@@ -550,24 +547,15 @@ func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) 
 	return meta, nil
 }
 
-// setIdentifyCooldown 在识别失败后把 item 标记为冷却中，避免短期重试。
-func setIdentifyCooldown(ctx context.Context, pool *pgxpool.Pool, itemID string, d time.Duration) {
-	interval := fmt.Sprintf("%d seconds", int(d.Seconds()))
+// tmdbSetIdentifyAttempted 记录"尝试识别过一次"(不区分成功/失败)。
+// Phase 5 前这里还会同时设置 identify_cooldown_until 做整块冷却,现在冷却语义
+// 由 scrape_queue.next_run_at + 指数退避接管,attempted_at 仅作诊断/审计。
+func tmdbSetIdentifyAttempted(ctx context.Context, pool *pgxpool.Pool, itemID string) {
 	_, err := pool.Exec(ctx,
-		"UPDATE items SET identify_attempted_at = NOW(), identify_cooldown_until = NOW() + $1::interval WHERE id = $2::uuid",
-		interval, itemID)
-	if err != nil {
-		slog.Debug("[TMDB] set identify cooldown failed", "item_id", itemID, "error", err)
-	}
-}
-
-// clearIdentifyCooldown 识别成功后清除冷却。
-func clearIdentifyCooldown(ctx context.Context, pool *pgxpool.Pool, itemID string) {
-	_, err := pool.Exec(ctx,
-		"UPDATE items SET identify_attempted_at = NOW(), identify_cooldown_until = NULL WHERE id = $1::uuid",
+		"UPDATE items SET identify_attempted_at = NOW() WHERE id = $1::uuid",
 		itemID)
 	if err != nil {
-		slog.Debug("[TMDB] clear identify cooldown failed", "item_id", itemID, "error", err)
+		slog.Debug("[TMDB] set identify_attempted_at failed", "item_id", itemID, "error", err)
 	}
 }
 
@@ -1543,7 +1531,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 			Score:       1,
 			Source:      "tmdb_id_direct",
 		}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), int64(*meta.TmdbID)))
-		clearIdentifyCooldown(ctx, pool, itemID)
+		tmdbSetIdentifyAttempted(ctx, pool, itemID)
 		return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
 	}
 
@@ -1565,14 +1553,14 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 				candidates, candErr := agg.Candidates(ctx, parsed, mediaType)
 				if candErr == nil && len(candidates) > 0 {
 					_ = replaceIdentifyCandidates(ctx, pool, itemID, candidates)
-					setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+					tmdbSetIdentifyAttempted(ctx, pool, itemID)
 					if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, "identify queued for manual confirmation"); markErr != nil {
 						slog.Warn("[TMDB] mark manual identify queue failed", "item_id", itemID, "error", markErr)
 					}
 					return nil, fmt.Errorf("identify queued for manual confirmation")
 				}
 			}
-			setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+			tmdbSetIdentifyAttempted(ctx, pool, itemID)
 			reason = "identify failed: no confident match"
 			if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, reason); markErr != nil {
 				slog.Warn("[TMDB] mark platform scan unidentified failed", "item_id", itemID, "error", markErr)
@@ -1591,7 +1579,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		if candidates, candErr := agg.Candidates(ctx, parsed, mediaType); candErr == nil && len(candidates) > 0 {
 			_ = replaceIdentifyCandidates(ctx, pool, itemID, candidates)
 		}
-		setIdentifyCooldown(ctx, pool, itemID, identifyFailureCooldown)
+		tmdbSetIdentifyAttempted(ctx, pool, itemID)
 		reason := fmt.Sprintf("identified by %s but no tmdb id", ident.Provider)
 		if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, models.PlatformScanSourceSearch, reason); markErr != nil {
 			slog.Warn("[TMDB] mark platform scan unidentified failed", "item_id", itemID, "error", markErr)
@@ -1602,7 +1590,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	if fillErr != nil {
 		return nil, fmt.Errorf("fill details: %w", fillErr)
 	}
-	clearIdentifyCooldown(ctx, pool, itemID)
+	tmdbSetIdentifyAttempted(ctx, pool, itemID)
 	slog.Debug("[Matcher] matched",
 		"item_id", itemID, "provider", ident.Provider, "provider_id", ident.ProviderID, "source", ident.Source, "score", ident.Score)
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, true, models.PlatformScanSourceSearch)
@@ -1838,8 +1826,7 @@ func (t *ScrapeTask) Stop() {
 }
 
 const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '')
-    AND type IN ('Movie', 'Series')
-    AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW())`
+    AND type IN ('Movie', 'Series')`
 
 func GetMissingScrapeCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	var count int64

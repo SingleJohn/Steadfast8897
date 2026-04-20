@@ -32,7 +32,7 @@ type UnmatchedItem = {
   scan_status: string
   scan_error?: string | null
   scanned_at?: string | null
-  identify_cooldown_until?: string | null
+  next_retry_at?: string | null
   candidates: Candidate[]
 }
 
@@ -179,7 +179,7 @@ onMounted(() => {
                   <n-icon :size="12"><AlertCircleOutline /></n-icon>
                   {{ item.scan_status || 'unidentified' }}
                 </span>
-                <span v-if="item.identify_cooldown_until" class="meta-pill">冷却至 {{ formatDate(item.identify_cooldown_until) }}</span>
+                <span v-if="item.next_retry_at" class="meta-pill">下次重试 {{ formatDate(item.next_retry_at) }}</span>
                 <span v-else-if="item.scanned_at" class="meta-pill">上次扫描 {{ formatDate(item.scanned_at) }}</span>
                 <span v-if="item.scan_error" class="meta-pill">{{ item.scan_error }}</span>
               </div>

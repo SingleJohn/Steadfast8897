@@ -151,6 +151,8 @@ func main() {
 		ProbeTask:      probeTask,
 		FileWatcher:    fileWatcher,
 		Ingest:         ingestWorker,
+		ScrapeQueue:    scrapeQueue,
+		ScrapeWorker:   scrapeWorker,
 		LogBuffer:      logBuffer,
 		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
@@ -262,6 +264,7 @@ func main() {
 		handlers.RegisterWebhookRoutes(group, state)
 		handlers.RegisterTaskCenterRoutes(group, state, adminMW)
 		handlers.RegisterSystemMetricsRoutes(group, state, adminMW)
+		handlers.RegisterAdminQueueRoutes(group, state, adminMW)
 		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
 	}
 

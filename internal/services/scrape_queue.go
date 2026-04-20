@@ -167,6 +167,81 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 		id, truncateError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())))
 }
 
+// RecentTask 给前端队列面板用:最近失败任务(含 item 名 / error / retry)。
+type RecentTask struct {
+	ID         int64          `json:"id"`
+	ItemID     string         `json:"item_id"`
+	ItemName   string         `json:"item_name"`
+	ItemType   string         `json:"item_type"`
+	TaskType   ScrapeTaskType `json:"task_type"`
+	Status     string         `json:"status"`
+	Priority   int16          `json:"priority"`
+	RetryCount int16          `json:"retry_count"`
+	LastError  string         `json:"last_error,omitempty"`
+	NextRunAt  time.Time      `json:"next_run_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+// Recent 返回最近 failed + 最近 done 的任务(failed 优先),供管理面板展示。
+func (q *ScrapeQueue) Recent(ctx context.Context, limit int) ([]RecentTask, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := q.pool.Query(ctx,
+		`SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
+		        sq.task_type, sq.status, sq.priority, sq.retry_count,
+		        COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at
+		   FROM scrape_queue sq
+		   LEFT JOIN items i ON i.id = sq.item_id
+		  WHERE sq.status IN ('failed', 'running')
+		  ORDER BY CASE sq.status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+		           sq.updated_at DESC
+		  LIMIT $1`,
+		limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RecentTask
+	for rows.Next() {
+		var t RecentTask
+		var tt string
+		if err := rows.Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
+			&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
+			&t.NextRunAt, &t.UpdatedAt); err != nil {
+			continue
+		}
+		t.TaskType = ScrapeTaskType(tt)
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// RetryTask 把单个 failed 任务重置为 pending(立即重试)。
+func (q *ScrapeQueue) RetryTask(ctx context.Context, id int64) error {
+	_, err := q.pool.Exec(ctx,
+		`UPDATE scrape_queue
+		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
+		        last_error = NULL, updated_at = NOW()
+		  WHERE id = $1 AND status = 'failed'`,
+		id)
+	return err
+}
+
+// RetryAllFailed 批量把所有 failed 任务重置为 pending。返回被重置的数量。
+func (q *ScrapeQueue) RetryAllFailed(ctx context.Context) (int64, error) {
+	tag, err := q.pool.Exec(ctx,
+		`UPDATE scrape_queue
+		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
+		        last_error = NULL, updated_at = NOW()
+		  WHERE status = 'failed'`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ReconcileOnStartup 把崩溃前遗留的 running 任务(updated_at 超过 10 分钟)重置为 pending,
 // 避免永久卡死。调用时机:main.go 启动 worker 前。
 func (q *ScrapeQueue) ReconcileOnStartup(ctx context.Context) error {

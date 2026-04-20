@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,13 @@ type IngestWorker struct {
 	cache    *CacheService
 	libs     *libraryIndex
 	renames  *renameBuffer
-	workers  int
+
+	// consumers:每个元素对应一个运行中的 consume goroutine 的 stop channel。
+	// SetWorkerCount 用它实现动态增减(system_config.ingest_worker_count 可调,
+	// Admin handler 改完立即生效;另有 60s 轮询兜底)。
+	workerMu   sync.Mutex
+	consumers  []chan struct{}
+	workersCtx context.Context
 
 	// inflight 记录 Tag 对应的在处理事件数,Barrier 轮询等待归零。
 	// 只对设了 Tag 的 scan 事件计数;FileWatcher/Webhook 事件 Tag 为空,不进入计数。
@@ -38,11 +45,10 @@ type IngestWorker struct {
 
 func NewIngestWorker(pool *pgxpool.Pool, cache *CacheService) *IngestWorker {
 	w := &IngestWorker{
-		ch:      make(chan IngestEvent, ingestChannelBuffer),
-		pool:    pool,
-		cache:   cache,
-		libs:    newLibraryIndex(pool),
-		workers: ingestWorkers,
+		ch:    make(chan IngestEvent, ingestChannelBuffer),
+		pool:  pool,
+		cache: cache,
+		libs:  newLibraryIndex(pool),
 	}
 	w.renames = newRenameBuffer(w.enqueue)
 	return w
@@ -91,7 +97,7 @@ func (w *IngestWorker) OverflowCount() int64 { return w.overflow.Load() }
 // ChannelDepth 返回当前 channel 待处理事件数(供 metrics 打点)。
 func (w *IngestWorker) ChannelDepth() int { return len(w.ch) }
 
-// Run 启动 Worker:加载 library 映射 + 启动定时刷新 + N 个消费 goroutine。
+// Run 启动 Worker:加载 library 映射 + 启动定时刷新 + 按 system_config 启动 N 个消费 goroutine。
 // 传入的 ctx 结束后所有 goroutine 停止。
 func (w *IngestWorker) Run(ctx context.Context) {
 	if err := w.libs.Refresh(ctx); err != nil {
@@ -99,19 +105,69 @@ func (w *IngestWorker) Run(ctx context.Context) {
 	}
 	w.libs.StartAutoRefresh(ctx, 60*time.Second)
 
-	slog.Info("[Ingest] Worker started", "workers", w.workers, "buffer", ingestChannelBuffer)
+	w.workersCtx = ctx
+	n := w.loadDesiredCount(ctx)
+	w.SetWorkerCount(n)
+	slog.Info("[Ingest] Worker started", "workers", n, "buffer", ingestChannelBuffer)
 
-	for i := 0; i < w.workers; i++ {
-		go w.consume(ctx, i)
-	}
+	go w.watchConfig(ctx, 60*time.Second)
+
 	<-ctx.Done()
 	slog.Info("[Ingest] Worker stopping")
+	w.workerMu.Lock()
+	for _, ch := range w.consumers {
+		close(ch)
+	}
+	w.consumers = nil
+	w.workerMu.Unlock()
 }
 
-func (w *IngestWorker) consume(ctx context.Context, id int) {
+// WorkerCount 返回当前运行中的 consume goroutine 数。
+func (w *IngestWorker) WorkerCount() int {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+	return len(w.consumers)
+}
+
+// SetWorkerCount 动态调整 consume goroutine 数量。n<cur 时关闭多余的 stopCh;
+// n>cur 时 spawn 新 goroutine。取值范围 [1, 64],超出自动 clamp。
+// 幂等:n==cur 时直接返回。
+func (w *IngestWorker) SetWorkerCount(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 64 {
+		n = 64
+	}
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+
+	cur := len(w.consumers)
+	if n == cur {
+		return
+	}
+	if n > cur {
+		for i := cur; i < n; i++ {
+			stopCh := make(chan struct{})
+			w.consumers = append(w.consumers, stopCh)
+			go w.consume(w.workersCtx, i, stopCh)
+		}
+		slog.Info("[Ingest] Resized workers up", "from", cur, "to", n)
+		return
+	}
+	for i := n; i < cur; i++ {
+		close(w.consumers[i])
+	}
+	w.consumers = w.consumers[:n]
+	slog.Info("[Ingest] Resized workers down", "from", cur, "to", n)
+}
+
+func (w *IngestWorker) consume(ctx context.Context, id int, stopCh chan struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-stopCh:
 			return
 		case e := <-w.ch:
 			start := time.Now()
@@ -129,6 +185,35 @@ func (w *IngestWorker) consume(ctx context.Context, id int) {
 			if dur := time.Since(start); dur > 2*time.Second {
 				slog.Info("[Ingest] Slow event",
 					"worker", id, "kind", e.Kind.String(), "path", e.Path, "duration", dur)
+			}
+		}
+	}
+}
+
+// loadDesiredCount 从 system_config.ingest_worker_count 读目标数量;默认 4。
+func (w *IngestWorker) loadDesiredCount(ctx context.Context) int {
+	raw := readSystemConfigValue(ctx, w.pool, "ingest_worker_count")
+	if raw == "" {
+		return ingestWorkers
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 1 {
+		return ingestWorkers
+	}
+	return n
+}
+
+// watchConfig 周期性对齐 system_config.ingest_worker_count(兜底:Admin handler 也会直接调 SetWorkerCount)。
+func (w *IngestWorker) watchConfig(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := w.loadDesiredCount(ctx); n != w.WorkerCount() {
+				w.SetWorkerCount(n)
 			}
 		}
 	}

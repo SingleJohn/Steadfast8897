@@ -657,4 +657,69 @@ export async function resetBackfillEpisodeImage() {
   return request<any>('/Library/Backfill/Reset/EpisodeImage', { method: 'POST' });
 }
 
+// ---- Phase 5: 队列面板 / metrics / 动态 worker / 缓存 invalidate ----
+
+export type ScrapeQueueStats = {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+};
+
+export type ScrapeQueueTask = {
+  id: number;
+  item_id: string;
+  item_name: string;
+  item_type: string;
+  task_type: string;
+  status: string;
+  priority: number;
+  retry_count: number;
+  last_error?: string;
+  next_run_at: string;
+  updated_at: string;
+};
+
+export type MetricsSnapshot = {
+  ingest_channel_depth?: number;
+  ingest_overflow_total?: number;
+  ingest_worker_count?: number;
+  scrape_pending?: number;
+  scrape_running?: number;
+  scrape_failed?: number;
+  scrape_done?: number;
+  tmdb_requests_total?: number;
+};
+
+export async function getScrapeQueueStats() {
+  return requestJson<ScrapeQueueStats>('/Admin/ScrapeQueue/Stats');
+}
+
+export async function getScrapeQueueRecent(limit = 20) {
+  return requestJson<{ tasks: ScrapeQueueTask[] }>(`/Admin/ScrapeQueue/Recent?limit=${limit}`);
+}
+
+export async function retryScrapeQueueTask(id: number) {
+  return request<any>(`/Admin/ScrapeQueue/Retry/${id}`, { method: 'POST' });
+}
+
+export async function retryAllFailedScrapeQueueTasks() {
+  return requestJson<{ reset: number }>('/Admin/ScrapeQueue/RetryAllFailed', { method: 'POST' });
+}
+
+export async function getMetricsSnapshot() {
+  return requestJson<MetricsSnapshot>('/Admin/Metrics/Snapshot');
+}
+
+export async function invalidateScrapeCache() {
+  return request<any>('/Admin/Scrape/Cache/Invalidate', { method: 'POST' });
+}
+
+export async function setIngestWorkerCount(count: number) {
+  return requestJson<{ count: number }>('/Admin/Ingest/Workers', {
+    method: 'POST',
+    body: JSON.stringify({ count }),
+  });
+}
+
 export { getToken, getUserId };

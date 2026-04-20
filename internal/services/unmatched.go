@@ -13,43 +13,51 @@ import (
 
 // UnmatchedItem 是未匹配面板返回的 item 视图。
 // 带上 top N 候选以便前端无须再次请求 /IdentifyCandidates。
+//
+// NextRetryAt 由 scrape_queue LEFT JOIN 得出(Phase 5 起替代原来的 identify_cooldown_until):
+// 只要 scrape_queue 里有这个 item 的 identify 任务处于 pending/running/failed,就取 next_run_at。
 type UnmatchedItem struct {
-	ID                string                    `json:"id"`
-	Name              string                    `json:"name"`
-	Type              string                    `json:"type"`
-	ProductionYear    *int32                    `json:"production_year,omitempty"`
-	FilePath          *string                   `json:"file_path,omitempty"`
-	TmdbID            *int32                    `json:"tmdb_id,omitempty"`
-	ScanStatus        string                    `json:"scan_status"`
-	ScanError         *string                   `json:"scan_error,omitempty"`
-	ScannedAt         *time.Time                `json:"scanned_at,omitempty"`
-	IdentifyCooldown  *time.Time                `json:"identify_cooldown_until,omitempty"`
-	Candidates        []identifyCandidateRecord `json:"candidates"`
+	ID             string                    `json:"id"`
+	Name           string                    `json:"name"`
+	Type           string                    `json:"type"`
+	ProductionYear *int32                    `json:"production_year,omitempty"`
+	FilePath       *string                   `json:"file_path,omitempty"`
+	TmdbID         *int32                    `json:"tmdb_id,omitempty"`
+	ScanStatus     string                    `json:"scan_status"`
+	ScanError      *string                   `json:"scan_error,omitempty"`
+	ScannedAt      *time.Time                `json:"scanned_at,omitempty"`
+	NextRetryAt    *time.Time                `json:"next_retry_at,omitempty"`
+	Candidates     []identifyCandidateRecord `json:"candidates"`
 }
 
-// ListUnmatchedItems 返回所有 platform_scan_status='unidentified' 或处于 identify_cooldown_until 未来
-// 的 item。按冷却/扫描时间降序。itemTypeFilter 为空则不过滤类型,否则要求大小写完全匹配(Movie/Series)。
+// ListUnmatchedItems 返回所有 platform_scan_status='unidentified' 或在 scrape_queue 里
+// 有 identify 任务待重试(next_run_at > NOW)的 item。按重试时间/扫描时间降序。
+// itemTypeFilter 为空则不过滤类型,否则要求大小写完全匹配(Movie/Series)。
 func ListUnmatchedItems(ctx context.Context, pool *pgxpool.Pool, itemTypeFilter string, limit int) ([]UnmatchedItem, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
 
 	var args []any
-	where := "WHERE (platform_scan_status = 'unidentified' OR (identify_cooldown_until IS NOT NULL AND identify_cooldown_until > NOW()))"
+	where := `WHERE (i.platform_scan_status = 'unidentified' OR (sq.next_run_at IS NOT NULL AND sq.next_run_at > NOW()))`
 	if strings.TrimSpace(itemTypeFilter) != "" {
 		args = append(args, itemTypeFilter)
-		where += fmt.Sprintf(" AND type = $%d", len(args))
+		where += fmt.Sprintf(" AND i.type = $%d", len(args))
 	}
 	args = append(args, limit)
 	limitPlaceholder := fmt.Sprintf("$%d", len(args))
 
 	query := fmt.Sprintf(`
-		SELECT id::text, name, type, production_year, file_path, tmdb_id,
-		       COALESCE(platform_scan_status, ''), platform_scan_error,
-		       platform_scanned_at, identify_cooldown_until
-		  FROM items
+		SELECT i.id::text, i.name, i.type, i.production_year, i.file_path, i.tmdb_id,
+		       COALESCE(i.platform_scan_status, ''), i.platform_scan_error,
+		       i.platform_scanned_at, sq.next_run_at
+		  FROM items i
+		  LEFT JOIN scrape_queue sq
+		    ON sq.item_id = i.id
+		   AND sq.task_type = 'identify'
+		   AND sq.status IN ('pending', 'running', 'failed')
 		  %s
-		  ORDER BY COALESCE(identify_cooldown_until, platform_scanned_at) DESC NULLS LAST
+		  ORDER BY COALESCE(sq.next_run_at, i.platform_scanned_at) DESC NULLS LAST
 		  LIMIT %s`, where, limitPlaceholder)
 
 	rows, err := pool.Query(ctx, query, args...)
@@ -63,7 +71,7 @@ func ListUnmatchedItems(ctx context.Context, pool *pgxpool.Pool, itemTypeFilter 
 	for rows.Next() {
 		var it UnmatchedItem
 		if err := rows.Scan(&it.ID, &it.Name, &it.Type, &it.ProductionYear, &it.FilePath, &it.TmdbID,
-			&it.ScanStatus, &it.ScanError, &it.ScannedAt, &it.IdentifyCooldown); err != nil {
+			&it.ScanStatus, &it.ScanError, &it.ScannedAt, &it.NextRetryAt); err != nil {
 			return nil, err
 		}
 		items = append(items, it)
