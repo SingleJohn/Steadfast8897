@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -318,21 +319,42 @@ func (w *IngestWorker) findShowRoot(libID, filePath string) string {
 	return ""
 }
 
-// processDelete 统一删除逻辑,修 file_watcher.go:190 bug:
-// 目录删除要匹配 file_path = <path> 或 file_path LIKE '<path>/%',
-// 否则整个目录被删后库里残留。清理完再补空 Season/Series 的回收。
+// processDelete 统一删除逻辑。
+//
+// 两种语义分开处理,避免嵌套 item 互相误杀:
+//
+//  1. Source="scan"(pruneMissingPaths 产的差集 Delete):
+//     是"item 层面"的删除 —— 某条 DB 记录不该存在了。只按 file_path 精确匹配删,
+//     子项靠 items.parent_id ON DELETE CASCADE 级联。
+//     反例:错误 Series Y(file_path=/show/Season 1) 与正确 Series Z(file_path=/show)
+//     下的 Episode 物理路径相同(都指向同一文件),LIKE '/show/Season 1/%' 会把
+//     Z 下的合法 Episode 一并删掉。
+//
+//  2. Source="fsnotify"/"webhook"(物理文件/目录消失):
+//     是"路径层面"的删除 —— 这个路径及其下所有文件消失了。Season.file_path 通常为 NULL
+//     不能靠 CASCADE 兜底,必须 LIKE '<path>/%' 匹配该目录下所有 Episode。
 func (w *IngestWorker) processDelete(ctx context.Context, e IngestEvent) error {
 	norm := filepath.Clean(e.Path)
-	prefix := norm + string(filepath.Separator) + "%"
 
-	tag, err := w.pool.Exec(ctx,
-		"DELETE FROM items WHERE file_path = $1 OR file_path LIKE $2",
-		norm, prefix)
+	var (
+		tag pgconn.CommandTag
+		err error
+	)
+	if e.Source == "scan" {
+		tag, err = w.pool.Exec(ctx,
+			"DELETE FROM items WHERE file_path = $1", norm)
+	} else {
+		prefix := norm + string(filepath.Separator) + "%"
+		tag, err = w.pool.Exec(ctx,
+			"DELETE FROM items WHERE file_path = $1 OR file_path LIKE $2",
+			norm, prefix)
+	}
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() > 0 {
-		slog.Info("[Ingest] Delete removed items", "count", tag.RowsAffected(), "path", norm)
+		slog.Info("[Ingest] Delete removed items",
+			"count", tag.RowsAffected(), "path", norm, "source", e.Source)
 		_ = cleanupEmptyParents(ctx, w.pool)
 	}
 	return nil
