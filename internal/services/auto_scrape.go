@@ -5,21 +5,23 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// autoScrapeRunning 保证同一 library 同时只有一个 autoScrapeNewItems 在跑,
-// 避免扫库频繁触发(file_watcher / 手动)时多个 goroutine 抢同一批未刮削 item,
-// 造成 PG 重复 UPDATE / 事务回滚风暴。
+// autoScrapeRunning 保证同一 library 同时只有一个 autoScrapeNewItems 扫表入队
+// (防 ingest 高频触发下重复扫表做无用功)。Phase 2 后该函数不再自己消费,
+// 只负责 SELECT → EnqueueBatch,实际刮削由 ScrapeWorker 消费 scrape_queue 完成。
 var autoScrapeRunning sync.Map // libraryID -> *atomic.Bool
 
+// autoScrapeNewItems 把本 library 里"还缺 overview"且"未在 cooldown"的
+// Movie/Series 一批入队到 scrape_queue,task_type=identify。
+// 入队是幂等的(UNIQUE(item_id, task_type)),重复触发不会放大工作量。
 func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID string) {
 	flagAny, _ := autoScrapeRunning.LoadOrStore(libraryID, &atomic.Bool{})
 	flag := flagAny.(*atomic.Bool)
 	if !flag.CompareAndSwap(false, true) {
-		slog.Debug("[AutoScrape] Already running for library, skip", "library", libraryID)
+		slog.Debug("[AutoScrape] Already enqueueing for library, skip", "library", libraryID)
 		return
 	}
 	defer flag.Store(false)
@@ -30,69 +32,40 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 		return
 	}
 
-	client := TmdbClientFromConfig(ctx, pool)
-	if client == nil {
-		slog.Warn("[AutoScrape] TMDB API key not configured, skipping")
+	// 仅扫没刮过的 Movie/Series,且不在 identify_cooldown 内。
+	// identify_cooldown_until 字段保留(Phase 4 删除),和 scrape_queue.next_run_at
+	// 是两套退避机制:前者是"单次刮削失败后的整块冷却",后者是队列调度里的指数退避。
+	rows, err := pool.Query(ctx,
+		`SELECT id::text FROM items
+		  WHERE library_id = $1::uuid
+		    AND type IN ('Movie', 'Series')
+		    AND (overview IS NULL OR overview = '')
+		    AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW())
+		  ORDER BY created_at DESC`,
+		libraryID)
+	if err != nil {
+		slog.Warn("[AutoScrape] Query failed", "library", libraryID, "error", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
 		return
 	}
 
-	type newItem struct {
-		id   string
-		name string
+	queue := NewScrapeQueue(pool)
+	enqueued, err := queue.EnqueueBatch(ctx, ids, ScrapeTaskIdentify, ScrapePriorityIdentify)
+	if err != nil {
+		slog.Warn("[AutoScrape] Enqueue failed", "library", libraryID, "error", err)
+		return
 	}
-
-	totalSuccess, totalFailed := 0, 0
-	for batch := 0; ; batch++ {
-		rows, err := pool.Query(ctx,
-			"SELECT id::text, name FROM items WHERE library_id = $1::uuid AND type IN ('Movie', 'Series') "+
-				"AND (overview IS NULL OR overview = '') "+
-				"AND (identify_cooldown_until IS NULL OR identify_cooldown_until < NOW()) "+
-				"ORDER BY created_at DESC LIMIT 50",
-			libraryID)
-		if err != nil {
-			break
-		}
-
-		var items []newItem
-		for rows.Next() {
-			var item newItem
-			if err := rows.Scan(&item.id, &item.name); err != nil {
-				continue
-			}
-			items = append(items, item)
-		}
-		rows.Close()
-
-		if len(items) == 0 {
-			break
-		}
-
-		slog.Info("[AutoScrape] Batch start", "batch", batch+1, "count", len(items), "library", libraryID)
-
-		success, failed := 0, 0
-		for _, item := range items {
-			_, err := ScrapeItemWithClient(ctx, pool, item.id, client)
-			if err != nil {
-				failed++
-				slog.Debug("[AutoScrape] Failed", "name", item.name, "error", err)
-			} else {
-				success++
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-
-		totalSuccess += success
-		totalFailed += failed
-		slog.Info("[AutoScrape] Batch done", "batch", batch+1, "success", success, "failed", failed)
-
-		// 如果全部失败说明 TMDB 不可达，停止
-		if success == 0 {
-			slog.Warn("[AutoScrape] All items in batch failed, stopping", "library", libraryID)
-			break
-		}
-	}
-
-	if totalSuccess > 0 || totalFailed > 0 {
-		slog.Info("[AutoScrape] Done", "success", totalSuccess, "failed", totalFailed)
-	}
+	slog.Info("[AutoScrape] Enqueued identify tasks", "library", libraryID, "count", enqueued)
 }

@@ -22,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"golang.org/x/time/rate"
+
 	"fyms/internal/models"
 	"fyms/internal/services/scraper"
 )
@@ -32,6 +34,15 @@ var sharedScrapeCache scraper.Cache
 
 func SetScrapeCache(c scraper.Cache) {
 	sharedScrapeCache = c
+}
+
+// sharedTmdbLimiter 是所有 TMDB 调用路径共享的 rate.Limiter,
+// main.go 启动时通过 SetTmdbLimiter 注入。未注入时 tmdbGet 不限流
+// (降级兼容,但生产应始终注入)。
+var sharedTmdbLimiter *rate.Limiter
+
+func SetTmdbLimiter(l *rate.Limiter) {
+	sharedTmdbLimiter = l
 }
 
 // identifyFailureCooldown 是识别失败后重试的冷却时长。
@@ -306,6 +317,11 @@ func (c *TmdbClient) nextKey() string {
 }
 
 func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[string]interface{}, error) {
+	if sharedTmdbLimiter != nil {
+		if err := sharedTmdbLimiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait: %w", err)
+		}
+	}
 	maxRetries := len(c.apiKeys)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		key := c.nextKey()

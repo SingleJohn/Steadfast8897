@@ -96,12 +96,18 @@ func main() {
 
 	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
 	services.SetScrapeCache(cache)
+	// Phase 2: 所有 TMDB 调用点共享同一个 rate.Limiter(3 rps, burst 5),
+	// 通过 TmdbClient.tmdbGet 自动 Wait,防止 worker/autoscrape/backfill/手动 Identify 叠加超频。
+	tmdbLimiter := services.NewTmdbLimiter()
+	services.SetTmdbLimiter(tmdbLimiter)
 	sessionManager := services.NewSessionManager()
 	progressBuffer := services.NewProgressBuffer(pool)
 	scanProgress := services.NewScanProgressTracker(pool)
 	probeTask := services.NewProbeTask()
 	ingestWorker := services.NewIngestWorker(pool, cache)
 	fileWatcher := services.NewFileWatcher(ingestWorker)
+	scrapeQueue := services.NewScrapeQueue(pool)
+	scrapeWorker := services.NewScrapeWorker(pool, scrapeQueue, tmdbLimiter)
 	scrapeTask := services.NewScrapeTask()
 
 	var proxyURL *string
@@ -185,6 +191,7 @@ func main() {
 		slog.Warn("task_runs reconcile on startup failed", "error", err)
 	}
 	go ingestWorker.Run(ctx)
+	go scrapeWorker.Run(ctx)
 	fileWatcher.Start(ctx, pool, cache)
 
 	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
