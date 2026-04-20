@@ -694,6 +694,7 @@ export type MetricsSnapshot = {
   scrape_running?: number;
   scrape_failed?: number;
   scrape_done?: number;
+  scrape_worker_count?: number;
   tmdb_requests_total?: number;
 };
 
@@ -727,6 +728,13 @@ export async function invalidateScrapeCache() {
 
 export async function setIngestWorkerCount(count: number) {
   return requestJson<{ count: number }>('/Admin/Ingest/Workers', {
+    method: 'POST',
+    body: JSON.stringify({ count }),
+  });
+}
+
+export async function setScrapeWorkerCount(count: number) {
+  return requestJson<{ count: number }>('/Admin/Scrape/Workers', {
     method: 'POST',
     body: JSON.stringify({ count }),
   });

@@ -334,8 +334,8 @@ const router = createRouter({
               name: 'obs_svc_queue',
               component: () => import('./pages/observability/service/QueueTab.vue'),
               meta: {
-                title: '刮削队列',
-                navLabel: '刮削队列',
+                title: '后台任务',
+                navLabel: '后台任务',
                 icon: 'tasks',
                 section: 'observability',
                 sectionLabel: '观测中心',

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,10 @@ const (
 	scrapeMaxRetry          = 5
 	scrapeIdleSleep         = 5 * time.Second
 
+	// SetWorkerCount clamp 上限。TMDB 限流 3rps,再多 worker 也只是在 limiter 上排队,
+	// 徒增上下文切换,16 足够覆盖"突发补量"场景。
+	scrapeWorkerMax = 16
+
 	tmdbRatePerSec = 3
 	tmdbRateBurst  = 5
 )
@@ -31,10 +37,17 @@ type ScrapeWorker struct {
 	queue   *ScrapeQueue
 	pool    *pgxpool.Pool
 	limiter *rate.Limiter
-	workers int
 
-	mu      sync.Mutex
+	// runMu 保护 Run 幂等启动。workerMu 保护 consumers 切片。两把锁独立,
+	// 避免 SetWorkerCount 与 Run 启停互相等待。
+	runMu   sync.Mutex
 	running bool
+
+	// consumers:每个元素对应一个运行中的 consume goroutine 的 stop channel。
+	// SetWorkerCount 用它动态增减,配合 system_config.scrape_worker_count。
+	workerMu   sync.Mutex
+	consumers  []chan struct{}
+	workersCtx context.Context
 
 	// cachedClient 是 worker 生命周期内复用的 TmdbClient,配合 GetScrapeAggregator
 	// 的 key=client 缓存命中 —— 原先每个任务都重建 aggregator + http.Transport,
@@ -49,7 +62,6 @@ func NewScrapeWorker(pool *pgxpool.Pool, queue *ScrapeQueue, limiter *rate.Limit
 		queue:   queue,
 		pool:    pool,
 		limiter: limiter,
-		workers: scrapeWorkerConcurrency,
 	}
 }
 
@@ -59,37 +71,31 @@ func NewTmdbLimiter() *rate.Limiter {
 	return rate.NewLimiter(rate.Limit(tmdbRatePerSec), tmdbRateBurst)
 }
 
-// Run 启动 worker:先 reconcile,再起 N 个 consume 循环。ctx 结束后全部停止。
+// Run 启动 worker:reconcile + 按 system_config 起 N 个 consume goroutine + 启 watchConfig
+// 兜底轮询 + 12h PruneDone。ctx 结束后关闭所有 consumer 并返回。
 func (w *ScrapeWorker) Run(ctx context.Context) {
-	w.mu.Lock()
+	w.runMu.Lock()
 	if w.running {
-		w.mu.Unlock()
+		w.runMu.Unlock()
 		return
 	}
 	w.running = true
-	w.mu.Unlock()
+	w.runMu.Unlock()
 
 	if err := w.queue.ReconcileOnStartup(ctx); err != nil {
 		slog.Warn("[ScrapeWorker] reconcile failed", "error", err)
 	}
 
+	w.workersCtx = ctx
+	n := w.loadDesiredCount(ctx)
+	w.SetWorkerCount(n)
 	slog.Info("[ScrapeWorker] started",
-		"workers", w.workers, "claim_batch", scrapeClaimBatch,
+		"workers", n, "claim_batch", scrapeClaimBatch,
 		"max_retry", scrapeMaxRetry, "tmdb_rps", tmdbRatePerSec)
 
-	var wg sync.WaitGroup
-	for i := 0; i < w.workers; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			w.consume(ctx, id)
-		}(i)
-	}
+	go w.watchConfig(ctx, 60*time.Second)
 
-	// 定期 prune done 任务(每 12h)
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		ticker := time.NewTicker(12 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -104,12 +110,89 @@ func (w *ScrapeWorker) Run(ctx context.Context) {
 
 	<-ctx.Done()
 	slog.Info("[ScrapeWorker] stopping")
+	w.workerMu.Lock()
+	for _, ch := range w.consumers {
+		close(ch)
+	}
+	w.consumers = nil
+	w.workerMu.Unlock()
 }
 
-func (w *ScrapeWorker) consume(ctx context.Context, id int) {
+// WorkerCount 返回当前运行中的 consume goroutine 数。
+func (w *ScrapeWorker) WorkerCount() int {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+	return len(w.consumers)
+}
+
+// SetWorkerCount 动态调整 consume goroutine 数量。n<cur 时关闭多余的 stopCh;
+// n>cur 时 spawn 新 goroutine。取值范围 [1, scrapeWorkerMax],超出自动 clamp。
+// 幂等:n==cur 时直接返回。TMDB 共享 limiter 3rps,加 worker 只能加 burst,不能突破速率上限。
+func (w *ScrapeWorker) SetWorkerCount(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > scrapeWorkerMax {
+		n = scrapeWorkerMax
+	}
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+
+	cur := len(w.consumers)
+	if n == cur {
+		return
+	}
+	if n > cur {
+		for i := cur; i < n; i++ {
+			stopCh := make(chan struct{})
+			w.consumers = append(w.consumers, stopCh)
+			go w.consume(w.workersCtx, i, stopCh)
+		}
+		slog.Info("[ScrapeWorker] Resized workers up", "from", cur, "to", n)
+		return
+	}
+	for i := n; i < cur; i++ {
+		close(w.consumers[i])
+	}
+	w.consumers = w.consumers[:n]
+	slog.Info("[ScrapeWorker] Resized workers down", "from", cur, "to", n)
+}
+
+// loadDesiredCount 从 system_config.scrape_worker_count 读目标数量;默认 scrapeWorkerConcurrency。
+func (w *ScrapeWorker) loadDesiredCount(ctx context.Context) int {
+	raw := readSystemConfigValue(ctx, w.pool, "scrape_worker_count")
+	if raw == "" {
+		return scrapeWorkerConcurrency
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 1 {
+		return scrapeWorkerConcurrency
+	}
+	return n
+}
+
+// watchConfig 周期性对齐 system_config.scrape_worker_count(兜底:Admin handler 也会直接调 SetWorkerCount)。
+func (w *ScrapeWorker) watchConfig(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := w.loadDesiredCount(ctx); n != w.WorkerCount() {
+				w.SetWorkerCount(n)
+			}
+		}
+	}
+}
+
+func (w *ScrapeWorker) consume(ctx context.Context, id int, stopCh chan struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stopCh:
 			return
 		default:
 		}
@@ -117,17 +200,26 @@ func (w *ScrapeWorker) consume(ctx context.Context, id int) {
 		tasks, err := w.queue.Claim(ctx, scrapeClaimBatch)
 		if err != nil {
 			slog.Warn("[ScrapeWorker] claim failed", "worker", id, "error", err)
-			sleepOrCancel(ctx, scrapeIdleSleep)
+			if !sleepOrStop(ctx, stopCh, scrapeIdleSleep) {
+				return
+			}
 			continue
 		}
 		if len(tasks) == 0 {
-			sleepOrCancel(ctx, scrapeIdleSleep)
+			if !sleepOrStop(ctx, stopCh, scrapeIdleSleep) {
+				return
+			}
 			continue
 		}
 
 		for _, t := range tasks {
 			if ctx.Err() != nil {
 				return
+			}
+			select {
+			case <-stopCh:
+				return
+			default:
 			}
 			w.runTask(ctx, id, t)
 		}
@@ -222,5 +314,18 @@ func sleepOrCancel(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-time.After(d):
+	}
+}
+
+// sleepOrStop 比 sleepOrCancel 多监听 stopCh;返回 false 代表需要退出 consume。
+// 动态缩容时老 worker 应当在下一次 idle/claim 失败后尽快感知到 stopCh 关闭。
+func sleepOrStop(ctx context.Context, stopCh chan struct{}, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-stopCh:
+		return false
+	case <-time.After(d):
+		return true
 	}
 }

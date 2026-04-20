@@ -17,7 +17,10 @@ import (
 )
 
 const (
-	ingestChannelBuffer = 10000
+	// 一个 IngestEvent 约 150 字节(两个路径字符串 + 几个枚举/时间戳),
+	// 10 万条 ~15MB,对服务可忽略,但能把"大库首扫 + fsnotify 抖动"场景下的溢出压到 0。
+	// buffer 起的是削峰作用 —— 真正瓶颈仍是 worker 吞吐,调大 worker 才是增加处理速度的办法。
+	ingestChannelBuffer = 100000
 	ingestWorkers       = 4
 
 	// fsnotify 对下载中的视频文件会持续推 Write 事件,首次读到的 mediainfo/size 可能不完整;

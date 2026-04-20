@@ -17,6 +17,7 @@ import (
 //	GET  /Admin/Metrics/Snapshot              → ingest/scrape/tmdb 的当前快照
 //	POST /Admin/Scrape/Cache/Invalidate       → 让 Aggregator/TmdbClient 缓存失效(改 tmdb 配置免重启)
 //	POST /Admin/Ingest/Workers {count: N}     → 动态调整 ingest worker 数量(同步写 system_config)
+//	POST /Admin/Scrape/Workers {count: N}     → 动态调整 scrape worker 数量(同步写 system_config)
 func RegisterAdminQueueRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.HandlerFunc) {
 	_ = state
 	group.GET("/Admin/ScrapeQueue/Stats", adminMW, getScrapeQueueStats)
@@ -27,6 +28,7 @@ func RegisterAdminQueueRoutes(group *gin.RouterGroup, state *AppState, adminMW g
 	group.GET("/Admin/Metrics/Snapshot", adminMW, getMetricsSnapshot)
 	group.POST("/Admin/Scrape/Cache/Invalidate", adminMW, invalidateScrapeCache)
 	group.POST("/Admin/Ingest/Workers", adminMW, setIngestWorkerCount)
+	group.POST("/Admin/Scrape/Workers", adminMW, setScrapeWorkerCount)
 }
 
 func getScrapeQueueStats(c *gin.Context) {
@@ -139,6 +141,9 @@ func getMetricsSnapshot(c *gin.Context) {
 			resp["scrape_done"] = stats.Done
 		}
 	}
+	if state.ScrapeWorker != nil {
+		resp["scrape_worker_count"] = state.ScrapeWorker.WorkerCount()
+	}
 	// TmdbRequestCount 是 package 级导出函数
 	resp["tmdb_requests_total"] = tmdbRequestCountSnapshot()
 
@@ -180,4 +185,32 @@ func setIngestWorkerCount(c *gin.Context) {
 	// 2) 立即生效
 	state.Ingest.SetWorkerCount(body.Count)
 	c.JSON(http.StatusOK, gin.H{"count": state.Ingest.WorkerCount()})
+}
+
+// setScrapeWorkerCount 跟 setIngestWorkerCount 对称,区别:
+//   - 上限 16(TMDB 共享限流 3rps,再多只是在 limiter 上排队)
+//   - system_config key = scrape_worker_count
+func setScrapeWorkerCount(c *gin.Context) {
+	state := GetState(c)
+	if state.ScrapeWorker == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "scrape worker not initialized"})
+		return
+	}
+	var body struct {
+		Count int `json:"count"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	if body.Count < 1 || body.Count > 16 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "count must be in [1, 16]"})
+		return
+	}
+	if err := persistScrapeWorkerCount(c, body.Count); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	state.ScrapeWorker.SetWorkerCount(body.Count)
+	c.JSON(http.StatusOK, gin.H{"count": state.ScrapeWorker.WorkerCount()})
 }

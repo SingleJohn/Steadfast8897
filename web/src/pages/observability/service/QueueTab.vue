@@ -9,7 +9,7 @@ import {
   NIcon,
   NPopconfirm,
 } from 'naive-ui'
-import { RefreshOutline, TrashOutline, SaveOutline } from '@vicons/ionicons5'
+import { RefreshOutline, SaveOutline } from '@vicons/ionicons5'
 import { useToast } from '@/composables/useToast'
 import EmptyState from '@/components/EmptyState.vue'
 import {
@@ -21,6 +21,7 @@ import {
   getMetricsSnapshot,
   invalidateScrapeCache,
   setIngestWorkerCount,
+  setScrapeWorkerCount,
   type ScrapeQueueStats,
   type ScrapeQueueTask,
   type ScrapeQueueTaskDetail,
@@ -35,8 +36,10 @@ const recent = ref<ScrapeQueueTask[]>([])
 const loading = ref(false)
 const firstLoaded = ref(false)
 
-const workerCountInput = ref<number>(4)
-const workerCountSaving = ref(false)
+const ingestWorkerInput = ref<number>(4)
+const ingestWorkerSaving = ref(false)
+const scrapeWorkerInput = ref<number>(4)
+const scrapeWorkerSaving = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 5000
@@ -58,9 +61,12 @@ async function refresh() {
     if (r.status === 'fulfilled') recent.value = r.value.tasks || []
     if (m.status === 'fulfilled') {
       metrics.value = m.value
-      // 同步 worker 输入框(用户没编辑时)
-      if (!workerCountSaving.value && typeof m.value.ingest_worker_count === 'number') {
-        workerCountInput.value = m.value.ingest_worker_count
+      // 用户未在编辑时同步输入框,避免正在改的值被轮询覆盖
+      if (!ingestWorkerSaving.value && typeof m.value.ingest_worker_count === 'number') {
+        ingestWorkerInput.value = m.value.ingest_worker_count
+      }
+      if (!scrapeWorkerSaving.value && typeof m.value.scrape_worker_count === 'number') {
+        scrapeWorkerInput.value = m.value.scrape_worker_count
       }
     }
     firstLoaded.value = true
@@ -139,16 +145,29 @@ async function handleInvalidateCache() {
   }
 }
 
-async function handleSaveWorkerCount() {
-  workerCountSaving.value = true
+async function handleSaveIngestWorker() {
+  ingestWorkerSaving.value = true
   try {
-    const r = await setIngestWorkerCount(workerCountInput.value)
-    showToast(`Ingest worker 数已调整为 ${r.count}`, 'success')
+    const r = await setIngestWorkerCount(ingestWorkerInput.value)
+    showToast(`入库 worker 数已调整为 ${r.count}`, 'success')
     await refresh()
   } catch (e: any) {
     showToast(e.message || '保存失败', 'error')
   } finally {
-    workerCountSaving.value = false
+    ingestWorkerSaving.value = false
+  }
+}
+
+async function handleSaveScrapeWorker() {
+  scrapeWorkerSaving.value = true
+  try {
+    const r = await setScrapeWorkerCount(scrapeWorkerInput.value)
+    showToast(`刮削 worker 数已调整为 ${r.count}`, 'success')
+    await refresh()
+  } catch (e: any) {
+    showToast(e.message || '保存失败', 'error')
+  } finally {
+    scrapeWorkerSaving.value = false
   }
 }
 
@@ -192,58 +211,110 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="queue-tab">
-    <!-- KPI 卡片 -->
-    <div class="kpi-grid">
-      <NCard class="kpi-card">
-        <div class="kpi-label">Pending</div>
-        <div class="kpi-value pending">{{ stats.pending }}</div>
-      </NCard>
-      <NCard class="kpi-card">
-        <div class="kpi-label">Running</div>
-        <div class="kpi-value running">{{ stats.running }}</div>
-      </NCard>
-      <NCard class="kpi-card">
-        <div class="kpi-label">Failed</div>
-        <div class="kpi-value failed">{{ stats.failed }}</div>
-      </NCard>
-      <NCard class="kpi-card">
-        <div class="kpi-label">Done</div>
-        <div class="kpi-value done">{{ stats.done }}</div>
-      </NCard>
-    </div>
-
-    <!-- Metrics + 管理操作 -->
-    <NCard title="Metrics 快照 / 管理" class="metrics-card">
+    <!-- ============ 入库流水线(Ingest)============ -->
+    <NCard class="pipeline-card">
+      <div class="pipeline-header">
+        <div class="pipeline-title">
+          <span class="pipeline-badge ingest">入库</span>
+          <span class="pipeline-name">Ingest · 文件事件 → items 表</span>
+        </div>
+        <div class="pipeline-hint">
+          in-memory channel · 溢出会让扫库漏文件,加 worker 或再扫一次补齐。
+        </div>
+      </div>
       <div class="metrics-grid">
         <div class="metric-item">
-          <span class="metric-label">Ingest 通道深度</span>
+          <span class="metric-label">通道深度</span>
           <span class="metric-value">{{ metrics.ingest_channel_depth ?? '-' }}</span>
+          <span class="metric-sub">当前 buffer 中未消费</span>
         </div>
         <div class="metric-item">
-          <span class="metric-label">Ingest 溢出累计</span>
-          <span class="metric-value">{{ metrics.ingest_overflow_total ?? '-' }}</span>
-        </div>
-        <div class="metric-item">
-          <span class="metric-label">TMDB 请求累计</span>
-          <span class="metric-value">{{ metrics.tmdb_requests_total ?? '-' }}</span>
+          <span class="metric-label">溢出累计</span>
+          <span
+            class="metric-value"
+            :class="{ warn: (metrics.ingest_overflow_total ?? 0) > 0 }"
+          >{{ metrics.ingest_overflow_total ?? '-' }}</span>
+          <span class="metric-sub">自启动以来丢弃的事件</span>
         </div>
         <div class="metric-item worker-item">
-          <span class="metric-label">Ingest Worker 数</span>
+          <span class="metric-label">Worker 数</span>
           <div class="worker-control">
             <NInputNumber
-              v-model:value="workerCountInput"
+              v-model:value="ingestWorkerInput"
               :min="1"
               :max="64"
               size="small"
               style="width: 90px"
             />
-            <NButton size="small" type="primary" :loading="workerCountSaving" @click="handleSaveWorkerCount">
+            <NButton size="small" type="primary" :loading="ingestWorkerSaving" @click="handleSaveIngestWorker">
               <template #icon><NIcon><SaveOutline /></NIcon></template>
               保存
             </NButton>
           </div>
+          <span class="metric-sub">[1, 64] · 扫库/监控并发</span>
         </div>
       </div>
+    </NCard>
+
+    <!-- ============ 刮削流水线(Scrape)============ -->
+    <NCard class="pipeline-card">
+      <div class="pipeline-header">
+        <div class="pipeline-title">
+          <span class="pipeline-badge scrape">刮削</span>
+          <span class="pipeline-name">Scrape · scrape_queue 表 → TMDB</span>
+        </div>
+        <div class="pipeline-hint">
+          PG 持久化队列 · 失败任务不丢,按退避重试;Pending 堆积说明刮不过来,可加 worker 或检查限流。
+        </div>
+      </div>
+
+      <!-- KPI -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Pending</div>
+          <div class="kpi-value pending">{{ stats.pending }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Running</div>
+          <div class="kpi-value running">{{ stats.running }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Failed</div>
+          <div class="kpi-value failed">{{ stats.failed }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Done</div>
+          <div class="kpi-value done">{{ stats.done }}</div>
+        </div>
+      </div>
+
+      <!-- Metrics + Worker 控件 -->
+      <div class="metrics-grid">
+        <div class="metric-item">
+          <span class="metric-label">TMDB 请求累计</span>
+          <span class="metric-value">{{ metrics.tmdb_requests_total ?? '-' }}</span>
+          <span class="metric-sub">自启动以来的 TMDB 调用次数</span>
+        </div>
+        <div class="metric-item worker-item">
+          <span class="metric-label">Worker 数</span>
+          <div class="worker-control">
+            <NInputNumber
+              v-model:value="scrapeWorkerInput"
+              :min="1"
+              :max="16"
+              size="small"
+              style="width: 90px"
+            />
+            <NButton size="small" type="primary" :loading="scrapeWorkerSaving" @click="handleSaveScrapeWorker">
+              <template #icon><NIcon><SaveOutline /></NIcon></template>
+              保存
+            </NButton>
+          </div>
+          <span class="metric-sub">[1, 16] · TMDB 共享限流 3rps</span>
+        </div>
+      </div>
+
+      <!-- 管控按钮 -->
       <div class="manage-row">
         <NButton size="small" @click="refresh" :loading="loading">
           <template #icon><NIcon><RefreshOutline /></NIcon></template>
@@ -267,7 +338,7 @@ onBeforeUnmount(() => {
       </div>
     </NCard>
 
-    <!-- 最近任务表 -->
+    <!-- ============ 最近任务列表 ============ -->
     <NCard title="最近任务(failed + running)" class="tasks-card">
       <NSpin :show="loading && !firstLoaded">
         <EmptyState v-if="firstLoaded && recent.length === 0" description="暂无 failed / running 任务" />
@@ -349,10 +420,54 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
+/* ============ Pipeline section ============ */
+.pipeline-card {
+  /* 让每个 pipeline section 顶部留出一个 header 区块 */
+}
+.pipeline-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--n-border-color, rgba(0, 0, 0, 0.08));
+}
+.pipeline-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pipeline-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 4px;
+  color: #fff;
+  letter-spacing: 0.03em;
+}
+.pipeline-badge.ingest {
+  background: #409eff;
+}
+.pipeline-badge.scrape {
+  background: #9b59b6;
+}
+.pipeline-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--n-text-color-2, #555);
+}
+.pipeline-hint {
+  font-size: 12px;
+  color: var(--n-text-color-3, #888);
+  line-height: 1.5;
+}
+
+/* ============ KPI grid ============ */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
+  margin-bottom: 14px;
 }
 @media (max-width: 768px) {
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
@@ -360,14 +475,18 @@ onBeforeUnmount(() => {
 
 .kpi-card {
   text-align: center;
+  padding: 14px 8px;
+  background: var(--n-card-color, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
+  border-radius: 6px;
 }
 .kpi-label {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--n-text-color-3, #888);
   margin-bottom: 6px;
 }
 .kpi-value {
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -376,9 +495,10 @@ onBeforeUnmount(() => {
 .kpi-value.failed { color: #f56c6c; }
 .kpi-value.done { color: #67c23a; }
 
+/* ============ Metrics grid ============ */
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 12px;
 }
@@ -400,6 +520,13 @@ onBeforeUnmount(() => {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
+.metric-value.warn {
+  color: #e6a23c;
+}
+.metric-sub {
+  font-size: 11px;
+  color: var(--n-text-color-3, #999);
+}
 .worker-control {
   display: flex;
   gap: 8px;
@@ -415,6 +542,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
+/* ============ 任务列表(沿用旧样式)============ */
 .task-list {
   display: flex;
   flex-direction: column;
