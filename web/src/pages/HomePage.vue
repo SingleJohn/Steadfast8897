@@ -12,7 +12,6 @@ import {
 } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
 import HeroCarousel from '../components/HeroCarousel.vue'
-import ItemGrid from '../components/ItemGrid.vue'
 import SwiperRow from '../components/SwiperRow.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -143,7 +142,7 @@ onUnmounted(() => {
 
 <template>
   <div v-if="loading" class="home-loading">
-    <n-skeleton class="home-hero-skeleton" height="560px" style="border-radius: 0" />
+    <n-skeleton class="home-hero-skeleton" height="clamp(480px, 72vh, 720px)" style="border-radius: 0" />
     <div class="home-loading-sections">
       <div v-for="i in 3" :key="`row-${i}`" class="home-loading-row">
         <n-skeleton text style="width: 140px; margin-bottom: 16px" />
@@ -212,16 +211,19 @@ onUnmounted(() => {
       </section>
 
       <div class="home-rows">
-        <section v-if="libraryViews.length > 0" class="home-grid-section">
-          <h2 class="home-grid-title">我的媒体</h2>
-          <ItemGrid :items="libraryViews" shape="thumb" />
-        </section>
-
-        <section v-if="resumeItems.length > 0" class="home-grid-section">
-          <h2 class="home-grid-title">继续观看</h2>
-          <ItemGrid :items="resumeItems" shape="thumb" :show-progress="true" />
-        </section>
-
+        <SwiperRow
+          v-if="libraryViews.length > 0"
+          title="我的媒体"
+          :items="libraryViews"
+          shape="thumb"
+        />
+        <SwiperRow
+          v-if="resumeItems.length > 0"
+          title="继续观看"
+          :items="resumeItems"
+          shape="thumb"
+          :show-progress="true"
+        />
         <SwiperRow v-if="favoriteItems.length > 0" title="我的收藏" :items="favoriteItems" />
         <SwiperRow
           v-for="{ id, name, items } in latestByLibrary"
@@ -241,8 +243,8 @@ onUnmounted(() => {
 }
 
 .home-hero-skeleton {
-  margin: 12px 0 0;
-  border-radius: var(--app-radius) !important;
+  margin: 0;
+  border-radius: var(--app-radius-xl, 24px) !important;
 }
 
 .home-loading-sections {
@@ -270,13 +272,14 @@ onUnmounted(() => {
 .empty-icon-wrap {
   width: 88px;
   height: 88px;
-  border-radius: var(--app-radius);
-  background: var(--app-surface-2);
-  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-card, 20px);
+  background: var(--app-surface-solid, #1c1b1b);
+  border: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 28px;
+  box-shadow: var(--app-shadow-1);
 }
 
 .empty-icon {
@@ -285,8 +288,10 @@ onUnmounted(() => {
 
 .empty-title {
   color: var(--app-text);
-  font-size: 26px;
-  font-weight: 700;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   margin: 0 0 10px;
 }
 
@@ -310,12 +315,13 @@ onUnmounted(() => {
   padding-bottom: 24px;
 }
 
+/*
+ * Hero 全幅出血:抵消 media-page-inner 24px 水平 padding,让背景顶到 viewport 左右两侧。
+ * 内容文字区域的 1480 限宽在 HeroCarousel 内部 .hero-content 处理。
+ */
 .home-hero-wrap {
-  max-width: 1480px;
-  margin-left: auto;
-  margin-right: auto;
-  padding: 0 8px;
-  margin-bottom: 28px;
+  margin: 0 -24px 36px;
+  padding: 0;
 }
 
 .home-sections {
@@ -331,30 +337,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 34px;
-}
-
-.home-grid-section {
-  min-width: 0;
-  padding: 0 8px;
-}
-
-.home-grid-title {
-  margin: 0 0 12px;
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--app-text);
+  gap: 38px;
 }
 
 .scan-banner {
   margin: 0 8px 34px;
-  padding: 22px 24px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius);
-  background: var(--app-surface-1);
+  padding: 24px 28px;
+  border: 0;
+  border-radius: var(--app-radius-card, 20px);
+  background: var(--app-surface-solid, #1c1b1b);
   box-shadow: var(--app-shadow-1);
-  backdrop-filter: blur(var(--app-glass-blur)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--app-glass-blur)) saturate(1.2);
 }
 
 .scan-banner-header {
@@ -362,22 +354,26 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 
 .scan-banner-title {
   margin: 0;
-  font-size: 22px;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   color: var(--app-text);
 }
 
 .scan-banner-eyebrow {
-  margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  margin: 0 0 6px;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--app-primary);
+  color: var(--app-accent-red, #e50914);
 }
 
 .scan-progress-list {
@@ -387,10 +383,10 @@ onUnmounted(() => {
 }
 
 .scan-progress-card {
-  padding: 16px;
-  border-radius: var(--app-radius);
-  background: var(--app-surface-2);
-  border: 1px solid var(--app-border);
+  padding: 16px 18px;
+  border-radius: var(--app-radius, 16px);
+  background: var(--app-surface-solid-2, #2a2a2a);
+  border: 0;
 }
 
 .scan-progress-top,
@@ -414,14 +410,8 @@ onUnmounted(() => {
 }
 
 @media (max-width: 959px) {
-  .home-hero-skeleton {
-    margin: 10px 0 0;
-  }
-
   .home-hero-wrap {
-    margin-bottom: 22px;
-    padding-left: 0;
-    padding-right: 0;
+    margin: 0 -16px 26px;
   }
 
   .home-loading-sections,
@@ -432,18 +422,14 @@ onUnmounted(() => {
 }
 
 @media (max-width: 599px) {
-  .home-hero-skeleton {
-    margin-top: 8px;
-  }
-
   .home-hero-wrap {
-    margin-bottom: 18px;
+    margin: 0 -16px 20px;
   }
 
   .scan-banner {
     margin-left: 0;
     margin-right: 0;
-    border-radius: var(--app-radius);
+    border-radius: var(--app-radius, 16px);
   }
 
   .empty-actions {
