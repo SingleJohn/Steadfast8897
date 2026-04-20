@@ -141,6 +141,8 @@ func main() {
 	bitrateEstimator := services.NewRedirectBitrateEstimator(pool, sessionManager)
 	sysCollector := sysmetrics.NewCollector(2*time.Second, bitrateEstimator.Estimate)
 
+	imageCache := handlers.NewImageCache(cfg, httpClient)
+
 	state := &handlers.AppState{
 		DB:             pool,
 		Cache:          cache,
@@ -160,8 +162,10 @@ func main() {
 		GapScanTask:    gapScanTask,
 		BackfillTask:   backfillTask,
 		SysMetrics:     sysCollector,
+		ImageCache:     imageCache,
 	}
 	sysCollector.Start(context.Background())
+	imageCache.StartJanitor(context.Background())
 
 	// 任务中心：注册 5 个适配器。M1 只读聚合，M2 才会写 task_runs。
 	taskRegistry := taskcenter.NewRegistry()

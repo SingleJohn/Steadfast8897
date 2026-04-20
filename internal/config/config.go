@@ -42,6 +42,10 @@ type AppConfig struct {
 	DataDir  string
 	CacheDir string
 
+	ImageCacheSourceDir  string
+	ImageCacheResizedDir string
+	ImageCacheMaxGB      int
+
 	UpdateImageRepo    string
 	UpdateGitHubRepo   string
 	UpdateDockerSocket string
@@ -59,6 +63,11 @@ func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 
 	cacheDir := filepath.Join(dataDir, "cache")
 	os.MkdirAll(cacheDir, 0755)
+
+	imgSourceDir := filepath.Join(cacheDir, "sources")
+	imgResizedDir := filepath.Join(cacheDir, "resized")
+	os.MkdirAll(imgSourceDir, 0755)
+	os.MkdirAll(imgResizedDir, 0755)
 
 	serverID := loadOrCreateServerID(dataDir)
 
@@ -83,6 +92,10 @@ func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 
 		DataDir:  dataDir,
 		CacheDir: cacheDir,
+
+		ImageCacheSourceDir:  imgSourceDir,
+		ImageCacheResizedDir: imgResizedDir,
+		ImageCacheMaxGB:      envInt("IMAGE_CACHE_MAX_GB", 5),
 
 		UpdateImageRepo:    envOr("FYMS_UPDATE_IMAGE_REPO", "eianz/fyms"),
 		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", "eianz/fyms"),

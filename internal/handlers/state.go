@@ -33,6 +33,7 @@ type AppState struct {
 	TaskCenter     *taskcenter.Registry
 	TaskChain      *taskcenter.ChainEngine
 	SysMetrics     *sysmetrics.Collector
+	ImageCache     *ImageCache
 }
 
 func GetState(c *gin.Context) *AppState {

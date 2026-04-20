@@ -21,7 +21,6 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"fyms/internal/assets"
-	"fyms/internal/config"
 	"fyms/internal/models"
 )
 
@@ -85,9 +84,10 @@ func servePlatformLogo(c *gin.Context, state *AppState, platformName string) {
 	}
 
 	cacheKey := fmt.Sprintf("platform_poster_v2_960x540_%s.jpg", strings.ReplaceAll(strings.ToLower(platformName), " ", "_"))
-	cachePath := filepath.Join(state.Config.CacheDir, cacheKey)
+	cachePath := state.ImageCache.ResizedPath(cacheKey)
 
 	if st, err := os.Stat(cachePath); err == nil && st.Size() > 0 {
+		state.ImageCache.Touch(cachePath)
 		c.Header("Cache-Control", "public, max-age=31536000")
 		c.File(cachePath)
 		return
@@ -367,11 +367,7 @@ func serveImage(c *gin.Context, state *AppState) {
 	imageSemaphore <- struct{}{}
 	defer func() { <-imageSemaphore }()
 
-	client := state.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	localPath, err := materializeImageSource(state.Config, client, *uid, imageType, tag, sourcePath, sourceIsURL)
+	localPath, srcHash, err := state.ImageCache.Materialize(sourcePath, sourceIsURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
 		return
@@ -390,70 +386,23 @@ func serveImage(c *gin.Context, state *AppState) {
 
 	outPath := localPath
 	if maxW > 0 || maxH > 0 {
-		cacheName := fmt.Sprintf("%s_%s_%dx%d%s", *uid, imageType, maxW, maxH, ext)
+		cacheName := fmt.Sprintf("%s_%s_%s_%dx%d_q%d%s", *uid, imageType, srcHash, maxW, maxH, quality, ext)
 		if tag != "" {
-			cacheName = fmt.Sprintf("%s_%s_%s_%dx%d%s", *uid, imageType, tag, maxW, maxH, ext)
+			cacheName = fmt.Sprintf("%s_%s_%s_%s_%dx%d_q%d%s", *uid, imageType, tag, srcHash, maxW, maxH, quality, ext)
 		}
-		outPath = filepath.Join(state.Config.CacheDir, cacheName)
+		outPath = state.ImageCache.ResizedPath(cacheName)
 		if st, serr := os.Stat(outPath); serr == nil && st.Size() > 0 {
-			// cached resize exists
+			state.ImageCache.Touch(outPath)
 		} else if err := resizeImage(localPath, outPath, maxW, maxH, quality, encFmt); err != nil {
 			slog.Warn("[Image] resize failed, serving original", "path", localPath, "error", err)
 			outPath = localPath
 		}
+	} else {
+		state.ImageCache.Touch(localPath)
 	}
 
 	c.Header("Cache-Control", "public, max-age=31536000")
 	c.File(outPath)
-}
-
-func materializeImageSource(cfg *config.AppConfig, client *http.Client, itemUUID, imageType, tag, source string, isURL bool) (string, error) {
-	if !isURL {
-		if _, err := os.Stat(source); err != nil {
-			return "", err
-		}
-		return source, nil
-	}
-
-	name := fmt.Sprintf("dl_%s_%s", itemUUID, imageType)
-	if tag != "" {
-		name = fmt.Sprintf("dl_%s_%s_%s", itemUUID, imageType, tag)
-	}
-	dest := filepath.Join(cfg.CacheDir, name+urlHash(source)+".img")
-	if st, err := os.Stat(dest); err == nil && st.Size() > 0 {
-		return dest, nil
-	}
-
-	resp, err := client.Get(source)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: %s", resp.Status)
-	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return "", err
-	}
-	_, err = io.Copy(f, resp.Body)
-	closeErr := f.Close()
-	if err != nil {
-		return "", err
-	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	return dest, nil
-}
-
-func urlHash(s string) string {
-	h := uint32(2166136261)
-	for i := 0; i < len(s) && i < 200; i++ {
-		h ^= uint32(s[i])
-		h *= 16777619
-	}
-	return fmt.Sprintf("%08x", h)
 }
 
 func resizeImage(srcPath, dstPath string, maxW, maxH, quality int, format imaging.Format) error {
