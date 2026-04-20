@@ -300,9 +300,11 @@ function backdropId(item: any): string {
   font-size: 15px;
   font-weight: 700;
   line-height: 1;
-  padding: 14px 26px;
+  height: 52px;
+  padding: 0 26px;
   border-radius: 14px;
   transition: transform 0.2s ease, background 0.2s ease, filter 0.2s ease;
+  box-sizing: border-box;
 }
 .hero-btn:active {
   transform: translateY(1px);
@@ -312,6 +314,7 @@ function backdropId(item: any): string {
   background: var(--app-primary, #e50914);
   color: #fff;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  min-width: 140px;
 }
 .hero-btn-primary:hover {
   filter: brightness(1.1);
@@ -344,15 +347,16 @@ function backdropId(item: any): string {
   color: var(--app-accent-red-soft, #ffb4aa);
 }
 
-/* Pagination:右下胶囊 */
+/* Pagination:底部居中胶囊 */
 .hero-pagination {
   position: absolute;
-  right: 32px;
-  bottom: 28px;
+  left: 0;
+  right: 0;
+  bottom: 20px;
   z-index: 10;
   display: flex;
   gap: 6px;
-  justify-content: flex-end;
+  justify-content: center;
 }
 
 .hero-carousel :deep(.swiper-pagination-bullet) {
@@ -373,11 +377,10 @@ function backdropId(item: any): string {
     height: clamp(440px, 66vh, 620px);
   }
   .hero-inner {
-    padding: 0 28px 56px;
+    padding: 0 28px 64px;
   }
   .hero-pagination {
-    right: 20px;
-    bottom: 20px;
+    bottom: 18px;
   }
 }
 
@@ -403,9 +406,11 @@ function backdropId(item: any): string {
     font-size: 13px;
   }
   .hero-btn {
-    padding: 12px 20px;
+    height: 46px;
+    padding: 0 20px;
     font-size: 14px;
   }
+  .hero-btn-primary,
   .hero-btn-glass {
     min-width: 0;
   }
@@ -414,7 +419,6 @@ function backdropId(item: any): string {
     height: 46px;
   }
   .hero-pagination {
-    right: 16px;
     bottom: 14px;
   }
 }
