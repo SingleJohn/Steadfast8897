@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NProgress, NSkeleton, NTag } from 'naive-ui'
+import { NButton, NSkeleton } from 'naive-ui'
 import {
   getFavoriteItems,
   getItems,
   getLatestBatch,
   getResumeItems,
-  getScanProgress,
   getViews,
 } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
@@ -31,8 +30,6 @@ const favoriteItems = ref<any[]>([])
 const libraryViews = ref<any[]>([])
 const latestByLibrary = ref<LibrarySection[]>([])
 const loading = ref(true)
-const scanProgress = ref<any[]>([])
-let scanTimer: ReturnType<typeof setInterval> | null = null
 
 const heroReady = computed(() => heroItems.value.length > 0)
 const hasContent = computed(() => (
@@ -40,42 +37,6 @@ const hasContent = computed(() => (
   || favoriteItems.value.length > 0
   || latestByLibrary.value.length > 0
 ))
-const activeScans = computed(() => scanProgress.value.filter((item: any) => item.Status === 'scanning'))
-
-function clearScanPolling() {
-  if (scanTimer) {
-    clearInterval(scanTimer)
-    scanTimer = null
-  }
-}
-
-function ensureScanPolling() {
-  if (scanTimer || activeScans.value.length === 0) return
-  scanTimer = setInterval(() => {
-    void refreshScanProgress()
-  }, 5000)
-}
-
-function scanLabelSuffix(libraryId: string) {
-  const sp = scanProgress.value.find((s: any) => s.LibraryId === libraryId)
-  return sp?.Status === 'scanning' ? ` (扫描中 ${sp.Percentage}%)` : ''
-}
-
-function libraryNameForScan(libraryId: string) {
-  return libraryViews.value.find((lib: any) => lib.Id === libraryId)?.Name || '媒体库'
-}
-
-async function refreshScanProgress() {
-  try {
-    const result = await getScanProgress()
-    const items = result.Items || []
-    scanProgress.value = items
-    if (items.some((item: any) => item.Status === 'scanning')) ensureScanPolling()
-    else clearScanPolling()
-  } catch {
-    clearScanPolling()
-  }
-}
 
 async function loadHome() {
   try {
@@ -133,11 +94,6 @@ function goManageLibraries() {
 
 onMounted(() => {
   void loadHome()
-  void refreshScanProgress()
-})
-
-onUnmounted(() => {
-  clearScanPolling()
 })
 </script>
 
@@ -181,36 +137,6 @@ onUnmounted(() => {
     </div>
 
     <div class="home-sections">
-      <section v-if="activeScans.length > 0" class="scan-banner">
-        <div class="scan-banner-header">
-          <div>
-            <p class="scan-banner-eyebrow">后台任务</p>
-            <h2 class="scan-banner-title">媒体库扫描进行中</h2>
-          </div>
-          <n-tag type="warning" round>{{ activeScans.length }} 个任务</n-tag>
-        </div>
-
-        <div class="scan-progress-list">
-          <article v-for="sp in activeScans" :key="sp.LibraryId" class="scan-progress-card">
-            <div class="scan-progress-top">
-              <strong>{{ libraryNameForScan(sp.LibraryId) }}</strong>
-              <span>{{ sp.Percentage }}%</span>
-            </div>
-            <n-progress
-              type="line"
-              :percentage="sp.Percentage"
-              :show-indicator="false"
-              :height="8"
-              border-radius="999px"
-            />
-            <div class="scan-progress-meta">
-              <span>{{ sp.ProcessedItems }}/{{ sp.TotalItems }} 已处理</span>
-              <span>{{ sp.Status }}</span>
-            </div>
-          </article>
-        </div>
-      </section>
-
       <div class="home-rows">
         <LibraryTabs
           v-if="libraryViews.length > 0"
@@ -235,7 +161,7 @@ onUnmounted(() => {
         <SwiperRow
           v-for="{ id, name, items } in latestByLibrary"
           :key="id"
-          :title="`最新 ${name}${scanLabelSuffix(id)}`"
+          :title="`最新 ${name}`"
           :items="items"
           :link-to="`/library/${id}`"
           density="compact"
@@ -348,75 +274,6 @@ onUnmounted(() => {
   gap: 18px;
 }
 
-.scan-banner {
-  margin: 0 8px 34px;
-  padding: 24px 28px;
-  border: 0;
-  border-radius: var(--app-radius-card, 20px);
-  background: var(--app-surface-solid, #1c1b1b);
-  box-shadow: var(--app-shadow-1);
-}
-
-.scan-banner-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.scan-banner-title {
-  margin: 0;
-  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  color: var(--app-text);
-}
-
-.scan-banner-eyebrow {
-  margin: 0 0 6px;
-  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--app-accent-red, #e50914);
-}
-
-.scan-progress-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-}
-
-.scan-progress-card {
-  padding: 16px 18px;
-  border-radius: var(--app-radius, 16px);
-  background: var(--app-surface-solid-2, #2a2a2a);
-  border: 0;
-}
-
-.scan-progress-top,
-.scan-progress-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.scan-progress-top {
-  margin-bottom: 12px;
-  color: var(--app-text);
-  font-size: 14px;
-}
-
-.scan-progress-meta {
-  color: var(--app-text-muted);
-  margin-top: 10px;
-  font-size: 12px;
-}
-
 @media (max-width: 959px) {
   .home-hero-wrap {
     margin: 0 -16px 26px;
@@ -432,12 +289,6 @@ onUnmounted(() => {
 @media (max-width: 599px) {
   .home-hero-wrap {
     margin: 0 -16px 20px;
-  }
-
-  .scan-banner {
-    margin-left: 0;
-    margin-right: 0;
-    border-radius: var(--app-radius, 16px);
   }
 
   .empty-actions {
