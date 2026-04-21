@@ -66,9 +66,69 @@ func NewScrapeWorker(pool *pgxpool.Pool, queue *ScrapeQueue, limiter *rate.Limit
 }
 
 // NewTmdbLimiter 返回共享给所有 TMDB 调用点的 rate.Limiter。
-// 作为 package 函数方便 main.go 和测试注入。
+// 作为 package 函数方便 main.go 和测试注入。初始值用默认常量,
+// 启动后由 ApplyTmdbLimiterConfig 根据 system_config 覆盖。
 func NewTmdbLimiter() *rate.Limiter {
 	return rate.NewLimiter(rate.Limit(tmdbRatePerSec), tmdbRateBurst)
+}
+
+// TmdbLimiterSetting 描述限流的数值,仅供查看/监控。
+type TmdbLimiterSetting struct {
+	RatePerSec float64
+	Burst      int
+}
+
+// CurrentTmdbLimiterSetting 返回 sharedTmdbLimiter 当前生效的数值。
+func CurrentTmdbLimiterSetting() TmdbLimiterSetting {
+	if sharedTmdbLimiter == nil {
+		return TmdbLimiterSetting{RatePerSec: float64(tmdbRatePerSec), Burst: tmdbRateBurst}
+	}
+	return TmdbLimiterSetting{
+		RatePerSec: float64(sharedTmdbLimiter.Limit()),
+		Burst:      sharedTmdbLimiter.Burst(),
+	}
+}
+
+// readTmdbLimiterConfig 读 system_config 里的速率配置,
+// 缺失或非法回退到 tmdbRatePerSec / tmdbRateBurst 默认值。
+func readTmdbLimiterConfig(ctx context.Context, pool *pgxpool.Pool) (float64, int) {
+	rps := float64(tmdbRatePerSec)
+	burst := tmdbRateBurst
+
+	if v := strings.TrimSpace(readSystemConfigValue(ctx, pool, "tmdb_rate_per_sec")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 50 {
+			rps = f
+		}
+	}
+	if v := strings.TrimSpace(readSystemConfigValue(ctx, pool, "tmdb_rate_burst")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 100 {
+			burst = n
+		}
+	}
+	return rps, burst
+}
+
+// ApplyTmdbLimiterConfig 从 system_config 读速率参数,用 SetLimit/SetBurst
+// 实时生效到 sharedTmdbLimiter。无需重启进程。
+//
+// 调用时机:
+//   - 启动时(main.go 创建 limiter 后立刻调一次)
+//   - postConfiguration handler 保存 tmdb_rate_* 配置后
+func ApplyTmdbLimiterConfig(ctx context.Context, pool *pgxpool.Pool) {
+	if sharedTmdbLimiter == nil {
+		return
+	}
+	rps, burst := readTmdbLimiterConfig(ctx, pool)
+	curRPS := float64(sharedTmdbLimiter.Limit())
+	curBurst := sharedTmdbLimiter.Burst()
+	if curRPS == rps && curBurst == burst {
+		return
+	}
+	sharedTmdbLimiter.SetLimit(rate.Limit(rps))
+	sharedTmdbLimiter.SetBurst(burst)
+	slog.Info("[TMDB] rate limiter updated",
+		"rps", rps, "burst", burst,
+		"prev_rps", curRPS, "prev_burst", curBurst)
 }
 
 // Run 启动 worker:reconcile + 按 system_config 起 N 个 consume goroutine + 启 watchConfig

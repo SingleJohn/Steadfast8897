@@ -209,6 +209,7 @@ func postConfiguration(c *gin.Context) {
 
 	needViewsInvalidate := false
 	needScrapeInvalidate := false
+	needLimiterApply := false
 	for key, raw := range updates {
 		valStr := configValueString(raw)
 		_, err := state.DB.Exec(ctx,
@@ -223,6 +224,8 @@ func postConfiguration(c *gin.Context) {
 		switch key {
 		case "platform_libraries_enabled", "platform_libraries_position", "library_show_item_count":
 			needViewsInvalidate = true
+		case "tmdb_rate_per_sec", "tmdb_rate_burst":
+			needLimiterApply = true
 		}
 		if strings.HasPrefix(key, "scrape_") ||
 			strings.HasPrefix(key, "tmdb_") ||
@@ -238,6 +241,9 @@ func postConfiguration(c *gin.Context) {
 	}
 	if needScrapeInvalidate {
 		services.InvalidateScrapeAggregator()
+	}
+	if needLimiterApply {
+		services.ApplyTmdbLimiterConfig(ctx, state.DB)
 	}
 	c.Status(http.StatusNoContent)
 }

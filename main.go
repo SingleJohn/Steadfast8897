@@ -96,10 +96,13 @@ func main() {
 
 	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
 	services.SetScrapeCache(cache)
-	// Phase 2: 所有 TMDB 调用点共享同一个 rate.Limiter(3 rps, burst 5),
+	// Phase 2: 所有 TMDB 调用点共享同一个 rate.Limiter(默认 3 rps, burst 5),
 	// 通过 TmdbClient.tmdbGet 自动 Wait,防止 worker/autoscrape/backfill/手动 Identify 叠加超频。
+	// 启动后立刻根据 system_config.tmdb_rate_per_sec / tmdb_rate_burst 覆盖默认值;
+	// postConfiguration handler 保存配置后也会调 ApplyTmdbLimiterConfig 实时生效。
 	tmdbLimiter := services.NewTmdbLimiter()
 	services.SetTmdbLimiter(tmdbLimiter)
+	services.ApplyTmdbLimiterConfig(context.Background(), pool)
 	sessionManager := services.NewSessionManager()
 	progressBuffer := services.NewProgressBuffer(pool)
 	scanProgress := services.NewScanProgressTracker(pool)
