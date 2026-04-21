@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import {
-  NButton, NInput, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
+  NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
 } from 'naive-ui'
-import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline } from '@vicons/ionicons5'
+import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
   addLibraryPath, removeLibraryPath, refreshSingleLibrary,
   uploadLibraryImage, setLibraryImageUrl, deleteLibraryImage, browseDirectories,
+  getScrapeDefaults, getLibraryScrapeConfig, updateLibraryScrapeConfig,
+  type ScrapeStrategy, type FieldPriorityMap, type ScrapeConfigOverride,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
 
@@ -91,6 +93,8 @@ async function loadLibrary(id?: string) {
     name.value = lib.Name
     collectionType.value = lib.CollectionType
     imageTag.value = lib.ImageTag || null
+    // 并行加载刮削配置(不阻塞主 UI,失败静默)
+    void loadScrapeConfig(libId)
   } catch {
     showToast('加载媒体库信息失败', 'error')
   } finally {
@@ -253,6 +257,165 @@ async function onSetCoverUrl() {
     settingUrlImage.value = false
   }
 }
+
+// ===== 元数据源(Phase 6) =====
+
+const providerOptions = [
+  { label: 'TMDB', value: 'tmdb' },
+  { label: 'TVDB', value: 'tvdb' },
+  { label: 'Bangumi', value: 'bangumi' },
+  { label: '豆瓣', value: 'douban' },
+  { label: 'Fanart.tv', value: 'fanart' },
+]
+const providerLabel = (n: string) => providerOptions.find((o) => o.value === n)?.label || n
+
+const fieldLabels: Record<string, string> = {
+  overview: '简介',
+  title: '标题',
+  original_title: '原始标题',
+  tagline: '标语',
+  premiered: '首映日期',
+  year: '年份',
+  rating: '评分',
+  actors: '演员',
+  poster: '海报',
+  backdrop: '背景图',
+  season_poster: '季海报',
+}
+const fieldLabel = (n: string) => fieldLabels[n] || n
+
+const scrapeMode = ref<'inherit' | 'custom'>('inherit')
+const savingScrapeCfg = ref(false)
+const scrapeDefaults = ref<{ providers: string[]; field_names: string[]; default_policy: FieldPriorityMap } | null>(null)
+const scrapeEffective = ref<Record<string, any>>({})
+
+const enableProvidersOn = ref(false)
+const enableStrategyOn = ref(false)
+const enableThresholdOn = ref(false)
+const enableAutoApplyOn = ref(false)
+
+const override = reactive<{
+  providersEnabled: string[]
+  strategy: ScrapeStrategy
+  confidenceThreshold: number
+  autoApply: boolean
+  fieldPriority: FieldPriorityMap
+}>({
+  providersEnabled: [],
+  strategy: 'aggregated',
+  confidenceThreshold: 0.72,
+  autoApply: true,
+  fieldPriority: {},
+})
+const fieldToAdd = ref<string | null>(null)
+
+const availableFieldsToAdd = () => {
+  if (!scrapeDefaults.value) return []
+  const used = new Set(Object.keys(override.fieldPriority))
+  return scrapeDefaults.value.field_names
+    .filter((f) => !used.has(f))
+    .map((f) => ({ label: fieldLabel(f), value: f }))
+}
+
+function addFieldOverride() {
+  const f = fieldToAdd.value
+  if (!f || !scrapeDefaults.value) return
+  const defaults = scrapeDefaults.value.default_policy[f] ?? []
+  const basis = override.providersEnabled.length > 0 ? override.providersEnabled : (scrapeEffective.value.ProvidersEnabled || defaults)
+  override.fieldPriority[f] = defaults.filter((p) => basis.includes(p))
+  for (const p of basis) {
+    if (!override.fieldPriority[f].includes(p)) override.fieldPriority[f].push(p)
+  }
+  fieldToAdd.value = null
+}
+
+function removeFieldOverride(f: string) {
+  delete override.fieldPriority[f]
+}
+
+function moveOverrideField(f: string, idx: number, delta: number) {
+  const cur = override.fieldPriority[f]
+  if (!cur) return
+  const t = idx + delta
+  if (t < 0 || t >= cur.length) return
+  ;[cur[idx], cur[t]] = [cur[t], cur[idx]]
+}
+
+async function loadScrapeConfig(id?: string) {
+  const libId = id || props.libraryId
+  if (!libId) return
+  try {
+    if (!scrapeDefaults.value) {
+      scrapeDefaults.value = await getScrapeDefaults()
+    }
+    const resp = await getLibraryScrapeConfig(libId)
+    scrapeEffective.value = resp.effective || {}
+    if (resp.inherit || !resp.override) {
+      scrapeMode.value = 'inherit'
+      enableProvidersOn.value = false
+      enableStrategyOn.value = false
+      enableThresholdOn.value = false
+      enableAutoApplyOn.value = false
+      override.providersEnabled = [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
+      override.strategy = (resp.effective?.Strategy as ScrapeStrategy) || 'aggregated'
+      override.confidenceThreshold = resp.effective?.ConfidenceThreshold ?? 0.72
+      override.autoApply = resp.effective?.AutoApply ?? true
+      override.fieldPriority = {}
+      return
+    }
+    scrapeMode.value = 'custom'
+    const ov = resp.override
+    enableProvidersOn.value = Array.isArray(ov.providers_enabled)
+    enableStrategyOn.value = !!ov.strategy
+    enableThresholdOn.value = typeof ov.confidence_threshold === 'number'
+    enableAutoApplyOn.value = typeof ov.auto_apply === 'boolean'
+    override.providersEnabled = Array.isArray(ov.providers_enabled)
+      ? [...ov.providers_enabled]
+      : [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
+    override.strategy = ov.strategy || (resp.effective?.Strategy as ScrapeStrategy) || 'aggregated'
+    override.confidenceThreshold = ov.confidence_threshold ?? resp.effective?.ConfidenceThreshold ?? 0.72
+    override.autoApply = ov.auto_apply ?? resp.effective?.AutoApply ?? true
+    override.fieldPriority = ov.field_priority ? { ...ov.field_priority } : {}
+  } catch {
+    // 读失败静默,保留上次值
+  }
+}
+
+async function handleSaveScrapeCfg() {
+  if (!props.libraryId) return
+  savingScrapeCfg.value = true
+  try {
+    if (scrapeMode.value === 'inherit') {
+      await updateLibraryScrapeConfig(props.libraryId, { inherit: true, override: null })
+      showToast('已改为继承全局', 'success')
+      await loadScrapeConfig()
+      return
+    }
+    const ov: ScrapeConfigOverride = {}
+    if (enableProvidersOn.value) ov.providers_enabled = [...override.providersEnabled]
+    if (enableStrategyOn.value) ov.strategy = override.strategy
+    if (enableThresholdOn.value) ov.confidence_threshold = override.confidenceThreshold
+    if (enableAutoApplyOn.value) ov.auto_apply = override.autoApply
+    if (Object.keys(override.fieldPriority).length > 0) {
+      ov.field_priority = { ...override.fieldPriority }
+    }
+    const isEmpty = !ov.providers_enabled && !ov.strategy &&
+      ov.confidence_threshold === undefined && ov.auto_apply === undefined &&
+      !ov.field_priority
+    if (isEmpty) {
+      await updateLibraryScrapeConfig(props.libraryId, { inherit: true, override: null })
+      showToast('无任何覆盖项,已改为继承全局', 'info')
+    } else {
+      await updateLibraryScrapeConfig(props.libraryId, { inherit: false, override: ov })
+      showToast('元数据源配置已保存', 'success')
+    }
+    await loadScrapeConfig()
+  } catch {
+    showToast('保存失败', 'error')
+  } finally {
+    savingScrapeCfg.value = false
+  }
+}
 </script>
 
 <template>
@@ -352,6 +515,135 @@ async function onSetCoverUrl() {
         </h4>
         <p class="em-section-desc">扫描此媒体库中所有文件夹的媒体文件。</p>
         <n-button type="primary" size="small" :loading="scanning" @click="handleScan">立即扫描</n-button>
+      </div>
+
+      <!-- Scrape config -->
+      <div class="em-section">
+        <h4 class="em-section-title">
+          <n-icon :size="15"><LayersOutline /></n-icon>
+          元数据源
+        </h4>
+        <p class="em-section-desc">本媒体库的刮削源 / 策略 / 字段优先级。未覆盖的项继承全局。</p>
+
+        <div class="em-scrape-mode">
+          <label class="em-mode-opt" :class="{ active: scrapeMode === 'inherit' }">
+            <input type="radio" v-model="scrapeMode" value="inherit" />
+            <span>继承全局</span>
+          </label>
+          <label class="em-mode-opt" :class="{ active: scrapeMode === 'custom' }">
+            <input type="radio" v-model="scrapeMode" value="custom" />
+            <span>自定义</span>
+          </label>
+        </div>
+
+        <div v-if="scrapeMode === 'inherit'" class="em-inherit-preview">
+          <div class="hint-text">
+            当前生效:启用源 {{ (scrapeEffective.ProvidersEnabled || []).map((p: string) => providerLabel(p)).join(' / ') || '(无)' }};
+            策略 {{ scrapeEffective.Strategy === 'sequential' ? '按顺序尝试' : '多源投票' }};
+            阈值 {{ scrapeEffective.ConfidenceThreshold ?? '-' }}
+          </div>
+        </div>
+
+        <div v-else class="em-scrape-overrides">
+          <!-- 启用的源 -->
+          <div class="em-override-block">
+            <label class="em-override-head">
+              <input type="checkbox" v-model="enableProvidersOn" />
+              <span>覆盖启用的源</span>
+            </label>
+            <div v-if="enableProvidersOn" class="em-override-body">
+              <n-checkbox-group v-model:value="override.providersEnabled">
+                <div class="em-provider-grid">
+                  <n-checkbox v-for="opt in providerOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
+                </div>
+              </n-checkbox-group>
+              <div class="hint-text">TVDB / Fanart / 豆瓣 Cookie 等凭据始终读全局,此处只控制"是否启用"。</div>
+            </div>
+          </div>
+
+          <!-- 识别策略 -->
+          <div class="em-override-block">
+            <label class="em-override-head">
+              <input type="checkbox" v-model="enableStrategyOn" />
+              <span>覆盖识别策略</span>
+            </label>
+            <div v-if="enableStrategyOn" class="em-override-body">
+              <label class="em-mode-opt" :class="{ active: override.strategy === 'aggregated' }">
+                <input type="radio" v-model="override.strategy" value="aggregated" />
+                <span>多源投票</span>
+              </label>
+              <label class="em-mode-opt" :class="{ active: override.strategy === 'sequential' }">
+                <input type="radio" v-model="override.strategy" value="sequential" />
+                <span>按顺序尝试</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 识别阈值 -->
+          <div class="em-override-block">
+            <label class="em-override-head">
+              <input type="checkbox" v-model="enableThresholdOn" />
+              <span>覆盖识别阈值</span>
+            </label>
+            <div v-if="enableThresholdOn" class="em-override-body">
+              <n-input-number v-model:value="override.confidenceThreshold" :min="0.5" :max="1" :step="0.01" size="small" />
+            </div>
+          </div>
+
+          <!-- 自动采纳 -->
+          <div class="em-override-block">
+            <label class="em-override-head">
+              <input type="checkbox" v-model="enableAutoApplyOn" />
+              <span>覆盖"自动采纳"</span>
+            </label>
+            <div v-if="enableAutoApplyOn" class="em-override-body">
+              <n-checkbox v-model:checked="override.autoApply">低于阈值时自动采纳(否则进人工确认队列)</n-checkbox>
+            </div>
+          </div>
+
+          <!-- 字段级覆盖 -->
+          <div class="em-override-block">
+            <div class="em-field-head">
+              <span>字段来源(仅覆盖列出的字段,其余继承)</span>
+              <n-select
+                v-model:value="fieldToAdd"
+                :options="availableFieldsToAdd()"
+                placeholder="+ 添加字段"
+                size="tiny"
+                :menu-props="solidModalMenuProps"
+                style="width: 140px"
+                @update:value="addFieldOverride"
+              />
+            </div>
+            <div v-if="Object.keys(override.fieldPriority).length === 0" class="hint-text">暂未覆盖任何字段</div>
+            <div v-for="f in Object.keys(override.fieldPriority)" :key="f" class="em-field-row">
+              <div class="em-field-name">{{ fieldLabel(f) }}</div>
+              <div class="em-field-pills">
+                <div
+                  v-for="(pname, idx) in override.fieldPriority[f]"
+                  :key="pname"
+                  class="em-field-pill"
+                >
+                  <span class="em-pill-idx">{{ idx + 1 }}</span>
+                  <span>{{ providerLabel(pname) }}</span>
+                  <n-button quaternary circle size="tiny" :disabled="idx === 0" @click="moveOverrideField(f, idx, -1)">
+                    <template #icon><n-icon><ArrowUpOutline /></n-icon></template>
+                  </n-button>
+                  <n-button quaternary circle size="tiny" :disabled="idx === override.fieldPriority[f].length - 1" @click="moveOverrideField(f, idx, 1)">
+                    <template #icon><n-icon><ArrowDownOutline /></n-icon></template>
+                  </n-button>
+                </div>
+              </div>
+              <n-button quaternary circle size="tiny" type="error" @click="removeFieldOverride(f)">
+                <template #icon><n-icon><CloseOutline /></n-icon></template>
+              </n-button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 12px">
+          <n-button type="primary" size="small" :loading="savingScrapeCfg" @click="handleSaveScrapeCfg">保存元数据源配置</n-button>
+        </div>
       </div>
 
       <!-- Danger -->
@@ -533,6 +825,128 @@ async function onSetCoverUrl() {
   transition: background 0.15s;
 }
 .em-dir-row:hover { background: var(--app-modal-hover-bg, rgba(128,128,128,0.08)); }
+
+/* ===== 元数据源 section ===== */
+.em-scrape-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.em-mode-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--app-border);
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.04));
+  font-size: 12px;
+  color: var(--app-text);
+  cursor: pointer;
+}
+.em-mode-opt.active {
+  border-color: var(--app-primary);
+  background: rgba(var(--app-primary-rgb, 59,130,246), 0.1);
+  color: var(--app-primary);
+}
+.em-mode-opt input {
+  accent-color: var(--app-primary);
+}
+
+.em-inherit-preview {
+  padding: 8px 10px;
+  background: rgba(128,128,128,0.03);
+  border-radius: 4px;
+}
+
+.em-scrape-overrides {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.em-override-block {
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+}
+.em-override-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--app-text);
+  font-weight: 500;
+  cursor: pointer;
+}
+.em-override-head input {
+  accent-color: var(--app-primary);
+}
+.em-override-body {
+  padding-top: 8px;
+  padding-left: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.em-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 12px;
+  width: 100%;
+}
+.em-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--app-text);
+  font-weight: 500;
+  padding-bottom: 8px;
+}
+.em-field-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px dashed var(--app-border);
+}
+.em-field-row:first-of-type { border-top: none; }
+.em-field-name {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+.em-field-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.em-field-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 12px;
+  background: rgba(128,128,128,0.06);
+  border: 1px solid var(--app-border);
+  font-size: 11px;
+  color: var(--app-text);
+}
+.em-pill-idx {
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted);
+  font-weight: 600;
+  opacity: 0.7;
+}
+.hint-text {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+  margin-top: 4px;
+  opacity: 0.8;
+}
 
 @media (max-width: 500px) {
   .em-banner { flex-direction: column; }

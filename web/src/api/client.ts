@@ -466,6 +466,59 @@ export async function restartServer() {
   return request('/System/Restart', { method: 'POST' });
 }
 
+// Scrape config ------------------------------------------------------------
+
+export type ScrapeStrategy = 'aggregated' | 'sequential';
+export type FieldPriorityMap = Record<string, string[]>;
+
+export interface ScrapeDefaults {
+  providers: string[];
+  field_names: string[];
+  strategy_options: ScrapeStrategy[];
+  default_policy: FieldPriorityMap;
+}
+
+export interface ScrapeConfigOverride {
+  providers_enabled?: string[];
+  provider_priority?: Record<string, number>;
+  field_priority?: FieldPriorityMap;
+  confidence_threshold?: number;
+  auto_apply?: boolean;
+  strategy?: ScrapeStrategy;
+}
+
+export interface LibraryScrapeConfigResponse {
+  inherit: boolean;
+  override: ScrapeConfigOverride | null;
+  effective: {
+    ProvidersEnabled?: string[];
+    ProviderPriority?: Record<string, number>;
+    FieldPriority?: FieldPriorityMap;
+    ConfidenceThreshold?: number;
+    AutoApply?: boolean;
+    Strategy?: ScrapeStrategy;
+    DoubanEnabled?: boolean;
+  };
+}
+
+export async function getScrapeDefaults() {
+  return request<ScrapeDefaults>('/System/Config/Scrape/Defaults');
+}
+
+export async function getLibraryScrapeConfig(id: string) {
+  return request<LibraryScrapeConfigResponse>(`/Library/${encodeURIComponent(id)}/ScrapeConfig`);
+}
+
+export async function updateLibraryScrapeConfig(
+  id: string,
+  body: { inherit: boolean; override: ScrapeConfigOverride | null },
+) {
+  return request(`/Library/${encodeURIComponent(id)}/ScrapeConfig`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
 export async function shutdownServer() {
   return request('/System/Shutdown', { method: 'POST' });
 }

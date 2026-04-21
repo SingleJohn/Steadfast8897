@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { NButton, NCard, NCheckbox, NCheckboxGroup, NEmpty, NForm, NFormItem, NGrid, NGridItem, NIcon, NInput, NInputNumber, NProgress, NSelect, NSlider, NSwitch } from 'naive-ui'
@@ -13,7 +13,8 @@ import {
   startBackfill, stopBackfill,
   getBackfillConfig, updateBackfillConfig,
   resetBackfillQuality, resetBackfillEpisodeImage,
-  type BackfillStage,
+  getScrapeDefaults,
+  type BackfillStage, type ScrapeStrategy, type FieldPriorityMap,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
 
@@ -125,6 +126,67 @@ const tvdbApiKey = ref('')
 const tvdbPin = ref('')
 const fanartApiKey = ref('')
 const savingScrapeSources = ref(false)
+
+// ===== 识别策略 + 字段级来源顺序(Phase 6) =====
+const strategy = ref<ScrapeStrategy>('aggregated')
+const strategyOptions: { label: string; value: ScrapeStrategy; desc: string }[] = [
+  { label: '多源投票', value: 'aggregated', desc: '并发请求所有启用源,多源互投,准确度优先' },
+  { label: '按顺序尝试', value: 'sequential', desc: '按优先级逐个尝试,首个过阈值即停,请求更少' },
+]
+const fieldNames = ref<string[]>([])
+const defaultPolicy = ref<FieldPriorityMap>({})
+const fieldPriority = ref<FieldPriorityMap>({})
+
+const fieldLabels: Record<string, string> = {
+  overview: '简介 Overview',
+  title: '标题 Title',
+  original_title: '原始标题 Original Title',
+  tagline: '标语 Tagline',
+  premiered: '首映日期 Premiered',
+  year: '年份 Year',
+  rating: '评分 Rating',
+  actors: '演员 Actors',
+  poster: '海报 Poster',
+  backdrop: '背景图 Backdrop',
+  season_poster: '季海报 Season Poster',
+}
+const fieldLabel = (n: string) => fieldLabels[n] || n
+
+function moveField(field: string, idx: number, delta: number) {
+  const cur = [...(fieldPriority.value[field] ?? [])]
+  const target = idx + delta
+  if (target < 0 || target >= cur.length) return
+  ;[cur[idx], cur[target]] = [cur[target], cur[idx]]
+  fieldPriority.value = { ...fieldPriority.value, [field]: cur }
+}
+
+function resetFieldPriority() {
+  const next: FieldPriorityMap = {}
+  const enabled = new Set(providersEnabled.value)
+  for (const f of fieldNames.value) {
+    next[f] = (defaultPolicy.value[f] ?? []).filter((p) => enabled.has(p))
+    for (const p of providersEnabled.value) {
+      if (!next[f].includes(p)) next[f].push(p)
+    }
+  }
+  fieldPriority.value = next
+}
+
+// 启用列表变化时同步每个字段:剔除已禁用,追加新启用
+watch(providersEnabled, () => {
+  if (fieldNames.value.length === 0) return
+  const enabled = new Set(providersEnabled.value)
+  const next: FieldPriorityMap = {}
+  for (const f of fieldNames.value) {
+    const cur = fieldPriority.value[f] ?? defaultPolicy.value[f] ?? []
+    const kept = cur.filter((p) => enabled.has(p))
+    for (const p of providersEnabled.value) {
+      if (!kept.includes(p)) kept.push(p)
+    }
+    next[f] = kept
+  }
+  fieldPriority.value = next
+}, { deep: true })
 
 const probeProgress = computed(() => {
   const s = snapshots.probe
@@ -266,6 +328,8 @@ async function handleSaveScrapeSources() {
     await updateSystemConfig({
       scrape_providers_enabled: JSON.stringify(providersEnabled.value),
       scrape_provider_priority: JSON.stringify(priorityObj),
+      scrape_field_priority: JSON.stringify(fieldPriority.value),
+      scrape_strategy: strategy.value,
       scrape_confidence_threshold: String(confidenceThreshold.value),
       scrape_auto_apply: String(autoApplyEnabled.value),
       douban_enabled: String(doubanEnabled.value),
@@ -337,6 +401,10 @@ async function stopProbeJob() {
 
 onMounted(() => {
   refreshScrapeSummary()
+  getScrapeDefaults().then((defs) => {
+    fieldNames.value = defs.field_names
+    defaultPolicy.value = { ...defs.default_policy }
+  }).catch(() => {})
   getSystemConfig().then((cfg: any) => {
     const keys = (cfg.tmdb_api_key || '').split(',').map((k: string) => k.trim()).filter((k: string) => k)
     tmdbApiKeys.value = keys.length > 0 ? keys : ['']
@@ -377,6 +445,37 @@ onMounted(() => {
     tvdbApiKey.value = cfg.tvdb_api_key || ''
     tvdbPin.value = cfg.tvdb_pin || ''
     fanartApiKey.value = cfg.fanart_api_key || ''
+    // 策略
+    const s = String(cfg.scrape_strategy || '').toLowerCase()
+    strategy.value = s === 'sequential' ? 'sequential' : 'aggregated'
+    // 字段级优先级:saved 优先,缺字段用默认;过滤出当前启用的 provider
+    let savedFP: FieldPriorityMap = {}
+    try {
+      savedFP = cfg.scrape_field_priority ? JSON.parse(cfg.scrape_field_priority) : {}
+    } catch { savedFP = {} }
+    const enabled = new Set(providersEnabled.value)
+    const applyEnabledFilter = (arr: string[]) => {
+      const kept = arr.filter((p) => enabled.has(p))
+      for (const p of providersEnabled.value) {
+        if (!kept.includes(p)) kept.push(p)
+      }
+      return kept
+    }
+    const waitForFieldNames = () => {
+      if (fieldNames.value.length === 0) {
+        setTimeout(waitForFieldNames, 50)
+        return
+      }
+      const merged: FieldPriorityMap = {}
+      for (const f of fieldNames.value) {
+        const base = (Array.isArray(savedFP[f]) && savedFP[f].length > 0)
+          ? savedFP[f]
+          : (defaultPolicy.value[f] ?? [])
+        merged[f] = applyEnabledFilter([...base])
+      }
+      fieldPriority.value = merged
+    }
+    waitForFieldNames()
     try { probePathMappings.value = cfg.probe_path_mappings ? JSON.parse(cfg.probe_path_mappings) : [] } catch { probePathMappings.value = [] }
     probeThreads.value = cfg.probe_threads || '5'
   }).catch(() => {})
@@ -534,6 +633,66 @@ onMounted(() => {
               </n-grid-item>
             </n-grid>
             <div class="hint-text">单源候选 ≥ 阈值直接采纳;多源互投(≥2)可低于阈值。推荐 0.72。</div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">识别策略</div>
+            <div class="strategy-options">
+              <label
+                v-for="opt in strategyOptions"
+                :key="opt.value"
+                class="strategy-row"
+                :class="{ active: strategy === opt.value }"
+              >
+                <input type="radio" :value="opt.value" v-model="strategy" />
+                <div class="strategy-copy">
+                  <div class="strategy-name">{{ opt.label }}</div>
+                  <div class="strategy-desc">{{ opt.desc }}</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="subsection">
+            <div class="subsection-title">
+              字段来源顺序
+              <n-button size="tiny" quaternary @click="resetFieldPriority">重置为默认</n-button>
+            </div>
+            <div class="field-priority-list">
+              <div v-for="f in fieldNames" :key="f" class="field-priority-row">
+                <div class="field-priority-label">{{ fieldLabel(f) }}</div>
+                <div class="field-priority-pills">
+                  <div
+                    v-for="(pname, pidx) in (fieldPriority[f] || [])"
+                    :key="pname"
+                    class="field-priority-pill"
+                  >
+                    <span class="pill-order">{{ pidx + 1 }}</span>
+                    <span class="pill-name">{{ providerLabel(pname) }}</span>
+                    <n-button
+                      quaternary
+                      circle
+                      size="tiny"
+                      :disabled="pidx === 0"
+                      @click="moveField(f, pidx, -1)"
+                    >
+                      <template #icon><n-icon><ArrowUpOutline /></n-icon></template>
+                    </n-button>
+                    <n-button
+                      quaternary
+                      circle
+                      size="tiny"
+                      :disabled="pidx === (fieldPriority[f] || []).length - 1"
+                      @click="moveField(f, pidx, 1)"
+                    >
+                      <template #icon><n-icon><ArrowDownOutline /></n-icon></template>
+                    </n-button>
+                  </div>
+                  <div v-if="!(fieldPriority[f] || []).length" class="hint-text">无启用源</div>
+                </div>
+              </div>
+            </div>
+            <div class="hint-text">每个字段按左起第一个启用源的优先,不可用再落下一个。评分推荐"豆瓣优先",图片推荐"TVDB 优先"。</div>
           </div>
 
           <div class="subsection switch-section">
@@ -967,6 +1126,94 @@ onMounted(() => {
 }
 .priority-actions :deep(.n-button) {
   cursor: pointer;
+}
+
+/* 识别策略单选 */
+.strategy-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.strategy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.strategy-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.strategy-row.active {
+  border-color: var(--app-primary);
+  background: rgba(var(--app-primary-rgb), 0.08);
+}
+.strategy-row input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--app-primary);
+}
+.strategy-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.strategy-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+.strategy-desc {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+/* 字段级优先级 */
+.field-priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.field-priority-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.field-priority-label {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+.field-priority-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.field-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: var(--app-text);
+}
+.field-priority-pill .pill-order {
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted);
+  font-weight: 600;
+  opacity: 0.7;
+}
+.field-priority-pill .pill-name {
+  padding: 0 2px;
 }
 
 .switch-section {
