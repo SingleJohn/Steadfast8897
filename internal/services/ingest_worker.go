@@ -269,6 +269,13 @@ func (w *IngestWorker) InflightCount(tag string) int64 {
 func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 	switch e.Kind {
 	case EventCreate, EventModify:
+		// Modify 事件只对视频文件有意义(mediainfo 可能变了)。
+		// nfo/jpg/mediainfo.json 等 sidecar 的 modify 不改变 item 树,
+		// 但会触发一次完整 scanOneShow(2~7s)+ autoScrapeNewItems,
+		// 第三方刮削器反复改 season.nfo 时会把日志和 DB 打爆。
+		if e.Kind == EventModify && !e.IsDir && !IsVideoExt(strings.ToLower(filepath.Ext(e.Path))) {
+			return nil
+		}
 		return w.processCreate(ctx, e)
 	case EventDelete:
 		return w.processDelete(ctx, e)

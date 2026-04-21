@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -14,10 +15,26 @@ import (
 // 只负责 SELECT → EnqueueBatch,实际刮削由 ScrapeWorker 消费 scrape_queue 完成。
 var autoScrapeRunning sync.Map // libraryID -> *atomic.Bool
 
+// autoScrapeLastRun 记录每个 library 最近一次成功触发扫表入队的时间。
+// CAS 只挡并发不挡高频串行,ingest 密集 modify 事件会让同一 library 几十 ms
+// 完成一次扫表再进下一次,日志和 DB 双压。加一个 cooldown 窗口,window 内
+// 直接跳过 —— 反正 ON CONFLICT + failed 的 item 由 ScrapeWorker 的
+// next_run_at(2→4→8→16→32 分钟)兜底重试,不需要 ingest 层高频重扫。
+var autoScrapeLastRun sync.Map // libraryID -> time.Time
+
+const autoScrapeCooldown = 30 * time.Second
+
 // autoScrapeNewItems 把本 library 里"还缺 overview"且"未在 cooldown"的
 // Movie/Series 一批入队到 scrape_queue,task_type=identify。
 // 入队是幂等的(UNIQUE(item_id, task_type)),重复触发不会放大工作量。
 func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID string) {
+	if lastAny, ok := autoScrapeLastRun.Load(libraryID); ok {
+		if time.Since(lastAny.(time.Time)) < autoScrapeCooldown {
+			slog.Debug("[AutoScrape] Within cooldown window, skip", "library", libraryID)
+			return
+		}
+	}
+
 	flagAny, _ := autoScrapeRunning.LoadOrStore(libraryID, &atomic.Bool{})
 	flag := flagAny.(*atomic.Bool)
 	if !flag.CompareAndSwap(false, true) {
@@ -25,6 +42,10 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 		return
 	}
 	defer flag.Store(false)
+
+	// 拿到执行锁就立即建立 cooldown 窗口,不管后面 SELECT/Enqueue 成败。
+	// 即使 auto_scrape_enabled=false 也占用窗口 —— 否则高频触发会反复查 system_config。
+	autoScrapeLastRun.Store(libraryID, time.Now())
 
 	var autoEnabled *string
 	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'auto_scrape_enabled'").Scan(&autoEnabled)
