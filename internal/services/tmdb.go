@@ -143,6 +143,21 @@ func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 	}
 }
 
+// sanitizeTmdbURL 把 api_key=XXX 替换成 api_key=***,避免日志泄漏。
+func sanitizeTmdbURL(u string) string {
+	const key = "api_key="
+	idx := strings.Index(u, key)
+	if idx < 0 {
+		return u
+	}
+	tail := u[idx+len(key):]
+	end := strings.IndexAny(tail, "&")
+	if end < 0 {
+		return u[:idx] + key + "***"
+	}
+	return u[:idx] + key + "***" + tail[end:]
+}
+
 func redactProxyURL(u *url.URL) string {
 	if u == nil {
 		return ""
@@ -334,11 +349,15 @@ func (c *TmdbClient) tmdbGet(ctx context.Context, urlTemplate string) (map[strin
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
+		// 部分代理/CDN WAF 会黑名单默认的 Go-http-client UA,显式带上浏览器 UA 避过
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; fyms/1.0; +https://github.com/ffoocn/fyms)")
+		req.Header.Set("Accept", "application/json")
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			DiagFrom(ctx).Record(reqURL, 0, nil, false)
-			slog.Debug("[TMDB] Request error", "error", err)
+			// 完整错误类型 + 字符串,诊断 "Access denied" / proxy / DNS 等异常必备
+			slog.Warn("[TMDB] Request error", "error", err, "error_type", fmt.Sprintf("%T", err), "url", sanitizeTmdbURL(reqURL))
 			return nil, err
 		}
 
