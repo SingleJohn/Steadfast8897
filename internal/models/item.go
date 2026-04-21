@@ -941,7 +941,10 @@ func GetAllGenresWithCounts(ctx context.Context, pool *pgxpool.Pool) ([]struct {
 // logical movie, with all physical versions aggregated as MediaSources.
 //
 // Key design decisions (learned from Jellyfin source):
-//   - Group by tmdb_id + type + studio — never merge across different studios
+//   - Group by ANY shared external_id (tmdb / imdb / douban / bangumi / ...) within
+//     the same studio — never merge across different studios. Multi-source primary
+//     IDs are treated equally; a transitive closure (union-find) bridges items that
+//     share different IDs (e.g. A↔B via tmdb, A↔C via imdb → {A,B,C} one group).
 //   - Only merge Movies (Series require episode re-parenting which is complex)
 //   - Reset all previous merges first to ensure idempotent results
 //   - The merged_to_id filter is only applied in platform library queries,
@@ -954,70 +957,116 @@ func MergeMultiVersionItems(ctx context.Context, pool *pgxpool.Pool) (int, error
 		slog.Info("[Merge] Reset previous merges", "reset_count", resetTag.RowsAffected())
 	}
 
-	// Find duplicate groups: same tmdb_id + type + studio within platform items.
-	// Only merge Movies; Series merging would orphan their child seasons/episodes.
-	rows, err := pool.Query(ctx,
-		`SELECT tmdb_id, studio
-		 FROM items
-		 WHERE tmdb_id IS NOT NULL
-		   AND type = 'Movie'
-		   AND studio IS NOT NULL AND studio <> ''
-		   AND merged_to_id IS NULL
-		 GROUP BY tmdb_id, studio
-		 HAVING COUNT(*) > 1`)
+	// Pull all (item_id, studio, provider, external_id) for unmerged Movies in
+	// a platform library context. Joining item_external_ids supports multi-source
+	// primary IDs; one item may appear multiple rows if it has several external IDs.
+	rows, err := pool.Query(ctx, `
+		SELECT i.id::text, i.studio, e.provider, e.external_id
+		  FROM items i
+		  JOIN item_external_ids e ON e.item_id = i.id
+		 WHERE i.type = 'Movie'
+		   AND i.merged_to_id IS NULL
+		   AND i.studio IS NOT NULL AND i.studio <> ''`)
 	if err != nil {
-		return 0, fmt.Errorf("find merge groups: %w", err)
+		return 0, fmt.Errorf("find merge candidates: %w", err)
 	}
 	defer rows.Close()
 
-	type mergeGroup struct {
-		TmdbID int32
-		Studio string
-	}
-	var groups []mergeGroup
+	// keyToItems: provider:external_id:studio → [item_id, ...]
+	keyToItems := map[string][]string{}
 	for rows.Next() {
-		var g mergeGroup
-		if err := rows.Scan(&g.TmdbID, &g.Studio); err != nil {
+		var itemID, studio, provider, externalID string
+		if err := rows.Scan(&itemID, &studio, &provider, &externalID); err != nil {
 			return 0, err
 		}
-		groups = append(groups, g)
+		key := provider + ":" + externalID + ":" + studio
+		keyToItems[key] = append(keyToItems[key], itemID)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 
-	slog.Info("[Merge] Found duplicate groups", "count", len(groups))
+	// Union-find across all keys to handle transitive closure.
+	parent := map[string]string{}
+	var find func(string) string
+	find = func(x string) string {
+		if _, ok := parent[x]; !ok {
+			parent[x] = x
+			return x
+		}
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+	union := func(x, y string) {
+		rx, ry := find(x), find(y)
+		if rx != ry {
+			parent[rx] = ry
+		}
+	}
+	for _, items := range keyToItems {
+		for i := 1; i < len(items); i++ {
+			union(items[0], items[i])
+		}
+	}
+
+	// Cluster items by root (union-find component).
+	rootToMembers := map[string][]string{}
+	for itemID := range parent {
+		root := find(itemID)
+		rootToMembers[root] = append(rootToMembers[root], itemID)
+	}
+
+	groupCount := 0
+	for _, members := range rootToMembers {
+		if len(members) >= 2 {
+			groupCount++
+		}
+	}
+	slog.Info("[Merge] Found duplicate groups", "count", groupCount)
 
 	merged := 0
-	for _, g := range groups {
-		// Pick best primary: image > overview > most recent
+	for _, members := range rootToMembers {
+		if len(members) < 2 {
+			continue
+		}
+		// Pick best primary among members: image > overview > most recent.
 		var primaryID string
 		err := pool.QueryRow(ctx,
 			`SELECT id::text FROM items
-			 WHERE tmdb_id = $1 AND type = 'Movie' AND studio = $2 AND merged_to_id IS NULL
-			 ORDER BY
-			   (CASE WHEN primary_image_tag IS NOT NULL THEN 0 ELSE 1 END),
-			   (CASE WHEN primary_image_path IS NOT NULL AND primary_image_path <> '' THEN 0 ELSE 1 END),
-			   (CASE WHEN overview IS NOT NULL AND overview <> '' THEN 0 ELSE 1 END),
-			   updated_at DESC
-			 LIMIT 1`, g.TmdbID, g.Studio).Scan(&primaryID)
+			  WHERE id = ANY($1::uuid[]) AND merged_to_id IS NULL
+			  ORDER BY
+			    (CASE WHEN primary_image_tag IS NOT NULL THEN 0 ELSE 1 END),
+			    (CASE WHEN primary_image_path IS NOT NULL AND primary_image_path <> '' THEN 0 ELSE 1 END),
+			    (CASE WHEN overview IS NOT NULL AND overview <> '' THEN 0 ELSE 1 END),
+			    updated_at DESC
+			  LIMIT 1`, members).Scan(&primaryID)
 		if err != nil {
-			slog.Warn("[Merge] Failed to pick primary", "tmdb_id", g.TmdbID, "studio", g.Studio, "error", err)
+			slog.Warn("[Merge] Failed to pick primary", "members", members, "error", err)
 			continue
 		}
 
+		others := make([]string, 0, len(members)-1)
+		for _, m := range members {
+			if m != primaryID {
+				others = append(others, m)
+			}
+		}
+		if len(others) == 0 {
+			continue
+		}
 		tag, err := pool.Exec(ctx,
 			`UPDATE items SET merged_to_id = $1::uuid
-			 WHERE tmdb_id = $2 AND type = 'Movie' AND studio = $3 AND id <> $1::uuid AND merged_to_id IS NULL`,
-			primaryID, g.TmdbID, g.Studio)
+			  WHERE id = ANY($2::uuid[]) AND merged_to_id IS NULL`,
+			primaryID, others)
 		if err != nil {
 			slog.Warn("[Merge] Failed to set merged_to_id", "primary", primaryID, "error", err)
 			continue
 		}
-		affected := int(tag.RowsAffected())
-		merged += affected
+		merged += int(tag.RowsAffected())
 
-		syncBestMetadataToPrimary(ctx, pool, primaryID, g.TmdbID, g.Studio)
+		syncBestMetadataToPrimary(ctx, pool, primaryID)
 	}
 
 	// Re-sync metadata for already-merged groups where primary still lacks data
@@ -1027,8 +1076,9 @@ func MergeMultiVersionItems(ctx context.Context, pool *pgxpool.Pool) (int, error
 }
 
 // syncBestMetadataToPrimary fills NULL/empty metadata fields on the primary
-// using the best available value from any group member (same tmdb_id + studio).
-func syncBestMetadataToPrimary(ctx context.Context, pool *pgxpool.Pool, primaryID string, tmdbID int32, studio string) {
+// using the best available value from any group member (primary itself or
+// any item whose merged_to_id points to primary).
+func syncBestMetadataToPrimary(ctx context.Context, pool *pgxpool.Pool, primaryID string) {
 	_, err := pool.Exec(ctx, `
 		UPDATE items p SET
 			primary_image_path  = COALESCE(NULLIF(p.primary_image_path, ''),  best.img_path),
@@ -1036,20 +1086,20 @@ func syncBestMetadataToPrimary(ctx context.Context, pool *pgxpool.Pool, primaryI
 			backdrop_image_path = COALESCE(NULLIF(p.backdrop_image_path, ''), best.bd_path),
 			backdrop_image_tag  = COALESCE(NULLIF(p.backdrop_image_tag, ''),  best.bd_tag),
 			overview            = COALESCE(NULLIF(p.overview, ''),            best.overview),
-			community_rating    = COALESCE(p.community_rating,               best.rating),
+			community_rating    = COALESCE(p.community_rating,                best.rating),
 			official_rating     = COALESCE(NULLIF(p.official_rating, ''),     best.official)
 		FROM (
 			SELECT
-				(SELECT primary_image_path  FROM items WHERE tmdb_id=$2 AND studio=$3 AND primary_image_path  IS NOT NULL AND primary_image_path  <> '' LIMIT 1) AS img_path,
-				(SELECT primary_image_tag   FROM items WHERE tmdb_id=$2 AND studio=$3 AND primary_image_tag   IS NOT NULL AND primary_image_tag   <> '' LIMIT 1) AS img_tag,
-				(SELECT backdrop_image_path FROM items WHERE tmdb_id=$2 AND studio=$3 AND backdrop_image_path IS NOT NULL AND backdrop_image_path <> '' LIMIT 1) AS bd_path,
-				(SELECT backdrop_image_tag  FROM items WHERE tmdb_id=$2 AND studio=$3 AND backdrop_image_tag  IS NOT NULL AND backdrop_image_tag  <> '' LIMIT 1) AS bd_tag,
-				(SELECT overview            FROM items WHERE tmdb_id=$2 AND studio=$3 AND overview IS NOT NULL AND overview <> '' LIMIT 1) AS overview,
-				(SELECT community_rating    FROM items WHERE tmdb_id=$2 AND studio=$3 AND community_rating    IS NOT NULL LIMIT 1) AS rating,
-				(SELECT official_rating     FROM items WHERE tmdb_id=$2 AND studio=$3 AND official_rating     IS NOT NULL AND official_rating <> '' LIMIT 1) AS official
+				(SELECT primary_image_path  FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND primary_image_path  IS NOT NULL AND primary_image_path  <> '' LIMIT 1) AS img_path,
+				(SELECT primary_image_tag   FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND primary_image_tag   IS NOT NULL AND primary_image_tag   <> '' LIMIT 1) AS img_tag,
+				(SELECT backdrop_image_path FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND backdrop_image_path IS NOT NULL AND backdrop_image_path <> '' LIMIT 1) AS bd_path,
+				(SELECT backdrop_image_tag  FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND backdrop_image_tag  IS NOT NULL AND backdrop_image_tag  <> '' LIMIT 1) AS bd_tag,
+				(SELECT overview            FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND overview IS NOT NULL AND overview <> '' LIMIT 1) AS overview,
+				(SELECT community_rating    FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND community_rating    IS NOT NULL LIMIT 1) AS rating,
+				(SELECT official_rating     FROM items WHERE (id = $1::uuid OR merged_to_id = $1::uuid) AND official_rating     IS NOT NULL AND official_rating <> '' LIMIT 1) AS official
 		) best
 		WHERE p.id = $1::uuid`,
-		primaryID, tmdbID, studio)
+		primaryID)
 	if err != nil {
 		slog.Warn("[Merge] syncBestMetadata failed", "primary", primaryID, "error", err)
 	}
@@ -1059,36 +1109,29 @@ func syncBestMetadataToPrimary(ctx context.Context, pool *pgxpool.Pool, primaryI
 // have secondaries but still lack some metadata fields.
 func syncExistingMergedGroups(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(ctx,
-		`SELECT DISTINCT p.id::text, p.tmdb_id, p.studio
-		 FROM items p
-		 WHERE p.merged_to_id IS NULL
-		   AND p.tmdb_id IS NOT NULL
-		   AND p.studio IS NOT NULL AND p.studio <> ''
-		   AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = p.id)
-		   AND (p.primary_image_tag IS NULL OR p.primary_image_tag = ''
-		     OR p.backdrop_image_tag IS NULL OR p.backdrop_image_tag = ''
-		     OR p.overview IS NULL OR p.overview = ''
-		     OR p.community_rating IS NULL)`)
+		`SELECT DISTINCT p.id::text
+		   FROM items p
+		  WHERE p.merged_to_id IS NULL
+		    AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = p.id)
+		    AND (p.primary_image_tag IS NULL OR p.primary_image_tag = ''
+		      OR p.backdrop_image_tag IS NULL OR p.backdrop_image_tag = ''
+		      OR p.overview IS NULL OR p.overview = ''
+		      OR p.community_rating IS NULL)`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	type prim struct {
-		ID     string
-		TmdbID int32
-		Studio string
-	}
-	var primaries []prim
+	var primaryIDs []string
 	for rows.Next() {
-		var p prim
-		if err := rows.Scan(&p.ID, &p.TmdbID, &p.Studio); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			continue
 		}
-		primaries = append(primaries, p)
+		primaryIDs = append(primaryIDs, id)
 	}
-	for _, p := range primaries {
-		syncBestMetadataToPrimary(ctx, pool, p.ID, p.TmdbID, p.Studio)
+	for _, id := range primaryIDs {
+		syncBestMetadataToPrimary(ctx, pool, id)
 	}
 }
 
