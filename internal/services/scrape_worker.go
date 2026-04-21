@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"fyms/internal/services/scraper"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
@@ -309,10 +312,18 @@ func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
 	dur := time.Since(start)
 
 	if err != nil {
+		fatal := isScrapeFatalError(err)
 		slog.Info("[ScrapeWorker] task failed",
 			"worker", workerID, "type", t.TaskType, "item", t.ItemID,
-			"retry", t.RetryCount, "error", err, "duration", dur)
-		w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error(), diag)
+			"retry", t.RetryCount, "error", err, "duration", dur, "fatal", fatal)
+		if fatal {
+			// 不可重试错误:直接落终态 failed,不走退避。
+			// 避免同一批 "no match" / 非 TMDB 源无法映射 的 item 在 pending 里
+			// 循环 5 次退避(最长 32 分钟)空耗代理和 worker。
+			w.queue.FailFatal(ctx, t.ID, err.Error(), diag)
+		} else {
+			w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error(), diag)
+		}
 		return
 	}
 
@@ -321,6 +332,37 @@ func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
 		slog.Info("[ScrapeWorker] slow task",
 			"worker", workerID, "type", t.TaskType, "item", t.ItemID, "duration", dur)
 	}
+}
+
+// isScrapeFatalError 判断错误是否"重试也没用",应直接归入 failed 而不退避。
+//
+// 准则:**如果代码或数据没变,重试一模一样的操作拿到相同错误的概率接近 100%**
+// 就是 fatal。临时性失败(HTTP / 超时 / 代理抖动 / 限流)**不在此列**,应走退避。
+func isScrapeFatalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, scraper.ErrNoMatch) {
+		return true
+	}
+	s := err.Error()
+	// 识别到非 TMDB 源但无法映射到 tmdb_id —— 豆瓣/Bangumi 独有条目,重试无效
+	if strings.Contains(s, "no tmdb id") {
+		return true
+	}
+	// 已入人工确认队列,不需要再 worker 重跑
+	if strings.Contains(s, "identify queued for manual confirmation") {
+		return true
+	}
+	// 类型不支持,代码层面就不会成功
+	if strings.Contains(s, "cannot scrape type") {
+		return true
+	}
+	// TMDB 404 在 identify 路径上通常意味着 tmdb_id 错误/TMDB 下架,重试依然 404
+	if strings.Contains(s, "HTTP 404") {
+		return true
+	}
+	return false
 }
 
 // dispatch 按 task_type 路由到单 item 处理函数。

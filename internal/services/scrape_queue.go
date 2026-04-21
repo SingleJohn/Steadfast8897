@@ -151,6 +151,31 @@ func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
 		id)
 }
 
+// FailFatal 标记任务为终态 failed,不走退避重试。
+// 用于明确不可能靠重试解决的错误(no match / 非 TMDB 源无法映射 / 类型不支持等)。
+// 节省 worker 资源和代理配额,避免 Pending 被一堆注定失败的 item 占住。
+func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, diag *ScrapeDiag) {
+	var reqURL, respBody interface{}
+	var respStatus interface{}
+	if diag != nil && diag.Attempts > 0 {
+		reqURL = diag.URL
+		if diag.Status > 0 {
+			respStatus = diag.Status
+		}
+		if diag.Body != "" {
+			respBody = diag.Body
+		}
+	}
+	_, _ = q.pool.Exec(ctx,
+		`UPDATE scrape_queue
+		    SET status = 'failed', retry_count = retry_count + 1,
+		        last_error = $2,
+		        request_url = $3, response_status = $4, response_sample = $5,
+		        updated_at = NOW()
+		  WHERE id = $1`,
+		id, truncateError(errMsg), reqURL, respStatus, respBody)
+}
+
 // Fail 标记失败并按指数退避排下次运行。超过 maxRetry 就落成 failed。
 // diag 允许为 nil(非 HTTP 任务或上游没注入时三列写 NULL)。
 func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string, diag *ScrapeDiag) {
