@@ -76,11 +76,10 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 		stillPath     string // M7.2: TMDB episode still_path (e.g. "/abc.jpg")
 	}
 	metas := make(map[int32]episodeMeta, len(episodesRaw))
-	const maxEpisodes = 50
-	for i, raw := range episodesRaw {
-		if i >= maxEpisodes {
-			break
-		}
+	// 历史版本曾用 maxEpisodes=50 做兜底,现在 TMDB 调用受 sharedTmdbLimiter(3 rps)
+	// 节流,长剧全量抓取不会打爆配额;DB 用 batch UPDATE(unnest)一次 round-trip 收尾,
+	// 无需上限。唯一长耗时点是 still 串行下载,也在 limiter 控制下。
+	for _, raw := range episodesRaw {
 		m, ok := raw.(map[string]any)
 		if !ok {
 			continue
