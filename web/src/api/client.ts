@@ -671,6 +671,10 @@ export type ScrapeQueueTask = {
   item_id: string;
   item_name: string;
   item_type: string;
+  file_path?: string;
+  series_name?: string;
+  index_number?: number;
+  parent_index_number?: number;
   task_type: string;
   status: string;
   priority: number;
@@ -702,8 +706,13 @@ export async function getScrapeQueueStats() {
   return requestJson<ScrapeQueueStats>('/Admin/ScrapeQueue/Stats');
 }
 
-export async function getScrapeQueueRecent(limit = 20) {
-  return requestJson<{ tasks: ScrapeQueueTask[] }>(`/Admin/ScrapeQueue/Recent?limit=${limit}`);
+export async function getScrapeQueueRecent(opts: { status?: 'failed' | 'running' | 'pending' | ''; limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.offset != null) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return requestJson<{ tasks: ScrapeQueueTask[]; total: number }>(`/Admin/ScrapeQueue/Recent${qs ? '?' + qs : ''}`);
 }
 
 export async function getScrapeQueueTaskDetail(id: number) {

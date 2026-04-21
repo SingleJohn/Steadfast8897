@@ -189,37 +189,73 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 		reqURL, respStatus, respBody)
 }
 
-// RecentTask 给前端队列面板用:最近失败任务(含 item 名 / error / retry)。
+// RecentTask 给前端队列面板用:最近失败/运行中任务。
+// SeriesName / IndexNumber / ParentIndexNumber 用于 Episode/Season 的上下文展示
+// (例如 "某剧 S01E05"),Movie/Series 顶层时为空。FilePath 帮助定位物理文件。
 type RecentTask struct {
-	ID         int64          `json:"id"`
-	ItemID     string         `json:"item_id"`
-	ItemName   string         `json:"item_name"`
-	ItemType   string         `json:"item_type"`
-	TaskType   ScrapeTaskType `json:"task_type"`
-	Status     string         `json:"status"`
-	Priority   int16          `json:"priority"`
-	RetryCount int16          `json:"retry_count"`
-	LastError  string         `json:"last_error,omitempty"`
-	NextRunAt  time.Time      `json:"next_run_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID                int64          `json:"id"`
+	ItemID            string         `json:"item_id"`
+	ItemName          string         `json:"item_name"`
+	ItemType          string         `json:"item_type"`
+	FilePath          string         `json:"file_path,omitempty"`
+	SeriesName        string         `json:"series_name,omitempty"`
+	IndexNumber       *int32         `json:"index_number,omitempty"`
+	ParentIndexNumber *int32         `json:"parent_index_number,omitempty"`
+	TaskType          ScrapeTaskType `json:"task_type"`
+	Status            string         `json:"status"`
+	Priority          int16          `json:"priority"`
+	RetryCount        int16          `json:"retry_count"`
+	LastError         string         `json:"last_error,omitempty"`
+	NextRunAt         time.Time      `json:"next_run_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
-// Recent 返回最近 failed + 最近 done 的任务(failed 优先),供管理面板展示。
-func (q *ScrapeQueue) Recent(ctx context.Context, limit int) ([]RecentTask, error) {
+// Recent 返回 scrape_queue 中的任务。
+//
+//	status = "" 表示 failed+running 合并(failed 优先);否则按该状态过滤
+//	limit/offset 分页(limit 1-500,offset >=0)
+//
+// SQL JOIN items 带出 file_path / series_name / index 等,前端展示时用来
+// 定位到"哪个剧集的哪一集"以及"物理路径",方便排查刮削失败。
+func (q *ScrapeQueue) Recent(ctx context.Context, status string, limit, offset int) ([]RecentTask, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := q.pool.Query(ctx,
-		`SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
-		        sq.task_type, sq.status, sq.priority, sq.retry_count,
-		        COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at
-		   FROM scrape_queue sq
-		   LEFT JOIN items i ON i.id = sq.item_id
-		  WHERE sq.status IN ('failed', 'running')
-		  ORDER BY CASE sq.status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
-		           sq.updated_at DESC
-		  LIMIT $1`,
-		limit)
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var where string
+	args := []any{limit, offset}
+	switch status {
+	case "failed":
+		where = "sq.status = 'failed'"
+	case "running":
+		where = "sq.status = 'running'"
+	case "pending":
+		where = "sq.status = 'pending'"
+	default:
+		where = "sq.status IN ('failed', 'running')"
+	}
+
+	query := `SELECT sq.id, sq.item_id::text,
+	                COALESCE(i.name, ''), COALESCE(i.type, ''),
+	                COALESCE(i.file_path, ''),
+	                COALESCE(i.series_name, ''),
+	                i.index_number, i.parent_index_number,
+	                sq.task_type, sq.status, sq.priority, sq.retry_count,
+	                COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at
+	           FROM scrape_queue sq
+	           LEFT JOIN items i ON i.id = sq.item_id
+	          WHERE ` + where + `
+	          ORDER BY CASE sq.status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+	                   sq.updated_at DESC
+	          LIMIT $1 OFFSET $2`
+
+	rows, err := q.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +266,7 @@ func (q *ScrapeQueue) Recent(ctx context.Context, limit int) ([]RecentTask, erro
 		var t RecentTask
 		var tt string
 		if err := rows.Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
+			&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
 			&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
 			&t.NextRunAt, &t.UpdatedAt); err != nil {
 			continue
@@ -238,6 +275,24 @@ func (q *ScrapeQueue) Recent(ctx context.Context, limit int) ([]RecentTask, erro
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// RecentCount 给分页器用,返回指定 status 的总数。status="" 时按 failed+running 合并计。
+func (q *ScrapeQueue) RecentCount(ctx context.Context, status string) (int64, error) {
+	var where string
+	switch status {
+	case "failed", "running", "pending":
+		where = "status = $1"
+	default:
+		where = "status IN ('failed', 'running')"
+	}
+	var n int64
+	if where == "status = $1" {
+		err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM scrape_queue WHERE `+where, status).Scan(&n)
+		return n, err
+	}
+	err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM scrape_queue WHERE `+where).Scan(&n)
+	return n, err
 }
 
 // RetryTask 把单个 failed 任务重置为 pending(立即重试)。

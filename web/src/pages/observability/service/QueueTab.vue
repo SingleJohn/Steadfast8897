@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import {
   NCard,
   NButton,
   NSpin,
   NTag,
+  NTabs,
+  NTabPane,
   NInputNumber,
   NIcon,
+  NPagination,
   NPopconfirm,
 } from 'naive-ui'
-import { RefreshOutline, SaveOutline } from '@vicons/ionicons5'
+import { CloudDownloadOutline, RefreshOutline, SaveOutline } from '@vicons/ionicons5'
 import { useToast } from '@/composables/useToast'
 import EmptyState from '@/components/EmptyState.vue'
 import {
@@ -20,6 +23,7 @@ import {
   retryAllFailedScrapeQueueTasks,
   getMetricsSnapshot,
   invalidateScrapeCache,
+  scrapeAllMetadata,
   setIngestWorkerCount,
   setScrapeWorkerCount,
   type ScrapeQueueStats,
@@ -32,7 +36,6 @@ const { showToast } = useToast()
 
 const stats = ref<ScrapeQueueStats>({ pending: 0, running: 0, done: 0, failed: 0 })
 const metrics = ref<MetricsSnapshot>({})
-const recent = ref<ScrapeQueueTask[]>([])
 const loading = ref(false)
 const firstLoaded = ref(false)
 
@@ -40,25 +43,73 @@ const ingestWorkerInput = ref<number>(4)
 const ingestWorkerSaving = ref(false)
 const scrapeWorkerInput = ref<number>(4)
 const scrapeWorkerSaving = ref(false)
+const scrapeAllLoading = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 5000
+
+// 任务列表按 status 分 Tab,每个 Tab 独立分页。
+const activeTab = ref<'failed' | 'running'>('failed')
+const PAGE_SIZE = 50
+const failedPage = ref(1)
+const runningPage = ref(1)
+const failedTasks = ref<ScrapeQueueTask[]>([])
+const runningTasks = ref<ScrapeQueueTask[]>([])
+const failedTotal = ref(0)
+const runningTotal = ref(0)
+const listLoading = ref(false)
+
+const currentList = computed(() =>
+  activeTab.value === 'failed' ? failedTasks.value : runningTasks.value,
+)
+const currentTotal = computed(() =>
+  activeTab.value === 'failed' ? failedTotal.value : runningTotal.value,
+)
+const currentPage = computed({
+  get: () => (activeTab.value === 'failed' ? failedPage.value : runningPage.value),
+  set: (v) => {
+    if (activeTab.value === 'failed') failedPage.value = v
+    else runningPage.value = v
+  },
+})
 
 const expandedId = ref<number | null>(null)
 const detailCache = reactive<Record<number, ScrapeQueueTaskDetail>>({})
 const detailLoading = ref<number | null>(null)
 const detailError = reactive<Record<number, string>>({})
 
+async function loadTaskList() {
+  listLoading.value = true
+  try {
+    const status = activeTab.value
+    const page = status === 'failed' ? failedPage.value : runningPage.value
+    const r = await getScrapeQueueRecent({
+      status,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+    })
+    if (status === 'failed') {
+      failedTasks.value = r.tasks || []
+      failedTotal.value = r.total ?? 0
+    } else {
+      runningTasks.value = r.tasks || []
+      runningTotal.value = r.total ?? 0
+    }
+  } catch {
+    // 静默;下次轮询自动重试
+  } finally {
+    listLoading.value = false
+  }
+}
+
 async function refresh() {
   loading.value = true
   try {
-    const [s, r, m] = await Promise.allSettled([
+    const [s, m] = await Promise.allSettled([
       getScrapeQueueStats(),
-      getScrapeQueueRecent(20),
       getMetricsSnapshot(),
     ])
     if (s.status === 'fulfilled') stats.value = s.value
-    if (r.status === 'fulfilled') recent.value = r.value.tasks || []
     if (m.status === 'fulfilled') {
       metrics.value = m.value
       // 用户未在编辑时同步输入框,避免正在改的值被轮询覆盖
@@ -69,11 +120,18 @@ async function refresh() {
         scrapeWorkerInput.value = m.value.scrape_worker_count
       }
     }
+    await loadTaskList()
     firstLoaded.value = true
   } finally {
     loading.value = false
   }
 }
+
+// 切 Tab 或翻页时重新拉列表(但只拉当前 Tab,不动 stats/metrics)
+watch([activeTab, failedPage, runningPage], () => {
+  expandedId.value = null
+  loadTaskList()
+})
 
 async function handleRetry(id: number) {
   try {
@@ -145,6 +203,24 @@ async function handleInvalidateCache() {
   }
 }
 
+async function handleScrapeAllMissing() {
+  scrapeAllLoading.value = true
+  try {
+    const r: any = await scrapeAllMetadata()
+    const n = Number(r?.enqueued ?? 0)
+    if (n === 0) {
+      showToast('没有需要入队的 item(都已有元数据或已入队)', 'info')
+    } else {
+      showToast(`已入队 ${n} 条 identify 任务,worker 将自动消费`, 'success')
+    }
+    await refresh()
+  } catch (e: any) {
+    showToast(e.message || '入队失败', 'error')
+  } finally {
+    scrapeAllLoading.value = false
+  }
+}
+
 async function handleSaveIngestWorker() {
   ingestWorkerSaving.value = true
   try {
@@ -198,6 +274,27 @@ function formatDate(s?: string): string {
   } catch {
     return s
   }
+}
+
+// 给 Episode / Season 拼一个 "S01E05" 风格的角标;Movie / Series 顶层返回空字符串。
+function episodeTag(t: ScrapeQueueTask): string {
+  const s = t.parent_index_number
+  const e = t.index_number
+  if (t.item_type === 'Episode' && s != null && e != null) {
+    return `S${String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`
+  }
+  if (t.item_type === 'Season' && e != null) {
+    return `S${String(e).padStart(2, '0')}`
+  }
+  return ''
+}
+
+// 主展示名:Episode 显示 "剧集名 S01E05",其他直接 item_name
+function displayTitle(t: ScrapeQueueTask): string {
+  const ep = episodeTag(t)
+  if (t.series_name && ep) return `${t.series_name} · ${ep}`
+  if (t.series_name) return t.series_name
+  return t.item_name || t.item_id
 }
 
 onMounted(() => {
@@ -320,6 +417,15 @@ onBeforeUnmount(() => {
           <template #icon><NIcon><RefreshOutline /></NIcon></template>
           手动刷新
         </NButton>
+        <NPopconfirm @positive-click="handleScrapeAllMissing">
+          <template #trigger>
+            <NButton size="small" type="primary" :loading="scrapeAllLoading">
+              <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
+              刮削全部缺失元数据
+            </NButton>
+          </template>
+          把所有缺 overview 且未识别的 Movie/Series 以最高优先级入队 identify,worker 自动消费。
+        </NPopconfirm>
         <NPopconfirm @positive-click="handleInvalidateCache">
           <template #trigger>
             <NButton size="small">失效刮削缓存</NButton>
@@ -338,39 +444,55 @@ onBeforeUnmount(() => {
       </div>
     </NCard>
 
-    <!-- ============ 最近任务列表 ============ -->
-    <NCard title="最近任务(failed + running)" class="tasks-card">
-      <NSpin :show="loading && !firstLoaded">
-        <EmptyState v-if="firstLoaded && recent.length === 0" description="暂无 failed / running 任务" />
+    <!-- ============ 任务列表(按 status 分 Tab + 分页)============ -->
+    <NCard class="tasks-card">
+      <NTabs v-model:value="activeTab" type="line" size="small" animated>
+        <NTabPane name="failed" :tab="`失败 (${stats.failed})`" />
+        <NTabPane name="running" :tab="`运行中 (${stats.running})`" />
+      </NTabs>
+
+      <NSpin :show="listLoading && !firstLoaded">
+        <EmptyState
+          v-if="firstLoaded && currentList.length === 0"
+          :description="activeTab === 'failed' ? '暂无失败任务' : '暂无运行中任务'"
+        />
         <div v-else class="task-list">
-          <div v-for="t in recent" :key="t.id" class="task-item">
+          <div v-for="t in currentList" :key="t.id" class="task-item">
             <div
               class="task-row"
               :class="[`status-${t.status}`, { expanded: expandedId === t.id }]"
               @click="toggleExpand(t.id)"
             >
-              <div class="task-main">
-                <NTag :type="statusColor(t.status)" size="small">{{ t.status }}</NTag>
-                <NTag size="small" class="type-tag">{{ taskTypeLabel(t.task_type) }}</NTag>
-                <span class="task-name">{{ t.item_name || t.item_id }}</span>
-                <span class="task-type-hint">{{ t.item_type }}</span>
-                <span class="expand-caret">{{ expandedId === t.id ? '▾' : '▸' }}</span>
+              <!-- 顶行:标题 + 类型标签 + 操作按钮 -->
+              <div class="task-head">
+                <div class="task-head-left">
+                  <NTag size="small" class="type-tag">{{ taskTypeLabel(t.task_type) }}</NTag>
+                  <span class="task-title">{{ displayTitle(t) }}</span>
+                  <span v-if="t.item_type" class="task-type-hint">{{ t.item_type }}</span>
+                  <span v-if="t.retry_count > 0" class="meta-pill warn">重试 {{ t.retry_count }}</span>
+                </div>
+                <div class="task-head-right" @click.stop>
+                  <NButton
+                    v-if="t.status === 'failed'"
+                    size="tiny"
+                    type="primary"
+                    ghost
+                    @click.stop="handleRetry(t.id)"
+                  >
+                    重试
+                  </NButton>
+                  <span class="expand-caret">{{ expandedId === t.id ? '▾' : '▸' }}</span>
+                </div>
               </div>
-              <div class="task-meta" @click.stop>
-                <span v-if="t.retry_count > 0" class="meta-pill">重试 {{ t.retry_count }}</span>
-                <span class="meta-pill">下次 {{ formatDate(t.next_run_at) }}</span>
-                <span v-if="t.last_error" class="meta-pill err" :title="t.last_error">
-                  {{ t.last_error.length > 80 ? t.last_error.slice(0, 80) + '…' : t.last_error }}
-                </span>
-                <NButton
-                  v-if="t.status === 'failed'"
-                  size="tiny"
-                  type="primary"
-                  ghost
-                  @click.stop="handleRetry(t.id)"
-                >
-                  重试
-                </NButton>
+
+              <!-- 次行:物理路径 + 错误摘要 -->
+              <div class="task-sub" @click.stop>
+                <code v-if="t.file_path" class="file-path" :title="t.file_path">{{ t.file_path }}</code>
+                <span v-else class="file-path empty">(无物理路径)</span>
+                <span class="meta-dim">下次 {{ formatDate(t.next_run_at) }}</span>
+              </div>
+              <div v-if="t.last_error" class="task-error" :title="t.last_error">
+                {{ t.last_error }}
               </div>
             </div>
             <div v-if="expandedId === t.id" class="task-detail">
@@ -379,6 +501,10 @@ onBeforeUnmount(() => {
                   加载详情失败:{{ detailError[t.id] }}
                 </div>
                 <div v-else-if="detailCache[t.id]" class="detail-body">
+                  <div class="detail-row" v-if="detailCache[t.id].file_path">
+                    <div class="detail-label">File Path</div>
+                    <code class="detail-url">{{ detailCache[t.id].file_path }}</code>
+                  </div>
                   <div class="detail-row" v-if="detailCache[t.id].request_url">
                     <div class="detail-label">Request URL</div>
                     <code class="detail-url">{{ detailCache[t.id].request_url }}</code>
@@ -407,6 +533,17 @@ onBeforeUnmount(() => {
               </NSpin>
             </div>
           </div>
+        </div>
+
+        <div v-if="currentTotal > PAGE_SIZE" class="pagination-row">
+          <NPagination
+            v-model:page="currentPage"
+            :page-count="Math.ceil(currentTotal / PAGE_SIZE)"
+            :page-size="PAGE_SIZE"
+            :page-slot="7"
+            size="small"
+          />
+          <span class="pagination-info">共 {{ currentTotal }} 条</span>
         </div>
       </NSpin>
     </NCard>
@@ -542,11 +679,12 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-/* ============ 任务列表(沿用旧样式)============ */
+/* ============ 任务列表(两行布局,主题色友好)============ */
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 8px;
 }
 .task-item {
   display: flex;
@@ -554,86 +692,157 @@ onBeforeUnmount(() => {
 }
 .task-row {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 12px;
   border-radius: 6px;
-  background: var(--n-card-color, rgba(0, 0, 0, 0.02));
-  border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
-  gap: 12px;
-  flex-wrap: wrap;
+  /* 透明底 + 明显边框:暗色/亮色主题下都能看清文字 */
+  background: transparent;
+  border: 1px solid var(--n-border-color);
+  border-left-width: 3px;
+  border-left-color: var(--n-border-color);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background-color 0.15s, border-color 0.15s;
 }
 .task-row:hover {
-  background: var(--n-color, rgba(0, 0, 0, 0.04));
+  background: var(--n-action-color);
 }
 .task-row.expanded {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
-.expand-caret {
-  font-size: 11px;
-  color: var(--n-text-color-3, #999);
-  margin-left: 4px;
-  user-select: none;
-}
 .task-row.status-failed {
-  border-left: 3px solid #f56c6c;
+  border-left-color: #f56c6c;
 }
 .task-row.status-running {
-  border-left: 3px solid #e6a23c;
+  border-left-color: #e6a23c;
 }
-.task-main {
+
+/* 顶行:标题区 + 操作区 */
+.task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.task-head-left {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1;
-  min-width: 200px;
+  min-width: 0;
 }
-.task-name {
+.task-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.task-title {
   font-weight: 500;
+  color: var(--n-text-color-1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 280px;
+  min-width: 0;
+  flex-shrink: 1;
 }
 .task-type-hint {
   font-size: 12px;
-  color: var(--n-text-color-3, #999);
+  color: var(--n-text-color-3);
+  flex-shrink: 0;
 }
 .type-tag {
-  background: var(--n-color, rgba(0, 0, 0, 0.05));
+  flex-shrink: 0;
 }
-.task-meta {
+.expand-caret {
+  font-size: 11px;
+  color: var(--n-text-color-3);
+  user-select: none;
+}
+
+/* 次行:物理路径 + 次要元数据 */
+.task-sub {
   display: flex;
-  gap: 6px;
   align-items: center;
-  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
 }
+.file-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--n-text-color-2);
+  background: var(--n-action-color);
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+  user-select: all;
+  cursor: text;
+}
+.file-path.empty {
+  color: var(--n-text-color-3);
+  font-style: italic;
+  background: transparent;
+  cursor: default;
+}
+.meta-dim {
+  color: var(--n-text-color-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 错误摘要:完整展示,不截断 */
+.task-error {
+  font-size: 12px;
+  color: #f56c6c;
+  background: rgba(245, 108, 108, 0.08);
+  padding: 4px 8px;
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 4.5em;
+  overflow: hidden;
+  line-height: 1.5;
+}
+
 .meta-pill {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
-  background: var(--n-color, rgba(0, 0, 0, 0.06));
-  color: var(--n-text-color-2, #666);
+  background: var(--n-action-color);
+  color: var(--n-text-color-2);
+  flex-shrink: 0;
 }
-.meta-pill.err {
-  background: rgba(245, 108, 108, 0.12);
-  color: #f56c6c;
-  max-width: 400px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.meta-pill.warn {
+  background: rgba(230, 162, 60, 0.15);
+  color: #e6a23c;
 }
 
 .task-detail {
   padding: 12px 14px;
-  border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
+  border: 1px solid var(--n-border-color);
   border-top: none;
   border-bottom-left-radius: 6px;
   border-bottom-right-radius: 6px;
-  background: var(--n-color, rgba(0, 0, 0, 0.015));
+  background: var(--n-action-color);
+}
+
+/* 分页器 */
+.pagination-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 8px;
+}
+.pagination-info {
+  font-size: 12px;
+  color: var(--n-text-color-3);
 }
 .detail-body {
   display: flex;

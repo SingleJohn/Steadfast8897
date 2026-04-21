@@ -56,18 +56,28 @@ func getScrapeQueueRecent(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "scrape queue not initialized"})
 		return
 	}
-	limit := 20
+	limit := 50
 	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
 			limit = n
 		}
 	}
-	tasks, err := state.ScrapeQueue.Recent(c.Request.Context(), limit)
+	offset := 0
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	status := c.Query("status") // "failed" | "running" | "pending" | ""(failed+running)
+
+	ctx := c.Request.Context()
+	tasks, err := state.ScrapeQueue.Recent(ctx, status, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+	total, _ := state.ScrapeQueue.RecentCount(ctx, status)
+	c.JSON(http.StatusOK, gin.H{"tasks": tasks, "total": total})
 }
 
 func getScrapeQueueTaskDetail(c *gin.Context) {
