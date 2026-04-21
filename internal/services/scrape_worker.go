@@ -168,6 +168,22 @@ func (w *ScrapeWorker) Run(ctx context.Context) {
 		}
 	}()
 
+	// 运行中兜底:每 5 分钟扫一次 "running > 10 分钟" 的任务,抢救 panic/deadlock
+	// 造成的卡死。正常任务 runTask 结束都会走 Done/Fail 转出 running 状态,所以
+	// 这个 ticker 绝大多数情况下啥也不做。
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = w.queue.ReconcileStaleRunning(ctx)
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	slog.Info("[ScrapeWorker] stopping")
 	w.workerMu.Lock()

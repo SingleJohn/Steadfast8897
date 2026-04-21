@@ -366,9 +366,29 @@ func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail,
 	return &t, nil
 }
 
-// ReconcileOnStartup 把崩溃前遗留的 running 任务(updated_at 超过 10 分钟)重置为 pending,
-// 避免永久卡死。调用时机:main.go 启动 worker 前。
+// ReconcileOnStartup 启动时无条件把所有 running 任务重置为 pending。
+// 启动时刻新的 worker goroutine 还没起来,不可能有"合法运行中"的任务 —— 旧进程
+// 留下的 running 全部是孤儿,哪怕 updated_at 是 1 秒前的也一样救不回来。
+// 之前用 `updated_at < NOW() - 10 min` 过滤会漏掉"重启前刚刚 Claim 的任务",
+// 让它们永久卡在 running 状态(前端"运行中"计数虚高,实际永不执行)。
 func (q *ScrapeQueue) ReconcileOnStartup(ctx context.Context) error {
+	tag, err := q.pool.Exec(ctx,
+		`UPDATE scrape_queue
+		    SET status = 'pending', updated_at = NOW()
+		  WHERE status = 'running'`)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("[ScrapeQueue] Reconciled orphan running tasks at startup", "count", tag.RowsAffected())
+	}
+	return nil
+}
+
+// ReconcileStaleRunning 运行中的兜底清理:针对 updated_at > 10 分钟的 running 任务。
+// 这种情况只可能来自 goroutine panic / deadlock 导致 task 永远没走到 Done/Fail。
+// 由 ScrapeWorker 每 5 分钟调一次,跟启动清理互补。
+func (q *ScrapeQueue) ReconcileStaleRunning(ctx context.Context) error {
 	tag, err := q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'pending', updated_at = NOW()
@@ -377,7 +397,9 @@ func (q *ScrapeQueue) ReconcileOnStartup(ctx context.Context) error {
 		return err
 	}
 	if tag.RowsAffected() > 0 {
-		slog.Info("[ScrapeQueue] Reconciled stale running tasks", "count", tag.RowsAffected())
+		slog.Warn("[ScrapeQueue] Reconciled stale running tasks during runtime",
+			"count", tag.RowsAffected(),
+			"hint", "goroutine may have panicked or deadlocked without updating status")
 	}
 	return nil
 }
