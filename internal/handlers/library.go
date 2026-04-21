@@ -1664,16 +1664,20 @@ func applyIdentifyCandidate(c *gin.Context) {
 	state := GetState(c)
 	itemID := c.Param("itemId")
 	candidateID := c.Param("candidateId")
-	tmdbID, err := services.ResolveIdentifyCandidateTMDBID(c.Request.Context(), state.DB, itemID, candidateID)
+	// 候选采纳可能走 provider.GetByID(豆瓣 HTML 解析)+ TMDB Fill,总时长给 30s 兜底
+	// 避免 TMDB/豆瓣慢响应让 HTTP 连接 hang 到前端超时
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	tmdbID, err := services.ResolveIdentifyCandidateTMDBID(ctx, state.DB, itemID, candidateID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, itemID, tmdbID); err != nil {
+	if _, err := services.ScrapeItemByTMDBID(ctx, state.DB, itemID, tmdbID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
+	_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -1716,20 +1720,25 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 		Message string `json:"message,omitempty"`
 	}
 	results := make([]applyResult, 0, len(body.Items))
+	// 批量采纳每条 15s 超时,避免单条拖慢整个批次;上游 body 解析走无超时 context
 	for _, pair := range body.Items {
 		res := applyResult{ItemID: pair.ItemID}
-		tmdbID, err := services.ResolveIdentifyCandidateTMDBID(c.Request.Context(), state.DB, pair.ItemID, pair.CandidateID)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+		tmdbID, err := services.ResolveIdentifyCandidateTMDBID(ctx, state.DB, pair.ItemID, pair.CandidateID)
 		if err != nil {
+			cancel()
 			res.Message = err.Error()
 			results = append(results, res)
 			continue
 		}
-		if _, err := services.ScrapeItemByTMDBID(c.Request.Context(), state.DB, pair.ItemID, tmdbID); err != nil {
+		if _, err := services.ScrapeItemByTMDBID(ctx, state.DB, pair.ItemID, tmdbID); err != nil {
+			cancel()
 			res.Message = err.Error()
 			results = append(results, res)
 			continue
 		}
-		_, _ = state.DB.Exec(c.Request.Context(), "DELETE FROM identify_candidates WHERE item_id = $1::uuid", pair.ItemID)
+		_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", pair.ItemID)
+		cancel()
 		res.OK = true
 		results = append(results, res)
 	}

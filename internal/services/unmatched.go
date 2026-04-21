@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"fyms/internal/services/scraper"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -133,56 +135,146 @@ func listIdentifyCandidatesBatch(ctx context.Context, pool *pgxpool.Pool, itemID
 
 // ResolveIdentifyCandidateTMDBID 从一个候选记录反查实际可用的 tmdb_id。
 // 批量采纳的公共路径,保持与 applyIdentifyCandidate 单条采纳相同的语义:
-// 1) provider=tmdb → 用 external_id
-// 2) payload.external_ids.tmdb
+// 1) payload.external_ids.tmdb
+// 2) provider=tmdb → 用 external_id
 // 3) payload.external_ids.imdb → TmdbClient.FindByExternalID 映射
-// 4) 候选 title+year → TMDB Search 兜底(Movie/Series 按 item.type 分流)
+// 4) 非 tmdb 候选:调对应 provider.GetByID 拉详情,从 Details.ExternalIDs 里
+//    取 tmdb/imdb 再走 (1)/(3) 映射(豆瓣/Bangumi 详情页通常含 imdb)
+// 5) 候选 title+year → TMDB Search 兜底(Movie/Series 按 item.type 分流)
 // 都没有返回友好错误,避免把非 TMDB 候选(如豆瓣)的 external_id 误当 TMDB ID 发请求。
 func ResolveIdentifyCandidateTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID, candidateID string) (int64, error) {
 	items, err := ListIdentifyCandidates(ctx, pool, itemID)
 	if err != nil {
 		return 0, err
 	}
-	for _, item := range items {
-		if item.ID != candidateID {
-			continue
+	var candidate *identifyCandidateRecord
+	for i := range items {
+		if items[i].ID == candidateID {
+			candidate = &items[i]
+			break
 		}
-		if tmdb := pickPayloadExternalID(item.Payload, "tmdb"); tmdb != "" {
-			if id, err := parseInt64(tmdb); err == nil && id > 0 {
-				return id, nil
-			}
+	}
+	if candidate == nil {
+		return 0, fmt.Errorf("候选不存在")
+	}
+
+	// 1) payload.external_ids.tmdb
+	if tmdb := pickPayloadExternalID(candidate.Payload, "tmdb"); tmdb != "" {
+		if id, err := parseInt64(tmdb); err == nil && id > 0 {
+			return id, nil
 		}
-		if item.Provider == "tmdb" {
-			if id, err := parseInt64(item.ExternalID); err == nil && id > 0 {
-				return id, nil
-			}
+	}
+	// 2) provider=tmdb
+	if candidate.Provider == "tmdb" {
+		if id, err := parseInt64(candidate.ExternalID); err == nil && id > 0 {
+			return id, nil
 		}
-		var client *TmdbClient
-		if imdb := pickPayloadExternalID(item.Payload, "imdb"); imdb != "" {
+	}
+
+	var client *TmdbClient
+	ensureClient := func() *TmdbClient {
+		if client == nil {
 			client = TmdbClientFromConfig(ctx, pool)
-			if client != nil {
-				if pid, ferr := client.FindByExternalID(ctx, "imdb", imdb); ferr == nil {
-					if id, perr := parseInt64(pid); perr == nil && id > 0 {
-						return id, nil
-					}
-				}
-			}
 		}
-		if strings.TrimSpace(item.Title) != "" {
-			if client == nil {
-				client = TmdbClientFromConfig(ctx, pool)
-			}
-			if client != nil {
-				if id := searchTMDBByTitle(ctx, pool, client, itemID, item.Title, item.Year); id > 0 {
-					slog.Info("[identify] resolved via TMDB search fallback",
-						"item_id", itemID, "provider", item.Provider, "title", item.Title, "tmdb_id", id)
+		return client
+	}
+	tryIMDbMap := func(imdb string) int64 {
+		imdb = strings.TrimSpace(imdb)
+		if imdb == "" {
+			return 0
+		}
+		c := ensureClient()
+		if c == nil {
+			return 0
+		}
+		pid, err := c.FindByExternalID(ctx, "imdb", imdb)
+		if err != nil {
+			return 0
+		}
+		if id, perr := parseInt64(pid); perr == nil && id > 0 {
+			return id
+		}
+		return 0
+	}
+
+	// 3) payload.external_ids.imdb
+	if id := tryIMDbMap(pickPayloadExternalID(candidate.Payload, "imdb")); id > 0 {
+		return id, nil
+	}
+
+	// 4) 非 tmdb 候选:走 provider.GetByID 拉详情,补 external_ids
+	if candidate.Provider != "tmdb" && strings.TrimSpace(candidate.ExternalID) != "" {
+		if details := fetchCandidateDetails(ctx, pool, candidate); details != nil {
+			if tmdb := strings.TrimSpace(details.ExternalIDs["tmdb"]); tmdb != "" {
+				if id, err := parseInt64(tmdb); err == nil && id > 0 {
+					slog.Info("[identify] resolved via provider GetByID → tmdb",
+						"item_id", itemID, "provider", candidate.Provider, "tmdb_id", id)
 					return id, nil
 				}
 			}
+			if id := tryIMDbMap(details.ExternalIDs["imdb"]); id > 0 {
+				slog.Info("[identify] resolved via provider GetByID → imdb → tmdb",
+					"item_id", itemID, "provider", candidate.Provider, "tmdb_id", id)
+				return id, nil
+			}
 		}
-		return 0, fmt.Errorf("候选未关联 TMDB ID(provider=%s),请使用「搜索 TMDB」手动选择", item.Provider)
 	}
-	return 0, fmt.Errorf("候选不存在")
+
+	// 5) title+year → TMDB search 兜底
+	if strings.TrimSpace(candidate.Title) != "" {
+		c := ensureClient()
+		if c != nil {
+			if id := searchTMDBByTitle(ctx, pool, c, itemID, candidate.Title, candidate.Year); id > 0 {
+				slog.Info("[identify] resolved via TMDB search fallback",
+					"item_id", itemID, "provider", candidate.Provider, "title", candidate.Title, "tmdb_id", id)
+				return id, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("候选未关联 TMDB ID(provider=%s),请使用「搜索 TMDB」手动选择", candidate.Provider)
+}
+
+// fetchCandidateDetails 调对应 provider 的 GetByID 拿详情。用于把非 TMDB 候选
+// 展开以补 external_ids(典型场景:豆瓣/Bangumi 详情页才会出现 imdb_id)。
+// provider 未启用 / GetByID 失败 / item type 不是 Movie/Series → 返回 nil,调用方降级。
+func fetchCandidateDetails(ctx context.Context, pool *pgxpool.Pool, cand *identifyCandidateRecord) *scraper.Details {
+	mediaType, err := loadItemMediaType(ctx, pool, cand.ItemID)
+	if err != nil || mediaType == "" {
+		return nil
+	}
+	client := TmdbClientFromConfig(ctx, pool)
+	if client == nil {
+		return nil
+	}
+	cfg := scraper.LoadRuntimeConfig(ctx, pool)
+	agg := GetScrapeAggregator(sharedScrapeCache, cfg, client, client.httpClient)
+	provider := agg.ProviderByName(cand.Provider)
+	if provider == nil {
+		return nil
+	}
+	details, err := provider.GetByID(ctx, mediaType, cand.ExternalID)
+	if err != nil {
+		slog.Debug("[identify] provider GetByID failed",
+			"item_id", cand.ItemID, "provider", cand.Provider, "external_id", cand.ExternalID, "error", err)
+		return nil
+	}
+	return details
+}
+
+func loadItemMediaType(ctx context.Context, pool *pgxpool.Pool, itemID string) (scraper.MediaType, error) {
+	var itemType string
+	if err := pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType); err != nil {
+		return "", err
+	}
+	switch itemType {
+	case "Movie":
+		return scraper.MediaMovie, nil
+	case "Series":
+		return scraper.MediaSeries, nil
+	default:
+		return "", nil
+	}
 }
 
 // searchTMDBByTitle 最后一级兜底:用候选 title+year 调 TMDB 搜索,取第一条命中。
