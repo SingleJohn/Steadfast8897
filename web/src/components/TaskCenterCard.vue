@@ -7,10 +7,10 @@ import { useTaskStream } from '@/composables/useTaskStream'
 import type { TaskKind, TaskSnapshot, TaskStatus } from '@/api/tasks'
 
 /**
- * OverviewPage 用的任务中心紧凑卡片。
+ * OverviewPage 用的作业调度紧凑卡片。
  *  - 连接 SSE 后自动实时刷新
- *  - 运行中任务优先排在上方，显示进度条
- *  - 无任何活动时显示"全部空闲"，整卡仍可点击跳转任务中心
+ *  - 运行中作业优先排在上方，显示进度条
+ *  - 无任何活动时显示"全部空闲"，整卡仍可点击跳转作业调度
  */
 
 const router = useRouter()
@@ -65,7 +65,7 @@ const sorted = computed(() => {
 })
 
 const headline = computed(() => {
-  if (runningCount.value > 0) return `${runningCount.value} 个任务运行中`
+  if (runningCount.value > 0) return `${runningCount.value} 个作业运行中`
   return '全部空闲'
 })
 
@@ -82,7 +82,7 @@ function brief(t: TaskSnapshot) {
 </script>
 
 <template>
-  <n-card class="section-card task-center-card" title="任务中心" size="small" @click="goTasksTab">
+  <n-card class="section-card task-center-card" title="作业调度" size="small" @click="goTasksTab">
     <template #header-extra>
       <span class="subtle-count">{{ headline }}</span>
       <span v-if="!connected" class="conn-dot" title="未连接实时流"></span>

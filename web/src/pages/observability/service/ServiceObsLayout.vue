@@ -29,7 +29,7 @@ const pageIcon = computed(() => {
 
 const pageDescription = computed(() => {
   const meta = route.meta as RouteMeta
-  return meta?.description || '播放会话、统计、系统日志与后台任务。'
+  return meta?.description || '播放会话、统计、系统日志与作业调度、队列管道。'
 })
 </script>
 

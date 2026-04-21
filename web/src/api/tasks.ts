@@ -1,4 +1,4 @@
-// 任务中心 API 封装。后端契约见 internal/services/taskcenter/task.go。
+// 作业调度 API 封装。后端契约见 internal/services/taskcenter/task.go。
 import { requestJson } from './client'
 
 export type TaskKind = 'scan' | 'scrape' | 'probe' | 'backfill' | 'update'
@@ -78,7 +78,7 @@ export async function listTaskHistory(q: TaskHistoryQuery = {}) {
   return requestJson<{ items: TaskRunRow[] }>(`/Tasks/history${qs ? '?' + qs : ''}`)
 }
 
-// 任务中心 SSE URL。EventSource 不支持自定义 header，token 通过 query 传。
+// 作业调度 SSE URL。EventSource 不支持自定义 header，token 通过 query 传。
 export function taskStreamUrl(token: string | null): string {
   const base = '/Tasks/stream'
   return token ? `${base}?api_key=${encodeURIComponent(token)}` : base

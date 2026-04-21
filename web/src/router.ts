@@ -315,8 +315,8 @@ const router = createRouter({
               name: 'obs_svc_tasks',
               component: () => import('./pages/observability/service/TasksTab.vue'),
               meta: {
-                title: '任务中心',
-                navLabel: '任务中心',
+                title: '作业调度',
+                navLabel: '作业调度',
                 icon: 'tasks',
                 section: 'observability',
                 sectionLabel: '观测中心',
@@ -334,8 +334,8 @@ const router = createRouter({
               name: 'obs_svc_queue',
               component: () => import('./pages/observability/service/QueueTab.vue'),
               meta: {
-                title: '后台任务',
-                navLabel: '后台任务',
+                title: '队列管道',
+                navLabel: '队列管道',
                 icon: 'tasks',
                 section: 'observability',
                 sectionLabel: '观测中心',

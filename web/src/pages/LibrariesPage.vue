@@ -317,7 +317,7 @@ onMounted(() => {
       rescrapeTimer = setInterval(pollRescrapeProgress, 2000)
     }
   }).catch(() => {})
-  // platform rescrape 的 task summary 不在任务中心范围内，保留独立轮询。
+  // platform rescrape 的 task summary 不在作业调度范围内，保留独立轮询。
   timers.push(setInterval(() => { void loadTaskSummary() }, 3000))
 })
 
