@@ -30,10 +30,27 @@ type Aggregator struct {
 	cache     Cache
 	threshold float64
 	policy    FieldPolicy
+	strategy  Strategy
 }
 
 func NewAggregator(cache Cache) *Aggregator {
-	return &Aggregator{cache: cache, threshold: DefaultThreshold, policy: DefaultFieldPolicy()}
+	return &Aggregator{
+		cache:     cache,
+		threshold: DefaultThreshold,
+		policy:    DefaultFieldPolicy(),
+		strategy:  StrategyAggregated,
+	}
+}
+
+// SetStrategy 覆盖识别策略。空值或未知值被 ParseStrategy 兜底为 Aggregated。
+func (a *Aggregator) SetStrategy(s Strategy) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s == "" {
+		a.strategy = StrategyAggregated
+		return
+	}
+	a.strategy = s
 }
 
 // SetFieldPolicy 覆盖字段级合并策略;BuildScrapeAggregator 在注入 RuntimeConfig 时调用。
@@ -99,13 +116,25 @@ func (a *Aggregator) SetThreshold(t float64) {
 	a.threshold = t
 }
 
-// Identify 按 Provider 并发识别,多源互投后返回 Identity。
+// Identify 按当前 strategy 调度识别:
+//   - StrategyAggregated(默认):并发所有 provider,多源互投加权,准确度优先
+//   - StrategySequential:按 Priority 升序逐个 provider 尝试,首个过阈值即返回
 func (a *Aggregator) Identify(ctx context.Context, parsed ParsedName, t MediaType) (*Identity, error) {
-	providers, threshold, cache := a.snapshot(t)
+	providers, threshold, cache, strategy := a.snapshot(t)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no provider supports media type %s", t)
 	}
+	if strategy == StrategySequential {
+		return a.identifySequential(ctx, providers, cache, parsed, t, threshold)
+	}
+	return a.identifyAggregated(ctx, providers, cache, parsed, t, threshold)
+}
 
+// identifyAggregated 是原并发互投实现(M4.5):
+//  1. 对所有 provider 并发 TryIDDirect;任一命中即按 Priority 取优返回
+//  2. 全部 provider 并发 Candidates,按 unified_key 归组加权
+//  3. 多源同指(>=2 provider)直接采纳;单源需 score >= threshold
+func (a *Aggregator) identifyAggregated(ctx context.Context, providers []Provider, cache Cache, parsed ParsedName, t MediaType, threshold float64) (*Identity, error) {
 	// 阶段 1:并发 ID 直达。任何一个 provider 返回 Identity 即按 Priority 取优采纳。
 	if id := concurrentIDDirect(ctx, providers, cache, parsed); id != nil {
 		return id, nil
@@ -141,9 +170,30 @@ func (a *Aggregator) Identify(ctx context.Context, parsed ParsedName, t MediaTyp
 	return id, nil
 }
 
+// identifySequential 按 Priority 升序逐个 provider 尝试 Matcher.Identify,
+// 首个返回非 nil Identity 即采纳;非 TMDB winner 同样尝试映射回 tmdb_id。
+// providers 参数已由 snapshot 按 Priority 升序过滤返回。
+func (a *Aggregator) identifySequential(ctx context.Context, providers []Provider, cache Cache, parsed ParsedName, t MediaType, threshold float64) (*Identity, error) {
+	for _, p := range providers {
+		id, err := NewMatcher(p, cache).WithThreshold(threshold).Identify(ctx, parsed, t)
+		if err != nil || id == nil {
+			continue
+		}
+		if id.Provider != "tmdb" {
+			if mapped := a.remapToTMDB(ctx, id); mapped != nil {
+				mapped.Score = id.Score
+				mapped.Source = id.Source + "+tmdb_map"
+				return mapped, nil
+			}
+		}
+		return id, nil
+	}
+	return nil, ErrNoMatch
+}
+
 // Candidates 返回聚合后的候选列表,按分数降序。用于 identify_candidates 人工确认。
 func (a *Aggregator) Candidates(ctx context.Context, parsed ParsedName, t MediaType) ([]ScoredCandidate, error) {
-	providers, threshold, cache := a.snapshot(t)
+	providers, threshold, cache, _ := a.snapshot(t)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no provider supports media type %s", t)
 	}
@@ -178,7 +228,7 @@ func (a *Aggregator) RegisteredProviders() []Provider {
 	return out
 }
 
-func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache) {
+func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache, Strategy) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	ps := make([]Provider, 0, len(a.providers))
@@ -187,7 +237,7 @@ func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache) {
 			ps = append(ps, p)
 		}
 	}
-	return ps, a.threshold, a.cache
+	return ps, a.threshold, a.cache, a.strategy
 }
 
 func (a *Aggregator) sortLocked() {

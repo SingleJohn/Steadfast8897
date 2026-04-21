@@ -20,6 +20,7 @@ type RuntimeConfig struct {
 	FieldPriority       map[string][]string
 	ConfidenceThreshold float64
 	AutoApply           bool
+	Strategy            Strategy
 	DoubanEnabled       bool
 	DoubanUA            string
 	DoubanCookie        string
@@ -34,6 +35,7 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 		ProvidersEnabled:    []string{"tmdb", "bangumi", "douban", "tvdb", "fanart"},
 		ConfidenceThreshold: DefaultThreshold,
 		AutoApply:           true,
+		Strategy:            StrategyAggregated,
 		DoubanEnabled:       true,
 		DoubanUA:            defaultDoubanUA,
 		BangumiUA:           defaultBangumiUA,
@@ -68,6 +70,9 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 	}
 	if v := loadConfigValue(ctx, pool, "scrape_auto_apply"); v != "" {
 		cfg.AutoApply = parseBool(v, true)
+	}
+	if v := loadConfigValue(ctx, pool, "scrape_strategy"); v != "" {
+		cfg.Strategy = ParseStrategy(v)
 	}
 	if v := loadConfigValue(ctx, pool, "douban_enabled"); v != "" {
 		cfg.DoubanEnabled = parseBool(v, true)
