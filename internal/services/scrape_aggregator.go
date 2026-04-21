@@ -22,9 +22,6 @@ func BuildScrapeAggregator(cache scraper.Cache, cfg scraper.RuntimeConfig, tmdb 
 	if cfg.ConfidenceThreshold > 0 {
 		agg.SetThreshold(cfg.ConfidenceThreshold)
 	}
-	if cfg.Strategy != "" {
-		agg.SetStrategy(cfg.Strategy)
-	}
 	if len(cfg.FieldPriority) > 0 {
 		agg.SetFieldPolicy(mergeFieldPolicy(scraper.DefaultFieldPolicy(), cfg.FieldPriority))
 	}
@@ -52,16 +49,16 @@ func BuildScrapeAggregator(cache scraper.Cache, cfg scraper.RuntimeConfig, tmdb 
 	}
 	if !tmdbOnly {
 		if hasProvider(enabled, "bangumi") {
-			register(providers.NewBangumiProvider(httpClient, cfg.BangumiUA))
+			register(providers.NewBangumiProvider(httpClient, cfg.Credentials.BangumiUA))
 		}
-		if cfg.DoubanEnabled && hasProvider(enabled, "douban") {
-			register(providers.NewDoubanProvider(httpClient, cfg.DoubanUA, cfg.DoubanCookie))
+		if hasProvider(enabled, "douban") {
+			register(providers.NewDoubanProvider(httpClient, cfg.Credentials.DoubanUA, cfg.Credentials.DoubanCookie))
 		}
-		if cfg.TVDBAPIKey != "" && hasProvider(enabled, "tvdb") {
-			register(providers.NewTVDBProvider(httpClient, cfg.TVDBAPIKey, cfg.TVDBPin))
+		if cfg.Credentials.TVDBAPIKey != "" && hasProvider(enabled, "tvdb") {
+			register(providers.NewTVDBProvider(httpClient, cfg.Credentials.TVDBAPIKey, cfg.Credentials.TVDBPin))
 		}
-		if cfg.FanartAPIKey != "" && hasProvider(enabled, "fanart") {
-			register(providers.NewFanartProvider(httpClient, cfg.FanartAPIKey))
+		if cfg.Credentials.FanartAPIKey != "" && hasProvider(enabled, "fanart") {
+			register(providers.NewFanartProvider(httpClient, cfg.Credentials.FanartAPIKey))
 		}
 	}
 	return agg

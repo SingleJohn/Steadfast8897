@@ -1603,7 +1603,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		"parsed_year", formatYear(parsed.Year),
 		"parsed_ids", parsed.IDs,
 		"providers", agg.Providers(),
-		"strategy", runtimeCfg.Strategy, "threshold", runtimeCfg.ConfidenceThreshold)
+		"threshold", runtimeCfg.ConfidenceThreshold)
 
 	// 已经带 TMDB ID 的 item 跳过 Identify 直接 Fill。
 	// 注意:不能只喂 tmdb details 给 MergeDetails,那样会绕过辅源。

@@ -9,7 +9,7 @@ import {
   addLibraryPath, removeLibraryPath, refreshSingleLibrary,
   uploadLibraryImage, setLibraryImageUrl, deleteLibraryImage, browseDirectories,
   getScrapeDefaults, getLibraryScrapeConfig, updateLibraryScrapeConfig,
-  type ScrapeStrategy, type FieldPriorityMap, type ScrapeConfigOverride,
+  type FieldPriorityMap, type ScrapeConfigOverride,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
 
@@ -290,19 +290,16 @@ const scrapeDefaults = ref<{ providers: string[]; field_names: string[]; default
 const scrapeEffective = ref<Record<string, any>>({})
 
 const enableProvidersOn = ref(false)
-const enableStrategyOn = ref(false)
 const enableThresholdOn = ref(false)
 const enableAutoApplyOn = ref(false)
 
 const override = reactive<{
   providersEnabled: string[]
-  strategy: ScrapeStrategy
   confidenceThreshold: number
   autoApply: boolean
   fieldPriority: FieldPriorityMap
 }>({
   providersEnabled: [],
-  strategy: 'aggregated',
   confidenceThreshold: 0.72,
   autoApply: true,
   fieldPriority: {},
@@ -353,11 +350,9 @@ async function loadScrapeConfig(id?: string) {
     if (resp.inherit || !resp.override) {
       scrapeMode.value = 'inherit'
       enableProvidersOn.value = false
-      enableStrategyOn.value = false
       enableThresholdOn.value = false
       enableAutoApplyOn.value = false
       override.providersEnabled = [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
-      override.strategy = (resp.effective?.Strategy as ScrapeStrategy) || 'aggregated'
       override.confidenceThreshold = resp.effective?.ConfidenceThreshold ?? 0.72
       override.autoApply = resp.effective?.AutoApply ?? true
       override.fieldPriority = {}
@@ -366,13 +361,11 @@ async function loadScrapeConfig(id?: string) {
     scrapeMode.value = 'custom'
     const ov = resp.override
     enableProvidersOn.value = Array.isArray(ov.providers_enabled)
-    enableStrategyOn.value = !!ov.strategy
     enableThresholdOn.value = typeof ov.confidence_threshold === 'number'
     enableAutoApplyOn.value = typeof ov.auto_apply === 'boolean'
     override.providersEnabled = Array.isArray(ov.providers_enabled)
       ? [...ov.providers_enabled]
       : [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
-    override.strategy = ov.strategy || (resp.effective?.Strategy as ScrapeStrategy) || 'aggregated'
     override.confidenceThreshold = ov.confidence_threshold ?? resp.effective?.ConfidenceThreshold ?? 0.72
     override.autoApply = ov.auto_apply ?? resp.effective?.AutoApply ?? true
     override.fieldPriority = ov.field_priority ? { ...ov.field_priority } : {}
@@ -393,13 +386,12 @@ async function handleSaveScrapeCfg() {
     }
     const ov: ScrapeConfigOverride = {}
     if (enableProvidersOn.value) ov.providers_enabled = [...override.providersEnabled]
-    if (enableStrategyOn.value) ov.strategy = override.strategy
     if (enableThresholdOn.value) ov.confidence_threshold = override.confidenceThreshold
     if (enableAutoApplyOn.value) ov.auto_apply = override.autoApply
     if (Object.keys(override.fieldPriority).length > 0) {
       ov.field_priority = { ...override.fieldPriority }
     }
-    const isEmpty = !ov.providers_enabled && !ov.strategy &&
+    const isEmpty = !ov.providers_enabled &&
       ov.confidence_threshold === undefined && ov.auto_apply === undefined &&
       !ov.field_priority
     if (isEmpty) {
@@ -523,7 +515,7 @@ async function handleSaveScrapeCfg() {
           <n-icon :size="15"><LayersOutline /></n-icon>
           元数据源
         </h4>
-        <p class="em-section-desc">本媒体库的刮削源 / 策略 / 字段优先级。未覆盖的项继承全局。</p>
+        <p class="em-section-desc">本媒体库的刮削源 / 阈值 / 字段优先级。未覆盖的项继承全局。</p>
 
         <div class="em-scrape-mode">
           <label class="em-mode-opt" :class="{ active: scrapeMode === 'inherit' }">
@@ -539,7 +531,6 @@ async function handleSaveScrapeCfg() {
         <div v-if="scrapeMode === 'inherit'" class="em-inherit-preview">
           <div class="hint-text">
             当前生效:启用源 {{ (scrapeEffective.ProvidersEnabled || []).map((p: string) => providerLabel(p)).join(' / ') || '(无)' }};
-            策略 {{ scrapeEffective.Strategy === 'sequential' ? '按顺序尝试' : '多源投票' }};
             阈值 {{ scrapeEffective.ConfidenceThreshold ?? '-' }}
           </div>
         </div>
@@ -558,24 +549,6 @@ async function handleSaveScrapeCfg() {
                 </div>
               </n-checkbox-group>
               <div class="hint-text">TVDB / Fanart / 豆瓣 Cookie 等凭据始终读全局,此处只控制"是否启用"。</div>
-            </div>
-          </div>
-
-          <!-- 识别策略 -->
-          <div class="em-override-block">
-            <label class="em-override-head">
-              <input type="checkbox" v-model="enableStrategyOn" />
-              <span>覆盖识别策略</span>
-            </label>
-            <div v-if="enableStrategyOn" class="em-override-body">
-              <label class="em-mode-opt" :class="{ active: override.strategy === 'aggregated' }">
-                <input type="radio" v-model="override.strategy" value="aggregated" />
-                <span>多源投票</span>
-              </label>
-              <label class="em-mode-opt" :class="{ active: override.strategy === 'sequential' }">
-                <input type="radio" v-model="override.strategy" value="sequential" />
-                <span>按顺序尝试</span>
-              </label>
             </div>
           </div>
 

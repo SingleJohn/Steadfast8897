@@ -14,20 +14,28 @@ const (
 	defaultDoubanUA  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+// ProviderCredentials 聚合所有"访问外部 provider 所需的凭据/UA"。
+// 与 RuntimeConfig 的行为字段分开:
+//   - 行为字段(ProvidersEnabled / FieldPriority / Threshold 等)可被库级 override 覆盖
+//   - 凭据永远全局,不暴露给前端 effective 响应
+//
+// 是否启用豆瓣源由 ProvidersEnabled 列表决定,不在此结构里单独开关。
+type ProviderCredentials struct {
+	TVDBAPIKey   string
+	TVDBPin      string
+	FanartAPIKey string
+	BangumiUA    string
+	DoubanUA     string
+	DoubanCookie string
+}
+
 type RuntimeConfig struct {
 	ProvidersEnabled    []string
 	ProviderPriority    map[string]int
 	FieldPriority       map[string][]string
 	ConfidenceThreshold float64
 	AutoApply           bool
-	Strategy            Strategy
-	DoubanEnabled       bool
-	DoubanUA            string
-	DoubanCookie        string
-	BangumiUA           string
-	TVDBAPIKey          string
-	TVDBPin             string
-	FanartAPIKey        string
+	Credentials         ProviderCredentials
 }
 
 func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
@@ -35,10 +43,10 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 		ProvidersEnabled:    []string{"tmdb", "bangumi", "douban", "tvdb", "fanart"},
 		ConfidenceThreshold: DefaultThreshold,
 		AutoApply:           true,
-		Strategy:            StrategyAggregated,
-		DoubanEnabled:       true,
-		DoubanUA:            defaultDoubanUA,
-		BangumiUA:           defaultBangumiUA,
+		Credentials: ProviderCredentials{
+			DoubanUA:  defaultDoubanUA,
+			BangumiUA: defaultBangumiUA,
+		},
 	}
 
 	if pool == nil {
@@ -71,28 +79,22 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 	if v := loadConfigValue(ctx, pool, "scrape_auto_apply"); v != "" {
 		cfg.AutoApply = parseBool(v, true)
 	}
-	if v := loadConfigValue(ctx, pool, "scrape_strategy"); v != "" {
-		cfg.Strategy = ParseStrategy(v)
-	}
-	if v := loadConfigValue(ctx, pool, "douban_enabled"); v != "" {
-		cfg.DoubanEnabled = parseBool(v, true)
-	}
 	if v := loadConfigValue(ctx, pool, "douban_ua"); v != "" {
-		cfg.DoubanUA = strings.TrimSpace(v)
+		cfg.Credentials.DoubanUA = strings.TrimSpace(v)
 	}
-	if cfg.DoubanUA == "" {
-		cfg.DoubanUA = defaultDoubanUA
+	if cfg.Credentials.DoubanUA == "" {
+		cfg.Credentials.DoubanUA = defaultDoubanUA
 	}
-	cfg.DoubanCookie = strings.TrimSpace(loadConfigValue(ctx, pool, "douban_cookie"))
+	cfg.Credentials.DoubanCookie = strings.TrimSpace(loadConfigValue(ctx, pool, "douban_cookie"))
 	if v := loadConfigValue(ctx, pool, "bangumi_ua"); v != "" {
-		cfg.BangumiUA = strings.TrimSpace(v)
+		cfg.Credentials.BangumiUA = strings.TrimSpace(v)
 	}
-	if cfg.BangumiUA == "" {
-		cfg.BangumiUA = defaultBangumiUA
+	if cfg.Credentials.BangumiUA == "" {
+		cfg.Credentials.BangumiUA = defaultBangumiUA
 	}
-	cfg.TVDBAPIKey = strings.TrimSpace(loadConfigValue(ctx, pool, "tvdb_api_key"))
-	cfg.TVDBPin = strings.TrimSpace(loadConfigValue(ctx, pool, "tvdb_pin"))
-	cfg.FanartAPIKey = strings.TrimSpace(loadConfigValue(ctx, pool, "fanart_api_key"))
+	cfg.Credentials.TVDBAPIKey = strings.TrimSpace(loadConfigValue(ctx, pool, "tvdb_api_key"))
+	cfg.Credentials.TVDBPin = strings.TrimSpace(loadConfigValue(ctx, pool, "tvdb_pin"))
+	cfg.Credentials.FanartAPIKey = strings.TrimSpace(loadConfigValue(ctx, pool, "fanart_api_key"))
 	return cfg
 }
 

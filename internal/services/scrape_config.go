@@ -64,7 +64,7 @@ func LoadEffectiveScrapeConfig(ctx context.Context, pool *pgxpool.Pool, libraryI
 // 覆盖所有影响 BuildScrapeAggregator 行为的字段:
 //   - ProvidersEnabled(order-sensitive)
 //   - ProviderPriority / FieldPriority(key 先排序保证稳定)
-//   - ConfidenceThreshold / AutoApply / Strategy / DoubanEnabled
+//   - ConfidenceThreshold / AutoApply
 //   - 凭据的"是否非空"(影响 provider 是否注册)
 //
 // 不含凭据明文,避免把 api key 塞进日志/metrics。
@@ -103,8 +103,8 @@ func hashRuntimeConfig(cfg scraper.RuntimeConfig) uint64 {
 	}
 	h.Write([]byte{3})
 
-	fmt.Fprintf(h, "t=%.4f;a=%t;s=%s;d=%t",
-		cfg.ConfidenceThreshold, cfg.AutoApply, cfg.Strategy, cfg.DoubanEnabled)
+	fmt.Fprintf(h, "t=%.4f;a=%t",
+		cfg.ConfidenceThreshold, cfg.AutoApply)
 	h.Write([]byte{4})
 
 	credTag := func(s string) byte {
@@ -114,10 +114,10 @@ func hashRuntimeConfig(cfg scraper.RuntimeConfig) uint64 {
 		return '1'
 	}
 	h.Write([]byte{
-		credTag(cfg.TVDBAPIKey),
-		credTag(cfg.TVDBPin),
-		credTag(cfg.FanartAPIKey),
-		credTag(cfg.DoubanCookie),
+		credTag(cfg.Credentials.TVDBAPIKey),
+		credTag(cfg.Credentials.TVDBPin),
+		credTag(cfg.Credentials.FanartAPIKey),
+		credTag(cfg.Credentials.DoubanCookie),
 	})
 	return h.Sum64()
 }

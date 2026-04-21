@@ -468,13 +468,11 @@ export async function restartServer() {
 
 // Scrape config ------------------------------------------------------------
 
-export type ScrapeStrategy = 'aggregated' | 'sequential';
 export type FieldPriorityMap = Record<string, string[]>;
 
 export interface ScrapeDefaults {
   providers: string[];
   field_names: string[];
-  strategy_options: ScrapeStrategy[];
   default_policy: FieldPriorityMap;
 }
 
@@ -484,7 +482,6 @@ export interface ScrapeConfigOverride {
   field_priority?: FieldPriorityMap;
   confidence_threshold?: number;
   auto_apply?: boolean;
-  strategy?: ScrapeStrategy;
 }
 
 export interface LibraryScrapeConfigResponse {
@@ -496,8 +493,6 @@ export interface LibraryScrapeConfigResponse {
     FieldPriority?: FieldPriorityMap;
     ConfidenceThreshold?: number;
     AutoApply?: boolean;
-    Strategy?: ScrapeStrategy;
-    DoubanEnabled?: boolean;
   };
 }
 

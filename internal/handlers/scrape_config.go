@@ -22,13 +22,12 @@ func RegisterScrapeConfigRoutes(group *gin.RouterGroup, adminMW gin.HandlerFunc)
 }
 
 // scrapeDefaultsResponse 给前端渲染 UI 的元数据:
-// 有哪些 provider、哪些字段、策略有哪些候选值。
+// 有哪些 provider、哪些字段、每个字段默认的 provider 优先级。
 // 字段名与 scraper.FieldPolicy 的字段一一对应,顺序即展示顺序。
 type scrapeDefaultsResponse struct {
-	Providers       []string            `json:"providers"`
-	FieldNames      []string            `json:"field_names"`
-	StrategyOptions []string            `json:"strategy_options"`
-	DefaultPolicy   map[string][]string `json:"default_policy"`
+	Providers     []string            `json:"providers"`
+	FieldNames    []string            `json:"field_names"`
+	DefaultPolicy map[string][]string `json:"default_policy"`
 }
 
 func getScrapeDefaults(c *gin.Context) {
@@ -38,10 +37,6 @@ func getScrapeDefaults(c *gin.Context) {
 		FieldNames: []string{
 			"overview", "title", "original_title", "tagline", "premiered",
 			"year", "rating", "actors", "poster", "backdrop", "season_poster",
-		},
-		StrategyOptions: []string{
-			string(scraper.StrategyAggregated),
-			string(scraper.StrategySequential),
 		},
 		DefaultPolicy: map[string][]string{
 			"overview":       def.Overview,
@@ -60,14 +55,34 @@ func getScrapeDefaults(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// effectiveScrapeConfig 是前端可见的 effective DTO。
+// 所有凭据明文从不序列化。字段名保持 PascalCase 以匹配历史前端合约。
+type effectiveScrapeConfig struct {
+	ProvidersEnabled    []string            `json:"ProvidersEnabled"`
+	ProviderPriority    map[string]int      `json:"ProviderPriority"`
+	FieldPriority       map[string][]string `json:"FieldPriority"`
+	ConfidenceThreshold float64             `json:"ConfidenceThreshold"`
+	AutoApply           bool                `json:"AutoApply"`
+}
+
+func effectiveFromRuntime(cfg scraper.RuntimeConfig) effectiveScrapeConfig {
+	return effectiveScrapeConfig{
+		ProvidersEnabled:    cfg.ProvidersEnabled,
+		ProviderPriority:    cfg.ProviderPriority,
+		FieldPriority:       cfg.FieldPriority,
+		ConfidenceThreshold: cfg.ConfidenceThreshold,
+		AutoApply:           cfg.AutoApply,
+	}
+}
+
 // libraryScrapeConfigResponse 描述一个库的刮削配置三件套:
 //   - inherit: override IS NULL(= 完全继承全局)
 //   - override: 库级 JSONB 反序列化,null 表示未设置
-//   - effective: 全局 + override 合并后的最终生效值(给前端预览)
+//   - effective: 全局 + override 合并后的最终生效值(给前端预览,剥离凭据)
 type libraryScrapeConfigResponse struct {
-	Inherit   bool                     `json:"inherit"`
-	Override  *scraper.ConfigOverride  `json:"override"`
-	Effective scraper.RuntimeConfig    `json:"effective"`
+	Inherit   bool                    `json:"inherit"`
+	Override  *scraper.ConfigOverride `json:"override"`
+	Effective effectiveScrapeConfig   `json:"effective"`
 }
 
 func getLibraryScrapeConfig(c *gin.Context) {
@@ -93,13 +108,10 @@ func getLibraryScrapeConfig(c *gin.Context) {
 	override, _ := services.LoadLibraryScrapeOverride(ctx, state.DB, libID.String())
 	effective := services.LoadEffectiveScrapeConfig(ctx, state.DB, libID.String())
 
-	// Effective 里的凭据字段剥离,避免泄漏给前端
-	effective = sanitizeEffectiveForClient(effective)
-
 	c.JSON(http.StatusOK, libraryScrapeConfigResponse{
 		Inherit:   override == nil,
 		Override:  override,
-		Effective: effective,
+		Effective: effectiveFromRuntime(effective),
 	})
 }
 
@@ -150,14 +162,3 @@ func putLibraryScrapeConfig(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// sanitizeEffectiveForClient 清掉 RuntimeConfig 里的凭据明文,只保留行为字段。
-// 前端只需要知道"启用哪些 provider / 字段顺序 / 策略 / 阈值",不需要看 api key。
-func sanitizeEffectiveForClient(cfg scraper.RuntimeConfig) scraper.RuntimeConfig {
-	cfg.TVDBAPIKey = ""
-	cfg.TVDBPin = ""
-	cfg.FanartAPIKey = ""
-	cfg.DoubanCookie = ""
-	cfg.DoubanUA = ""
-	cfg.BangumiUA = ""
-	return cfg
-}

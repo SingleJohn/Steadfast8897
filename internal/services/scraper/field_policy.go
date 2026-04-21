@@ -39,12 +39,19 @@ type FieldPolicy struct {
 	SeasonPoster  []string
 }
 
-// DefaultFieldPolicy 返回方案 §5.3 的默认字段优先级策略。
+// DefaultFieldPolicy 返回每个字段默认的 provider 优先级顺序。
+//
+// 选择逻辑:
+//   - Overview: bangumi 中文简介(番剧/华语)质量最稳,居次;douban 常带"展开全部"噪声,退后
+//   - OriginalTitle: imdb 不是独立 provider,移除;bangumi 对日系原名覆盖好
+//   - Rating: 豆瓣社区评分更贴近中文用户口味,居首
+//   - Poster/SeasonPoster: TVDB 剧集海报覆盖全,居首
+//   - Backdrop: Fanart 专业图库,居首
 func DefaultFieldPolicy() FieldPolicy {
 	return FieldPolicy{
-		Overview:      []string{"tmdb", "douban", "bangumi", "tvdb"},
+		Overview:      []string{"tmdb", "bangumi", "douban", "tvdb"},
 		Title:         []string{"tmdb", "tvdb", "douban", "bangumi"},
-		OriginalTitle: []string{"tmdb", "tvdb", "imdb"},
+		OriginalTitle: []string{"tmdb", "tvdb", "bangumi"},
 		Tagline:       []string{"tmdb", "tvdb"},
 		Premiered:     []string{"tmdb", "tvdb", "bangumi"},
 		Year:          []string{"tmdb", "tvdb", "bangumi", "douban"},
