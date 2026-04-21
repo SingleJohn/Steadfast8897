@@ -346,10 +346,6 @@ func isScrapeFatalError(err error) bool {
 		return true
 	}
 	s := err.Error()
-	// 识别到非 TMDB 源但无法映射到 tmdb_id —— 豆瓣/Bangumi 独有条目,重试无效
-	if strings.Contains(s, "no tmdb id") {
-		return true
-	}
 	// 已入人工确认队列,不需要再 worker 重跑
 	if strings.Contains(s, "identify queued for manual confirmation") {
 		return true

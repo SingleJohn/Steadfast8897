@@ -1668,12 +1668,12 @@ func applyIdentifyCandidate(c *gin.Context) {
 	// 避免 TMDB/豆瓣慢响应让 HTTP 连接 hang 到前端超时
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	tmdbID, err := services.ResolveIdentifyCandidateTMDBID(ctx, state.DB, itemID, candidateID)
+	provider, externalID, err := services.ResolveIdentifyCandidate(ctx, state.DB, itemID, candidateID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if _, err := services.ScrapeItemByTMDBID(ctx, state.DB, itemID, tmdbID); err != nil {
+	if _, err := services.ScrapeItemByProviderID(ctx, state.DB, itemID, provider, externalID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -1724,14 +1724,14 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 	for _, pair := range body.Items {
 		res := applyResult{ItemID: pair.ItemID}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-		tmdbID, err := services.ResolveIdentifyCandidateTMDBID(ctx, state.DB, pair.ItemID, pair.CandidateID)
+		provider, externalID, err := services.ResolveIdentifyCandidate(ctx, state.DB, pair.ItemID, pair.CandidateID)
 		if err != nil {
 			cancel()
 			res.Message = err.Error()
 			results = append(results, res)
 			continue
 		}
-		if _, err := services.ScrapeItemByTMDBID(ctx, state.DB, pair.ItemID, tmdbID); err != nil {
+		if _, err := services.ScrapeItemByProviderID(ctx, state.DB, pair.ItemID, provider, externalID); err != nil {
 			cancel()
 			res.Message = err.Error()
 			results = append(results, res)
