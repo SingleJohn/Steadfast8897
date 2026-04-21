@@ -23,6 +23,7 @@ import (
 	"fyms/internal/config"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/services"
 	"fyms/internal/services/taskcenter"
 )
 
@@ -207,6 +208,7 @@ func postConfiguration(c *gin.Context) {
 	}
 
 	needViewsInvalidate := false
+	needScrapeInvalidate := false
 	for key, raw := range updates {
 		valStr := configValueString(raw)
 		_, err := state.DB.Exec(ctx,
@@ -222,9 +224,20 @@ func postConfiguration(c *gin.Context) {
 		case "platform_libraries_enabled", "platform_libraries_position", "library_show_item_count":
 			needViewsInvalidate = true
 		}
+		if strings.HasPrefix(key, "scrape_") ||
+			strings.HasPrefix(key, "tmdb_") ||
+			strings.HasPrefix(key, "tvdb_") ||
+			strings.HasPrefix(key, "fanart_") ||
+			strings.HasPrefix(key, "douban_") ||
+			strings.HasPrefix(key, "bangumi_") {
+			needScrapeInvalidate = true
+		}
 	}
 	if needViewsInvalidate {
 		state.Cache.Del(ctx, "views:all")
+	}
+	if needScrapeInvalidate {
+		services.InvalidateScrapeAggregator()
 	}
 	c.Status(http.StatusNoContent)
 }
