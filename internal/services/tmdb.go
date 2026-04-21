@@ -1430,17 +1430,25 @@ func RefreshItemMetadataByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID
 	if meta.TmdbID == nil || *meta.TmdbID == 0 {
 		return nil, fmt.Errorf("no TMDB ID")
 	}
-	details, err := fetchTMDBDetailsByID(ctx, client, meta.ItemType, int64(*meta.TmdbID))
-	if err != nil {
-		return nil, err
+	mediaType, ok := mediaTypeFor(meta.ItemType)
+	if !ok {
+		return nil, fmt.Errorf("cannot scrape type: %s", meta.ItemType)
 	}
-	merged := scraper.MergeDetails(&scraper.Identity{
+	tmdbIDStr := strconv.FormatInt(int64(*meta.TmdbID), 10)
+	ident := &scraper.Identity{
 		Provider:    "tmdb",
-		ProviderID:  strconv.FormatInt(int64(*meta.TmdbID), 10),
-		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(int64(*meta.TmdbID), 10)},
+		ProviderID:  tmdbIDStr,
+		ExternalIDs: map[string]string{"tmdb": tmdbIDStr},
 		Score:       1,
 		Source:      "tmdb_id_refresh",
-	}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), int64(*meta.TmdbID)))
+	}
+	parsed := buildParsedName(meta)
+	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
+	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
+	if fillErr != nil {
+		return nil, fmt.Errorf("fill details: %w", fillErr)
+	}
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
 }
 
@@ -1485,17 +1493,25 @@ func ScrapeItemByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 	if err != nil {
 		return nil, err
 	}
-	details, err := fetchTMDBDetailsByID(ctx, client, meta.ItemType, tmdbID)
-	if err != nil {
-		return nil, fmt.Errorf("获取 TMDB 详情失败: %w", err)
+	mediaType, ok := mediaTypeFor(meta.ItemType)
+	if !ok {
+		return nil, fmt.Errorf("cannot scrape type: %s", meta.ItemType)
 	}
-	merged := scraper.MergeDetails(&scraper.Identity{
+	tmdbIDStr := strconv.FormatInt(tmdbID, 10)
+	ident := &scraper.Identity{
 		Provider:    "tmdb",
-		ProviderID:  strconv.FormatInt(tmdbID, 10),
-		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(tmdbID, 10)},
+		ProviderID:  tmdbIDStr,
+		ExternalIDs: map[string]string{"tmdb": tmdbIDStr},
 		Score:       1,
 		Source:      "manual_tmdb_id",
-	}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), tmdbID))
+	}
+	parsed := buildParsedName(meta)
+	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
+	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
+	if fillErr != nil {
+		return nil, fmt.Errorf("fill details: %w", fillErr)
+	}
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, true, models.PlatformScanSourceSearch)
 }
 
@@ -1525,23 +1541,6 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		return nil, err
 	}
 
-	// 已经带 TMDB ID 的 item 走直达，节省搜索阶段
-	if meta.TmdbID != nil && *meta.TmdbID > 0 {
-		details, ferr := fetchTMDBDetailsByID(ctx, client, meta.ItemType, int64(*meta.TmdbID))
-		if ferr != nil {
-			return nil, fmt.Errorf("fetch tmdb details: %w", ferr)
-		}
-		merged := scraper.MergeDetails(&scraper.Identity{
-			Provider:    "tmdb",
-			ProviderID:  strconv.FormatInt(int64(*meta.TmdbID), 10),
-			ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(int64(*meta.TmdbID), 10)},
-			Score:       1,
-			Source:      "tmdb_id_direct",
-		}, tmdbDetailsFromRaw(details, mediaTypeMust(meta.ItemType), int64(*meta.TmdbID)))
-		tmdbSetIdentifyAttempted(ctx, pool, itemID)
-		return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
-	}
-
 	mediaType, ok := mediaTypeFor(meta.ItemType)
 	if !ok {
 		return nil, fmt.Errorf("cannot scrape type: %s", meta.ItemType)
@@ -1550,6 +1549,27 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	parsed := buildParsedName(meta)
 	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
 	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+
+	// 已经带 TMDB ID 的 item 跳过 Identify 直接 Fill。
+	// 注意:不能只喂 tmdb details 给 MergeDetails,那样会绕过辅源。
+	// agg.Fill 内部会把 tmdb 作为 primary 拉详情,再并发拉 bangumi/douban/tvdb/fanart
+	// 按 FieldPolicy 合字段(rating / poster / overview 等)。
+	if meta.TmdbID != nil && *meta.TmdbID > 0 {
+		tmdbIDStr := strconv.FormatInt(int64(*meta.TmdbID), 10)
+		ident := &scraper.Identity{
+			Provider:    "tmdb",
+			ProviderID:  tmdbIDStr,
+			ExternalIDs: map[string]string{"tmdb": tmdbIDStr},
+			Score:       1,
+			Source:      "tmdb_id_direct",
+		}
+		merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
+		if fillErr != nil {
+			return nil, fmt.Errorf("fill details: %w", fillErr)
+		}
+		tmdbSetIdentifyAttempted(ctx, pool, itemID)
+		return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, int64(*meta.TmdbID), merged, false, models.PlatformScanSourceTMDB)
+	}
 
 	ident, err := agg.Identify(ctx, parsed, mediaType)
 	if err != nil {
@@ -1620,11 +1640,6 @@ func resolveTMDBIDFromIdentity(ident *scraper.Identity) int64 {
 		}
 	}
 	return 0
-}
-
-func mediaTypeMust(itemType string) scraper.MediaType {
-	t, _ := mediaTypeFor(itemType)
-	return t
 }
 
 func mediaTypeFor(itemType string) (scraper.MediaType, bool) {
