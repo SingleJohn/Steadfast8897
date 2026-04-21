@@ -57,16 +57,18 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 	// —— 退避完全由 scrape_queue.next_run_at 接管,UNIQUE(item_id, task_type)
 	// 防重复入队,worker.Claim 只取 next_run_at <= NOW() 的任务。
 	//
-	// 第三方 NFO 复制过来的场景:
-	//   - tmdb_id IS NOT NULL        → NFO 已带 TMDB ID,身份已确定,不需再 identify
-	//   - platform_scan_source='nfo' → NFO 带 <studio>,ApplyNfoData 已把源标记为 nfo
-	// 这两种都跳过,避免浪费 TMDB 配额。
+	// 跳过条件(= 已识别或人工托管):
+	//   - item_external_ids 有任何记录(tmdb/imdb/douban/bangumi/...)→ 身份已定
+	//   - platform_scan_source='nfo'            → NFO 已带 studio,人工托管
+	// 这两种都跳过,避免浪费 provider 配额。
 	rows, err := pool.Query(ctx,
 		`SELECT id::text FROM items
 		  WHERE library_id = $1::uuid
 		    AND type IN ('Movie', 'Series')
 		    AND (overview IS NULL OR overview = '')
-		    AND tmdb_id IS NULL
+		    AND NOT EXISTS (
+		        SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+		    )
 		    AND platform_scan_source IS DISTINCT FROM 'nfo'
 		  ORDER BY created_at DESC`,
 		libraryID)
@@ -107,7 +109,9 @@ func EnqueueMissingScrapeIdentify(ctx context.Context, pool *pgxpool.Pool) (int6
 		`SELECT id::text FROM items
 		  WHERE type IN ('Movie', 'Series')
 		    AND (overview IS NULL OR overview = '')
-		    AND tmdb_id IS NULL
+		    AND NOT EXISTS (
+		        SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+		    )
 		    AND platform_scan_source IS DISTINCT FROM 'nfo'`)
 	if err != nil {
 		return 0, err
