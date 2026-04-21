@@ -100,8 +100,8 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 }
 
 // EnqueueMissingScrapeIdentify 给用户手动"刮削全部缺失元数据"入口用:
-// 扫全表 Movie/Series,把 overview 为空且未识别(tmdb_id IS NULL,且非 NFO 源)的
-// 以 refresh 优先级(0,最高)入队 identify,worker 自动消费。
+// 扫全表 Movie/Series,把 overview 为空且未识别(item_external_ids 无任何记录,
+// 且非 NFO 源)的以 refresh 优先级(0,最高)入队 identify,worker 自动消费。
 // 与 autoScrapeNewItems 的过滤条件一致,但不受 library 边界和 auto_scrape_enabled 限制。
 // 返回入队数量(ON CONFLICT 时 tag.RowsAffected 仍计入已存在行的 priority 更新)。
 func EnqueueMissingScrapeIdentify(ctx context.Context, pool *pgxpool.Pool) (int64, error) {

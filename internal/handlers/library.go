@@ -1801,10 +1801,11 @@ func mergeVersions(c *gin.Context, state *AppState) {
 	}
 	slog.Info("MergeVersions completed", "merged", merged)
 
-	// Gather diagnostic counts
+	// Gather diagnostic counts. primary 不再要求 tmdb_id IS NOT NULL ——
+	// 多源合并后 primary 可能仅有 douban/bangumi 等非 TMDB 外部 ID。
 	var totalPrimaries, totalSecondaries int64
 	state.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items WHERE merged_to_id IS NULL AND tmdb_id IS NOT NULL
+		`SELECT COUNT(*) FROM items WHERE merged_to_id IS NULL
 		   AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = items.id)`).Scan(&totalPrimaries)
 	state.DB.QueryRow(ctx,
 		"SELECT COUNT(*) FROM items WHERE merged_to_id IS NOT NULL").Scan(&totalSecondaries)
