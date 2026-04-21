@@ -176,6 +176,7 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	}
 
 	// still 图下载 + 回写 primary_image_path;串行保持原有节奏避免压爆 TMDB CDN。
+	var stillOK, stillFail int
 	for _, t := range stillTargets {
 		savePath := fmt.Sprintf("data/metadata/%s/still.jpg", t.id)
 		if client.DownloadImage(ctx, t.stillPath, savePath, "w300") {
@@ -183,7 +184,19 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 			_, _ = pool.Exec(ctx,
 				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
 				savePath, tag, t.id)
+			stillOK++
+		} else {
+			stillFail++
+			slog.Debug("[TMDB] episode still download failed",
+				"episode_id", t.id, "still_path", t.stillPath)
 		}
+	}
+	if len(stillTargets) > 0 || len(updIDs) > 0 {
+		slog.Info("[TMDB] season episodes processed",
+			"season_id", seasonItemID, "tmdb_id", tmdbID, "season", seasonNum,
+			"name_overview_updated", len(updIDs),
+			"stills_targeted", len(stillTargets), "stills_ok", stillOK, "stills_failed", stillFail,
+			"still_fetch_enabled", stillFetchEnabled)
 	}
 	return nil
 }

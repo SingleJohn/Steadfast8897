@@ -129,6 +129,8 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 		return err
 	}
 	if seasonNum == nil || seriesTmdbID == nil || *seriesTmdbID <= 0 {
+		slog.Info("[Backfill-EpImg] skip: missing season_num or series tmdb_id",
+			"season_id", seasonID)
 		return nil
 	}
 
@@ -137,6 +139,8 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 		return err
 	}
 	if len(stills) == 0 {
+		slog.Info("[Backfill-EpImg] tmdb returned 0 stills",
+			"season_id", seasonID, "tmdb_id", *seriesTmdbID, "season", *seasonNum)
 		return nil
 	}
 
@@ -164,9 +168,11 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 	}
 	rows.Close()
 
+	var downloaded, failed, notInTmdb int
 	for _, ep := range eps {
 		still, ok := stills[ep.epNum]
 		if !ok || still == "" {
+			notInTmdb++
 			continue
 		}
 		savePath := fmt.Sprintf("data/metadata/%s/still.jpg", ep.id)
@@ -176,8 +182,17 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 				`UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW()
 				  WHERE id = $3::uuid AND primary_image_path IS NULL`,
 				savePath, tag, ep.id)
+			downloaded++
+		} else {
+			failed++
+			slog.Debug("[Backfill-EpImg] download failed",
+				"episode_id", ep.id, "ep_num", ep.epNum, "still_path", still)
 		}
 	}
+	slog.Info("[Backfill-EpImg] done",
+		"season_id", seasonID, "tmdb_id", *seriesTmdbID, "season", *seasonNum,
+		"eps_missing_image", len(eps), "stills_from_tmdb", len(stills),
+		"downloaded", downloaded, "failed", failed, "not_in_tmdb", notInTmdb)
 	return nil
 }
 
