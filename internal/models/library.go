@@ -18,16 +18,18 @@ type Library struct {
 	PrimaryImagePath *string   `json:"PrimaryImagePath,omitempty"`
 	PrimaryImageTag  *string   `json:"PrimaryImageTag,omitempty"`
 	SortOrder        int       `json:"SortOrder"`
+	ScrapeConfig     *string   `json:"ScrapeConfig,omitempty"` // 原始 JSONB 文本,nil = 继承全局
 }
 
 // libraryColumns 列出所有 Library 结构体字段对应的列。
 // 不再用 SELECT *，避免后续新增列(如 deleted_at)破坏 Scan 行为。
-const libraryColumns = `id, name, collection_type, paths, created_at, primary_image_path, primary_image_tag, sort_order`
+// scrape_config::text 统一以字符串形式返回,反序列化交给上层。
+const libraryColumns = `id, name, collection_type, paths, created_at, primary_image_path, primary_image_tag, sort_order, scrape_config::text`
 
 func scanLibrary(row pgx.Row) (*Library, error) {
 	var l Library
 	err := row.Scan(&l.ID, &l.Name, &l.CollectionType, &l.Paths, &l.CreatedAt,
-		&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder)
+		&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder, &l.ScrapeConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +48,7 @@ func GetAllLibraries(ctx context.Context, pool *pgxpool.Pool) ([]Library, error)
 	for rows.Next() {
 		var l Library
 		if err := rows.Scan(&l.ID, &l.Name, &l.CollectionType, &l.Paths, &l.CreatedAt,
-			&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder); err != nil {
+			&l.PrimaryImagePath, &l.PrimaryImageTag, &l.SortOrder, &l.ScrapeConfig); err != nil {
 			return nil, err
 		}
 		libs = append(libs, l)
@@ -83,6 +85,21 @@ func UpdateLibrary(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, name *
 
 func UpdateLibrarySortOrder(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, sortOrder int) error {
 	_, err := pool.Exec(ctx, "UPDATE libraries SET sort_order = $1 WHERE id = $2", sortOrder, id)
+	return err
+}
+
+// UpdateLibraryScrapeConfig 写入库级刮削配置。
+// rawJSON 为 nil → 清空(scrape_config = NULL = 继承全局);
+// 非 nil → 写入 JSONB(上层负责保证是合法 JSON object)。
+// 保存后调用方应触发 services.InvalidateScrapeAggregator 让 aggregator 缓存失效。
+func UpdateLibraryScrapeConfig(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, rawJSON *string) error {
+	if rawJSON == nil {
+		_, err := pool.Exec(ctx,
+			"UPDATE libraries SET scrape_config = NULL WHERE id = $1", id)
+		return err
+	}
+	_, err := pool.Exec(ctx,
+		"UPDATE libraries SET scrape_config = $1::jsonb WHERE id = $2", *rawJSON, id)
 	return err
 }
 

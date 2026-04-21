@@ -1,11 +1,14 @@
 package services
 
 import (
+	"context"
 	"net/http"
-	"sync/atomic"
+	"sync"
 
 	"fyms/internal/services/scraper"
 	"fyms/internal/services/scraper/providers"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // BuildScrapeAggregator 按运行时配置注册启用的 Provider。
@@ -64,34 +67,56 @@ func BuildScrapeAggregator(cache scraper.Cache, cfg scraper.RuntimeConfig, tmdb 
 	return agg
 }
 
-// ========== Aggregator 缓存(Phase 4 优化) ==========
+// ========== Aggregator 缓存 ==========
+//
+// 缓存 key 从 *TmdbClient 升级为 (client, configHash):
+//   - 不同库的 effective config 可能不同 → 对应不同 aggregator 实例
+//   - 同 effective config 的多个库 → 共享实例(hash 相同)
+//   - TmdbClient 指针变化(凭据重置)→ 自动失效,不会串用旧 http.Transport
+//
+// 配置变更时调 InvalidateScrapeAggregator 清空整表:
+//   - Admin 改 system_config.scrape_* / tmdb_*
+//   - Admin 改某库 libraries.scrape_config
+//   - TMDB key 轮换导致 TmdbClient 重建
 
-type cachedAggregatorEntry struct {
+type aggregatorCacheKey struct {
 	client *TmdbClient
-	agg    *scraper.Aggregator
+	hash   uint64
 }
 
-var cachedAggregator atomic.Pointer[cachedAggregatorEntry]
+var aggregatorCache sync.Map // aggregatorCacheKey -> *scraper.Aggregator
 
-// GetScrapeAggregator 返回和 client 指针匹配的缓存 aggregator;未命中时重建并写缓存。
-// 缓存 key 用 *TmdbClient 的指针身份 —— worker 持有 stable client 时 O(1) 复用;
-// 其他调用点(用户手动 Identify / scrapeEpisodeMetadata)各自 new client 时
-// 每次都是 cache miss → 回退到 BuildScrapeAggregator,行为不变。
-//
-// 配置变更时需调 InvalidateScrapeAggregator(Admin 改 tmdb_api_key / providers 配置后)。
+// GetScrapeAggregator 按 global RuntimeConfig 构造/返回 aggregator。
+// 用于无 libraryID 的调用点(手动 Identify、SearchTMDB 等)。
+// 同 (client, configHash) 的请求命中缓存;不同 hash 独立构造。
 func GetScrapeAggregator(cache scraper.Cache, cfg scraper.RuntimeConfig, tmdb *TmdbClient, httpClient *http.Client) *scraper.Aggregator {
-	if e := cachedAggregator.Load(); e != nil && e.client == tmdb {
-		return e.agg
+	key := aggregatorCacheKey{client: tmdb, hash: hashRuntimeConfig(cfg)}
+	if v, ok := aggregatorCache.Load(key); ok {
+		return v.(*scraper.Aggregator)
 	}
 	agg := BuildScrapeAggregator(cache, cfg, tmdb, httpClient)
-	cachedAggregator.Store(&cachedAggregatorEntry{client: tmdb, agg: agg})
-	return agg
+	actual, _ := aggregatorCache.LoadOrStore(key, agg)
+	return actual.(*scraper.Aggregator)
 }
 
-// InvalidateScrapeAggregator 让下一次 GetScrapeAggregator 重建。
-// 供 Admin 修改 scrape 相关 config 后调用。
+// GetScrapeAggregatorForLibrary 按 libraryID 读 effective config 构造 aggregator。
+// libraryID 为空时退化为 GetScrapeAggregator(global cfg),行为与旧代码一致。
+func GetScrapeAggregatorForLibrary(
+	ctx context.Context, pool *pgxpool.Pool,
+	cache scraper.Cache, tmdb *TmdbClient, httpClient *http.Client,
+	libraryID string,
+) *scraper.Aggregator {
+	cfg := LoadEffectiveScrapeConfig(ctx, pool, libraryID)
+	return GetScrapeAggregator(cache, cfg, tmdb, httpClient)
+}
+
+// InvalidateScrapeAggregator 清空所有 (client, hash) 桶。
+// 供 Admin 修改 scrape 相关配置后调用。
 func InvalidateScrapeAggregator() {
-	cachedAggregator.Store(nil)
+	aggregatorCache.Range(func(k, _ any) bool {
+		aggregatorCache.Delete(k)
+		return true
+	})
 }
 
 func hasProvider(set map[string]struct{}, name string) bool {

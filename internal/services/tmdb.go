@@ -532,19 +532,20 @@ func ScrapeItem(ctx context.Context, pool *pgxpool.Pool, itemID string) (map[str
 }
 
 type scrapeItemMeta struct {
-	ItemType string
-	Name     string
-	Year     *int32
-	TmdbID   *int32
-	ImdbID   *string
-	FilePath *string
+	ItemType  string
+	Name      string
+	Year      *int32
+	TmdbID    *int32
+	ImdbID    *string
+	FilePath  *string
+	LibraryID string // 用于 per-library 刮削配置
 }
 
 func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) (*scrapeItemMeta, error) {
 	meta := &scrapeItemMeta{}
 	err := pool.QueryRow(ctx,
-		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path FROM items WHERE id = $1::uuid", itemID,
-	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath)
+		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path, library_id::text FROM items WHERE id = $1::uuid", itemID,
+	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath, &meta.LibraryID)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("item not found")
 	}
@@ -1443,8 +1444,7 @@ func RefreshItemMetadataByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID
 		Source:      "tmdb_id_refresh",
 	}
 	parsed := buildParsedName(meta)
-	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
-	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+	agg := GetScrapeAggregatorForLibrary(ctx, pool, sharedScrapeCache, client, client.httpClient, meta.LibraryID)
 	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
 	if fillErr != nil {
 		return nil, fmt.Errorf("fill details: %w", fillErr)
@@ -1506,8 +1506,7 @@ func ScrapeItemByTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 		Source:      "manual_tmdb_id",
 	}
 	parsed := buildParsedName(meta)
-	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
-	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
+	agg := GetScrapeAggregatorForLibrary(ctx, pool, sharedScrapeCache, client, client.httpClient, meta.LibraryID)
 	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
 	if fillErr != nil {
 		return nil, fmt.Errorf("fill details: %w", fillErr)
@@ -1547,7 +1546,7 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	}
 
 	parsed := buildParsedName(meta)
-	runtimeCfg := scraper.LoadRuntimeConfig(ctx, pool)
+	runtimeCfg := LoadEffectiveScrapeConfig(ctx, pool, meta.LibraryID)
 	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
 
 	// 已经带 TMDB ID 的 item 跳过 Identify 直接 Fill。
