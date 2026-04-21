@@ -423,7 +423,35 @@ func (c *TmdbClient) SearchTV(ctx context.Context, name string) (map[string]inte
 }
 
 // SearchMovieMulti returns up to 20 TMDB movie search results.
+// 带 year 过滤 0 结果时自动 fallback 去掉 year 重试一次 —— 常见场景:
+//   - item 之前被错误识别,production_year 被污染,用户自定义搜索时 year 预填错值
+//   - 文件名里的年份是再发行年/目录年,不是 TMDB 的首映年
+//
+// Matcher 的 scoreCandidate 会用 parsed.Year 给候选打分,年份不一致的候选分数低,
+// 所以放宽 year 过滤不会降低识别准确度,只会提高召回。
 func (c *TmdbClient) SearchMovieMulti(ctx context.Context, name string, year *int32) ([]map[string]interface{}, error) {
+	out, err := c.searchMovieOnce(ctx, name, year)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	if year != nil {
+		slog.Debug("[TMDB] search with year returned 0, retrying without year",
+			"query", name, "year", *year)
+		out, err = c.searchMovieOnce(ctx, name, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("未找到结果")
+}
+
+func (c *TmdbClient) searchMovieOnce(ctx context.Context, name string, year *int32) ([]map[string]interface{}, error) {
 	u := fmt.Sprintf("%s/search/movie?api_key={API_KEY}&language=%s&query=%s",
 		TMDB_BASE, c.language, url.QueryEscape(name))
 	if year != nil {
@@ -435,7 +463,7 @@ func (c *TmdbClient) SearchMovieMulti(ctx context.Context, name string, year *in
 	}
 	results, ok := data["results"].([]interface{})
 	if !ok || len(results) == 0 {
-		return nil, fmt.Errorf("未找到结果")
+		return nil, nil
 	}
 	var out []map[string]interface{}
 	for _, r := range results {
