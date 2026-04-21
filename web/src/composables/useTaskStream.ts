@@ -1,4 +1,4 @@
-// 单例的任务中心 SSE 连接 + 响应式快照表。
+// 单例的作业调度 SSE 连接 + 响应式快照表。
 //
 // 所有页面（OverviewPage 的 TaskCenterCard / 服务观测的 TasksTab）共享
 // 同一个 EventSource：引用计数归零时关闭连接，避免多标签页打开多条流。
@@ -129,7 +129,9 @@ export function useTaskStream() {
   })
 
   const tasks = computed<TaskSnapshot[]>(() => {
-    const order: TaskKind[] = ['scan', 'scrape', 'probe', 'backfill', 'update']
+    // 'scrape' 刻意省略:方案 C 后刮削由 scrape_queue + ScrapeWorker 持续驱动,
+    // 不再作为一等任务卡片。历史表仍会展示 kind='scrape' 的旧运行记录。
+    const order: TaskKind[] = ['scan', 'probe', 'backfill', 'update']
     const out: TaskSnapshot[] = []
     for (const k of order) {
       const s = snapshots[k]

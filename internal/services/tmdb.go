@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1788,50 +1787,11 @@ func fetchDoubanOverview(client *http.Client, name string) *string {
 	return &desc
 }
 
-// ========== Scrape Task with Progress ==========
-
-type ScrapeProgress struct {
-	Status         string  `json:"status"`
-	TotalItems     int64   `json:"total_items"`
-	ProcessedItems int64   `json:"processed_items"`
-	SuccessItems   int64   `json:"success_items"`
-	FailedItems    int64   `json:"failed_items"`
-	CurrentItem    *string `json:"current_item,omitempty"`
-	LastError      *string `json:"last_error,omitempty"`
-	Percentage     int     `json:"percentage"`
-	MissingCount   int64   `json:"missing_count"`
-	ItemsTotal     int64   `json:"items_total"`
-}
-
-type ScrapeTask struct {
-	mu       sync.Mutex
-	progress ScrapeProgress
-	stopFlag atomic.Bool
-}
-
-func NewScrapeTask() *ScrapeTask {
-	return &ScrapeTask{
-		progress: ScrapeProgress{
-			Status: "idle",
-		},
-	}
-}
-
-func (t *ScrapeTask) GetProgress() ScrapeProgress {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	p := t.progress
-	return p
-}
-
-func (t *ScrapeTask) Stop() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.progress.Status == "running" {
-		t.stopFlag.Store(true)
-		t.progress.Status = "stopping"
-	}
-}
+// ========== Scrape item counters ==========
+// 方案 C 后不再有 legacy ScrapeTask / ScrapeProgress:
+// 全库刮削在 handler 层退化为一次 EnqueueMissingScrapeIdentify 的入队动作,
+// 由 ScrapeWorker 消费 scrape_queue 实际执行。下面两个计数函数仍被
+// buildEffectiveScrapeProgress 用来填 missing_count / items_total。
 
 const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '')
     AND type IN ('Movie', 'Series')`
@@ -1848,121 +1808,6 @@ func GetTopLevelItemCount(ctx context.Context, pool *pgxpool.Pool) (int64, error
 	var count int64
 	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type IN ('Movie', 'Series')").Scan(&count)
 	return count, err
-}
-
-func loadItemsPendingScrape(ctx context.Context, pool *pgxpool.Pool) ([]itemRow, error) {
-	rows, err := pool.Query(ctx,
-		"SELECT id, type, name, production_year FROM items WHERE "+missingMetadataScrapeWhere+" ORDER BY created_at DESC")
-	if err != nil {
-		return nil, fmt.Errorf("query items: %w", err)
-	}
-	defer rows.Close()
-
-	var items []itemRow
-	for rows.Next() {
-		var r itemRow
-		if err := rows.Scan(&r.id, &r.itemType, &r.name, &r.year); err != nil {
-			continue
-		}
-		items = append(items, r)
-	}
-	return items, rows.Err()
-}
-
-type itemRow struct {
-	id       uuid.UUID
-	itemType string
-	name     string
-	year     *int32
-}
-
-func (t *ScrapeTask) Start(ctx context.Context, pool *pgxpool.Pool) error {
-	t.mu.Lock()
-	if t.progress.Status == "running" || t.progress.Status == "stopping" {
-		t.mu.Unlock()
-		return fmt.Errorf("already running")
-	}
-	t.mu.Unlock()
-
-	items, err := loadItemsPendingScrape(ctx, pool)
-	if err != nil {
-		return err
-	}
-
-	total := int64(len(items))
-
-	t.mu.Lock()
-	t.progress = ScrapeProgress{
-		Status:     "running",
-		TotalItems: total,
-	}
-	t.mu.Unlock()
-	t.stopFlag.Store(false)
-
-	go func() {
-		bgCtx := context.Background()
-		client := TmdbClientFromConfig(bgCtx, pool)
-		if client == nil {
-			t.mu.Lock()
-			t.progress.Status = "error"
-			errMsg := "TMDB API key not configured"
-			t.progress.LastError = &errMsg
-			t.mu.Unlock()
-			return
-		}
-
-		for _, item := range items {
-			if t.stopFlag.Load() {
-				t.mu.Lock()
-				t.progress.Status = "stopped"
-				t.progress.CurrentItem = nil
-				t.mu.Unlock()
-				slog.Info("[Scrape] Stopped by user")
-				return
-			}
-
-			t.mu.Lock()
-			name := item.name
-			t.progress.CurrentItem = &name
-			t.mu.Unlock()
-
-			_, err := ScrapeItemWithClient(bgCtx, pool, item.id.String(), client)
-			t.mu.Lock()
-			if err != nil {
-				t.progress.FailedItems++
-				errMsg := fmt.Sprintf("%s: %s", item.name, err.Error())
-				t.progress.LastError = &errMsg
-				slog.Debug("[Scrape] Failed", "name", item.name, "error", err)
-			} else {
-				t.progress.SuccessItems++
-			}
-			t.progress.ProcessedItems++
-			if t.progress.TotalItems > 0 {
-				t.progress.Percentage = int(t.progress.ProcessedItems * 100 / t.progress.TotalItems)
-			}
-			t.mu.Unlock()
-
-			time.Sleep(300 * time.Millisecond)
-		}
-
-		t.mu.Lock()
-		slog.Info("[Scrape] Done",
-			"success", t.progress.SuccessItems,
-			"total", t.progress.TotalItems,
-			"failed", t.progress.FailedItems)
-		t.progress.Status = "completed"
-		t.progress.CurrentItem = nil
-		t.mu.Unlock()
-
-		merged, merr := models.MergeMultiVersionItems(bgCtx, pool)
-		if merr != nil {
-			slog.Error("[Scrape] MergeVersions failed", "error", merr)
-		} else if merged > 0 {
-			slog.Info("[Scrape] MergeVersions completed", "merged", merged)
-		}
-	}()
-
-	return nil
 }
 
 // ========== JSON helpers ==========

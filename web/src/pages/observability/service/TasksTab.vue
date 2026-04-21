@@ -30,21 +30,23 @@ import {
 } from '@/api/tasks'
 
 /**
- * 观测中心 · 任务中心 Tab
- *   - 顶部：实时 SSE 驱动的 5 张任务卡片（状态/进度/最近一次运行）
+ * 观测中心 · 作业调度 Tab
+ *   - 顶部：实时 SSE 驱动的作业卡片（状态/进度/最近一次运行）
  *   - 底部：task_runs 历史表（按 kind 过滤）
  *
- * M3 阶段只读：Start/Stop 按钮在 M4 接入。此处只保留状态可视化。
+ * 刮削不在这里——它由 scrape_queue + ScrapeWorker 持续驱动，入口在"队列管道"Tab。
  */
 
 const { tasks, connected, lastError } = useTaskStream()
 const { showToast } = useToast()
 const busy = ref<Partial<Record<TaskKind, boolean>>>({})
 
-// 哪些任务允许在任务中心直接 Start：
+// 哪些作业允许在作业调度面板直接 Start：
 //   - scan 由库扫描路径触发，不支持
+//   - scrape 不再作为一等作业（由 scrape_queue + ScrapeWorker 持续驱动，
+//     全库触发入口在"观测中心 > 队列管道"面板的"刮削全部缺失元数据"按钮）
 //   - update 的 apply 动作需要先做 backup（由 OverviewPage 专门处理），这里只暴露 check
-const startKinds: TaskKind[] = ['scrape', 'probe', 'backfill', 'update']
+const startKinds: TaskKind[] = ['probe', 'backfill', 'update']
 
 function canStart(kind: TaskKind, status: TaskStatus): boolean {
   if (!startKinds.includes(kind)) return false

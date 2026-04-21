@@ -1,4 +1,4 @@
-// Package adapters 把现有任务对象（services.ScrapeTask / ProbeTask / ...）
+// Package adapters 把现有任务对象（ProbeTask / BackfillTask / ...）
 // 包装成 taskcenter.Task 接口。本包只做字段映射 + 方法转发，不引入新业务。
 //
 // M1 阶段：Snapshot 只读映射 + Start/Stop 转发；不写 task_runs 表。

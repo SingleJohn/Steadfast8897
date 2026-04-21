@@ -108,7 +108,6 @@ func main() {
 	fileWatcher := services.NewFileWatcher(ingestWorker)
 	scrapeQueue := services.NewScrapeQueue(pool)
 	scrapeWorker := services.NewScrapeWorker(pool, scrapeQueue, tmdbLimiter)
-	scrapeTask := services.NewScrapeTask()
 
 	var proxyURL *string
 	pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'tmdb_proxy'").Scan(&proxyURL)
@@ -156,7 +155,6 @@ func main() {
 		ScrapeQueue:    scrapeQueue,
 		ScrapeWorker:   scrapeWorker,
 		LogBuffer:      logBuffer,
-		ScrapeTask:     scrapeTask,
 		HTTPClient:     httpClient,
 		Updater:        updater,
 		GapScanTask:    gapScanTask,
@@ -167,10 +165,11 @@ func main() {
 	sysCollector.Start(context.Background())
 	imageCache.StartJanitor(context.Background())
 
-	// 任务中心：注册 5 个适配器。M1 只读聚合，M2 才会写 task_runs。
+	// 任务中心：注册 4 个适配器。刮削由 scrape_queue + ScrapeWorker 持续驱动,
+	// 不再作为 task_center 的一等公民(方案 C)——全库刮削在 /Library/Scrape/All
+	// 里退化为一次瞬时入队动作。
 	taskRegistry := taskcenter.NewRegistry()
 	taskRegistry.Register(adapters.NewScanAdapter(scanProgress))
-	taskRegistry.Register(adapters.NewScrapeAdapter(scrapeTask, pool))
 	taskRegistry.Register(adapters.NewProbeAdapter(probeTask, pool))
 	taskRegistry.Register(adapters.NewBackfillAdapter(backfillTask, pool))
 	taskRegistry.Register(adapters.NewUpdateAdapter(updater, pool))

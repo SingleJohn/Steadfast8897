@@ -25,7 +25,6 @@ type AppState struct {
 	ScrapeQueue    *services.ScrapeQueue
 	ScrapeWorker   *services.ScrapeWorker
 	LogBuffer      *services.LogBuffer
-	ScrapeTask     *services.ScrapeTask
 	HTTPClient     *http.Client
 	Updater        *services.Updater
 	GapScanTask    *services.GapScanTask

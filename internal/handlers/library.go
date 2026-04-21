@@ -1451,10 +1451,27 @@ type platformTaskSummary struct {
 	Rescrape         rescrapeProgressResponse `json:"rescrape"`
 }
 
+// scrapeProgressResponse 替代已删除的 services.ScrapeProgress。
+// 方案 C 后刮削由 scrape_queue + ScrapeWorker 持续消费驱动,
+// 这里的字段是从 scrape_queue.Stats 派生出的兼容 shape,
+// 供 /Library/Scrape/Progress 和 /Library/Tasks/Summary 保持旧契约。
+type scrapeProgressResponse struct {
+	Status         string `json:"status"`
+	TotalItems     int64  `json:"total_items"`
+	ProcessedItems int64  `json:"processed_items"`
+	SuccessItems   int64  `json:"success_items"`
+	FailedItems    int64  `json:"failed_items"`
+	CurrentItem    string `json:"current_item,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+	Percentage     int    `json:"percentage"`
+	MissingCount   int64  `json:"missing_count"`
+	ItemsTotal     int64  `json:"items_total"`
+}
+
 type taskSummaryResponse struct {
-	Scrape   services.ScrapeProgress `json:"scrape"`
-	Probe    services.ProbeProgress  `json:"probe"`
-	Platform platformTaskSummary     `json:"platform"`
+	Scrape   scrapeProgressResponse `json:"scrape"`
+	Probe    services.ProbeProgress `json:"probe"`
+	Platform platformTaskSummary    `json:"platform"`
 }
 
 func buildEffectiveProbeProgress(ctx context.Context, state *AppState) services.ProbeProgress {
@@ -1473,20 +1490,36 @@ func buildEffectiveProbeProgress(ctx context.Context, state *AppState) services.
 	return prog
 }
 
-func buildEffectiveScrapeProgress(ctx context.Context, state *AppState) services.ScrapeProgress {
-	prog := state.ScrapeTask.GetProgress()
-	if prog.Status != "running" && prog.Status != "stopping" {
-		if cnt, err := services.GetMissingScrapeCount(ctx, state.DB); err == nil {
-			prog.MissingCount = cnt
+// buildEffectiveScrapeProgress 从 scrape_queue 派生刮削整体进度。
+// 方案 C 后不再有 legacy ScrapeTask 的单一运行态:
+//   - status: pending+running > 0 → running;否则 idle
+//   - processed = done;total = done + pending + running + failed
+//   - success/failed 分别映射到 done/failed
+//   - missing_count 仍从 items 表(缺 overview 的 Movie/Series)查,
+//     和 scrape_queue 各自独立,用于 UI 提示"还有多少待刮"
+func buildEffectiveScrapeProgress(ctx context.Context, state *AppState) scrapeProgressResponse {
+	resp := scrapeProgressResponse{Status: "idle"}
+	if state.ScrapeQueue != nil {
+		if stats, err := state.ScrapeQueue.Stats(ctx); err == nil {
+			resp.SuccessItems = stats.Done
+			resp.FailedItems = stats.Failed
+			resp.ProcessedItems = stats.Done
+			resp.TotalItems = stats.Done + stats.Pending + stats.Running + stats.Failed
+			if stats.Pending+stats.Running > 0 {
+				resp.Status = "running"
+			}
+			if resp.TotalItems > 0 {
+				resp.Percentage = int(resp.ProcessedItems * 100 / resp.TotalItems)
+			}
 		}
-		if prog.MissingCount > 0 {
-			prog.Status = "idle"
-		}
+	}
+	if cnt, err := services.GetMissingScrapeCount(ctx, state.DB); err == nil {
+		resp.MissingCount = cnt
 	}
 	if total, err := services.GetTopLevelItemCount(ctx, state.DB); err == nil {
-		prog.ItemsTotal = total
+		resp.ItemsTotal = total
 	}
-	return prog
+	return resp
 }
 
 func buildRescrapeProgressResponse(ctx context.Context, state *AppState) rescrapeProgressResponse {
@@ -1683,31 +1716,27 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"results": results})
 }
 
+// scrapeAll 是"刮削缺失元数据"的入口。
+// 方案 C 后不再跑一个 legacy 批处理任务,改为把所有缺 overview 且未识别的
+// Movie/Series 以 refresh 优先级入队 identify,由 ScrapeWorker 持续消费。
+// 返回入队数量,前端 toast 提示后引导用户到"观测中心 > 后台任务"看进度。
 func scrapeAll(c *gin.Context) {
 	state := GetState(c)
-	if t := state.TaskCenter.Get(taskcenter.KindScrape); t != nil {
-		if _, err := t.Start(c.Request.Context(), nil, taskcenter.TriggerManual); err != nil {
-			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
+	n, err := services.EnqueueMissingScrapeIdentify(c.Request.Context(), state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if err := state.ScrapeTask.Start(c.Request.Context(), state.DB); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
+	c.JSON(http.StatusOK, gin.H{"enqueued": n})
 }
 
+// stopScrape 是旧 API 的兼容 no-op。刮削已由 scrape_queue 驱动,
+// 单条失败任务请在后台任务面板重试/取消,整体"停止刮削"已无语义。
 func stopScrape(c *gin.Context) {
-	state := GetState(c)
-	if t := state.TaskCenter.Get(taskcenter.KindScrape); t != nil {
-		_ = t.Stop()
-	} else {
-		state.ScrapeTask.Stop()
-	}
-	c.JSON(http.StatusOK, state.ScrapeTask.GetProgress())
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"message": "刮削已由队列驱动,无需停止;请到后台任务面板重试/取消单条失败任务",
+	})
 }
 
 func getScrapeProgress(c *gin.Context) {

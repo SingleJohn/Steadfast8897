@@ -75,3 +75,33 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 	}
 	slog.Info("[AutoScrape] Enqueued identify tasks", "library", libraryID, "count", enqueued)
 }
+
+// EnqueueMissingScrapeIdentify 给用户手动"刮削全部缺失元数据"入口用:
+// 扫全表 Movie/Series,把 overview 为空且未识别(tmdb_id IS NULL,且非 NFO 源)的
+// 以 refresh 优先级(0,最高)入队 identify,worker 自动消费。
+// 与 autoScrapeNewItems 的过滤条件一致,但不受 library 边界和 auto_scrape_enabled 限制。
+// 返回入队数量(ON CONFLICT 时 tag.RowsAffected 仍计入已存在行的 priority 更新)。
+func EnqueueMissingScrapeIdentify(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT id::text FROM items
+		  WHERE type IN ('Movie', 'Series')
+		    AND (overview IS NULL OR overview = '')
+		    AND tmdb_id IS NULL
+		    AND platform_scan_source IS DISTINCT FROM 'nfo'`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return NewScrapeQueue(pool).EnqueueBatch(ctx, ids, ScrapeTaskIdentify, ScrapePriorityRefresh)
+}

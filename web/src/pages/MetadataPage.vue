@@ -8,7 +8,7 @@ import { AppIcons } from '@/icons/appIcons'
 import { SearchOutline, VideocamOutline, AddOutline, CloseOutline, ArrowForwardOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, ReorderFourOutline } from '@vicons/ionicons5'
 import {
   getSystemConfig, updateSystemConfig,
-  scrapeAllMetadata, stopScrape,
+  scrapeAllMetadata, getScrapeProgress,
   startProbe, stopProbe,
   startBackfill, stopBackfill,
   getBackfillConfig, updateBackfillConfig,
@@ -46,22 +46,21 @@ const scraping = ref(false)
 // 避免大面积改模板；等后续页面重构再收敛字段命名。
 const { snapshots } = useTaskStream()
 
-const scrapeProgress = computed(() => {
-  const s = snapshots.scrape
-  if (!s) return null
-  return {
-    status: s.status === 'succeeded' ? 'completed' : s.status,
-    total_items: s.total,
-    processed_items: s.processed,
-    success_items: s.success ?? 0,
-    failed_items: s.failed ?? 0,
-    current_item: s.current ?? '',
-    last_error: s.error ?? '',
-    percentage: s.percent,
-    missing_count: s.counters?.missing ?? 0,
-    items_total: s.counters?.itemsTotal ?? 0,
+// 刮削已由 scrape_queue + ScrapeWorker 持续驱动,本页面不再展示进度。
+// 这里只保留一个轻量 ref 用于显示"待刮削 N / 总 M"提示,点入队按钮后手动刷新。
+const scrapeSummary = ref<{ missing_count: number; items_total: number } | null>(null)
+
+async function refreshScrapeSummary() {
+  try {
+    const p: any = await getScrapeProgress()
+    scrapeSummary.value = {
+      missing_count: Number(p?.missing_count ?? 0),
+      items_total: Number(p?.items_total ?? 0),
+    }
+  } catch {
+    scrapeSummary.value = null
   }
-})
+}
 
 const providerOptions = [
   { label: 'TMDB (基准源)', value: 'tmdb' },
@@ -236,8 +235,10 @@ async function handleResetEpisodeImage() {
   }
 }
 
-// 保留签名以减少调用点改动：进度由 SSE 自动更新，这里是 no-op。
-async function refreshTaskSummary() {}
+// 进度由 SSE 自动更新,这里只负责刮削计数的手动刷新(轻量调用)。
+async function refreshTaskSummary() {
+  await refreshScrapeSummary()
+}
 
 async function handleSaveConfig() {
   savingConfig.value = true
@@ -284,13 +285,19 @@ async function handleSaveScrapeSources() {
 async function handleScrapeAll() {
   scraping.value = true
   try {
-    await scrapeAllMetadata()
-    await refreshTaskSummary()
-    showToast('正在刮削缺失元数据，这可能需要一些时间...', 'success')
+    const r: any = await scrapeAllMetadata()
+    const n = Number(r?.enqueued ?? 0)
+    if (n === 0) {
+      showToast('没有需要入队的 item(都已有元数据或已入队)', 'info')
+    } else {
+      showToast(`已入队 ${n} 条,请到"观测中心 > 队列管道"查看进度`, 'success')
+    }
+    await refreshScrapeSummary()
   } catch {
-    showToast('启动元数据刮削失败', 'error')
+    showToast('入队失败', 'error')
+  } finally {
+    scraping.value = false
   }
-  setTimeout(() => { scraping.value = false }, 3000)
 }
 
 async function saveProbeSettingsOnly() {
@@ -329,6 +336,7 @@ async function stopProbeJob() {
 }
 
 onMounted(() => {
+  refreshScrapeSummary()
   getSystemConfig().then((cfg: any) => {
     const keys = (cfg.tmdb_api_key || '').split(',').map((k: string) => k.trim()).filter((k: string) => k)
     tmdbApiKeys.value = keys.length > 0 ? keys : ['']
@@ -392,36 +400,14 @@ onMounted(() => {
           </div>
         </template>
 
-        <div v-if="scrapeProgress" class="stats-grid">
+        <div v-if="scrapeSummary" class="stats-grid">
           <div class="stat-box">
-            <div class="stat-value">{{ (scrapeProgress.status === 'running' || scrapeProgress.status === 'stopping') ? Math.max((scrapeProgress.total_items || 0) - (scrapeProgress.processed_items || 0), 0) : (scrapeProgress.missing_count || 0) }}</div>
-            <div class="stat-name">待刮削<template v-if="scrapeProgress.items_total"> / {{ scrapeProgress.items_total }} 总项</template></div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-value ok">{{ scrapeProgress.success_items || 0 }}</div>
-            <div class="stat-name">成功</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-value err">{{ scrapeProgress.failed_items || 0 }}</div>
-            <div class="stat-name">失败</div>
+            <div class="stat-value">{{ scrapeSummary.missing_count }}</div>
+            <div class="stat-name">待刮削<template v-if="scrapeSummary.items_total"> / {{ scrapeSummary.items_total }} 总项</template></div>
           </div>
         </div>
-
-        <div v-if="scrapeProgress && (scrapeProgress.status === 'running' || scrapeProgress.status === 'stopping')" class="progress-panel">
-          <div class="progress-row">
-            <n-progress type="line" :percentage="scrapeProgress.percentage" :show-indicator="false" :color="scrapeProgress.status === 'stopping' ? '#ff9800' : undefined" style="flex: 1" />
-            <span class="pct">{{ scrapeProgress.percentage }}%</span>
-          </div>
-          <div class="panel-meta">
-            {{ scrapeProgress.processed_items }}/{{ scrapeProgress.total_items }}
-            <span>成功 {{ scrapeProgress.success_items }}</span>
-            <span>失败 {{ scrapeProgress.failed_items }}</span>
-            <span v-if="scrapeProgress.current_item">当前: {{ scrapeProgress.current_item }}</span>
-          </div>
-          <div v-if="scrapeProgress.last_error" class="panel-error">{{ scrapeProgress.last_error }}</div>
-        </div>
-        <div v-else-if="scrapeProgress?.status === 'completed'" class="success-note">
-          刮削完成: {{ scrapeProgress.success_items }} 成功, {{ scrapeProgress.failed_items }} 失败
+        <div class="hint-text" style="margin-bottom: 12px">
+          点击下方按钮将缺失元数据的 Movie/Series 入队,实时进度请到 "观测中心 &gt; 队列管道" 查看。
         </div>
 
         <n-form label-placement="top" size="small" class="config-form">
@@ -475,8 +461,7 @@ onMounted(() => {
 
         <div class="card-actions">
           <n-button type="primary" size="small" :loading="savingConfig" @click="handleSaveConfig">保存设置</n-button>
-          <n-button v-if="scrapeProgress?.status !== 'running' && scrapeProgress?.status !== 'stopping'" secondary size="small" :loading="scraping" :disabled="scraping || (scrapeProgress?.missing_count === 0 && scrapeProgress?.status === 'idle')" @click="handleScrapeAll">刮削缺失元数据</n-button>
-          <n-button v-else type="warning" size="small" :disabled="scrapeProgress?.status === 'stopping'" @click="async () => { await stopScrape(); await refreshTaskSummary() }">{{ scrapeProgress?.status === 'stopping' ? '停止中...' : '停止刮削' }}</n-button>
+          <n-button secondary size="small" :loading="scraping" :disabled="scraping || scrapeSummary?.missing_count === 0" @click="handleScrapeAll">刮削缺失元数据</n-button>
         </div>
       </n-card>
 
