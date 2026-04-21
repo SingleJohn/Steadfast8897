@@ -85,14 +85,37 @@ function isSelected(itemId: string, candidateId: string) {
 async function applyOne(itemId: string, candidateId: string) {
   applyingOne.value = itemId
   try {
-    await applyItemIdentifyCandidate(itemId, candidateId)
-    showToast('已采纳,正在刮削', 'success')
+    const resp = await applyItemIdentifyCandidate(itemId, candidateId)
+    const item = items.value.find((it) => it.id === itemId)
+    showToast(applyToastMessage(resp.provider, resp.tmdb_id, item?.type), 'success')
     selected.value.delete(itemId)
     items.value = items.value.filter((it) => it.id !== itemId)
   } catch (err: any) {
     showToast(err?.message || '采纳失败', 'error')
   } finally {
     applyingOne.value = ''
+  }
+}
+
+// 区分 TMDB 路径 vs 非 TMDB 路径,Series 没拿到 tmdb_id 的情况下提醒用户分集元数据缺失。
+function applyToastMessage(provider?: string, tmdbId?: number, itemType?: string): string {
+  const isTmdb = !provider || provider === 'tmdb' || (typeof tmdbId === 'number' && tmdbId > 0)
+  if (isTmdb) return '已采纳,正在刮削'
+  const label = providerDisplayName(provider)
+  if (itemType === 'Series') {
+    return `已按 ${label} 采纳(无 TMDB ID,Series 暂无分集元数据)`
+  }
+  return `已按 ${label} 采纳(无 TMDB ID,基本字段已写入)`
+}
+
+function providerDisplayName(name?: string): string {
+  switch (name) {
+    case 'tmdb': return 'TMDB'
+    case 'tvdb': return 'TVDB'
+    case 'bangumi': return 'Bangumi'
+    case 'douban': return '豆瓣'
+    case 'fanart': return 'Fanart.tv'
+    default: return name || '未知源'
   }
 }
 
@@ -104,11 +127,11 @@ async function applyBatch() {
     const resp = await batchApplyIdentifyCandidates(payload)
     const okCount = resp.results.filter((r) => r.ok).length
     const failCount = resp.results.length - okCount
-    if (failCount === 0) {
-      showToast(`已采纳 ${okCount} 条`, 'success')
-    } else {
-      showToast(`采纳 ${okCount} 条成功,${failCount} 条失败`, failCount > okCount ? 'error' : 'success')
-    }
+    const nonTmdbCount = resp.results.filter((r) => r.ok && r.provider && r.provider !== 'tmdb' && !(r.tmdb_id && r.tmdb_id > 0)).length
+    let msg = `已采纳 ${okCount} 条`
+    if (nonTmdbCount > 0) msg += `(其中 ${nonTmdbCount} 条无 TMDB ID,Series 无分集)`
+    if (failCount > 0) msg = `采纳 ${okCount} 条成功,${failCount} 条失败`
+    showToast(msg, failCount > okCount ? 'error' : 'success')
     // 成功的从列表移除
     const failedIds = new Set(resp.results.filter((r) => !r.ok).map((r) => r.item_id))
     items.value = items.value.filter((it) => failedIds.has(it.id))

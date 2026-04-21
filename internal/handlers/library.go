@@ -1673,12 +1673,17 @@ func applyIdentifyCandidate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if _, err := services.ScrapeItemByProviderID(ctx, state.DB, itemID, provider, externalID); err != nil {
+	result, err := services.ScrapeItemByProviderID(ctx, state.DB, itemID, provider, externalID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":       true,
+		"provider": provider,
+		"tmdb_id":  result["tmdb_id"],
+	})
 }
 
 func listUnmatchedItems(c *gin.Context) {
@@ -1715,9 +1720,11 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 		return
 	}
 	type applyResult struct {
-		ItemID  string `json:"item_id"`
-		OK      bool   `json:"ok"`
-		Message string `json:"message,omitempty"`
+		ItemID   string `json:"item_id"`
+		OK       bool   `json:"ok"`
+		Message  string `json:"message,omitempty"`
+		Provider string `json:"provider,omitempty"`
+		TmdbID   int64  `json:"tmdb_id,omitempty"`
 	}
 	results := make([]applyResult, 0, len(body.Items))
 	// 批量采纳每条 15s 超时,避免单条拖慢整个批次;上游 body 解析走无超时 context
@@ -1731,7 +1738,8 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 			results = append(results, res)
 			continue
 		}
-		if _, err := services.ScrapeItemByProviderID(ctx, state.DB, pair.ItemID, provider, externalID); err != nil {
+		out, err := services.ScrapeItemByProviderID(ctx, state.DB, pair.ItemID, provider, externalID)
+		if err != nil {
 			cancel()
 			res.Message = err.Error()
 			results = append(results, res)
@@ -1740,6 +1748,10 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 		_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", pair.ItemID)
 		cancel()
 		res.OK = true
+		res.Provider = provider
+		if v, ok := out["tmdb_id"].(int64); ok {
+			res.TmdbID = v
+		}
 		results = append(results, res)
 	}
 	c.JSON(http.StatusOK, gin.H{"results": results})

@@ -428,8 +428,18 @@ export async function listUnmatchedItems(params?: { type?: string; limit?: numbe
   return requestJson<{ items: any[]; count: number }>(`/Library/Scrape/Unmatched${suffix}`);
 }
 
+export type ApplyCandidateResult = {
+  item_id: string;
+  ok: boolean;
+  message?: string;
+  // 采纳实际走的 provider("tmdb" / "douban" / "bangumi" / ...)
+  provider?: string;
+  // 采纳后落到的 tmdb_id;非 TMDB primary 时若没能跨源映射回 tmdb,该字段为 0/缺失
+  tmdb_id?: number;
+};
+
 export async function batchApplyIdentifyCandidates(items: { item_id: string; candidate_id: string }[]) {
-  return requestJson<{ results: { item_id: string; ok: boolean; message?: string }[] }>(
+  return requestJson<{ results: ApplyCandidateResult[] }>(
     '/Library/Scrape/Unmatched/Apply',
     { method: 'POST', body: JSON.stringify({ items }) },
   );
@@ -440,9 +450,10 @@ export async function getItemIdentifyCandidates(itemId: string) {
 }
 
 export async function applyItemIdentifyCandidate(itemId: string, candidateId: string) {
-  return requestJson<{ ok: boolean }>(`/Items/${itemId}/IdentifyCandidates/${candidateId}/Apply`, {
-    method: 'POST',
-  });
+  return requestJson<{ ok: boolean; provider?: string; tmdb_id?: number }>(
+    `/Items/${itemId}/IdentifyCandidates/${candidateId}/Apply`,
+    { method: 'POST' },
+  );
 }
 
 // Genres
