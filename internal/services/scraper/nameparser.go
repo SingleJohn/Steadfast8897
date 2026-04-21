@@ -367,67 +367,57 @@ func inferMediaHint(raw string, p *ParsedName) string {
 
 // splitBilingual 按字符类型（CJK / ASCII 字母数字 / 其他）分段，
 // CJK 段拼为 Title，ASCII 段拼为 OriginalTitle。
+// splitBilingual 把 "中文标题 English Title" 切分为主/副两部分。
+//
+// 关键规则:**只在"空格 + 英文字母开头"的边界才切** —— 序号紧贴中文(如
+// "摇滚万万岁2" / "午夜凶铃2")不切、"中文 中文"连写不切、"中文数字 中文"也不切。
+// 避免之前按字符类型分段把 "摇滚万万岁2" 切成 "摇滚万万岁" + "2" 丢掉续集编号。
+//
+// 行为示例:
+//   "摇滚万万岁2"               → ("摇滚万万岁2", "")
+//   "午夜凶铃2 美版"             → ("午夜凶铃2 美版", "")
+//   "迷失 Lost"                  → ("迷失", "Lost")
+//   "钢铁侠3 Iron Man 3"         → ("钢铁侠3", "Iron Man 3")
+//   "阿凡达2:水之道"             → ("阿凡达2:水之道", "")
+//   "Oceansize: Feed To Feed"    → ("Oceansize: Feed To Feed", "")  ← 纯英文
 func splitBilingual(s string) (title, original string) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", ""
 	}
+	// 纯 ASCII:整个当 title,不切分
 	if !reCJK.MatchString(s) {
 		return s, ""
 	}
 
-	type seg struct {
-		text string
-		kind int // 1=cjk, 2=ascii, 0=other
-	}
-	var segs []seg
-	var cur strings.Builder
-	curKind := 0
-	flush := func() {
-		if cur.Len() == 0 {
-			return
-		}
-		segs = append(segs, seg{strings.TrimSpace(cur.String()), curKind})
-		cur.Reset()
-	}
-	for _, r := range s {
-		k := 0
-		switch {
-		case reCJK.MatchString(string(r)):
-			k = 1
-		case isAsciiAlnum(r):
-			k = 2
-		}
-		if k != curKind && cur.Len() > 0 {
-			flush()
-		}
-		if k != 0 || (curKind != 0 && r == ' ') {
-			cur.WriteRune(r)
-			if k != 0 {
-				curKind = k
-			}
-		}
-	}
-	flush()
-
-	var cjk, asc []string
-	for _, s := range segs {
-		t := strings.TrimSpace(s.text)
-		if t == "" {
+	runes := []rune(s)
+	splitAt := -1
+	for i := 0; i < len(runes)-1; i++ {
+		if runes[i] != ' ' {
 			continue
 		}
-		switch s.kind {
-		case 1:
-			cjk = append(cjk, t)
-		case 2:
-			asc = append(asc, t)
+		j := i + 1
+		for j < len(runes) && runes[j] == ' ' {
+			j++
+		}
+		if j >= len(runes) {
+			break
+		}
+		r := runes[j]
+		// 只在"空格 + 英文字母"边界切。数字紧贴中文属于续集编号,不切。
+		// 且后续至少 3 字符才当独立 original,避免单字母/缩写误判。
+		isAsciiLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if isAsciiLetter && len(runes)-j >= 3 {
+			splitAt = j
+			break
 		}
 	}
-	title = strings.Join(cjk, "")
-	original = strings.Join(asc, " ")
-	if len([]rune(original)) <= 2 {
-		original = ""
+
+	if splitAt < 0 {
+		return s, ""
 	}
+	title = strings.TrimSpace(string(runes[:splitAt]))
+	original = strings.TrimSpace(string(runes[splitAt:]))
 	return
 }
 

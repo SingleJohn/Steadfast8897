@@ -1596,6 +1596,15 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	runtimeCfg := LoadEffectiveScrapeConfig(ctx, pool, meta.LibraryID)
 	agg := GetScrapeAggregator(sharedScrapeCache, runtimeCfg, client, client.httpClient)
 
+	slog.Info("[Identify] start",
+		"item_id", itemID, "type", meta.ItemType,
+		"raw_name", meta.Name,
+		"parsed_title", parsed.Title, "parsed_original", parsed.OriginalTitle,
+		"parsed_year", formatYear(parsed.Year),
+		"parsed_ids", parsed.IDs,
+		"providers", agg.Providers(),
+		"strategy", runtimeCfg.Strategy, "threshold", runtimeCfg.ConfidenceThreshold)
+
 	// 已经带 TMDB ID 的 item 跳过 Identify 直接 Fill。
 	// 注意:不能只喂 tmdb details 给 MergeDetails,那样会绕过辅源。
 	// agg.Fill 内部会把 tmdb 作为 primary 拉详情,再并发拉 bangumi/douban/tvdb/fanart
@@ -1622,9 +1631,13 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		reason := err.Error()
 		source := models.PlatformScanSourceSearch
 		if errors.Is(err, scraper.ErrNoMatch) {
+			// 捞一次候选列表,用于诊断日志 + (可选)人工确认队列。
+			// 无论 AutoApply 如何都需要,有 cache 不会多发 TMDB 请求。
+			candidates, _ := agg.Candidates(ctx, parsed, mediaType)
+			logIdentifyFailure(itemID, parsed, candidates, runtimeCfg.ConfidenceThreshold)
+
 			if !runtimeCfg.AutoApply {
-				candidates, candErr := agg.Candidates(ctx, parsed, mediaType)
-				if candErr == nil && len(candidates) > 0 {
+				if len(candidates) > 0 {
 					_ = replaceIdentifyCandidates(ctx, pool, itemID, candidates)
 					tmdbSetIdentifyAttempted(ctx, pool, itemID)
 					if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, "identify queued for manual confirmation"); markErr != nil {
@@ -1640,6 +1653,8 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 			}
 			return nil, err
 		}
+		slog.Warn("[Identify] error (not ErrNoMatch)",
+			"item_id", itemID, "parsed_title", parsed.Title, "error", reason)
 		if markErr := models.MarkPlatformScanError(ctx, pool, itemID, source, reason); markErr != nil {
 			slog.Warn("[TMDB] mark platform scan error failed", "item_id", itemID, "error", markErr)
 		}
@@ -1664,9 +1679,70 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		return nil, fmt.Errorf("fill details: %w", fillErr)
 	}
 	tmdbSetIdentifyAttempted(ctx, pool, itemID)
-	slog.Debug("[Matcher] matched",
-		"item_id", itemID, "provider", ident.Provider, "provider_id", ident.ProviderID, "source", ident.Source, "score", ident.Score)
+	slog.Info("[Identify] matched",
+		"item_id", itemID,
+		"parsed_title", parsed.Title, "parsed_year", formatYear(parsed.Year),
+		"provider", ident.Provider, "provider_id", ident.ProviderID,
+		"source", ident.Source, "score", fmt.Sprintf("%.3f", ident.Score),
+		"tmdb_id", tmdbID)
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, true, models.PlatformScanSourceSearch)
+}
+
+// logIdentifyFailure 打印识别失败时的完整诊断:parsed 解析结果 + top-5 候选 + 每个候选打分 / 年份 / 来源 + 阈值。
+// 日志 level=Info 方便过滤,不会被 Debug 隐藏。
+func logIdentifyFailure(itemID string, parsed scraper.ParsedName, candidates []scraper.ScoredCandidate, threshold float64) {
+	const topN = 5
+	shown := candidates
+	if len(shown) > topN {
+		shown = shown[:topN]
+	}
+	type briefCand struct {
+		Provider string  `json:"provider"`
+		ID       string  `json:"id"`
+		Title    string  `json:"title"`
+		Year     string  `json:"year"`
+		Score    float64 `json:"score"`
+		Source   string  `json:"source"`
+	}
+	out := make([]briefCand, 0, len(shown))
+	for _, c := range shown {
+		yr := ""
+		if c.Year != nil {
+			yr = strconv.FormatInt(int64(*c.Year), 10)
+		}
+		out = append(out, briefCand{
+			Provider: c.Provider, ID: c.ProviderID,
+			Title: c.Title, Year: yr,
+			Score: roundFloat(c.Score, 3), Source: c.Source,
+		})
+	}
+	reason := "no candidate from any provider"
+	if len(candidates) > 0 {
+		reason = fmt.Sprintf("best score %.3f < threshold %.2f", candidates[0].Score, threshold)
+	}
+	slog.Info("[Identify] failed",
+		"item_id", itemID,
+		"parsed_title", parsed.Title, "parsed_original", parsed.OriginalTitle,
+		"parsed_year", formatYear(parsed.Year), "parsed_ids", parsed.IDs,
+		"threshold", threshold,
+		"candidates_total", len(candidates),
+		"top_candidates", out,
+		"reason", reason)
+}
+
+func formatYear(y *int32) string {
+	if y == nil {
+		return ""
+	}
+	return strconv.FormatInt(int64(*y), 10)
+}
+
+func roundFloat(v float64, digits int) float64 {
+	p := 1.0
+	for i := 0; i < digits; i++ {
+		p *= 10
+	}
+	return float64(int64(v*p+0.5)) / p
 }
 
 // resolveTMDBIDFromIdentity 从 Identity 提取 tmdb_id;兼容 Provider=tmdb 的直达
