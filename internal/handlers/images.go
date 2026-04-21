@@ -182,7 +182,7 @@ func serveImage(c *gin.Context, state *AppState) {
 		*uid).Scan(&primaryPath, &backdropPath, &itemType)
 	if err != nil {
 		var libImgPath *string
-		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid", *uid).Scan(&libImgPath)
+		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&libImgPath)
 		if lerr != nil || libImgPath == nil || *libImgPath == "" {
 			// Rust compatibility: when itemId is a cast_members.id, serve the actor headshot.
 			// Many Emby clients request GET /Items/{personId}/Images/Primary where personId
@@ -349,7 +349,7 @@ func serveImage(c *gin.Context, state *AppState) {
 	}
 
 	if sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath)) {
-		state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid", *uid).Scan(&sourcePath)
+		state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&sourcePath)
 		sourcePath = sanitizeImagePath(sourcePath)
 		if sourcePath != "" {
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
   NButton, NInput, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
@@ -200,6 +200,36 @@ async function onLibraryDeleted() {
   editLibraryId.value = null
   libraries.value = await getLibraries()
 }
+
+// cleanup snapshot 的子任务每个库一个 child,Message 字段带 "library=<id>"。
+// 把 running → succeeded/failed 的转变转成 toast 通知管理员。
+const cleanupStatusMap = new Map<string, string>()
+watch(
+  () => snapshots.cleanup?.children ?? [],
+  (children) => {
+    const seen = new Set<string>()
+    for (const c of children) {
+      const libId = (c.message ?? '').replace(/^library=/, '')
+      if (!libId) continue
+      seen.add(libId)
+      const prev = cleanupStatusMap.get(libId)
+      cleanupStatusMap.set(libId, c.status)
+      if (prev && prev !== c.status) {
+        const name = c.current || c.phase || libId
+        if (c.status === 'succeeded') {
+          showToast(`「${name}」已清理完成`, 'success')
+        } else if (c.status === 'failed') {
+          showToast(`「${name}」清理失败:${c.error || '未知错误'}`, 'error')
+        }
+      }
+    }
+    // 丢掉已不在 children 里的条目,避免内存泄漏。
+    for (const id of Array.from(cleanupStatusMap.keys())) {
+      if (!seen.has(id)) cleanupStatusMap.delete(id)
+    }
+  },
+  { deep: true },
+)
 
 async function moveLibrary(index: number, direction: 'up' | 'down') {
   const swapIdx = direction === 'up' ? index - 1 : index + 1

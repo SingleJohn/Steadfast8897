@@ -173,7 +173,10 @@ func main() {
 	taskRegistry.Register(adapters.NewProbeAdapter(probeTask, pool))
 	taskRegistry.Register(adapters.NewBackfillAdapter(backfillTask, pool))
 	taskRegistry.Register(adapters.NewUpdateAdapter(updater, pool))
+	cleanupTask := adapters.NewCleanupAdapter(pool)
+	taskRegistry.Register(cleanupTask)
 	state.TaskCenter = taskRegistry
+	state.CleanupTask = cleanupTask
 	// SSE 广播：每秒扫描快照，仅在关键字段变化时推送。
 	taskRegistry.StartBroadcaster(context.Background(), time.Second)
 
@@ -196,6 +199,8 @@ func main() {
 	if err := taskcenter.ReconcileOnStartup(ctx, pool); err != nil {
 		slog.Warn("task_runs reconcile on startup failed", "error", err)
 	}
+	// 接管上次进程中途退出时未完成的库清理:有 deleted_at 标记但 items 未清空的库。
+	go cleanupTask.ResumeAfterRestart(context.Background())
 	go ingestWorker.Run(ctx)
 	go scrapeWorker.Run(ctx)
 	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)

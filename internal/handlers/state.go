@@ -10,6 +10,7 @@ import (
 	"fyms/internal/services"
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
+	"fyms/internal/services/taskcenter/adapters"
 )
 
 type AppState struct {
@@ -31,6 +32,7 @@ type AppState struct {
 	BackfillTask   *services.BackfillTask
 	TaskCenter     *taskcenter.Registry
 	TaskChain      *taskcenter.ChainEngine
+	CleanupTask    *adapters.CleanupAdapter
 	SysMetrics     *sysmetrics.Collector
 	ImageCache     *ImageCache
 }

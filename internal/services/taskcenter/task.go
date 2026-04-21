@@ -20,6 +20,7 @@ const (
 	KindProbe    Kind = "probe"
 	KindBackfill Kind = "backfill"
 	KindUpdate   Kind = "update"
+	KindCleanup  Kind = "cleanup" // 媒体库软删除后的后台清理
 )
 
 // Status 是统一的任务状态枚举。各适配器内部旧状态（如 "scanning" / "idle"）

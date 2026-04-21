@@ -22,6 +22,7 @@ const kindLabels: Record<TaskKind, string> = {
   probe: '视频探测',
   backfill: '存量回填',
   update: '自更新',
+  cleanup: '媒体库清理',
 }
 
 const statusLabels: Record<TaskStatus, string> = {

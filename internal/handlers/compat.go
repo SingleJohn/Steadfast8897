@@ -1547,7 +1547,7 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 	sibRows, err := state.DB.Query(ctx,
 		`SELECT s.id::text, l.name AS lib_name
 		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid`, itemID)
+		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, itemID)
 	if err != nil {
 		return nil
 	}

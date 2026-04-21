@@ -706,7 +706,7 @@ func GetRecursiveItemCount(ctx context.Context, pool *pgxpool.Pool, parentID str
 func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, limit int64) ([]dto.ItemRow, error) {
 	var libType string
 	err := pool.QueryRow(ctx,
-		"SELECT collection_type FROM libraries WHERE id = $1::uuid", libraryID).Scan(&libType)
+		"SELECT collection_type FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", libraryID).Scan(&libType)
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}

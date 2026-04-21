@@ -58,7 +58,7 @@ func (r *Registry) Kinds() []Kind {
 // SnapshotAll 返回所有任务的当前快照。顺序按 Kind 常量定义的稳定顺序，
 // 让前端 /Tasks 列表展示位置不跳动。
 func (r *Registry) SnapshotAll() []Snapshot {
-	order := []Kind{KindScan, KindScrape, KindProbe, KindBackfill, KindUpdate}
+	order := []Kind{KindScan, KindScrape, KindProbe, KindBackfill, KindUpdate, KindCleanup}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

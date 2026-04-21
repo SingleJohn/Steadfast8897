@@ -39,7 +39,7 @@ func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *Cac
 		return
 	}
 
-	rows, err := pool.Query(ctx, "SELECT id, name, paths FROM libraries ORDER BY name")
+	rows, err := pool.Query(ctx, "SELECT id, name, paths FROM libraries WHERE deleted_at IS NULL ORDER BY name")
 	if err != nil {
 		slog.Error("[FileWatcher] Failed to get libraries", "error", err)
 		return

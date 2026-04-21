@@ -643,7 +643,7 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 	sibRows, err := state.DB.Query(ctx,
 		`SELECT s.id::text, l.name AS lib_name
 		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid`, primaryID)
+		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, primaryID)
 	if err != nil {
 		return nil
 	}

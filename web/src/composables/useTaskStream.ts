@@ -131,7 +131,7 @@ export function useTaskStream() {
   const tasks = computed<TaskSnapshot[]>(() => {
     // 'scrape' 刻意省略:方案 C 后刮削由 scrape_queue + ScrapeWorker 持续驱动,
     // 不再作为一等任务卡片。历史表仍会展示 kind='scrape' 的旧运行记录。
-    const order: TaskKind[] = ['scan', 'probe', 'backfill', 'update']
+    const order: TaskKind[] = ['scan', 'probe', 'backfill', 'update', 'cleanup']
     const out: TaskSnapshot[] = []
     for (const k of order) {
       const s = snapshots[k]

@@ -34,7 +34,7 @@ func newLibraryIndex(pool *pgxpool.Pool) *libraryIndex {
 
 // Refresh 从 DB 重新加载 libraries → paths 映射。
 func (li *libraryIndex) Refresh(ctx context.Context) error {
-	rows, err := li.pool.Query(ctx, "SELECT id, collection_type, paths FROM libraries")
+	rows, err := li.pool.Query(ctx, "SELECT id, collection_type, paths FROM libraries WHERE deleted_at IS NULL")
 	if err != nil {
 		return err
 	}

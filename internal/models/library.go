@@ -20,6 +20,10 @@ type Library struct {
 	SortOrder        int       `json:"SortOrder"`
 }
 
+// libraryColumns 列出所有 Library 结构体字段对应的列。
+// 不再用 SELECT *，避免后续新增列(如 deleted_at)破坏 Scan 行为。
+const libraryColumns = `id, name, collection_type, paths, created_at, primary_image_path, primary_image_tag, sort_order`
+
 func scanLibrary(row pgx.Row) (*Library, error) {
 	var l Library
 	err := row.Scan(&l.ID, &l.Name, &l.CollectionType, &l.Paths, &l.CreatedAt,
@@ -31,7 +35,8 @@ func scanLibrary(row pgx.Row) (*Library, error) {
 }
 
 func GetAllLibraries(ctx context.Context, pool *pgxpool.Pool) ([]Library, error) {
-	rows, err := pool.Query(ctx, "SELECT * FROM libraries ORDER BY sort_order ASC, name ASC")
+	rows, err := pool.Query(ctx,
+		"SELECT "+libraryColumns+" FROM libraries WHERE deleted_at IS NULL ORDER BY sort_order ASC, name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +55,8 @@ func GetAllLibraries(ctx context.Context, pool *pgxpool.Pool) ([]Library, error)
 }
 
 func GetLibraryByID(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (*Library, error) {
-	row := pool.QueryRow(ctx, "SELECT * FROM libraries WHERE id = $1", id)
+	row := pool.QueryRow(ctx,
+		"SELECT "+libraryColumns+" FROM libraries WHERE id = $1 AND deleted_at IS NULL", id)
 	l, err := scanLibrary(row)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -60,7 +66,7 @@ func GetLibraryByID(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (*Lib
 
 func CreateLibrary(ctx context.Context, pool *pgxpool.Pool, name, collectionType string, paths []string) (*Library, error) {
 	row := pool.QueryRow(ctx,
-		"INSERT INTO libraries (name, collection_type, paths) VALUES ($1, $2, $3) RETURNING *",
+		"INSERT INTO libraries (name, collection_type, paths) VALUES ($1, $2, $3) RETURNING "+libraryColumns,
 		name, collectionType, paths)
 	return scanLibrary(row)
 }
@@ -98,13 +104,78 @@ func BatchUpdateLibrarySortOrder(ctx context.Context, pool *pgxpool.Pool, orders
 	return nil
 }
 
-func DeleteLibrary(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {
-	_, err := pool.Exec(ctx, "DELETE FROM items WHERE library_id = $1", id)
+// MarkLibraryDeleted 软删除：设置 deleted_at，后续读查询都会过滤掉这一行。
+// 真正的 items/libraries 物理删除由后台 cleanup goroutine 分批完成。
+// 对已标记过的库重复调用是 no-op（WHERE 过滤保证幂等）。
+func MarkLibraryDeleted(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (bool, error) {
+	ct, err := pool.Exec(ctx,
+		"UPDATE libraries SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL", id)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = pool.Exec(ctx, "DELETE FROM libraries WHERE id = $1", id)
+	return ct.RowsAffected() > 0, nil
+}
+
+// CountLibraryItems 统计某个库下剩余未删除的 items，清理 worker 用它计算 total。
+func CountLibraryItems(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (int64, error) {
+	var n int64
+	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE library_id = $1", id).Scan(&n)
+	return n, err
+}
+
+// DeleteLibraryItemsBatch 分批删除指定库的 items。
+// 每次最多删 limit 行，返回本批实际删除数。0 表示已清空。
+// 采用 CTE + LIMIT 避免一条 DELETE 锁住整表 + 触发整条 CASCADE 链同步处理几十万行。
+func DeleteLibraryItemsBatch(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	ct, err := pool.Exec(ctx, `
+		WITH victims AS (
+			SELECT id FROM items WHERE library_id = $1 LIMIT $2
+		)
+		DELETE FROM items WHERE id IN (SELECT id FROM victims)
+	`, id, limit)
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}
+
+// FinalizeLibraryDeletion 在 items 全部清理完后，把 libraries 行本身删掉。
+func FinalizeLibraryDeletion(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {
+	_, err := pool.Exec(ctx, "DELETE FROM libraries WHERE id = $1 AND deleted_at IS NOT NULL", id)
 	return err
+}
+
+// ListDeletedLibraryIDs 返回所有已标记删除但 items 行或 libraries 行仍在的库 id。
+// 服务启动时用它接管上次进程中途退出遗留的待清理任务。
+func ListDeletedLibraryIDs(ctx context.Context, pool *pgxpool.Pool) ([]uuid.UUID, error) {
+	rows, err := pool.Query(ctx, "SELECT id FROM libraries WHERE deleted_at IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetLibraryNameIncludingDeleted 获取库名（即使已软删除），给 cleanup snapshot 展示用。
+func GetLibraryNameIncludingDeleted(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (string, error) {
+	var name string
+	err := pool.QueryRow(ctx, "SELECT name FROM libraries WHERE id = $1", id).Scan(&name)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	return name, err
 }
 
 func AddLibraryPath(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, path string) error {

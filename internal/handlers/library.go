@@ -725,7 +725,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 	sibRows, err := pool.Query(ctx,
 		`SELECT s.id::text, l.name AS lib_name
 		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid`, itemID)
+		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, itemID)
 	if err != nil {
 		return nil
 	}
@@ -1071,6 +1071,9 @@ func addLibrary(c *gin.Context) {
 	_ = lib
 }
 
+// deleteLibrary 把库标记为 deleted_at = NOW() 后立即返回 204,真正的 items
+// 物理删除由 CleanupAdapter 后台分批跑(避免大库 DELETE 阻塞请求几分钟)。
+// 完成后通过 task center SSE 推 succeeded snapshot,前端可据此 toast 通知。
 func deleteLibrary(c *gin.Context) {
 	state := GetState(c)
 	idStr := strings.TrimSpace(c.Query("id"))
@@ -1083,11 +1086,28 @@ func deleteLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid id"})
 		return
 	}
-	if err := models.DeleteLibrary(c.Request.Context(), state.DB, id); err != nil {
+
+	// 取库名给 cleanup snapshot 展示用;库不存在则当幂等成功处理。
+	lib, err := models.GetLibraryByID(c.Request.Context(), state.DB, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if lib == nil {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	marked, err := models.MarkLibraryDeleted(c.Request.Context(), state.DB, id)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	invalidateViewsCache(c, state)
+
+	if marked && state.CleanupTask != nil {
+		state.CleanupTask.Enqueue(id, lib.Name)
+	}
 	c.Status(http.StatusNoContent)
 }
 
@@ -1313,7 +1333,7 @@ func refreshSingle(c *gin.Context) {
 	var lib models.Library
 	err = state.DB.QueryRow(ctx,
 		`SELECT l.id, l.name, l.collection_type, l.paths, l.created_at, l.primary_image_path, l.primary_image_tag
-		 FROM libraries l JOIN items i ON i.library_id = l.id WHERE i.id = $1::uuid`,
+		 FROM libraries l JOIN items i ON i.library_id = l.id WHERE i.id = $1::uuid AND l.deleted_at IS NULL`,
 		*resolved).Scan(&lib.ID, &lib.Name, &lib.CollectionType, &lib.Paths, &lib.CreatedAt, &lib.PrimaryImagePath, &lib.PrimaryImageTag)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})

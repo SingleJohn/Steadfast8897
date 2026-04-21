@@ -1,7 +1,7 @@
 // 作业调度 API 封装。后端契约见 internal/services/taskcenter/task.go。
 import { requestJson } from './client'
 
-export type TaskKind = 'scan' | 'scrape' | 'probe' | 'backfill' | 'update'
+export type TaskKind = 'scan' | 'scrape' | 'probe' | 'backfill' | 'update' | 'cleanup'
 
 export type TaskStatus =
   | 'idle'

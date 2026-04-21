@@ -126,6 +126,7 @@ async function handleDelete() {
   if (!libraryId.value) return
   try {
     await deleteLibraryById(libraryId.value)
+    showToast('媒体库正在后台清理,完成后会通知', 'info')
     router.push({ name: 'media_libraries' })
   } catch {
     showToast('删除媒体库失败', 'error')

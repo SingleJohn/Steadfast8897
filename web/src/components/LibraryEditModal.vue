@@ -39,6 +39,7 @@ const browserLoading = ref(false)
 const uploadingImage = ref(false)
 const imageTag = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
+const deleting = ref(false)
 const coverKey = ref(0)
 const coverUrlInput = ref('')
 const settingUrlImage = ref(false)
@@ -157,14 +158,19 @@ async function handleScan() {
 }
 
 async function handleDelete() {
-  if (!props.libraryId) return
+  if (!props.libraryId || deleting.value) return
+  deleting.value = true
   try {
     await deleteLibraryById(props.libraryId)
-    showToast('媒体库已删除', 'success')
+    // 后端只做了 soft delete,items 物理删除在后台跑;完成后由
+    // cleanup task 的 SSE snapshot 触发另一条 toast(见 LibrariesPage)。
+    showToast('媒体库正在后台清理,完成后会通知', 'info')
     showDeleteConfirm.value = false
     emit('deleted')
   } catch {
     showToast('删除媒体库失败', 'error')
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -379,9 +385,24 @@ async function onSetCoverUrl() {
     </n-modal>
 
     <!-- Delete Confirm Sub-Modal -->
-    <n-modal v-model:show="showDeleteConfirm" preset="dialog" type="error" title="删除媒体库" positive-text="删除" negative-text="取消" @positive-click="handleDelete">
+    <n-modal
+      v-model:show="showDeleteConfirm"
+      preset="dialog"
+      type="error"
+      title="删除媒体库"
+      :positive-text="deleting ? '删除中…' : '删除'"
+      negative-text="取消"
+      :loading="deleting"
+      :positive-button-props="{ disabled: deleting, loading: deleting }"
+      :mask-closable="!deleting"
+      :close-on-esc="!deleting"
+      @positive-click="handleDelete"
+    >
       <p style="color: var(--app-text-muted); font-size: 14px">
         确定要删除媒体库「<strong style="color: var(--app-text)">{{ library?.Name }}</strong>」吗？此操作不可撤销。
+      </p>
+      <p style="color: var(--app-text-muted); font-size: 12px; margin-top: 8px">
+        删除后会立即从列表消失,关联媒体项由后台分批清理,完成时会在右上角通知。
       </p>
     </n-modal>
   </n-modal>
