@@ -34,7 +34,25 @@ var (
 	nfoRoleRe  = regexp.MustCompile(`(?i)<role>([^<]*)</role>`)
 	nfoTypeRe  = regexp.MustCompile(`(?i)<type>([^<]*)</type>`)
 	nfoTmdbRe  = regexp.MustCompile(`(?i)<tmdbid>([^<]*)</tmdbid>`)
+
+	// Kodi/Jellyfin/tinyMediaManager 的现代标准:<uniqueid type="xxx">123</uniqueid>
+	// default="true" / default="false" 等属性可选。
+	nfoUniqueIdTmdbRe = regexp.MustCompile(`(?is)<uniqueid\b[^>]*\btype\s*=\s*"tmdb"[^>]*>([^<]*)</uniqueid>`)
+	nfoUniqueIdImdbRe = regexp.MustCompile(`(?is)<uniqueid\b[^>]*\btype\s*=\s*"imdb"[^>]*>([^<]*)</uniqueid>`)
 )
+
+// stripNfoNestedBlocks 把 actor/director/producer/crew/set 等包含嵌套 <tmdbid>/<imdbid>
+// 的块从 xml 里剔除,避免顶层正则误匹配演职员的 ID。Kodi/Jellyfin 风格 NFO 里
+// 这是必须的 —— 演员列表里的 <tmdbid> 是人物 ID,跟电影 ID 同名不同义。
+func stripNfoNestedBlocks(xml string) string {
+	xml = nfoActorRe.ReplaceAllString(xml, "")
+	// director 在本 NFO 里是 <director tmdbid="...">name</director> 属性形式,
+	// 不会被 <tmdbid> 正则抓到;但有的刮削器会生成 <director><name>...</name><tmdbid>...</tmdbid></director>
+	// 这种块状格式,同样剔除。
+	dirBlock := regexp.MustCompile(`(?is)<director>[\s\S]*?</director>`)
+	xml = dirBlock.ReplaceAllString(xml, "")
+	return xml
+}
 
 func init() {
 	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "premiered", "studio"}
@@ -96,31 +114,53 @@ func ParseNfo(nfoPath string) *NfoData {
 		xml = xml[3:]
 	}
 
+	// 关键修复:演员块里也带 <tmdbid>/<imdbid>(那是人物 ID),顶层字段提取前
+	// 必须先把 <actor>/<director> 块剔除,否则 FindStringSubmatch 会抓到
+	// 第一个演员的人物 ID,当成电影 ID 写入 items.tmdb_id。
+	xmlTop := stripNfoNestedBlocks(xml)
+
 	result := &NfoData{}
 
-	result.Title = nfoTag(xml, "title")
-	result.OriginalTitle = nfoTag(xml, "originaltitle")
-	result.Plot = nfoTag(xml, "plot")
-	result.Tagline = nfoTag(xml, "tagline")
-	if s := nfoTag(xml, "year"); s != nil {
+	result.Title = nfoTag(xmlTop, "title")
+	result.OriginalTitle = nfoTag(xmlTop, "originaltitle")
+	result.Plot = nfoTag(xmlTop, "plot")
+	result.Tagline = nfoTag(xmlTop, "tagline")
+	if s := nfoTag(xmlTop, "year"); s != nil {
 		if v, err := strconv.ParseInt(*s, 10, 32); err == nil {
 			i := int32(v)
 			result.Year = &i
 		}
 	}
-	if s := nfoTag(xml, "rating"); s != nil {
+	if s := nfoTag(xmlTop, "rating"); s != nil {
 		if v, err := strconv.ParseFloat(*s, 64); err == nil {
 			result.Rating = &v
 		}
 	}
-	if s := nfoTag(xml, "tmdbid"); s != nil {
+	// tmdbid:老式 <tmdbid> 优先,fallback 到 <uniqueid type="tmdb">
+	if s := nfoTag(xmlTop, "tmdbid"); s != nil {
 		if v, err := strconv.ParseInt(*s, 10, 32); err == nil {
 			i := int32(v)
 			result.TmdbID = &i
 		}
 	}
-	result.ImdbID = nfoTag(xml, "imdbid")
-	result.Premiered = nfoTag(xml, "premiered")
+	if result.TmdbID == nil {
+		if m := nfoUniqueIdTmdbRe.FindStringSubmatch(xmlTop); m != nil {
+			if v, err := strconv.ParseInt(strings.TrimSpace(m[1]), 10, 32); err == nil && v > 0 {
+				i := int32(v)
+				result.TmdbID = &i
+			}
+		}
+	}
+	// imdbid:<imdbid> 优先,fallback 到 <uniqueid type="imdb">
+	result.ImdbID = nfoTag(xmlTop, "imdbid")
+	if result.ImdbID == nil || strings.TrimSpace(*result.ImdbID) == "" {
+		if m := nfoUniqueIdImdbRe.FindStringSubmatch(xmlTop); m != nil {
+			if s := strings.TrimSpace(m[1]); s != "" {
+				result.ImdbID = &s
+			}
+		}
+	}
+	result.Premiered = nfoTag(xmlTop, "premiered")
 
 	for _, m := range nfoGenreRe.FindAllStringSubmatch(xml, -1) {
 		g := strings.TrimSpace(m[1])
@@ -179,7 +219,7 @@ func ParseNfo(nfoPath string) *NfoData {
 	}
 
 	// Extract first <studio> tag
-	result.Studio = nfoTag(xml, "studio")
+	result.Studio = nfoTag(xmlTop, "studio")
 
 	return result
 }
