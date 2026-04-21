@@ -117,11 +117,13 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 		stillPath string
 	}
 	var (
-		updIDs        []string
-		updNames      []*string
-		updOverviews  []*string
-		stillTargets  []stillTarget
+		updIDs       []string
+		updNames     []*string
+		updOverviews []*string
+		stillTargets []stillTarget
 	)
+	// 诊断:跳过 still 下载的三种原因分别计数
+	var stillsTmdbEmpty, stillsAlreadyHas, stillsDisabled int
 	for epRows.Next() {
 		var id string
 		var indexNum *int32
@@ -154,7 +156,13 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 			updOverviews = append(updOverviews, no)
 		}
 
-		if stillFetchEnabled && meta.stillPath != "" && strings.TrimSpace(deref(currentImagePath)) == "" {
+		if !stillFetchEnabled {
+			stillsDisabled++
+		} else if meta.stillPath == "" {
+			stillsTmdbEmpty++
+		} else if strings.TrimSpace(deref(currentImagePath)) != "" {
+			stillsAlreadyHas++
+		} else {
 			stillTargets = append(stillTargets, stillTarget{id: id, stillPath: meta.stillPath})
 		}
 	}
@@ -191,11 +199,14 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 				"episode_id", t.id, "still_path", t.stillPath)
 		}
 	}
-	if len(stillTargets) > 0 || len(updIDs) > 0 {
+	if len(stillTargets) > 0 || len(updIDs) > 0 || stillsTmdbEmpty > 0 || stillsAlreadyHas > 0 {
 		slog.Info("[TMDB] season episodes processed",
 			"season_id", seasonItemID, "tmdb_id", tmdbID, "season", seasonNum,
 			"name_overview_updated", len(updIDs),
 			"stills_targeted", len(stillTargets), "stills_ok", stillOK, "stills_failed", stillFail,
+			"stills_skipped_tmdb_empty", stillsTmdbEmpty,
+			"stills_skipped_already_has", stillsAlreadyHas,
+			"stills_skipped_disabled", stillsDisabled,
 			"still_fetch_enabled", stillFetchEnabled)
 	}
 	return nil
