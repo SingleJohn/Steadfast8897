@@ -37,6 +37,13 @@ const customYear = ref<number | null>(null)
 const tmdbResults = ref<any[]>([])
 const tmdbSearching = ref(false)
 const tmdbApplying = ref<number | null>(null)
+const forceSolidModalStyle = {
+  '--n-color': 'var(--app-modal-solid-card)',
+  '--n-color-modal': 'var(--app-modal-solid-card)',
+  '--n-border-color': 'var(--app-modal-solid-border)',
+  '--n-box-shadow': 'var(--app-shadow-card)',
+  '--n-action-color': 'var(--app-modal-solid-soft)',
+}
 
 async function openCustomScrape() {
   if (!item.value) return
@@ -527,13 +534,20 @@ function handleGenreClick(genreId: string) {
     </div>
 
     <!-- ═══ 自定义刮削弹窗 ═══ -->
-    <n-modal v-model:show="showCustomScrape" preset="card" title="自定义刮削 - 搜索 TMDB" style="max-width: 680px; max-height: 85vh;" :bordered="false">
+    <n-modal
+      v-model:show="showCustomScrape"
+      preset="card"
+      title="自定义刮削 - 搜索 TMDB"
+      :style="[forceSolidModalStyle, { maxWidth: '680px', maxHeight: '85vh' }]"
+      class="solid-modal-card force-solid-modal custom-scrape-modal"
+      :bordered="false"
+    >
       <div class="tmdb-search-bar">
         <n-input v-model:value="customQuery" placeholder="输入名称搜索 TMDB" clearable @keyup.enter="handleTmdbSearch" style="flex: 1" />
         <n-input-number v-model:value="customYear" :min="1900" :max="2030" placeholder="年份" clearable style="width: 110px" />
         <n-button type="primary" :loading="tmdbSearching" @click="handleTmdbSearch" :disabled="!customQuery.trim()">搜索</n-button>
       </div>
-      <div v-if="tmdbSearching" style="text-align: center; padding: 32px 0"><n-spin /></div>
+      <div v-if="tmdbSearching" class="tmdb-loading"><n-spin /></div>
       <div v-else-if="tmdbResults.length" class="tmdb-results">
         <div v-for="r in tmdbResults" :key="r.id" class="tmdb-result-card" @click="handleApplyTmdb(r.id)">
           <img v-if="r.poster_path" :src="'https://image.tmdb.org/t/p/w92' + r.poster_path" class="tmdb-poster" />
@@ -552,7 +566,7 @@ function handleGenreClick(genreId: string) {
           <div v-if="tmdbApplying === r.id" class="tmdb-applying"><n-spin size="small" /></div>
         </div>
       </div>
-      <div v-else-if="!tmdbSearching && customQuery" style="text-align: center; padding: 24px 0; color: #888">点击搜索查找 TMDB 结果</div>
+      <div v-else-if="!tmdbSearching && customQuery" class="tmdb-empty-state">点击搜索查找 TMDB 结果</div>
     </n-modal>
   </div>
 </template>
@@ -1423,11 +1437,26 @@ function handleGenreClick(genreId: string) {
 
 /* ═══ 自定义刮削弹窗 ═══ */
 .tmdb-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.tmdb-loading { text-align: center; padding: 32px 0; }
 .tmdb-results { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.tmdb-result-card { display: flex; gap: 12px; padding: 10px; border-radius: 8px; cursor: pointer; position: relative; transition: background 0.15s; }
-.tmdb-result-card:hover { background: rgba(255,255,255,0.06); }
+.tmdb-result-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  background: rgba(15, 23, 42, 0.58);
+  border: 1px solid rgba(71, 85, 105, 0.55);
+}
+.tmdb-result-card:hover {
+  background: rgba(30, 41, 59, 0.82);
+  border-color: rgba(100, 116, 139, 0.9);
+  transform: translateY(-1px);
+}
 .tmdb-poster { width: 46px; height: 69px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
-.tmdb-poster-empty { background: rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: center; color: #555; font-size: 20px; }
+.tmdb-poster-empty { background: rgba(30, 41, 59, 0.9); display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 20px; }
 .tmdb-info { flex: 1; min-width: 0; }
 .tmdb-title { font-weight: 600; font-size: 15px; color: #eee; }
 .tmdb-year { color: #888; font-weight: 400; margin-left: 4px; }
@@ -1435,4 +1464,41 @@ function handleGenreClick(genreId: string) {
 .tmdb-rating { color: #f5c518; font-weight: 600; }
 .tmdb-overview { font-size: 13px; color: #999; margin-top: 4px; line-height: 1.4; }
 .tmdb-applying { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); border-radius: 8px; }
+.tmdb-empty-state {
+  text-align: center;
+  padding: 24px 0;
+  color: #94a3b8;
+}
+
+:deep(.custom-scrape-modal .n-input),
+:deep(.custom-scrape-modal .n-input-number .n-input) {
+  --n-color: rgba(15, 23, 42, 0.92) !important;
+  --n-color-disabled: rgba(15, 23, 42, 0.72) !important;
+  --n-color-active: rgba(15, 23, 42, 0.96) !important;
+  --n-color-focus: rgba(15, 23, 42, 0.96) !important;
+  --n-text-color: #f8fafc !important;
+  --n-text-color-disabled: rgba(248, 250, 252, 0.55) !important;
+  --n-placeholder-color: rgba(148, 163, 184, 0.92) !important;
+  --n-caret-color: #f8fafc !important;
+  --n-border: 1px solid rgba(71, 85, 105, 0.95) !important;
+  --n-border-hover: 1px solid rgba(100, 116, 139, 1) !important;
+  --n-border-focus: 1px solid rgba(56, 189, 248, 0.95) !important;
+  --n-box-shadow-focus: 0 0 0 2px rgba(56, 189, 248, 0.18) !important;
+}
+
+:deep(.custom-scrape-modal .n-input .n-input__input-el),
+:deep(.custom-scrape-modal .n-input-number .n-input input) {
+  color: #f8fafc !important;
+}
+
+:deep(.custom-scrape-modal .n-input .n-input__placeholder),
+:deep(.custom-scrape-modal .n-input-number .n-input .n-input__placeholder) {
+  color: rgba(148, 163, 184, 0.92) !important;
+}
+
+:deep(.custom-scrape-modal .n-input .n-input__suffix),
+:deep(.custom-scrape-modal .n-input-number .n-input .n-input__suffix),
+:deep(.custom-scrape-modal .n-input-number .n-input-number-suffix) {
+  color: rgba(148, 163, 184, 0.9) !important;
+}
 </style>
