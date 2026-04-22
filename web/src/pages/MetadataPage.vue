@@ -160,12 +160,47 @@ const fieldLabels: Record<string, string> = {
 }
 const fieldLabel = (n: string) => fieldLabels[n] || n
 
-function moveField(field: string, idx: number, delta: number) {
+// 字段 pill 拖拽排序状态(按字段独立)
+const fieldDragging = ref<{ field: string; index: number } | null>(null)
+const fieldDragOver = ref<{ field: string; index: number } | null>(null)
+
+function onFieldPillDragStart(field: string, index: number, e: DragEvent) {
+  fieldDragging.value = { field, index }
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+function onFieldPillDragOver(field: string, index: number, e: DragEvent) {
+  const d = fieldDragging.value
+  if (!d || d.field !== field) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const cur = fieldDragOver.value
+  if (!cur || cur.field !== field || cur.index !== index) {
+    fieldDragOver.value = { field, index }
+  }
+}
+function onFieldPillDrop(field: string, index: number, e: DragEvent) {
+  e.preventDefault()
+  const from = fieldDragging.value
+  fieldDragging.value = null
+  fieldDragOver.value = null
+  if (!from || from.field !== field || from.index === index) return
   const cur = [...(fieldPriority.value[field] ?? [])]
-  const target = idx + delta
-  if (target < 0 || target >= cur.length) return
-  ;[cur[idx], cur[target]] = [cur[target], cur[idx]]
+  const [moved] = cur.splice(from.index, 1)
+  cur.splice(index, 0, moved)
   fieldPriority.value = { ...fieldPriority.value, [field]: cur }
+}
+function onFieldPillDragEnd() {
+  fieldDragging.value = null
+  fieldDragOver.value = null
+}
+function onFieldPillDragLeave(field: string, index: number) {
+  const cur = fieldDragOver.value
+  if (cur && cur.field === field && cur.index === index) {
+    fieldDragOver.value = null
+  }
 }
 
 function resetFieldPriority() {
@@ -742,16 +777,22 @@ onMounted(() => {
               v-for="(pname, pidx) in (fieldPriority[f] || [])"
               :key="pname"
               class="field-priority-pill"
+              :class="{
+                dragging: fieldDragging && fieldDragging.field === f && fieldDragging.index === pidx,
+                'drag-over': fieldDragOver && fieldDragOver.field === f && fieldDragOver.index === pidx && !(fieldDragging && fieldDragging.field === f && fieldDragging.index === pidx),
+              }"
               :style="{ '--accent': providerMeta[pname]?.accent }"
+              draggable="true"
+              @dragstart="onFieldPillDragStart(f, pidx, $event)"
+              @dragover="onFieldPillDragOver(f, pidx, $event)"
+              @drop="onFieldPillDrop(f, pidx, $event)"
+              @dragend="onFieldPillDragEnd"
+              @dragleave="onFieldPillDragLeave(f, pidx)"
+              title="拖拽调整顺序"
             >
+              <n-icon class="pill-handle"><ReorderFourOutline /></n-icon>
               <span class="pill-order">{{ pidx + 1 }}</span>
               <span class="pill-name">{{ providerLabel(pname) }}</span>
-              <n-button quaternary circle size="tiny" :disabled="pidx === 0" @click="moveField(f, pidx, -1)">
-                <template #icon><n-icon><ArrowUpOutline /></n-icon></template>
-              </n-button>
-              <n-button quaternary circle size="tiny" :disabled="pidx === (fieldPriority[f] || []).length - 1" @click="moveField(f, pidx, 1)">
-                <template #icon><n-icon><ArrowDownOutline /></n-icon></template>
-              </n-button>
             </div>
             <div v-if="!(fieldPriority[f] || []).length" class="hint-text">无启用源</div>
           </div>
@@ -1325,13 +1366,40 @@ onMounted(() => {
 .field-priority-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 4px 2px 8px;
+  gap: 5px;
+  padding: 3px 10px 3px 7px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--accent, #888) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent, #888) 30%, transparent);
   font-size: 11px;
   color: var(--app-text);
+  cursor: grab;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.field-priority-pill:hover {
+  background: color-mix(in srgb, var(--accent, #888) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #888) 50%, transparent);
+}
+.field-priority-pill:active {
+  cursor: grabbing;
+}
+.field-priority-pill.dragging {
+  opacity: 0.4;
+}
+.field-priority-pill.drag-over {
+  transform: translateX(3px);
+  border-color: color-mix(in srgb, var(--accent, var(--app-primary)) 75%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, var(--app-primary)) 40%, transparent);
+}
+.field-priority-pill .pill-handle {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  opacity: 0.55;
+  display: inline-flex;
+}
+.field-priority-pill:hover .pill-handle {
+  opacity: 0.85;
 }
 .field-priority-pill .pill-order {
   font-variant-numeric: tabular-nums;
