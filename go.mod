@@ -12,7 +12,7 @@ require (
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/shirou/gopsutil/v3 v3.24.5
 	golang.org/x/crypto v0.31.0
-	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8
+	golang.org/x/image v0.21.0
 	golang.org/x/net v0.25.0
 	golang.org/x/sync v0.10.0
 	golang.org/x/time v0.15.0

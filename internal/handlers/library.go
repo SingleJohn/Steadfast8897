@@ -24,7 +24,10 @@ import (
 	"fyms/internal/middleware"
 	"fyms/internal/models"
 	"fyms/internal/services"
+	"fyms/internal/services/coverart"
 	"fyms/internal/services/taskcenter"
+
+	"github.com/disintegration/imaging"
 )
 
 func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, adminMW, optAuthMW gin.HandlerFunc) {
@@ -57,7 +60,9 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/VirtualFolders/:id/Refresh", adminMW, refreshSingleLibrary)
 	u.POST("/Library/VirtualFolders/:id/Image", adminMW, uploadLibraryImage)
 	u.POST("/Library/VirtualFolders/:id/ImageUrl", adminMW, setLibraryImageFromURL)
+	u.POST("/Library/VirtualFolders/:id/Image/Generate", adminMW, generateLibraryCover)
 	u.DELETE("/Library/VirtualFolders/:id/Image", adminMW, deleteLibraryImage)
+	u.GET("/Library/CoverArt/Styles", authMW, listCoverArtStyles)
 	u.GET("/Library/Scan/Progress", getScanProgress)
 
 	u.POST("/Library/Probe/Start", adminMW, startProbe)
@@ -2105,6 +2110,126 @@ func deleteLibraryImage(c *gin.Context) {
 	_ = os.Remove(imgPath)
 	invalidateViewsCache(c, state)
 	c.Status(http.StatusNoContent)
+}
+
+// listCoverArtStyles 返回所有注册的封面生成风格,供前端下拉展示。
+func listCoverArtStyles(c *gin.Context) {
+	items := coverart.List()
+	out := make([]map[string]any, 0, len(items))
+	for _, g := range items {
+		w, h := g.AspectRatio()
+		out = append(out, map[string]any{
+			"name":        g.Name(),
+			"label":       g.Label(),
+			"aspectRatio": fmt.Sprintf("%d:%d", w, h),
+		})
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// generateLibraryCover 调用 coverart 风格生成封面,写入磁盘并更新 DB。
+// POST /Library/VirtualFolders/:id/Image/Generate
+// body: { "Style": string, "Options"?: map[string]any }
+func generateLibraryCover(c *gin.Context) {
+	state := GetState(c)
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid id"})
+		return
+	}
+	ctx := c.Request.Context()
+	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	if err != nil || lib == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
+		return
+	}
+
+	var body struct {
+		Style   string         `json:"Style"`
+		Options map[string]any `json:"Options"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	style := strings.TrimSpace(body.Style)
+	if style == "" {
+		// 默认取第一个注册的风格
+		if list := coverart.List(); len(list) > 0 {
+			style = list[0].Name()
+		}
+	}
+	gen, ok := coverart.Get(style)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style: " + style})
+		return
+	}
+
+	// 同库串行,防止并发写入
+	release, err := coverart.AcquireBusy(id)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"message": "generation already in progress"})
+		return
+	}
+	defer release()
+
+	paths, err := coverart.PickPosterPaths(ctx, state.DB, id)
+	if err != nil {
+		if err == coverart.ErrNoPosters {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "媒体库暂无可用海报素材,请先扫描入库"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	out, err := gen.Render(ctx, coverart.Input{
+		LibraryID:      lib.ID,
+		LibraryName:    lib.Name,
+		CollectionType: lib.CollectionType,
+		PosterPaths:    paths,
+		Options:        body.Options,
+		OutputWidth:    1920,
+		OutputHeight:   1080,
+	})
+	if err != nil {
+		if err == coverart.ErrFontMissing {
+			c.JSON(http.StatusFailedDependency, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "render failed: " + err.Error()})
+		return
+	}
+
+	imgDir := filepath.Join("data", "library-images", idStr)
+	if err := os.MkdirAll(imgDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	fpath := filepath.Join(imgDir, "primary.jpg")
+	f, err := os.Create(fpath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if err := imaging.Encode(f, out.Image, imaging.JPEG, imaging.JPEGQuality(out.Quality)); err != nil {
+		_ = f.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "encode failed: " + err.Error()})
+		return
+	}
+	if err := f.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	tag := uuid.New().String()
+	if err := models.UpdateLibraryImage(ctx, state.DB, id, fpath, tag); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"ImageTag": tag, "Style": style})
 }
 
 type updateLibraryInfoBody struct {

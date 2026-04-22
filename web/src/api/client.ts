@@ -356,6 +356,30 @@ export async function deleteLibraryImage(id: string) {
   return request(`/Library/VirtualFolders/${id}/Image`, { method: 'DELETE' });
 }
 
+export interface CoverStyle {
+  name: string;
+  label: string;
+  aspectRatio: string;
+}
+
+export async function listCoverStyles() {
+  return request<CoverStyle[]>(`/Library/CoverArt/Styles`);
+}
+
+export async function generateLibraryCover(
+  id: string,
+  style: string,
+  options?: Record<string, any>,
+) {
+  return request<{ ImageTag: string; Style: string }>(
+    `/Library/VirtualFolders/${id}/Image/Generate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ Style: style, Options: options ?? null }),
+    },
+  );
+}
+
 // User management
 export async function getAllUsers() {
   return request<any[]>('/Users');

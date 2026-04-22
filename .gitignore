@@ -45,3 +45,7 @@ coverage/
 # Local-only working docs (refactor plans, notes)
 docs/refactor/
 docs/
+
+# Downloaded fonts for cover art generation (fetched by scripts/fetch-fonts.sh)
+internal/services/coverart/assets/fonts/*.otf
+internal/services/coverart/assets/fonts/*.ttf

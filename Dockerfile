@@ -26,8 +26,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY main.go ./
 COPY internal/ ./internal/
+COPY scripts/ ./scripts/
 
 COPY --from=frontend-builder /build/web/dist /build/web/dist
+
+# 拉取封面生成所需的嵌入字体(幂等;所有 CI 入口复用同一脚本)
+RUN apk add --no-cache bash curl ca-certificates && bash scripts/fetch-fonts.sh
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w \

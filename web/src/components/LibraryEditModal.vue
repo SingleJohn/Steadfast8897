@@ -3,13 +3,14 @@ import { reactive, ref, watch } from 'vue'
 import {
   NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
 } from 'naive-ui'
-import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline } from '@vicons/ionicons5'
+import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline, SparklesOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
   addLibraryPath, removeLibraryPath, refreshSingleLibrary,
   uploadLibraryImage, setLibraryImageUrl, deleteLibraryImage, browseDirectories,
   getScrapeDefaults, getLibraryScrapeConfig, updateLibraryScrapeConfig,
-  type FieldPriorityMap, type ScrapeConfigOverride,
+  listCoverStyles, generateLibraryCover,
+  type FieldPriorityMap, type ScrapeConfigOverride, type CoverStyle,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
 
@@ -46,6 +47,10 @@ const coverKey = ref(0)
 const coverUrlInput = ref('')
 const settingUrlImage = ref(false)
 const showUrlInput = ref(false)
+const coverStyles = ref<CoverStyle[]>([])
+const coverStylesLoaded = ref(false)
+const generatingCover = ref(false)
+const showStylePicker = ref(false)
 
 const typeOptions = [
   { label: '电影', value: 'movies' },
@@ -258,6 +263,51 @@ async function onSetCoverUrl() {
   }
 }
 
+async function ensureCoverStylesLoaded() {
+  if (coverStylesLoaded.value) return
+  try {
+    coverStyles.value = await listCoverStyles()
+  } catch {
+    // 静默,后续点击生成时再提示
+  } finally {
+    coverStylesLoaded.value = true
+  }
+}
+
+async function onClickGenerate() {
+  await ensureCoverStylesLoaded()
+  if (coverStyles.value.length === 0) {
+    showToast('暂无可用的封面风格', 'error')
+    return
+  }
+  if (coverStyles.value.length === 1) {
+    await onGenerateCover(coverStyles.value[0].name)
+    return
+  }
+  showStylePicker.value = !showStylePicker.value
+}
+
+async function onGenerateCover(style: string) {
+  if (!props.libraryId || generatingCover.value) return
+  generatingCover.value = true
+  showStylePicker.value = false
+  try {
+    const res = await generateLibraryCover(props.libraryId, style)
+    imageTag.value = res.ImageTag
+    coverKey.value++
+    showToast('封面已生成', 'success')
+    emit('updated')
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg.includes('422')) showToast('媒体库暂无可用海报素材,请先扫描入库', 'error')
+    else if (msg.includes('409')) showToast('已有生成任务进行中,请稍候', 'info')
+    else if (msg.includes('424')) showToast('字体资源缺失,请参见 internal/services/coverart/assets/fonts/ 下的 README', 'error')
+    else showToast('封面生成失败', 'error')
+  } finally {
+    generatingCover.value = false
+  }
+}
+
 // ===== 元数据源(Phase 6) =====
 
 const providerOptions = [
@@ -436,23 +486,39 @@ async function handleSaveScrapeCfg() {
             </div>
           </div>
           <div class="em-cover-actions">
-            <label class="em-cover-btn">
-              <n-icon :size="13"><CloudUploadOutline /></n-icon>
+            <label class="em-cover-btn em-cover-btn-upload">
+              <n-icon :size="12"><CloudUploadOutline /></n-icon>
               {{ uploadingImage ? '...' : '上传' }}
               <input type="file" accept="image/*" style="display: none" :disabled="uploadingImage" @change="onCoverChange" />
             </label>
-            <button class="em-cover-btn" @click="showUrlInput = !showUrlInput">
-              <n-icon :size="13"><LinkOutline /></n-icon>
+            <button class="em-cover-btn em-cover-btn-link" @click="showUrlInput = !showUrlInput">
+              <n-icon :size="12"><LinkOutline /></n-icon>
               链接
             </button>
+            <button class="em-cover-btn em-cover-btn-gen" :disabled="generatingCover" @click="onClickGenerate">
+              <n-icon :size="12"><SparklesOutline /></n-icon>
+              {{ generatingCover ? '···' : '生成' }}
+            </button>
             <button v-if="coverUrl()" class="em-cover-btn em-cover-btn-del" @click="onDeleteCover">
-              <n-icon :size="13"><TrashOutline /></n-icon>
+              <n-icon :size="12"><TrashOutline /></n-icon>
               删除
             </button>
           </div>
           <div v-if="showUrlInput" class="em-url-input">
             <n-input v-model:value="coverUrlInput" size="tiny" placeholder="输入图片 URL" :disabled="settingUrlImage" @keydown.enter.prevent="onSetCoverUrl" />
             <n-button size="tiny" type="primary" :loading="settingUrlImage" :disabled="!coverUrlInput.trim()" @click="onSetCoverUrl">确定</n-button>
+          </div>
+          <div v-if="showStylePicker && coverStyles.length > 1" class="em-style-picker">
+            <div class="em-style-picker-title">选择风格</div>
+            <button
+              v-for="s in coverStyles"
+              :key="s.name"
+              class="em-style-opt"
+              :disabled="generatingCover"
+              @click="onGenerateCover(s.name)"
+            >
+              {{ s.label }}
+            </button>
           </div>
         </div>
 
@@ -716,17 +782,103 @@ async function handleSaveScrapeCfg() {
 
 .em-cover-actions {
   display: flex;
-  gap: 5px;
-  margin-top: 6px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 .em-cover-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
   display: inline-flex; align-items: center; gap: 3px;
-  padding: 3px 8px; font-size: 11px; border-radius: 5px;
-  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.1)); border: 1px solid var(--app-border);
-  color: var(--app-text-muted); cursor: pointer; transition: all 0.15s;
+  padding: 3px 4px;
+  font-size: 11px; font-weight: 500;
+  border-radius: 5px;
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.08));
+  border: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
 }
-.em-cover-btn:hover { border-color: var(--app-primary); color: var(--app-primary); }
-.em-cover-btn-del:hover { border-color: var(--app-error); color: var(--app-error); }
+.em-cover-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.em-cover-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* 上传 — 蓝色 */
+.em-cover-btn-upload {
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #60a5fa;
+}
+.em-cover-btn-upload:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.65);
+  color: #93c5fd;
+}
+
+/* 链接 — 青色 */
+.em-cover-btn-link {
+  border-color: rgba(20, 184, 166, 0.35);
+  color: #2dd4bf;
+}
+.em-cover-btn-link:hover {
+  background: rgba(20, 184, 166, 0.18);
+  border-color: rgba(20, 184, 166, 0.65);
+  color: #5eead4;
+}
+
+/* 自动生成 — 紫色,作为新功能默认稍亮一点 */
+.em-cover-btn-gen {
+  background: rgba(139, 92, 246, 0.14);
+  border-color: rgba(139, 92, 246, 0.5);
+  color: #c4b5fd;
+}
+.em-cover-btn-gen:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.26);
+  border-color: rgba(139, 92, 246, 0.85);
+  color: #ede9fe;
+  box-shadow: 0 2px 10px -3px rgba(139, 92, 246, 0.5);
+}
+
+/* 删除 — 默认克制灰,hover 才变红 */
+.em-cover-btn-del {
+  border-color: rgba(239, 68, 68, 0.28);
+  color: rgba(239, 68, 68, 0.85);
+}
+.em-cover-btn-del:hover {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #f87171;
+}
+
+.em-style-picker {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--app-modal-panel-bg-soft, rgba(128,128,128,0.06));
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.em-style-picker-title {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  margin-bottom: 2px;
+}
+.em-style-opt {
+  display: block;
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.em-style-opt:hover { border-color: var(--app-primary); color: var(--app-primary); }
+.em-style-opt:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .em-url-input {
   display: flex;

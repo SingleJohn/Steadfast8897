@@ -42,6 +42,9 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Fetch embedded fonts
+        run: bash scripts/fetch-fonts.sh
+
       - name: Build backend
         run: |
           export CGO_ENABLED=0
