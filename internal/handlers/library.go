@@ -2184,10 +2184,13 @@ func generateLibraryCover(c *gin.Context) {
 		return
 	}
 
+	itemCount, _ := models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
+
 	out, err := gen.Render(ctx, coverart.Input{
 		LibraryID:      lib.ID,
 		LibraryName:    lib.Name,
 		CollectionType: lib.CollectionType,
+		ItemCount:      int(itemCount),
 		PosterPaths:    paths,
 		Options:        body.Options,
 		OutputWidth:    1920,

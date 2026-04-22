@@ -7,8 +7,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PickPosterPaths 从该媒体库随机抽最多 9 张已有海报的 item,
-// 不足 9 时循环填满;没有任何海报则返回 ErrNoPosters。
+// PosterCount 是封面生成需要的海报数量。九宫格风格改为 3 列 × 4 行后为 12;
+// 风格内部可按需截取或循环。
+const PosterCount = 12
+
+// PickPosterPaths 从该媒体库随机抽最多 PosterCount 张已有海报的 item,
+// 不足时循环填满;没有任何海报则返回 ErrNoPosters。
 //
 // 只查 libraries 表中 collection_type=movies/tvshows 的库;平台库走独立表,
 // 不走本函数。
@@ -21,8 +25,8 @@ func PickPosterPaths(ctx context.Context, pool *pgxpool.Pool, libID uuid.UUID) (
 		   AND primary_image_path IS NOT NULL
 		   AND primary_image_path <> ''
 		 ORDER BY RANDOM()
-		 LIMIT 9
-	`, libID)
+		 LIMIT $2
+	`, libID, PosterCount)
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +47,8 @@ func PickPosterPaths(ctx context.Context, pool *pgxpool.Pool, libID uuid.UUID) (
 	if n == 0 {
 		return nil, ErrNoPosters
 	}
-	out := make([]string, 9)
-	for i := 0; i < 9; i++ {
+	out := make([]string, PosterCount)
+	for i := 0; i < PosterCount; i++ {
 		out[i] = raw[i%n]
 	}
 	return out, nil

@@ -103,6 +103,30 @@ func tint(c color.RGBA, factor float64) color.RGBA {
 	return shade(c, factor)
 }
 
+// softBackground 把主色转成适合做封面大面积背景的柔和淡色。
+// 保留色相,把饱和度压低并把亮度拉高,避免主色过饱和造成视觉刺眼。
+// 参考 jellyfin-library-poster 的效果:淡绿、淡蓝、淡灰等。
+func softBackground(c color.RGBA) color.RGBA {
+	h, s, _ := rgbToHSL(c.R, c.G, c.B)
+	if s < 0.15 {
+		// 主色本身就偏灰,直接给一个中性蓝灰
+		return color.RGBA{R: 0x8b, G: 0x9e, B: 0xaa, A: 0xff}
+	}
+	// S 压到 0.30,L 拉到 0.68 — 靠近柔和 pastel
+	newS := 0.30
+	newL := 0.68
+	return hslToRGB(h, newS, newL)
+}
+
+// softBackgroundDarker 用于 softBackground 的底部竖向渐变参考色,比背景略深一点。
+func softBackgroundDarker(c color.RGBA) color.RGBA {
+	h, s, _ := rgbToHSL(c.R, c.G, c.B)
+	if s < 0.15 {
+		return color.RGBA{R: 0x6f, G: 0x80, B: 0x8c, A: 0xff}
+	}
+	return hslToRGB(h, 0.34, 0.54)
+}
+
 // lerpColor 在两个颜色间线性插值,t∈[0,1]。
 func lerpColor(a, b color.RGBA, t float64) color.RGBA {
 	if t < 0 {

@@ -5,26 +5,21 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	"math"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/disintegration/imaging"
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
-// ninegridStyle 九宫格拼贴风格:
+// ninegridStyle 对标 jellyfin-library-poster:
 //
-//	┌───────────────────────────────┐
-//	│ 库名                          │ <- 左侧渐变蒙版压暗,文字白色 + 阴影
-//	│ (居中或顶部)     ┌──┬──┬──┐   │
-//	│                 │P │P │P │   │
-//	│                 ├──┼──┼──┤   │
-//	│                 │P │P │P │   │
-//	│                 ├──┼──┼──┤   │
-//	│                 │P │P │P │   │
-//	│                 └──┴──┴──┘   │
-//	└───────────────────────────────┘
+//   - 左侧大面积淡色背景 + 主标题 + 橙色竖条 + 英文副标
+//   - 右侧 3 列海报,每列 4 张(2:3 比例),整列统一倾斜 ~12°
+//   - 每列 Y 起点错位,顶/底故意溢出画布形成"海报墙"视觉
+//   - 海报有圆角 + 柔和投影
 type ninegridStyle struct{}
 
 func (ninegridStyle) Name() string            { return "ninegrid" }
@@ -35,69 +30,70 @@ func init() {
 	Register(ninegridStyle{})
 }
 
-// Render 渲染九宫格封面。流程:
-//  1. 并发加载 9 张海报(失败的位置用 fallback 灰块)
-//  2. 从首张海报提取主色,算出 colorA(深)/colorB(浅)
-//  3. 渐变底填满整图(指数 0.7 非线性过渡)
-//  4. 右侧 3x3 网格,每格 coverFit 裁到单元尺寸
-//  5. 九宫格上叠左黑右透的水平蒙版,让左侧可读
-//  6. 左侧绘制库名:单行二分字号,放不下则多行 wrap(封顶 3 行)
-//  7. JPEG 编码,quality=88
+// 输出尺寸(默认 1920x1080)。所有坐标常量都基于这个尺寸。
+const (
+	nineCanvasW = 1920
+	nineCanvasH = 1080
+
+	// 海报单张尺寸(2:3 比例)
+	ninePosterW = 300
+	ninePosterH = 450
+	// 列内海报上下间距
+	ninePosterGap = 22
+	// 列水平间距(海报宽度 + 额外间距)
+	nineColumnGap = 44
+	// 每列海报数量
+	ninePostersPerCol = 4
+	// 列数
+	nineColumns = 3
+	// 整列旋转角度。imaging.Rotate 正数=逆时针;原版是顺时针倾斜(顶部偏右)→ 取负。
+	nineRotateAngle = -12.0
+	// 海报圆角半径
+	nineCornerRadius = 14
+)
+
 func (ninegridStyle) Render(ctx context.Context, in Input) (Output, error) {
 	w, h := in.OutputWidth, in.OutputHeight
 	if w <= 0 {
-		w = 1920
+		w = nineCanvasW
 	}
 	if h <= 0 {
-		h = 1080
+		h = nineCanvasH
 	}
 
-	posters := loadPostersConcurrent(ctx, in.PosterPaths)
+	// 1. 加载 12 张海报(并发,失败用占位灰块),前 3 列×4 张
+	need := ninePostersPerCol * nineColumns
+	posters := loadPostersConcurrent(ctx, in.PosterPaths, need)
 
+	// 2. 主色 → 背景色(柔和淡色)
 	dominant := DominantColor(posters[0])
-	colorA := shade(dominant, -0.35)
-	colorB := tint(dominant, +0.15)
+	bgTop := softBackground(dominant)
+	bgBottom := softBackgroundDarker(dominant)
 
 	base := image.NewRGBA(image.Rect(0, 0, w, h))
-	drawHorizontalGradient(base, colorA, colorB, 0.7)
+	drawVerticalGradient(base, bgTop, bgBottom)
 
 	if err := ctx.Err(); err != nil {
 		return Output{}, err
 	}
 
-	// 右侧网格区域:占约 60% 宽度,保留 60px 上下边距
-	gridRight := w - 40
-	gridTop := 60
-	gridBottom := h - 60
-	gap := 16
-	cols, rowsN := 3, 3
-	cellW := 360
-	cellH := (gridBottom - gridTop - gap*(rowsN-1)) / rowsN
-	if cellH <= 0 {
-		cellH = 300
-	}
-	gridWidth := cellW*cols + gap*(cols-1)
-	gridLeft := gridRight - gridWidth
-
-	drawGrid(base, posters, gridLeft, gridTop, cellW, cellH, gap, cols, rowsN)
+	// 3. 绘制 3 列倾斜海报
+	drawTiltedColumns(base, posters, w, h)
 
 	if err := ctx.Err(); err != nil {
 		return Output{}, err
 	}
 
-	// 左侧渐变蒙版:从左 α=0.85 → 右 α=0,压暗九宫格左缘让文字可读
-	drawHorizontalAlphaMask(base,
-		image.Rect(0, 0, gridLeft+gridWidth/2, h),
-		color.RGBA{0, 0, 0, 0}, // 颜色固定黑色
-		0.78, 0.0, 0.7)
-
-	// 标题文字左侧区域:左内边距 80,宽度上限 maxTitleW
-	titleMaxW := gridLeft - 120
-	if titleMaxW < 360 {
-		titleMaxW = 360
-	}
-	if err := drawTitle(base, in.LibraryName, 80, h/2, titleMaxW, h-120); err != nil {
+	// 4. 左侧标题 + 英文副标 + 橙色竖条
+	if err := drawTitleBlock(base, in.LibraryName, in.CollectionType, w, h); err != nil {
 		return Output{}, err
+	}
+
+	// 5. 右上角数量角标(若提供了 ItemCount)
+	if in.ItemCount > 0 {
+		if err := drawCountBadge(base, in.ItemCount, w); err != nil {
+			return Output{}, err
+		}
 	}
 
 	return Output{
@@ -107,26 +103,97 @@ func (ninegridStyle) Render(ctx context.Context, in Input) (Output, error) {
 	}, nil
 }
 
-// loadPostersConcurrent 并发加载最多 9 张海报,失败返回占位。
-func loadPostersConcurrent(ctx context.Context, paths []string) []image.Image {
-	out := make([]image.Image, 9)
+// drawCountBadge 在画布右上角画一个橙色圆角矩形 + 白色数字(item 总数)。
+func drawCountBadge(base *image.RGBA, count, canvasW int) error {
+	face, err := makeFace(44)
+	if err != nil {
+		return err
+	}
+	defer face.Close()
+
+	text := strconv.Itoa(count)
+	advance := font.MeasureString(face, text).Round()
+	metrics := face.Metrics()
+	textH := metrics.Ascent.Round() + metrics.Descent.Round()
+
+	padX, padY := 22, 10
+	badgeW := advance + padX*2
+	badgeH := textH + padY*2
+	badgeX := canvasW - badgeW - 50
+	badgeY := 50
+
+	// 画一个带圆角的橙色矩形:先整体填色,再用透明像素裁四个角
+	orange := color.RGBA{0xe4, 0x7e, 0x48, 0xff}
+	radius := badgeH / 2
+	if radius > 22 {
+		radius = 22
+	}
+	drawRoundedRect(base, image.Rect(badgeX, badgeY, badgeX+badgeW, badgeY+badgeH), radius, orange)
+
+	// 数字:白色,带轻微阴影
+	textBaseY := badgeY + padY + metrics.Ascent.Round()
+	drawStringWithShadow(base, text, badgeX+padX, textBaseY, face, color.RGBA{255, 255, 255, 255})
+	return nil
+}
+
+// drawRoundedRect 在 dst 上画带圆角的实心矩形。
+func drawRoundedRect(dst *image.RGBA, r image.Rectangle, radius int, c color.RGBA) {
+	w, h := r.Dx(), r.Dy()
+	if radius*2 > w {
+		radius = w / 2
+	}
+	if radius*2 > h {
+		radius = h / 2
+	}
+	rr := radius * radius
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			// 四角外的像素不画
+			var inCorner bool
+			var cx, cy int
+			switch {
+			case x < radius && y < radius:
+				inCorner, cx, cy = true, radius, radius
+			case x >= w-radius && y < radius:
+				inCorner, cx, cy = true, w-radius-1, radius
+			case x < radius && y >= h-radius:
+				inCorner, cx, cy = true, radius, h-radius-1
+			case x >= w-radius && y >= h-radius:
+				inCorner, cx, cy = true, w-radius-1, h-radius-1
+			}
+			if inCorner {
+				dx, dy := x-cx, y-cy
+				if dx*dx+dy*dy > rr {
+					continue
+				}
+			}
+			dst.SetRGBA(r.Min.X+x, r.Min.Y+y, c)
+		}
+	}
+}
+
+
+// loadPostersConcurrent 并发加载最多 n 张海报,路径不足时循环用已有的,单张失败返回占位。
+func loadPostersConcurrent(ctx context.Context, paths []string, n int) []image.Image {
+	out := make([]image.Image, n)
 	var wg sync.WaitGroup
-	for i := 0; i < 9; i++ {
+	pn := len(paths)
+	for i := 0; i < n; i++ {
 		idx := i
 		var p string
-		if idx < len(paths) {
-			p = paths[idx]
+		if pn > 0 {
+			p = paths[idx%pn]
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if ctx.Err() != nil || p == "" {
-				out[idx] = placeholderTile(360, 540)
+				out[idx] = placeholderTile(ninePosterW, ninePosterH)
 				return
 			}
 			img, err := loadImage(p)
 			if err != nil || img == nil {
-				out[idx] = placeholderTile(360, 540)
+				out[idx] = placeholderTile(ninePosterW, ninePosterH)
 				return
 			}
 			out[idx] = img
@@ -136,93 +203,78 @@ func loadPostersConcurrent(ctx context.Context, paths []string) []image.Image {
 	return out
 }
 
-// drawHorizontalGradient 从左(colorA)到右(colorB),t=(x/w)^exponent。
-func drawHorizontalGradient(dst *image.RGBA, a, b color.RGBA, exponent float64) {
-	w := dst.Bounds().Dx()
-	h := dst.Bounds().Dy()
-	for x := 0; x < w; x++ {
-		t := math.Pow(float64(x)/float64(w-1), exponent)
-		col := lerpColor(a, b, t)
-		for y := 0; y < h; y++ {
-			dst.SetRGBA(x, y, col)
-		}
-	}
-}
+// drawTiltedColumns 把 n 张海报按 3 列堆成整列后旋转,再贴到 base 右侧。
+// 每列有独立的 Y 错位,产生视觉上的"每列高度不齐"。部分海报故意超出画布。
+func drawTiltedColumns(base *image.RGBA, posters []image.Image, canvasW, canvasH int) {
+	// 列画布尺寸:足够装下 4 张海报 + 间距 + 阴影 padding
+	shadowPad := 24
+	colW := ninePosterW + shadowPad*2
+	colH := ninePostersPerCol*ninePosterH + (ninePostersPerCol-1)*ninePosterGap + shadowPad*2
 
-// drawHorizontalAlphaMask 在 rect 区域叠加水平透明度渐变层:
-// 左端 α=startA,右端 α=endA,非线性 exponent。颜色固定 fillColor。
-func drawHorizontalAlphaMask(dst *image.RGBA, rect image.Rectangle, fillColor color.RGBA, startA, endA, exponent float64) {
-	rw := rect.Dx()
-	if rw <= 0 {
-		return
+	// 三列中心 X:整体靠右,但保证第 3 列旋转后不会完全溢出画布。
+	// 左侧 [0, ~820] 留给标题文字区。
+	colStep := ninePosterW + nineColumnGap
+	baseColCenter := canvasW - colStep*2 - ninePosterW/2 - 60
+	colCenterX := []int{
+		baseColCenter,
+		baseColCenter + colStep,
+		baseColCenter + 2*colStep,
 	}
-	for x := 0; x < rw; x++ {
-		t := math.Pow(float64(x)/float64(rw-1), exponent)
-		a := startA + (endA-startA)*t
-		if a < 0 {
-			a = 0
-		} else if a > 1 {
-			a = 1
-		}
-		alpha := uint8(math.Round(a * 255))
-		c := color.RGBA{R: fillColor.R, G: fillColor.G, B: fillColor.B, A: alpha}
-		overlayColumn(dst, rect.Min.X+x, rect.Min.Y, rect.Max.Y, c)
-	}
-}
+	// Y 错位:让列与列之间不齐,形成错落视觉(单位:像素)
+	colYJitter := []int{-90, 70, -30}
 
-// overlayColumn 在 dst 的某一列(x 固定)上做 source-over 合成 c。
-func overlayColumn(dst *image.RGBA, x, y0, y1 int, c color.RGBA) {
-	if c.A == 0 {
-		return
-	}
-	sr, sg, sb, sa := float64(c.R), float64(c.G), float64(c.B), float64(c.A)/255.0
-	for y := y0; y < y1; y++ {
-		old := dst.RGBAAt(x, y)
-		dr := float64(old.R)*(1-sa) + sr*sa
-		dg := float64(old.G)*(1-sa) + sg*sa
-		db := float64(old.B)*(1-sa) + sb*sa
-		dst.SetRGBA(x, y, color.RGBA{
-			R: uint8(dr),
-			G: uint8(dg),
-			B: uint8(db),
-			A: 255,
-		})
-	}
-}
-
-// drawGrid 把 9 张海报按 3 行 3 列 coverFit 到 dst 的 (x0,y0)+(cellW*cols+gap*(cols-1)) 区域。
-func drawGrid(dst *image.RGBA, posters []image.Image, x0, y0, cellW, cellH, gap, cols, rowsN int) {
-	for r := 0; r < rowsN; r++ {
-		for c := 0; c < cols; c++ {
-			idx := r*cols + c
+	for c := 0; c < nineColumns; c++ {
+		colImg := image.NewNRGBA(image.Rect(0, 0, colW, colH))
+		// 把 4 张海报竖向堆进列画布(含阴影)
+		for r := 0; r < ninePostersPerCol; r++ {
+			idx := c*ninePostersPerCol + r
 			if idx >= len(posters) || posters[idx] == nil {
 				continue
 			}
-			fitted := coverFit(posters[idx], cellW, cellH)
-			cx := x0 + c*(cellW+gap)
-			cy := y0 + r*(cellH+gap)
-			draw.Draw(dst, image.Rect(cx, cy, cx+cellW, cy+cellH), fitted, image.Point{}, draw.Src)
+			fitted := coverFit(posters[idx], ninePosterW, ninePosterH)
+			rounded := roundCorners(fitted, nineCornerRadius)
+			withShadow := withDropShadow(rounded, 0, 6, 8, 0.45)
+			// withShadow 带 pad 的 bounds > rounded
+			sb := withShadow.Bounds()
+			dstX := (colW - sb.Dx()) / 2
+			dstY := shadowPad + r*(ninePosterH+ninePosterGap) - (sb.Dy()-ninePosterH)/2
+			draw.Draw(colImg,
+				image.Rect(dstX, dstY, dstX+sb.Dx(), dstY+sb.Dy()),
+				withShadow, sb.Min, draw.Over)
 		}
+
+		// 整列旋转(transparent 背景)
+		rotated := imaging.Rotate(colImg, nineRotateAngle, color.Transparent)
+		rb := rotated.Bounds()
+
+		// 把旋转后的整列贴到 base:中心对齐 colCenterX[c],Y 基线为 canvas 垂直中心 + jitter
+		cx := colCenterX[c]
+		cy := canvasH/2 + colYJitter[c]
+		dstX := cx - rb.Dx()/2
+		dstY := cy - rb.Dy()/2
+		draw.Draw(base,
+			image.Rect(dstX, dstY, dstX+rb.Dx(), dstY+rb.Dy()),
+			rotated, rb.Min, draw.Over)
 	}
 }
 
-// drawTitle 在 (x, yCenter) 以白色 + 阴影绘制库名。
-// 先单行二分找最大字号,放不下则多行 wrap 最多 3 行,末行超长加 "…"。
-func drawTitle(dst *image.RGBA, name string, x, yCenter, maxW, maxH int) error {
+// drawTitleBlock 在 base 的左侧画:
+//
+//	主标题(库名,白色,大字号自适应)
+//	+ 下方:橙色竖条 + 英文副标(TV / MOVIE / DOC / MEDIA)
+func drawTitleBlock(base *image.RGBA, name, collectionType string, canvasW, canvasH int) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil
 	}
 
-	// 单行二分
-	lowSize, highSize := 30.0, 140.0
-	var bestSize float64
+	// 左侧文字区域:x in [80, 780]
+	const leftPad = 80
+	titleMaxW := 700
+
+	// 1. 主标题:二分找最大单行字号
+	lowSize, highSize := 56.0, 170.0
 	var bestFace font.Face
-	defer func() {
-		if bestFace != nil {
-			_ = bestFace.Close()
-		}
-	}()
 	for lowSize <= highSize {
 		mid := (lowSize + highSize) / 2
 		face, err := makeFace(mid)
@@ -230,12 +282,11 @@ func drawTitle(dst *image.RGBA, name string, x, yCenter, maxW, maxH int) error {
 			return err
 		}
 		advance := font.MeasureString(face, name)
-		if advance.Round() <= maxW {
+		if advance.Round() <= titleMaxW {
 			if bestFace != nil {
 				_ = bestFace.Close()
 			}
 			bestFace = face
-			bestSize = mid
 			lowSize = mid + 2
 		} else {
 			_ = face.Close()
@@ -243,55 +294,108 @@ func drawTitle(dst *image.RGBA, name string, x, yCenter, maxW, maxH int) error {
 		}
 	}
 
-	// 单行放得下 → 直接画
+	// 副标题内容
+	sub := subtitleForCollection(collectionType)
+
+	// 2. 画主标题(如果单行放得下)
+	var mainBottom int
 	if bestFace != nil {
+		defer bestFace.Close()
 		metrics := bestFace.Metrics()
-		lineHeight := metrics.Ascent.Round() + metrics.Descent.Round()
-		y := yCenter + metrics.Ascent.Round()/2
-		_ = lineHeight
-		_ = bestSize
-		drawLineWithShadow(dst, name, x, y, bestFace)
-		return nil
-	}
-
-	// 单行最小字号仍放不下 → 多行模式,字号用 48
-	return drawWrappedTitle(dst, name, x, yCenter, maxW, maxH)
-}
-
-// drawWrappedTitle 以固定字号 48 多行 wrap,最多 3 行,超出末尾追加 "…"。
-func drawWrappedTitle(dst *image.RGBA, name string, x, yCenter, maxW, _ int) error {
-	const maxLines = 3
-	const lineHeightFactor = 1.25
-	size := 48.0
-	for {
-		if size < 24 {
-			break
-		}
-		face, err := makeFace(size)
+		ascent := metrics.Ascent.Round()
+		descent := metrics.Descent.Round()
+		// 主标题 baseline 位置:在画布纵向中心略偏上,给副标题留空间
+		baseY := canvasH/2 - descent/2 + 10
+		drawStringWithShadow(base, name, leftPad, baseY, bestFace, color.RGBA{255, 255, 255, 255})
+		mainBottom = baseY + descent
+		_ = ascent
+	} else {
+		// 单行最小字号也超宽 → 多行 wrap
+		bottom, err := drawWrappedTitle(base, name, leftPad, canvasH/2, titleMaxW)
 		if err != nil {
 			return err
+		}
+		mainBottom = bottom
+	}
+
+	// 3. 副标题:橙色竖条 + 大写英文
+	subSize := 30.0
+	subFace, err := makeFace(subSize)
+	if err != nil {
+		return err
+	}
+	defer subFace.Close()
+	subMetrics := subFace.Metrics()
+	subH := subMetrics.Ascent.Round() + subMetrics.Descent.Round()
+	subGapTop := 24
+	subBaseY := mainBottom + subGapTop + subMetrics.Ascent.Round()
+
+	// 橙色竖条:宽 5,高度与副标题基本一致
+	barW := 5
+	barH := subH - 2
+	barX := leftPad
+	barY := subBaseY - subMetrics.Ascent.Round() + 2
+	drawFilledRect(base,
+		image.Rect(barX, barY, barX+barW, barY+barH),
+		color.RGBA{0xe4, 0x7e, 0x48, 0xff})
+
+	// 副标题文字(带一点点字间距的大写英文)
+	subX := leftPad + barW + 18
+	drawStringWithShadow(base, sub, subX, subBaseY, subFace, color.RGBA{255, 255, 255, 220})
+
+	_ = canvasW
+	return nil
+}
+
+// subtitleForCollection 把库类型映射到英文副标。
+func subtitleForCollection(ct string) string {
+	switch strings.ToLower(strings.TrimSpace(ct)) {
+	case "movies":
+		return "M O V I E"
+	case "tvshows":
+		return "T V"
+	case "music":
+		return "M U S I C"
+	case "boxsets":
+		return "C O L L E C T I O N"
+	case "homevideos":
+		return "H O M E"
+	default:
+		return "M E D I A"
+	}
+}
+
+// drawWrappedTitle 用固定字号 72 多行 wrap,最多 3 行,末行超长追加 "…"。
+// 返回最后一行的 baseline + descent(供副标题定位)。
+func drawWrappedTitle(dst *image.RGBA, name string, x, yCenter, maxW int) (int, error) {
+	const maxLines = 3
+	const lineHeightFactor = 1.18
+	size := 72.0
+	for size >= 36 {
+		face, err := makeFace(size)
+		if err != nil {
+			return 0, err
 		}
 		lines := wrapToLines(face, name, maxW, maxLines)
 		metrics := face.Metrics()
 		lineH := int(float64(metrics.Ascent.Round()+metrics.Descent.Round()) * lineHeightFactor)
 		totalH := lineH * len(lines)
-		// 如果最多 3 行仍有剩余字符,且已经最小字号,强制在末尾截断加 "…"
-		if len(lines) <= maxLines || size <= 24 {
+		if len(lines) <= maxLines || size <= 36 {
 			yStart := yCenter - totalH/2 + metrics.Ascent.Round()
 			for i, ln := range lines {
-				drawLineWithShadow(dst, ln, x, yStart+i*lineH, face)
+				drawStringWithShadow(dst, ln, x, yStart+i*lineH, face, color.RGBA{255, 255, 255, 255})
 			}
+			bottom := yStart + (len(lines)-1)*lineH + metrics.Descent.Round()
 			_ = face.Close()
-			return nil
+			return bottom, nil
 		}
 		_ = face.Close()
 		size -= 6
 	}
-	return nil
+	return yCenter, nil
 }
 
-// wrapToLines 按"中文逐字、英文按空格"切分,使每行宽度 ≤ maxW。
-// 最多产出 maxLines 行,超出部分末尾追加 "…"。
+// wrapToLines 按"中文逐字、英文按空格"切分。
 func wrapToLines(face font.Face, s string, maxW int, maxLines int) []string {
 	tokens := splitTokens(s)
 	var lines []string
@@ -315,16 +419,13 @@ func wrapToLines(face font.Face, s string, maxW int, maxLines int) []string {
 		}
 	}
 	flush()
-
 	if len(lines) > maxLines {
-		// 末行加省略号
 		lines = lines[:maxLines]
 		lines[maxLines-1] = truncateWithEllipsis(face, lines[maxLines-1]+"…", maxW)
 	}
 	return lines
 }
 
-// splitTokens:中文/日文等 CJK 按单字切分,拉丁字符按空格切分成词 + 空格。
 func splitTokens(s string) []string {
 	var tokens []string
 	var word strings.Builder
@@ -351,19 +452,18 @@ func splitTokens(s string) []string {
 
 func isCJK(r rune) bool {
 	switch {
-	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+	case r >= 0x4E00 && r <= 0x9FFF:
 		return true
-	case r >= 0x3040 && r <= 0x30FF: // Hiragana + Katakana
+	case r >= 0x3040 && r <= 0x30FF:
 		return true
-	case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
+	case r >= 0xAC00 && r <= 0xD7AF:
 		return true
-	case r >= 0x3400 && r <= 0x4DBF: // CJK Extension A
+	case r >= 0x3400 && r <= 0x4DBF:
 		return true
 	}
 	return false
 }
 
-// truncateWithEllipsis 从末尾逐字符去掉,直到测得宽度 ≤ maxW 并在末尾保留 "…"。
 func truncateWithEllipsis(face font.Face, s string, maxW int) string {
 	if font.MeasureString(face, s).Round() <= maxW {
 		return s
@@ -379,22 +479,22 @@ func truncateWithEllipsis(face font.Face, s string, maxW int) string {
 	return "…"
 }
 
-// drawLineWithShadow 先在 (x+3, y+3) 画半透明黑色阴影,再在 (x, y) 画白色主文字。
-func drawLineWithShadow(dst *image.RGBA, text string, x, y int, face font.Face) {
-	shadowColor := image.NewUniform(color.RGBA{0, 0, 0, 170})
-	whiteColor := image.NewUniform(color.RGBA{255, 255, 255, 255})
+// drawStringWithShadow 先画半透明黑色阴影,再画主文字。
+func drawStringWithShadow(dst *image.RGBA, text string, x, y int, face font.Face, fg color.RGBA) {
+	shadow := image.NewUniform(color.RGBA{0, 0, 0, 150})
+	fill := image.NewUniform(fg)
 
 	sd := &font.Drawer{
 		Dst:  dst,
-		Src:  shadowColor,
+		Src:  shadow,
 		Face: face,
-		Dot:  fixed.P(x+3, y+3),
+		Dot:  fixed.P(x+2, y+3),
 	}
 	sd.DrawString(text)
 
 	md := &font.Drawer{
 		Dst:  dst,
-		Src:  whiteColor,
+		Src:  fill,
 		Face: face,
 		Dot:  fixed.P(x, y),
 	}
