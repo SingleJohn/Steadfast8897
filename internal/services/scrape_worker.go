@@ -395,6 +395,13 @@ func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 			return fmt.Errorf("tmdb client unavailable")
 		}
 		return processBackfillEpisodeImageTask(ctx, w.pool, client, t.ItemID)
+
+	case ScrapeTaskBackfillActorImg:
+		client := w.tmdbClient(ctx)
+		if client == nil {
+			return fmt.Errorf("tmdb client unavailable")
+		}
+		return processBackfillActorImagesTask(ctx, w.pool, client, t.ItemID)
 	}
 	return fmt.Errorf("unknown task_type: %s", t.TaskType)
 }

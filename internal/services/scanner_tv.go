@@ -375,25 +375,55 @@ func scanOneShow(
 		pool.Exec(ctx, "UPDATE items SET updated_at = NOW() WHERE id = $1::uuid AND type = 'Series'", seriesID)
 	}
 
-	// 已刮削 Series 下有新 Episode → 入队 backfill,避免新集/新季停在占位符。
-	// Series 已识别过(tmdb_id 非空)时,autoScrapeNewItems 不会重入队它,
-	// BackfillTask 又只在用户手动触发或启动 24h 后跑,所以这里必须主动入队。
-	if len(newEpisodeSeasonIDs) > 0 {
-		var seriesTmdbID *int64
-		_ = pool.QueryRow(ctx,
-			"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Series'",
-			seriesID,
-		).Scan(&seriesTmdbID)
-		if seriesTmdbID != nil && *seriesTmdbID > 0 {
-			queue := NewScrapeQueue(pool)
-			_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
-			seasonIDs := make([]string, 0, len(newEpisodeSeasonIDs))
-			for sid := range newEpisodeSeasonIDs {
-				seasonIDs = append(seasonIDs, sid)
+	// Series 有 tmdb_id(identify 成功或 NFO 带 tmdbid)时才能做 TMDB 补全。
+	// autoScrapeNewItems 不会把已识别 / NFO 源的 item 重入队,BackfillTask 又只在用户手动
+	// 触发或启动 24h 后跑,所以这里是常规 rescrape 路径外的主动补全入口。
+	var seriesTmdbID *int64
+	_ = pool.QueryRow(ctx,
+		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Series'",
+		seriesID,
+	).Scan(&seriesTmdbID)
+	seriesScraped := seriesTmdbID != nil && *seriesTmdbID > 0
+
+	// 分支 1:已刮削 Series 下新增 Episode → 增量补 name/image,避免新集停在占位符。
+	if seriesScraped && len(newEpisodeSeasonIDs) > 0 {
+		queue := NewScrapeQueue(pool)
+		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
+		seasonIDs := make([]string, 0, len(newEpisodeSeasonIDs))
+		for sid := range newEpisodeSeasonIDs {
+			seasonIDs = append(seasonIDs, sid)
+		}
+		_, _ = queue.EnqueueBatch(ctx, seasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
+		slog.Info("[Scan] New episodes under scraped series, enqueued backfill",
+			"series", seriesID, "show", finalShowName, "seasons", len(seasonIDs))
+	}
+
+	// 分支 2:NFO 扫入且 Series 有 tmdb_id → 补 TMDB 独有字段。
+	// NFO 不带 cast image_url,也不带分集 still,而 auto_scrape 明确跳过 NFO 源,
+	// 这里是唯一的兜底入口。UNIQUE(item_id,task_type) 会去重,重扫不会放大工作量。
+	// 包含所有现存季(不限 new),下游任务按 "字段为空才覆盖" 语义自检,不会覆盖已有数据。
+	if seriesScraped && nfoData != nil {
+		queue := NewScrapeQueue(pool)
+		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillActorImg, ScrapePriorityScan)
+		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
+		rows, err := pool.Query(ctx,
+			"SELECT id::text FROM items WHERE parent_id = $1::uuid AND type = 'Season'",
+			seriesID)
+		if err == nil {
+			var allSeasonIDs []string
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					allSeasonIDs = append(allSeasonIDs, id)
+				}
 			}
-			_, _ = queue.EnqueueBatch(ctx, seasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
-			slog.Info("[Scan] New episodes under scraped series, enqueued backfill",
-				"series", seriesID, "show", finalShowName, "seasons", len(seasonIDs))
+			rows.Close()
+			if len(allSeasonIDs) > 0 {
+				_, _ = queue.EnqueueBatch(ctx, allSeasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
+			}
+			slog.Info("[Scan] NFO series, enqueued TMDB complement",
+				"series", seriesID, "show", finalShowName,
+				"tmdb_id", *seriesTmdbID, "seasons", len(allSeasonIDs))
 		}
 	}
 }

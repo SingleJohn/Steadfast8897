@@ -233,6 +233,29 @@ func resolveSeasonPosterMediaPath(ctx context.Context, pool *pgxpool.Pool, seaso
 	return filepath.Join(filepath.Dir(*episodePath), "poster.jpg")
 }
 
+// resolveEpisodeThumbMediaPath 返回 Episode 对应媒体目录内的 thumb 路径,形如
+// `<视频同目录>/<视频 basename>-thumb.jpg`。这是 Emby/Jellyfin 的 thumb 命名约定,
+// 也是 scanner 端 FindEpisodeThumbCached 首要识别的 pattern。
+// file_path 为 http URL 或空时返回空串,调用方回退到 data/metadata。
+func resolveEpisodeThumbMediaPath(ctx context.Context, pool *pgxpool.Pool, episodeID string) string {
+	var filePath *string
+	if err := pool.QueryRow(ctx,
+		"SELECT file_path FROM items WHERE id = $1::uuid AND type = 'Episode'",
+		episodeID,
+	).Scan(&filePath); err != nil || filePath == nil || *filePath == "" {
+		return ""
+	}
+	p := *filePath
+	if strings.HasPrefix(strings.ToLower(p), "http") {
+		return ""
+	}
+	stem := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+	if stem == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), stem+"-thumb.jpg")
+}
+
 func writeNfoFile(path string, itemType string, nfo *NfoData) bool {
 	if path == "" || nfo == nil {
 		return false

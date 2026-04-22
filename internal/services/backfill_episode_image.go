@@ -168,6 +168,11 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 	}
 	rows.Close()
 
+	// saveMode 决定媒体目录 / data dir 的写入策略,与 applyMergedDetails 一致。
+	saveMode := getScrapeSaveMode(ctx, pool)
+	saveToData := saveMode == "database" || saveMode == "both"
+	saveToMedia := saveMode == "media_dir" || saveMode == "both"
+
 	var downloaded, failed, notInTmdb int
 	for _, ep := range eps {
 		still, ok := stills[ep.epNum]
@@ -175,13 +180,30 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 			notInTmdb++
 			continue
 		}
-		savePath := fmt.Sprintf("data/metadata/%s/still.jpg", ep.id)
-		if client.DownloadImage(ctx, still, savePath, "w300") {
-			tag := GenerateImageTag(savePath)
+		var dbPath string
+		var dbTag *string
+		mediaSaved := false
+		if saveToMedia {
+			if mediaPath := resolveEpisodeThumbMediaPath(ctx, pool, ep.id); mediaPath != "" {
+				if client.DownloadImage(ctx, still, mediaPath, "w300") {
+					dbPath = mediaPath
+					dbTag = GenerateImageTag(mediaPath)
+					mediaSaved = true
+				}
+			}
+		}
+		if saveToData || (saveToMedia && !mediaSaved) {
+			dataPath := fmt.Sprintf("data/metadata/%s/still.jpg", ep.id)
+			if client.DownloadImage(ctx, still, dataPath, "w300") && dbPath == "" {
+				dbPath = dataPath
+				dbTag = GenerateImageTag(dataPath)
+			}
+		}
+		if dbPath != "" {
 			_, _ = pool.Exec(ctx,
 				`UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW()
 				  WHERE id = $3::uuid AND primary_image_path IS NULL`,
-				savePath, tag, ep.id)
+				dbPath, dbTag, ep.id)
 			downloaded++
 		} else {
 			failed++

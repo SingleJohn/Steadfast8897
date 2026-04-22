@@ -43,22 +43,23 @@ func scrapeEpisodeMetadata(ctx context.Context, pool *pgxpool.Pool, client *Tmdb
 	}
 	rows.Close()
 
-	// stillEnabled 在整个 Series 刮削里只读一次,避免每季重复查 system_config。
+	// stillEnabled / saveMode 在整个 Series 刮削里只读一次,避免每季重复查 system_config。
 	stillEnabled := readEpisodeStillFetchEnabled(ctx, pool)
+	saveMode := getScrapeSaveMode(ctx, pool)
 
 	for _, s := range seasons {
 		num := int32(1)
 		if s.indexNum != nil {
 			num = *s.indexNum
 		}
-		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, num, stillEnabled); err != nil {
+		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, num, stillEnabled, saveMode); err != nil {
 			slog.Debug("[TMDB] episode fetch failed", "season_id", s.id, "tmdb_id", tmdbID, "season", num, "error", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonItemID string, tmdbID int64, seasonNum int32, stillFetchEnabled bool) error {
+func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonItemID string, tmdbID int64, seasonNum int32, stillFetchEnabled bool, saveMode string) error {
 	endpoint := fmt.Sprintf("%s/tv/%d/season/%d?api_key={API_KEY}&language=%s", TMDB_BASE, tmdbID, seasonNum, client.language)
 	data, err := client.tmdbGet(ctx, endpoint)
 	if err != nil {
@@ -184,14 +185,36 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	}
 
 	// still 图下载 + 回写 primary_image_path;串行保持原有节奏避免压爆 TMDB CDN。
+	// saveMode=media_dir/both 时先尝试写到 `<视频同目录>/<basename>-thumb.jpg`(Emby/Jellyfin
+	// 约定,scanner 端 FindEpisodeThumbCached 首要识别的 pattern);media 写失败或路径解析
+	// 不出(http / strm URL / 空 file_path)时回退 data/metadata。
+	saveToData := saveMode == "database" || saveMode == "both"
+	saveToMedia := saveMode == "media_dir" || saveMode == "both"
 	var stillOK, stillFail int
 	for _, t := range stillTargets {
-		savePath := fmt.Sprintf("data/metadata/%s/still.jpg", t.id)
-		if client.DownloadImage(ctx, t.stillPath, savePath, "w300") {
-			tag := GenerateImageTag(savePath)
+		var dbPath string
+		var dbTag *string
+		mediaSaved := false
+		if saveToMedia {
+			if mediaPath := resolveEpisodeThumbMediaPath(ctx, pool, t.id); mediaPath != "" {
+				if client.DownloadImage(ctx, t.stillPath, mediaPath, "w300") {
+					dbPath = mediaPath
+					dbTag = GenerateImageTag(mediaPath)
+					mediaSaved = true
+				}
+			}
+		}
+		if saveToData || (saveToMedia && !mediaSaved) {
+			dataPath := fmt.Sprintf("data/metadata/%s/still.jpg", t.id)
+			if client.DownloadImage(ctx, t.stillPath, dataPath, "w300") && dbPath == "" {
+				dbPath = dataPath
+				dbTag = GenerateImageTag(dataPath)
+			}
+		}
+		if dbPath != "" {
 			_, _ = pool.Exec(ctx,
 				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				savePath, tag, t.id)
+				dbPath, dbTag, t.id)
 			stillOK++
 		} else {
 			stillFail++

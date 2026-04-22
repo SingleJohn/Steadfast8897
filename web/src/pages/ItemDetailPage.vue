@@ -396,7 +396,7 @@ function handleGenreClick(genreId: string) {
           <div v-for="ep in episodes" :key="ep.Id" class="ep-card" @click="router.push('/item/' + ep.Id)">
             <div v-if="(ep.UserData?.PlayedPercentage || 0) > 0 && (ep.UserData?.PlayedPercentage || 0) < 100" class="ep-progress" :style="{ width: (ep.UserData?.PlayedPercentage || 0) + '%' }" />
             <div class="ep-thumb-wrap">
-              <img :src="getImageUrl(ep.SeriesPrimaryImageItemId || ep.Id, 'Primary', 200)" alt="" class="ep-thumb" />
+              <img :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" />
             </div>
             <div class="ep-body">
               <div class="ep-header">
@@ -424,7 +424,7 @@ function handleGenreClick(genreId: string) {
           <div v-for="ep in episodes" :key="ep.Id" class="ep-card" @click="router.push('/item/' + ep.Id)">
             <div v-if="(ep.UserData?.PlayedPercentage || 0) > 0 && (ep.UserData?.PlayedPercentage || 0) < 100" class="ep-progress" :style="{ width: (ep.UserData?.PlayedPercentage || 0) + '%' }" />
             <div class="ep-thumb-wrap">
-              <img :src="getImageUrl(ep.SeriesPrimaryImageItemId || ep.Id, 'Primary', 200)" alt="" class="ep-thumb" />
+              <img :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" />
             </div>
             <div class="ep-body">
               <div class="ep-header">

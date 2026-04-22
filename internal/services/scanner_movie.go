@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,24 @@ import (
 
 	"fyms/internal/models"
 )
+
+// enqueueMovieNfoComplement 给 NFO 扫入的 Movie 入队 TMDB 补全任务。
+// NFO 不带 cast image_url,而 autoScrapeNewItems 跳过 NFO 源,这里是兜底入口。
+// UNIQUE(item_id, task_type) 会去重,重复扫不会放大工作量。
+// Movie 没 Episode,所以只入队演员头像;poster/backdrop 通常已在本地目录(poster.jpg/fanart.jpg)。
+func enqueueMovieNfoComplement(ctx context.Context, pool *pgxpool.Pool, itemID string) {
+	var tmdbID *int64
+	_ = pool.QueryRow(ctx,
+		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Movie'",
+		itemID,
+	).Scan(&tmdbID)
+	if tmdbID == nil || *tmdbID <= 0 {
+		return
+	}
+	_ = NewScrapeQueue(pool).Enqueue(ctx, itemID, ScrapeTaskBackfillActorImg, ScrapePriorityScan)
+	slog.Info("[Scan] NFO movie, enqueued actor image complement",
+		"movie", itemID, "tmdb_id", *tmdbID)
+}
 
 // ============ Movie Scanning ============
 
@@ -230,6 +249,7 @@ func scanOneMovie(
 				if nfoPath := FindNfoCached(dirCache); nfoPath != nil {
 					if nfo := ParseNfo(*nfoPath); nfo != nil {
 						ApplyNfoDataWithPlatformSource(ctx, pool, itemID.String(), nfo, models.PlatformScanSourceNFO)
+						enqueueMovieNfoComplement(ctx, pool, itemID.String())
 					}
 				}
 			}
@@ -259,6 +279,7 @@ func scanOneMovie(
 			if nfoPath := FindNfoCached(dirCache); nfoPath != nil {
 				if nfo := ParseNfo(*nfoPath); nfo != nil {
 					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
+					enqueueMovieNfoComplement(ctx, pool, insertedID.String())
 				}
 			}
 		} else if err == pgx.ErrNoRows {
@@ -304,6 +325,7 @@ func scanOneMovie(
 				if nfoPath := FindNfoCached(parentCache); nfoPath != nil {
 					if nfo := ParseNfo(*nfoPath); nfo != nil {
 						ApplyNfoDataWithPlatformSource(ctx, pool, itemID.String(), nfo, models.PlatformScanSourceNFO)
+						enqueueMovieNfoComplement(ctx, pool, itemID.String())
 					}
 				}
 			}
@@ -332,6 +354,15 @@ func scanOneMovie(
 		).Scan(&insertedID)
 		if err == nil && insertedID != nil {
 			ensureMovieMediaVersions(ctx, pool, *insertedID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
+			// 单文件布局首次新建:与目录布局新建分支对称,apply 同目录的 NFO。
+			// 不加这段时,NFO 里的 tmdbid/plot/cast 要等下次扫描命中 existing 分支才被补上,
+			// 首扫期间 TMDB identify 会基于文件名再识别一轮,容易误判 + 覆盖 NFO 手工编辑。
+			if nfoPath := FindNfoCached(parentCache); nfoPath != nil {
+				if nfo := ParseNfo(*nfoPath); nfo != nil {
+					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
+					enqueueMovieNfoComplement(ctx, pool, insertedID.String())
+				}
+			}
 		} else if err == pgx.ErrNoRows {
 			if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, fullPath); existingID != nil {
 				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)

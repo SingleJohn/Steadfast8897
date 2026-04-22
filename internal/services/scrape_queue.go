@@ -17,7 +17,10 @@ const (
 	ScrapeTaskBackfillQuality     ScrapeTaskType = "backfill_quality"
 	ScrapeTaskBackfillEpisodeName ScrapeTaskType = "backfill_episode_name"
 	ScrapeTaskBackfillEpisodeImg  ScrapeTaskType = "backfill_episode_image"
-	ScrapeTaskRefresh             ScrapeTaskType = "refresh"
+	// ScrapeTaskBackfillActorImg:给 NFO 扫入的 Series/Movie 补演员头像 URL。
+	// 只填 cast_members.image_url IS NULL 的行,不覆盖已有 URL。
+	ScrapeTaskBackfillActorImg ScrapeTaskType = "backfill_actor_images"
+	ScrapeTaskRefresh          ScrapeTaskType = "refresh"
 )
 
 // Priority 默认值约定(数值越小越优先):

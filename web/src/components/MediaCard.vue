@@ -34,12 +34,19 @@ const hasImage = computed(() => {
 })
 
 const imgSrc = computed(() => {
+  const it = props.item
   if (props.shape === 'thumb') {
-    if (props.item.BackdropImageTags?.length > 0) return getImageUrl(props.item.Id, 'Backdrop', 500)
-    if (props.item.ParentBackdropItemId) return getImageUrl(props.item.ParentBackdropItemId, 'Backdrop', 500)
-    if (props.item.ImageTags?.Thumb) return getImageUrl(props.item.Id, 'Thumb', 500)
+    // 横版卡片(例:继续观看)优先用横图:Episode backdrop > 父级 backdrop > Episode thumb。
+    // 三者皆空时落到下面竖版分支 —— 竖版海报在 16:9 卡里会裁切,但比空占位好。
+    if (it.BackdropImageTags?.length > 0) return getImageUrl(it.Id, 'Backdrop', 500)
+    if (it.ParentBackdropItemId) return getImageUrl(it.ParentBackdropItemId, 'Backdrop', 500)
+    if (it.ImageTags?.Thumb) return getImageUrl(it.Id, 'Thumb', 500)
   }
-  const id = props.item.SeriesPrimaryImageItemId || props.item.Id
+  // 竖版/方形:
+  // - Episode 没有竖版海报,显示父剧海报是 Emby 客户端通用行为(竖版卡里显示 still 比例不协调)
+  // - Movie/Series 显示自己的 Primary
+  // 注意 ItemDetailPage 的分集缩略图是横图场景,那里要用 Episode.Id 拿 still,不走这里。
+  const id = (it.Type === 'Episode' && it.SeriesPrimaryImageItemId) ? it.SeriesPrimaryImageItemId : it.Id
   return getImageUrl(id, 'Primary', 300)
 })
 
