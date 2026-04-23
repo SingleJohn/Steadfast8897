@@ -17,10 +17,12 @@ import (
 var ErrNoMatch = errors.New("scraper: no match")
 
 const (
-	DefaultThreshold = 0.72
-	cacheTTLSuccess  = 7 * 24 * time.Hour
-	cacheTTLEmpty    = 24 * time.Hour
-	candidateTopN    = 5
+	DefaultThreshold  = 0.72
+	cacheTTLSuccess   = 7 * 24 * time.Hour
+	cacheTTLEmpty     = 24 * time.Hour
+	candidateTopN     = 5
+	maxSearchAttempts = 10
+	nearThresholdGap  = 0.08
 )
 
 // Matcher 负责把 ParsedName 映射到一个 provider 内部 ID。
@@ -73,7 +75,7 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 		if strings.TrimSpace(a.Query) == "" {
 			continue
 		}
-		candidates, err := m.searchCached(ctx, t, a.Query, a.Year)
+		candidates, err := m.searchCached(ctx, t, a)
 		if err != nil {
 			slog.Debug("[Matcher] search error", "query", a.Query, "error", err)
 			continue
@@ -94,6 +96,15 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 				Source:      a.Source,
 			}, nil
 		}
+		if best.score >= m.threshold-nearThresholdGap && m.passesSecondaryConfirm(candidates, parsed, best) {
+			return &Identity{
+				Provider:    m.provider.Name(),
+				ProviderID:  best.cand.ProviderID,
+				ExternalIDs: cloneIDs(best.cand.ExternalIDs),
+				Score:       best.score,
+				Source:      a.Source + "+secondary_confirm",
+			}, nil
+		}
 	}
 	return nil, ErrNoMatch
 }
@@ -106,7 +117,7 @@ func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType
 		if strings.TrimSpace(a.Query) == "" {
 			continue
 		}
-		candidates, err := m.searchCached(ctx, t, a.Query, a.Year)
+		candidates, err := m.searchCached(ctx, t, a)
 		if err != nil {
 			continue
 		}
@@ -202,37 +213,138 @@ func (m *Matcher) tryExternalID(ctx context.Context, p ParsedName, kind string) 
 }
 
 type SearchAttempt struct {
-	Source string
-	Query  string
-	Year   *int32
+	Source         string
+	Query          string
+	Year           *int32
+	PreferOriginal bool
 }
 
 // BuildSearchAttempts 返回识别阶段会依次尝试的搜索 query 序列。
 func BuildSearchAttempts(p ParsedName) []SearchAttempt {
-	var out []SearchAttempt
-	if p.OriginalTitle != "" {
-		out = append(out, SearchAttempt{"orig_title+year", p.OriginalTitle, p.Year})
-	}
-	if p.Title != "" && p.Title != p.OriginalTitle {
-		out = append(out, SearchAttempt{"title+year", p.Title, p.Year})
-	}
-	if p.Year != nil {
-		if p.OriginalTitle != "" {
-			out = append(out, SearchAttempt{"orig_title_no_year", p.OriginalTitle, nil})
+	out := make([]SearchAttempt, 0, maxSearchAttempts)
+	seen := map[string]struct{}{}
+
+	appendAttempt := func(source, query string, year *int32, preferOriginal bool) bool {
+		query = strings.TrimSpace(query)
+		if query == "" || len(out) >= maxSearchAttempts {
+			return false
 		}
-		if p.Title != "" && p.Title != p.OriginalTitle {
-			out = append(out, SearchAttempt{"title_no_year", p.Title, nil})
+		key := strings.ToLower(query)
+		if year != nil {
+			key += "|" + strconv.FormatInt(int64(*year), 10)
+		}
+		if preferOriginal {
+			key += "|orig"
+		}
+		if _, ok := seen[key]; ok {
+			return false
+		}
+		seen[key] = struct{}{}
+		out = append(out, SearchAttempt{Source: source, Query: query, Year: year, PreferOriginal: preferOriginal})
+		return true
+	}
+
+	appendSeed := func(seed SearchSeed) {
+		if len(out) >= maxSearchAttempts {
+			return
+		}
+		year := seed.Year
+		if year == nil {
+			year = p.Year
+		}
+		if seed.OriginalTitle != "" {
+			appendAttempt(seed.Source+"_orig_title+year", seed.OriginalTitle, year, true)
+		}
+		if seed.Title != "" && seed.Title != seed.OriginalTitle {
+			appendAttempt(seed.Source+"_title+year", seed.Title, year, false)
+		}
+		full := strings.TrimSpace(strings.Join(compactStrings(seed.Title, seed.OriginalTitle), " "))
+		if full != "" && full != seed.Title && full != seed.OriginalTitle {
+			appendAttempt(seed.Source+"_full_bilingual", full, nil, false)
+		}
+		if year != nil {
+			if seed.OriginalTitle != "" {
+				appendAttempt(seed.Source+"_orig_title_no_year", seed.OriginalTitle, nil, true)
+			}
+			if seed.Title != "" && seed.Title != seed.OriginalTitle {
+				appendAttempt(seed.Source+"_title_no_year", seed.Title, nil, false)
+			}
 		}
 	}
+
+	seeds := prioritizeSearchSeeds(p)
+	weakSeeds := make([]SearchSeed, 0, len(seeds))
+	if len(p.SearchSeeds) > 0 {
+		for _, seed := range seeds {
+			if seed.Weak {
+				weakSeeds = append(weakSeeds, seed)
+				continue
+			}
+			appendSeed(seed)
+		}
+		if len(out) == 0 {
+			for _, seed := range weakSeeds {
+				appendSeed(seed)
+			}
+		}
+	} else {
+		appendSeed(SearchSeed{
+			Source:        "parsed",
+			Title:         p.Title,
+			OriginalTitle: p.OriginalTitle,
+			Year:          p.Year,
+		})
+	}
+
 	if len(out) == 0 {
 		return out
 	}
-	// 最后兜底：主 query 的首个 token（对抗 `Name.EXTRA.STUFF` 残留噪声）
 	primary := out[0].Query
 	if token := firstCoreToken(primary); token != "" && token != primary {
-		out = append(out, SearchAttempt{"first_token", token, nil})
+		appendAttempt("first_token", token, nil, false)
 	}
 	return out
+}
+
+func prioritizeSearchSeeds(p ParsedName) []SearchSeed {
+	if len(p.SearchSeeds) == 0 {
+		return nil
+	}
+	seeds := append([]SearchSeed(nil), p.SearchSeeds...)
+	sort.SliceStable(seeds, func(i, j int) bool {
+		return searchSeedPriority(seeds[i], p) < searchSeedPriority(seeds[j], p)
+	})
+	return seeds
+}
+
+func searchSeedPriority(seed SearchSeed, p ParsedName) int {
+	priority := 10
+	if seed.Weak {
+		priority += 40
+	}
+	switch seed.Source {
+	case "item_name":
+		priority -= 3
+	case "file_basename":
+		priority -= 2
+	case "parent_folder":
+		priority -= 1
+	}
+	switch strings.ToLower(strings.TrimSpace(p.MediaHint)) {
+	case "anime":
+		if seed.OriginalTitle != "" && seed.OriginalTitle != seed.Title {
+			priority -= 8
+		}
+	case "series":
+		if seed.Source == "item_name" || seed.Source == "file_basename" {
+			priority -= 3
+		}
+	case "movie":
+		if seed.Year != nil {
+			priority -= 2
+		}
+	}
+	return priority
 }
 
 func firstCoreToken(s string) string {
@@ -243,13 +355,28 @@ func firstCoreToken(s string) string {
 	return parts[0]
 }
 
-func (m *Matcher) searchCached(ctx context.Context, t MediaType, query string, year *int32) ([]Candidate, error) {
-	key := searchCacheKey(m.provider.Name(), t, query, year)
+func compactStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func (m *Matcher) searchCached(ctx context.Context, t MediaType, attempt SearchAttempt) ([]Candidate, error) {
+	key := searchCacheKey(m.provider.Name(), t, attempt.Query, attempt.Year, attempt.PreferOriginal)
 	var cached []Candidate
 	if m.cache != nil && m.cache.GetJSON(ctx, key, &cached) {
 		return cached, nil
 	}
-	q := Query{Title: query, Year: year}
+	q := Query{Year: attempt.Year, Hint: attempt.Source}
+	if attempt.PreferOriginal {
+		q.OriginalTitle = attempt.Query
+	} else {
+		q.Title = attempt.Query
+	}
 	candidates, err := m.provider.Search(ctx, t, q)
 	if err != nil {
 		return nil, err
@@ -264,12 +391,16 @@ func (m *Matcher) searchCached(ctx context.Context, t MediaType, query string, y
 	return candidates, nil
 }
 
-func searchCacheKey(provider string, t MediaType, query string, year *int32) string {
+func searchCacheKey(provider string, t MediaType, query string, year *int32, preferOriginal bool) string {
 	yr := ""
 	if year != nil {
 		yr = strconv.FormatInt(int64(*year), 10)
 	}
-	h := sha1.Sum([]byte(strings.ToLower(query) + "|" + yr))
+	mode := "title"
+	if preferOriginal {
+		mode = "orig"
+	}
+	h := sha1.Sum([]byte(strings.ToLower(query) + "|" + yr + "|" + mode))
 	return fmt.Sprintf("scraper:search:%s:%s:%s", provider, strings.ToLower(string(t)), hex.EncodeToString(h[:]))
 }
 
@@ -279,25 +410,11 @@ type scoredCandidate struct {
 }
 
 func pickBest(cands []Candidate, p ParsedName) *scoredCandidate {
-	if len(cands) == 0 {
+	ranked := rankCandidates(cands, p, 1)
+	if len(ranked) == 0 {
 		return nil
 	}
-	top := cands
-	if len(top) > candidateTopN {
-		top = top[:candidateTopN]
-	}
-	var best *scoredCandidate
-	for _, c := range top {
-		if strings.TrimSpace(c.ProviderID) == "" {
-			continue
-		}
-		s := scoreCandidate(c, p)
-		if best == nil || s > best.score {
-			cc := c
-			best = &scoredCandidate{cand: cc, score: s}
-		}
-	}
-	return best
+	return &ranked[0]
 }
 
 func cloneIDs(src map[string]string) map[string]string {
@@ -320,7 +437,11 @@ func scoreCandidate(c Candidate, p ParsedName) float64 {
 	titleSim := bestTitleSimilarity(c, p)
 	year := yearScore(c.Year, p.Year)
 	pop := popularityScore(c.Popularity)
-	return 0.55*titleSim + 0.30*year + 0.15*pop
+	score := 0.55*titleSim + 0.30*year + 0.15*pop + mediaHintBonus(c, p, titleSim, year)
+	if score > 1 {
+		return 1
+	}
+	return score
 }
 
 func bestTitleSimilarity(c Candidate, p ParsedName) float64 {
@@ -383,7 +504,7 @@ func popularityScore(pop float64) float64 {
 
 // normalizeForCompare 小写 + 剥非字母数字 + 保留 CJK。
 func normalizeForCompare(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(strings.ToLower(normalizeCompareSymbols(s)))
 	if s == "" {
 		return ""
 	}
@@ -404,11 +525,55 @@ func titleCompareVariants(s string) []string {
 	if base == "" {
 		return nil
 	}
-	out := []string{base}
-	if withArabic := normalizeChineseNumerals(base); withArabic != "" && withArabic != base {
-		out = append(out, withArabic)
+	out := make([]string, 0, 6)
+	appendVariant := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == value {
+				return
+			}
+		}
+		out = append(out, value)
+	}
+
+	appendVariant(base)
+	appendVariant(strings.ReplaceAll(base, " ", ""))
+	if withArabic := normalizeChineseNumerals(base); withArabic != "" {
+		appendVariant(withArabic)
+		appendVariant(strings.ReplaceAll(withArabic, " ", ""))
+		if withRomanArabic := normalizeRomanNumerals(withArabic); withRomanArabic != "" {
+			appendVariant(withRomanArabic)
+			appendVariant(strings.ReplaceAll(withRomanArabic, " ", ""))
+		}
+	}
+	if withRomanArabic := normalizeRomanNumerals(base); withRomanArabic != "" {
+		appendVariant(withRomanArabic)
+		appendVariant(strings.ReplaceAll(withRomanArabic, " ", ""))
 	}
 	return out
+}
+
+func normalizeCompareSymbols(s string) string {
+	if s == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"：", " ", ":", " ",
+		"·", " ", "・", " ", "•", " ",
+		"．", " ", ".", " ",
+		"—", " ", "–", " ", "-", " ", "_", " ",
+		"/", " ", "\\", " ",
+		"（", " ", "）", " ", "(", " ", ")", " ",
+		"【", " ", "】", " ", "[", " ", "]", " ",
+		"“", " ", "”", " ", "\"", " ",
+		"‘", " ", "’", " ", "'", " ", "`", " ",
+		"＋", " ", "+", " ",
+		"＆", " ", "&", " ",
+	)
+	return replacer.Replace(s)
 }
 
 func normalizeDigitRune(r rune) rune {
@@ -520,6 +685,194 @@ func chineseNumeralTokenToArabic(token string) (string, bool) {
 	}
 	total += section + number
 	return strconv.Itoa(total), true
+}
+
+func normalizeRomanNumerals(s string) string {
+	if s == "" {
+		return ""
+	}
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return ""
+	}
+	changed := false
+	for i, part := range parts {
+		if arabic, ok := romanTokenToArabic(part); ok {
+			parts[i] = arabic
+			changed = true
+		}
+	}
+	if !changed {
+		return s
+	}
+	return strings.Join(parts, " ")
+}
+
+func romanTokenToArabic(token string) (string, bool) {
+	token = strings.ToUpper(strings.TrimSpace(token))
+	if token == "" || len(token) > 6 {
+		return "", false
+	}
+	for _, r := range token {
+		if !strings.ContainsRune("IVXLCDM", r) {
+			return "", false
+		}
+	}
+	value := romanToInt(token)
+	if value <= 0 || value > 30 || intToRoman(value) != token {
+		return "", false
+	}
+	return strconv.Itoa(value), true
+}
+
+func romanToInt(s string) int {
+	values := map[rune]int{'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+	total := 0
+	prev := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		v := values[rune(s[i])]
+		if v < prev {
+			total -= v
+		} else {
+			total += v
+			prev = v
+		}
+	}
+	return total
+}
+
+func intToRoman(v int) string {
+	if v <= 0 {
+		return ""
+	}
+	type roman struct {
+		value int
+		text  string
+	}
+	table := []roman{
+		{1000, "M"}, {900, "CM"}, {500, "D"}, {400, "CD"},
+		{100, "C"}, {90, "XC"}, {50, "L"}, {40, "XL"},
+		{10, "X"}, {9, "IX"}, {5, "V"}, {4, "IV"}, {1, "I"},
+	}
+	var out strings.Builder
+	for _, item := range table {
+		for v >= item.value {
+			out.WriteString(item.text)
+			v -= item.value
+		}
+	}
+	return out.String()
+}
+
+func mediaHintBonus(c Candidate, p ParsedName, titleSim, yearFit float64) float64 {
+	switch strings.ToLower(strings.TrimSpace(p.MediaHint)) {
+	case "anime":
+		orig := specificTitleSimilarity(p.OriginalTitle, c.OriginalTitle, c.Title)
+		switch {
+		case orig >= 0.93 && yearFit >= 0.5:
+			return 0.05
+		case orig >= 0.86:
+			return 0.03
+		}
+	case "series":
+		if titleSim >= 0.92 && yearFit >= 0.5 {
+			return 0.03
+		}
+	case "movie":
+		if titleSim >= 0.92 && yearFit >= 1.0 {
+			return 0.02
+		}
+	}
+	return 0
+}
+
+func specificTitleSimilarity(source string, targets ...string) float64 {
+	avs := titleCompareVariants(source)
+	if len(avs) == 0 {
+		return 0
+	}
+	best := 0.0
+	for _, target := range targets {
+		for _, a := range avs {
+			for _, b := range titleCompareVariants(target) {
+				if s := jaroWinkler(a, b); s > best {
+					best = s
+				}
+			}
+		}
+	}
+	return best
+}
+
+func rankCandidates(cands []Candidate, p ParsedName, limit int) []scoredCandidate {
+	if len(cands) == 0 || limit == 0 {
+		return nil
+	}
+	top := cands
+	if len(top) > candidateTopN {
+		top = top[:candidateTopN]
+	}
+	ranked := make([]scoredCandidate, 0, len(top))
+	for _, c := range top {
+		if strings.TrimSpace(c.ProviderID) == "" {
+			continue
+		}
+		ranked = append(ranked, scoredCandidate{cand: c, score: scoreCandidate(c, p)})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+	if limit > 0 && len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked
+}
+
+func (m *Matcher) passesSecondaryConfirm(cands []Candidate, p ParsedName, best *scoredCandidate) bool {
+	if best == nil {
+		return false
+	}
+	titleSim := bestTitleSimilarity(best.cand, p)
+	yearFit := yearScore(best.cand.Year, p.Year)
+	if hasMatchingExternalID(best.cand.ExternalIDs, p.IDs) {
+		return true
+	}
+
+	ranked := rankCandidates(cands, p, 2)
+	secondBest := 0.0
+	if len(ranked) > 1 {
+		secondBest = ranked[1].score
+	}
+	margin := best.score - secondBest
+
+	switch {
+	case titleSim >= 0.96 && yearFit >= 0.5:
+		return true
+	case titleSim >= 0.92 && yearFit >= 1.0 && margin >= 0.04:
+		return true
+	case strings.EqualFold(strings.TrimSpace(p.MediaHint), "anime") &&
+		specificTitleSimilarity(p.OriginalTitle, best.cand.OriginalTitle, best.cand.Title) >= 0.93 &&
+		yearFit >= 0.5 && margin >= 0.03:
+		return true
+	default:
+		return false
+	}
+}
+
+func hasMatchingExternalID(candidateIDs, parsedIDs map[string]string) bool {
+	if len(candidateIDs) == 0 || len(parsedIDs) == 0 {
+		return false
+	}
+	for kind, parsedID := range parsedIDs {
+		parsedID = strings.TrimSpace(parsedID)
+		if parsedID == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(candidateIDs[kind]), parsedID) {
+			return true
+		}
+	}
+	return false
 }
 
 // jaroWinkler 在 rune 上实现的 Jaro-Winkler 相似度。

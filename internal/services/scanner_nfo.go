@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,7 @@ var (
 	// default="true" / default="false" 等属性可选。
 	nfoUniqueIdTmdbRe = regexp.MustCompile(`(?is)<uniqueid\b[^>]*\btype\s*=\s*"tmdb"[^>]*>([^<]*)</uniqueid>`)
 	nfoUniqueIdImdbRe = regexp.MustCompile(`(?is)<uniqueid\b[^>]*\btype\s*=\s*"imdb"[^>]*>([^<]*)</uniqueid>`)
+	nfoUniqueIdTvdbRe = regexp.MustCompile(`(?is)<uniqueid\b[^>]*\btype\s*=\s*"tvdb"[^>]*>([^<]*)</uniqueid>`)
 )
 
 // stripNfoNestedBlocks 把 actor/director/producer/crew/set 等包含嵌套 <tmdbid>/<imdbid>
@@ -55,7 +57,7 @@ func stripNfoNestedBlocks(xml string) string {
 }
 
 func init() {
-	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "premiered", "studio"}
+	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "tvdbid", "premiered", "studio"}
 	nfoTagRegexes = make(map[string]nfoTagPair, len(tags))
 	for _, name := range tags {
 		nfoTagRegexes[name] = nfoTagPair{
@@ -89,6 +91,7 @@ type NfoData struct {
 	Rating        *float64
 	TmdbID        *int32
 	ImdbID        *string
+	TvdbID        *int32
 	Genres        []string
 	Actors        []NfoActor
 	Directors     []string
@@ -157,6 +160,20 @@ func ParseNfo(nfoPath string) *NfoData {
 		if m := nfoUniqueIdImdbRe.FindStringSubmatch(xmlTop); m != nil {
 			if s := strings.TrimSpace(m[1]); s != "" {
 				result.ImdbID = &s
+			}
+		}
+	}
+	if s := nfoTag(xmlTop, "tvdbid"); s != nil {
+		if v, err := strconv.ParseInt(*s, 10, 32); err == nil && v > 0 {
+			i := int32(v)
+			result.TvdbID = &i
+		}
+	}
+	if result.TvdbID == nil {
+		if m := nfoUniqueIdTvdbRe.FindStringSubmatch(xmlTop); m != nil {
+			if v, err := strconv.ParseInt(strings.TrimSpace(m[1]), 10, 32); err == nil && v > 0 {
+				i := int32(v)
+				result.TvdbID = &i
 			}
 		}
 	}
@@ -438,4 +455,47 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 		return
 	}
 	committed = true
+	syncNfoProviderHints(ctx, pool, itemID, nfo)
+}
+
+func syncNfoProviderHints(ctx context.Context, pool *pgxpool.Pool, itemID string, nfo *NfoData) {
+	if pool == nil || nfo == nil {
+		return
+	}
+	updates := map[string]string{}
+	if nfo.TmdbID != nil && *nfo.TmdbID > 0 {
+		updates["tmdb"] = strconv.FormatInt(int64(*nfo.TmdbID), 10)
+	}
+	if nfo.ImdbID != nil {
+		if imdb := strings.TrimSpace(*nfo.ImdbID); imdb != "" {
+			updates["imdb"] = imdb
+		}
+	}
+	if nfo.TvdbID != nil && *nfo.TvdbID > 0 {
+		updates["tvdb"] = strconv.FormatInt(int64(*nfo.TvdbID), 10)
+	}
+	if len(updates) == 0 {
+		return
+	}
+
+	var raw []byte
+	if err := pool.QueryRow(ctx, "SELECT provider_ids FROM items WHERE id = $1::uuid", itemID).Scan(&raw); err != nil {
+		slog.Warn("[ApplyNfo] load provider_ids failed", "item_id", itemID, "error", err)
+		return
+	}
+	merged := map[string]string{}
+	mergeProviderIDs(merged, raw)
+	for provider, value := range updates {
+		merged[provider] = value
+	}
+	payload, err := json.Marshal(merged)
+	if err != nil {
+		slog.Warn("[ApplyNfo] marshal provider_ids failed", "item_id", itemID, "error", err)
+		return
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE items SET provider_ids = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
+		string(payload), itemID); err != nil {
+		slog.Warn("[ApplyNfo] update provider_ids failed", "item_id", itemID, "error", err)
+	}
 }

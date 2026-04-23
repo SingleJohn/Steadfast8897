@@ -333,6 +333,9 @@ func writeNfoFile(path string, itemType string, nfo *NfoData) bool {
 	if nfo.TmdbID != nil {
 		fmt.Fprintf(&b, "  <tmdbid>%d</tmdbid>\n", *nfo.TmdbID)
 	}
+	if nfo.TvdbID != nil {
+		fmt.Fprintf(&b, "  <tvdbid>%d</tvdbid>\n", *nfo.TvdbID)
+	}
 	for _, genre := range nfo.Genres {
 		g := strings.TrimSpace(genre)
 		if g == "" {
@@ -643,25 +646,50 @@ func ScrapeItem(ctx context.Context, pool *pgxpool.Pool, itemID string) (map[str
 }
 
 type scrapeItemMeta struct {
-	ItemType  string
-	Name      string
-	Year      *int32
-	TmdbID    *int32
-	ImdbID    *string
-	FilePath  *string
-	LibraryID string // 用于 per-library 刮削配置
+	ItemType    string
+	Name        string
+	Year        *int32
+	TmdbID      *int32
+	ImdbID      *string
+	FilePath    *string
+	LibraryID   string // 用于 per-library 刮削配置
+	ExternalIDs map[string]string
 }
 
 func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) (*scrapeItemMeta, error) {
-	meta := &scrapeItemMeta{}
+	meta := &scrapeItemMeta{ExternalIDs: map[string]string{}}
+	var providerIDsRaw []byte
 	err := pool.QueryRow(ctx,
-		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path, library_id::text FROM items WHERE id = $1::uuid", itemID,
-	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath, &meta.LibraryID)
+		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path, library_id::text, provider_ids FROM items WHERE id = $1::uuid", itemID,
+	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath, &meta.LibraryID, &providerIDsRaw)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("item not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query item: %w", err)
+	}
+	mergeProviderIDs(meta.ExternalIDs, providerIDsRaw)
+
+	rows, err := pool.Query(ctx,
+		"SELECT provider, external_id FROM item_external_ids WHERE item_id = $1::uuid",
+		itemID)
+	if err != nil {
+		return nil, fmt.Errorf("query item external ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var provider, externalID string
+		if err := rows.Scan(&provider, &externalID); err != nil {
+			return nil, fmt.Errorf("scan item external ids: %w", err)
+		}
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		externalID = strings.TrimSpace(externalID)
+		if provider != "" && externalID != "" {
+			meta.ExternalIDs[provider] = externalID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate item external ids: %w", err)
 	}
 	return meta, nil
 }
@@ -680,22 +708,31 @@ func tmdbSetIdentifyAttempted(ctx context.Context, pool *pgxpool.Pool, itemID st
 
 // buildParsedName 从 item meta + 文件路径构造 ParsedName，给 Matcher 使用。
 func buildParsedName(meta *scrapeItemMeta) scraper.ParsedName {
-	basis := meta.Name
-	if meta.FilePath != nil && *meta.FilePath != "" {
-		basis = filepath.Base(*meta.FilePath)
-	}
 	mode := scraper.ModeMovie
 	if meta.ItemType == "Series" {
 		mode = scraper.ModeSeries
 	}
-	parsed := scraper.Parse(basis, mode)
+
+	candidates := collectParsedNameCandidates(meta, mode)
+	parsed := pickPrimaryParsedCandidate(candidates, meta.ItemType)
+	parsed.SearchSeeds = buildSearchSeeds(candidates, parsed)
 
 	// DB 侧的 year 最可信，覆盖解析结果
 	if meta.Year != nil && *meta.Year > 0 {
 		parsed.Year = meta.Year
+		for i := range parsed.SearchSeeds {
+			parsed.SearchSeeds[i].Year = meta.Year
+		}
 	}
 	if parsed.IDs == nil {
 		parsed.IDs = map[string]string{}
+	}
+	for _, cand := range candidates {
+		for kind, id := range cand.Parsed.IDs {
+			if strings.TrimSpace(parsed.IDs[kind]) == "" && strings.TrimSpace(id) != "" {
+				parsed.IDs[kind] = strings.TrimSpace(id)
+			}
+		}
 	}
 	if meta.TmdbID != nil && *meta.TmdbID > 0 && parsed.IDs["tmdb"] == "" {
 		parsed.IDs["tmdb"] = strconv.Itoa(int(*meta.TmdbID))
@@ -703,11 +740,181 @@ func buildParsedName(meta *scrapeItemMeta) scraper.ParsedName {
 	if meta.ImdbID != nil && strings.TrimSpace(*meta.ImdbID) != "" && parsed.IDs["imdb"] == "" {
 		parsed.IDs["imdb"] = strings.TrimSpace(*meta.ImdbID)
 	}
+	for kind, id := range meta.ExternalIDs {
+		if strings.TrimSpace(parsed.IDs[kind]) == "" && strings.TrimSpace(id) != "" {
+			parsed.IDs[kind] = strings.TrimSpace(id)
+		}
+	}
 	// Title 兜底：若归一化后 Title/OriginalTitle 都为空，用 items.name
 	if parsed.Title == "" && parsed.OriginalTitle == "" {
 		parsed.Title = meta.Name
 	}
 	return parsed
+}
+
+type parsedNameCandidate struct {
+	Source string
+	Raw    string
+	Parsed scraper.ParsedName
+}
+
+func collectParsedNameCandidates(meta *scrapeItemMeta, mode scraper.ParseMode) []parsedNameCandidate {
+	candidates := make([]parsedNameCandidate, 0, 4)
+	seen := map[string]struct{}{}
+	add := func(source, raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		key := strings.ToLower(raw)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, parsedNameCandidate{
+			Source: source,
+			Raw:    raw,
+			Parsed: scraper.Parse(raw, mode),
+		})
+	}
+
+	add("item_name", meta.Name)
+	if meta.FilePath != nil && strings.TrimSpace(*meta.FilePath) != "" {
+		fp := strings.TrimSpace(*meta.FilePath)
+		add("file_basename", filepath.Base(fp))
+		add("parent_folder", filepath.Base(filepath.Dir(fp)))
+		add("grandparent_folder", filepath.Base(filepath.Dir(filepath.Dir(fp))))
+	}
+	return candidates
+}
+
+func pickPrimaryParsedCandidate(candidates []parsedNameCandidate, itemType string) scraper.ParsedName {
+	if len(candidates) == 0 {
+		return scraper.ParsedName{IDs: make(map[string]string)}
+	}
+	best := candidates[0]
+	bestScore := scoreParsedNameCandidate(best, itemType)
+	for _, cand := range candidates[1:] {
+		if score := scoreParsedNameCandidate(cand, itemType); score > bestScore {
+			best = cand
+			bestScore = score
+		}
+	}
+	parsed := best.Parsed
+	if parsed.IDs == nil {
+		parsed.IDs = make(map[string]string)
+	}
+	return parsed
+}
+
+func scoreParsedNameCandidate(c parsedNameCandidate, itemType string) int {
+	score := 0
+	if len(c.Parsed.IDs) > 0 {
+		score += 100
+	}
+	if c.Parsed.Year != nil {
+		score += 30
+	}
+	if title := primaryParsedTitle(c.Parsed); title != "" {
+		score += 20
+		if !scraper.IsWeakTitle(title) {
+			score += 25
+		} else {
+			score -= 40
+		}
+	}
+	if c.Parsed.Title != "" && c.Parsed.OriginalTitle != "" {
+		score += 10
+	}
+	if c.Parsed.Season != nil || c.Parsed.Episode != nil {
+		score -= 20
+	}
+	switch c.Source {
+	case "item_name":
+		score += 18
+	case "file_basename":
+		score += 12
+	case "parent_folder":
+		score += 16
+	case "grandparent_folder":
+		score += 8
+	}
+	if itemType == "Movie" && c.Source == "parent_folder" {
+		score += 10
+	}
+	if itemType == "Series" && c.Source == "file_basename" {
+		score += 12
+	}
+	return score
+}
+
+func primaryParsedTitle(p scraper.ParsedName) string {
+	if s := strings.TrimSpace(p.Title); s != "" {
+		return s
+	}
+	return strings.TrimSpace(p.OriginalTitle)
+}
+
+func buildSearchSeeds(candidates []parsedNameCandidate, primary scraper.ParsedName) []scraper.SearchSeed {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]scraper.SearchSeed, 0, len(candidates))
+	seen := map[string]struct{}{}
+	add := func(c parsedNameCandidate) {
+		seed := scraper.SearchSeed{
+			Source:        c.Source,
+			Title:         strings.TrimSpace(c.Parsed.Title),
+			OriginalTitle: strings.TrimSpace(c.Parsed.OriginalTitle),
+			Year:          c.Parsed.Year,
+		}
+		title := primaryParsedTitle(c.Parsed)
+		seed.Weak = title == "" || scraper.IsWeakTitle(title)
+		key := strings.ToLower(seed.Source + "|" + seed.Title + "|" + seed.OriginalTitle)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, seed)
+	}
+
+	primaryKey := strings.ToLower(primary.Title + "|" + primary.OriginalTitle)
+	for _, cand := range candidates {
+		if strings.ToLower(cand.Parsed.Title+"|"+cand.Parsed.OriginalTitle) == primaryKey {
+			add(cand)
+			break
+		}
+	}
+	for _, cand := range candidates {
+		add(cand)
+	}
+	return out
+}
+
+func mergeProviderIDs(dst map[string]string, raw []byte) {
+	if len(raw) == 0 || dst == nil {
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+	for key, value := range payload {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if s := strings.TrimSpace(v); s != "" {
+				dst[key] = s
+			}
+		case float64:
+			if v > 0 {
+				dst[key] = strconv.FormatInt(int64(v), 10)
+			}
+		}
+	}
 }
 
 func upsertExternalIDs(ctx context.Context, pool *pgxpool.Pool, itemID string, ids []externalIDRecord) {
@@ -906,6 +1113,8 @@ func (c *TmdbClient) FindByExternalID(ctx context.Context, kind, id string) (str
 		source = "imdb_id"
 	case "tmdb":
 		return id, nil
+	case "tvdb":
+		source = "tvdb_id"
 	default:
 		return "", nil
 	}
@@ -1119,9 +1328,16 @@ func mergedToNfoData(merged *scraper.MergedDetails, tmdbID int64, studio *string
 		tagline = &s
 	}
 	var imdbID *string
+	var tvdbID *int32
 	if merged.ExternalIDs != nil {
 		if s := strings.TrimSpace(merged.ExternalIDs["imdb"]); s != "" {
 			imdbID = &s
+		}
+		if s := strings.TrimSpace(merged.ExternalIDs["tvdb"]); s != "" {
+			if v, err := strconv.ParseInt(s, 10, 32); err == nil && v > 0 {
+				tv := int32(v)
+				tvdbID = &tv
+			}
 		}
 	}
 	var tmdbIDi32 *int32
@@ -1151,6 +1367,7 @@ func mergedToNfoData(merged *scraper.MergedDetails, tmdbID int64, studio *string
 		Rating:        rating,
 		TmdbID:        tmdbIDi32,
 		ImdbID:        imdbID,
+		TvdbID:        tvdbID,
 		Genres:        append([]string(nil), merged.Genres...),
 		Actors:        actors,
 		Directors:     append([]string(nil), merged.Directors...),

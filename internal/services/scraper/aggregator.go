@@ -195,9 +195,12 @@ func (a *Aggregator) remapToTMDB(ctx context.Context, id *Identity) *Identity {
 			ExternalIDs: cloneIDs(id.ExternalIDs),
 		}
 	}
-	// imdb → tmdb
-	if imdb := strings.TrimSpace(id.ExternalIDs["imdb"]); imdb != "" {
-		pid, err := tmdb.FindByExternalID(ctx, "imdb", imdb)
+	for _, kind := range []string{"imdb", "tvdb"} {
+		externalID := strings.TrimSpace(id.ExternalIDs[kind])
+		if externalID == "" {
+			continue
+		}
+		pid, err := tmdb.FindByExternalID(ctx, kind, externalID)
 		if err == nil && strings.TrimSpace(pid) != "" && pid != "0" {
 			ids := cloneIDs(id.ExternalIDs)
 			if ids == nil {

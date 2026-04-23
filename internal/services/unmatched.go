@@ -137,12 +137,12 @@ func listIdentifyCandidatesBatch(ctx context.Context, pool *pgxpool.Pool, itemID
 // ResolveIdentifyCandidate 把一条候选反解为 "采纳时应使用的 (provider, externalID)"。
 // 优先返回 ("tmdb", tmdbID):尝试把候选映射到 TMDB,能映射就走 TMDB 路径(Series
 // 可继续抓 episode)。依次尝试:
-//   1) payload.external_ids.tmdb
-//   2) provider=tmdb → external_id
-//   3) payload.external_ids.imdb → TmdbClient.FindByExternalID
-//   4) 非 tmdb 候选:调 provider.GetByID 补 imdb 后再 FindByExternalID(豆瓣/Bangumi
-//      详情页通常含 imdb,Candidates 阶段的 payload 里没有)
-//   5) 候选 title+year → TMDB Search 兜底
+//  1. payload.external_ids.tmdb
+//  2. provider=tmdb → external_id
+//  3. payload.external_ids.imdb / tvdb → TmdbClient.FindByExternalID
+//  4. 非 tmdb 候选:调 provider.GetByID 补 external ids 后再 FindByExternalID(豆瓣/Bangumi
+//     详情页通常含 imdb,Candidates 阶段的 payload 里没有)
+//  5. 候选 title+year → TMDB Search 兜底
 //
 // 全部映射失败时回落到候选原 provider,返回 (candidate.Provider, candidate.ExternalID):
 // 调用方用 ScrapeItemByProviderID 走非 TMDB 路径入库(Series 无 episode 但其它字段齐全)。
@@ -212,16 +212,17 @@ func tryResolveToTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 		}
 		return client
 	}
-	tryIMDbMap := func(imdb string) int64 {
-		imdb = strings.TrimSpace(imdb)
-		if imdb == "" {
+	tryMapToTMDB := func(kind, externalID string) int64 {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		externalID = strings.TrimSpace(externalID)
+		if kind == "" || externalID == "" {
 			return 0
 		}
 		c := ensureClient()
 		if c == nil {
 			return 0
 		}
-		pid, err := c.FindByExternalID(ctx, "imdb", imdb)
+		pid, err := c.FindByExternalID(ctx, kind, externalID)
 		if err != nil {
 			return 0
 		}
@@ -231,9 +232,11 @@ func tryResolveToTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 		return 0
 	}
 
-	// 3) payload.external_ids.imdb
-	if id := tryIMDbMap(pickPayloadExternalID(candidate.Payload, "imdb")); id > 0 {
-		return id
+	// 3) payload.external_ids.imdb / tvdb
+	for _, kind := range []string{"imdb", "tvdb"} {
+		if id := tryMapToTMDB(kind, pickPayloadExternalID(candidate.Payload, kind)); id > 0 {
+			return id
+		}
 	}
 
 	// 4) 非 tmdb 候选:走 provider.GetByID 拉详情,补 external_ids
@@ -246,10 +249,12 @@ func tryResolveToTMDBID(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 					return id
 				}
 			}
-			if id := tryIMDbMap(details.ExternalIDs["imdb"]); id > 0 {
-				slog.Info("[identify] resolved via provider GetByID → imdb → tmdb",
-					"item_id", itemID, "provider", candidate.Provider, "tmdb_id", id)
-				return id
+			for _, kind := range []string{"imdb", "tvdb"} {
+				if id := tryMapToTMDB(kind, details.ExternalIDs[kind]); id > 0 {
+					slog.Info("[identify] resolved via provider GetByID → external_id → tmdb",
+						"item_id", itemID, "provider", candidate.Provider, "kind", kind, "tmdb_id", id)
+					return id
+				}
 			}
 		}
 	}

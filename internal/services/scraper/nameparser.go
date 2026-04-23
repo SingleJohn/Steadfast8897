@@ -23,9 +23,18 @@ type ParsedName struct {
 	Season        *int32
 	Episode       *int32
 	IDs           map[string]string
+	SearchSeeds   []SearchSeed
 	MediaHint     string
 	Junk          []string
 	Quality       QualityTags
+}
+
+type SearchSeed struct {
+	Source        string
+	Title         string
+	OriginalTitle string
+	Year          *int32
+	Weak          bool
 }
 
 // QualityTags 聚合从文件名解析出的画质信息。
@@ -45,11 +54,11 @@ func (q QualityTags) Empty() bool {
 }
 
 var (
-	reIDTmdb    = regexp.MustCompile(`\{tmdb-(\d+)\}`)
-	reIDImdbFmt = regexp.MustCompile(`\{imdb-(tt\d{7,8})\}`)
+	reIDTmdb    = regexp.MustCompile(`(?i)(?:\{|\[)(?:tmdbid|tmdb)-(\d+)(?:\}|\])`)
+	reIDImdbFmt = regexp.MustCompile(`(?i)(?:\{|\[)(?:imdbid|imdb)-(tt\d{7,8})(?:\}|\])`)
 	reIDImdbRaw = regexp.MustCompile(`(?i)\btt(\d{7,8})\b`)
-	reIDTvdb    = regexp.MustCompile(`\{tvdb-(\d+)\}`)
-	reIDBangumi = regexp.MustCompile(`\{(?:bgm|bangumi)-(\d+)\}`)
+	reIDTvdb    = regexp.MustCompile(`(?i)(?:\{|\[)(?:tvdbid|tvdb)-(\d+)(?:\}|\])`)
+	reIDBangumi = regexp.MustCompile(`(?i)(?:\{|\[)(?:bgmid|bgm|bangumiid|bangumi)-(\d+)(?:\}|\])`)
 
 	reEpSxxExx = regexp.MustCompile(`(?i)\bs(\d{1,2})[\s._-]*e(\d{1,3})\b`)
 	reEpNxN    = regexp.MustCompile(`\b(\d{1,2})x(\d{1,3})\b`)
@@ -70,6 +79,8 @@ var (
 	reBracketTag  = regexp.MustCompile(`\[[^\[\]]*\]`)
 	reGroupSuffix = regexp.MustCompile(`-[A-Za-z0-9@._]+$`)
 	reSpaces      = regexp.MustCompile(`\s+`)
+	reWeakSeason  = regexp.MustCompile(`^season\s*\d+$`)
+	reWeakSxx     = regexp.MustCompile(`^s\d{1,2}$`)
 
 	reCJK = regexp.MustCompile(`[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]`)
 
@@ -141,6 +152,37 @@ func extractIDs(work string, p *ParsedName) string {
 		work = strings.Replace(work, m[0], " ", 1)
 	}
 	return work
+}
+
+func IsWeakTitle(raw string) bool {
+	s := normalizeWeakTitle(raw)
+	if s == "" {
+		return true
+	}
+	switch s {
+	case "movie", "video", "sample", "trailer", "feature", "film",
+		"show", "tvshow", "episode", "season", "extras", "extra",
+		"bdmv", "stream", "playlist", "disc", "disk", "cd1", "cd2",
+		"电影", "视频", "样片", "预告", "正片", "剧集", "季":
+		return true
+	}
+	if reWeakSeason.MatchString(s) {
+		return true
+	}
+	if reWeakSxx.MatchString(s) {
+		return true
+	}
+	return false
+}
+
+func normalizeWeakTitle(raw string) string {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	if s == "" {
+		return ""
+	}
+	s = strings.NewReplacer(".", " ", "_", " ", "-", " ").Replace(s)
+	s = reSpaces.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
 }
 
 func extractEpisode(work string, p *ParsedName) string {
@@ -374,12 +416,13 @@ func inferMediaHint(raw string, p *ParsedName) string {
 // 避免之前按字符类型分段把 "摇滚万万岁2" 切成 "摇滚万万岁" + "2" 丢掉续集编号。
 //
 // 行为示例:
-//   "摇滚万万岁2"               → ("摇滚万万岁2", "")
-//   "午夜凶铃2 美版"             → ("午夜凶铃2 美版", "")
-//   "迷失 Lost"                  → ("迷失", "Lost")
-//   "钢铁侠3 Iron Man 3"         → ("钢铁侠3", "Iron Man 3")
-//   "阿凡达2:水之道"             → ("阿凡达2:水之道", "")
-//   "Oceansize: Feed To Feed"    → ("Oceansize: Feed To Feed", "")  ← 纯英文
+//
+//	"摇滚万万岁2"               → ("摇滚万万岁2", "")
+//	"午夜凶铃2 美版"             → ("午夜凶铃2 美版", "")
+//	"迷失 Lost"                  → ("迷失", "Lost")
+//	"钢铁侠3 Iron Man 3"         → ("钢铁侠3", "Iron Man 3")
+//	"阿凡达2:水之道"             → ("阿凡达2:水之道", "")
+//	"Oceansize: Feed To Feed"    → ("Oceansize: Feed To Feed", "")  ← 纯英文
 func splitBilingual(s string) (title, original string) {
 	s = strings.TrimSpace(s)
 	if s == "" {
