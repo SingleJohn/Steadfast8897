@@ -802,10 +802,46 @@ export type ScrapeQueueTask = {
   updated_at: string;
 };
 
+export type ScrapeQueueIdentifyDetail = {
+  stage?: string;
+  reason?: string;
+  threshold?: number;
+  auto_apply?: boolean;
+  providers?: string[];
+  parsed?: {
+    title?: string;
+    original_title?: string;
+    year?: number;
+    ids?: Record<string, string>;
+    media_hint?: string;
+    junk?: string[];
+  };
+  search_attempts?: Array<{
+    source: string;
+    query: string;
+    year?: number;
+  }>;
+  candidates_total?: number;
+  best_score?: number;
+  candidates?: Array<{
+    provider: string;
+    provider_id: string;
+    title: string;
+    original_title?: string;
+    year?: number;
+    score: number;
+    popularity?: number;
+    source?: string;
+    external_ids?: Record<string, string>;
+    poster_url?: string;
+  }>;
+};
+
 export type ScrapeQueueTaskDetail = ScrapeQueueTask & {
   request_url?: string;
   response_status?: number;
   response_sample?: string;
+  detail_json?: ScrapeQueueIdentifyDetail;
 };
 
 export type MetricsSnapshot = {

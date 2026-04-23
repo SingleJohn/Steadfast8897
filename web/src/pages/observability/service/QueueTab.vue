@@ -35,6 +35,7 @@ import {
   type ScrapeQueueStats,
   type ScrapeQueueTask,
   type ScrapeQueueTaskDetail,
+  type ScrapeQueueIdentifyDetail,
   type RefreshQueueStats,
   type RefreshQueueTask,
   type RefreshQueueTaskDetail,
@@ -303,6 +304,48 @@ function formatRefreshOptions(options?: RefreshQueueTaskDetail['options']): stri
     .filter(([, value]) => Boolean(value))
     .map(([key, value]) => `${key}: ${String(value)}`)
   return lines.length > 0 ? lines.join('\n') : '默认'
+}
+
+function scrapeIdentifyDetail(detail?: ScrapeQueueTaskDetail): ScrapeQueueIdentifyDetail | null {
+  return detail?.detail_json || null
+}
+
+function formatIdentifyParsed(detail?: ScrapeQueueIdentifyDetail | null): string {
+  const parsed = detail?.parsed
+  if (!parsed) return ''
+  const lines: string[] = []
+  if (parsed.title) lines.push(`title: ${parsed.title}`)
+  if (parsed.original_title) lines.push(`original_title: ${parsed.original_title}`)
+  if (typeof parsed.year === 'number') lines.push(`year: ${parsed.year}`)
+  if (parsed.media_hint) lines.push(`media_hint: ${parsed.media_hint}`)
+  if (parsed.ids && Object.keys(parsed.ids).length > 0) {
+    lines.push(`ids: ${Object.entries(parsed.ids).map(([k, v]) => `${k}=${v}`).join(', ')}`)
+  }
+  if (parsed.junk && parsed.junk.length > 0) {
+    lines.push(`junk: ${parsed.junk.join(', ')}`)
+  }
+  return lines.join('\n')
+}
+
+function formatIdentifyAttempt(attempt: NonNullable<ScrapeQueueIdentifyDetail['search_attempts']>[number]): string {
+  const year = typeof attempt.year === 'number' ? ` · year=${attempt.year}` : ''
+  return `${attempt.source} · ${attempt.query}${year}`
+}
+
+function formatIdentifyCandidate(candidate: NonNullable<ScrapeQueueIdentifyDetail['candidates']>[number]): string {
+  const lines = [
+    `${candidate.provider}/${candidate.provider_id}`,
+    `title: ${candidate.title || '-'}`,
+    `score: ${candidate.score}`,
+  ]
+  if (candidate.original_title) lines.push(`original_title: ${candidate.original_title}`)
+  if (typeof candidate.year === 'number') lines.push(`year: ${candidate.year}`)
+  if (typeof candidate.popularity === 'number') lines.push(`popularity: ${candidate.popularity}`)
+  if (candidate.source) lines.push(`source: ${candidate.source}`)
+  if (candidate.external_ids && Object.keys(candidate.external_ids).length > 0) {
+    lines.push(`external_ids: ${Object.entries(candidate.external_ids).map(([k, v]) => `${k}=${v}`).join(', ')}`)
+  }
+  return lines.join('\n')
 }
 
 async function handleRetryAllScrape() {
@@ -724,6 +767,63 @@ onBeforeUnmount(() => {
                     <div class="detail-label">File Path</div>
                     <code class="detail-url">{{ scrapeDetailCache[t.id].file_path }}</code>
                   </div>
+                  <div v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])" class="detail-structured">
+                    <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.reason">
+                      <div class="detail-label">Identify Reason</div>
+                      <pre class="detail-pre err-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.reason }}</pre>
+                    </div>
+                    <div class="detail-meta-grid">
+                      <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.stage">
+                        <div class="detail-label">Stage</div>
+                        <pre class="detail-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.stage }}</pre>
+                      </div>
+                      <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.threshold != null">
+                        <div class="detail-label">Threshold</div>
+                        <pre class="detail-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.threshold }}</pre>
+                      </div>
+                      <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.best_score != null">
+                        <div class="detail-label">Best Score</div>
+                        <pre class="detail-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.best_score }}</pre>
+                      </div>
+                      <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.auto_apply != null">
+                        <div class="detail-label">Auto Apply</div>
+                        <pre class="detail-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.auto_apply ? 'true' : 'false' }}</pre>
+                      </div>
+                      <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.providers?.length">
+                        <div class="detail-label">Providers</div>
+                        <pre class="detail-pre">{{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.providers?.join(' → ') }}</pre>
+                      </div>
+                    </div>
+                    <div class="detail-row" v-if="formatIdentifyParsed(scrapeIdentifyDetail(scrapeDetailCache[t.id]))">
+                      <div class="detail-label">Parsed</div>
+                      <pre class="detail-pre">{{ formatIdentifyParsed(scrapeIdentifyDetail(scrapeDetailCache[t.id])) }}</pre>
+                    </div>
+                    <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.search_attempts?.length">
+                      <div class="detail-label">Search Attempts</div>
+                      <div class="detail-chip-list">
+                        <code
+                          v-for="(attempt, idx) in scrapeIdentifyDetail(scrapeDetailCache[t.id])?.search_attempts"
+                          :key="`${t.id}-attempt-${idx}`"
+                          class="detail-chip"
+                        >
+                          {{ formatIdentifyAttempt(attempt) }}
+                        </code>
+                      </div>
+                    </div>
+                    <div class="detail-row" v-if="scrapeIdentifyDetail(scrapeDetailCache[t.id])?.candidates?.length">
+                      <div class="detail-label">
+                        Candidates
+                        <span class="detail-count">({{ scrapeIdentifyDetail(scrapeDetailCache[t.id])?.candidates_total ?? scrapeIdentifyDetail(scrapeDetailCache[t.id])?.candidates?.length }})</span>
+                      </div>
+                      <div class="detail-candidate-list">
+                        <pre
+                          v-for="candidate in scrapeIdentifyDetail(scrapeDetailCache[t.id])?.candidates"
+                          :key="`${t.id}-${candidate.provider}-${candidate.provider_id}`"
+                          class="detail-pre detail-candidate-pre"
+                        >{{ formatIdentifyCandidate(candidate) }}</pre>
+                      </div>
+                    </div>
+                  </div>
                   <div class="detail-row" v-if="scrapeDetailCache[t.id].request_url">
                     <div class="detail-label">Request URL</div>
                     <code class="detail-url">{{ scrapeDetailCache[t.id].request_url }}</code>
@@ -743,7 +843,7 @@ onBeforeUnmount(() => {
                     <pre class="detail-pre">{{ formatResponseBody(scrapeDetailCache[t.id].response_sample) }}</pre>
                   </div>
                   <div
-                    v-if="!scrapeDetailCache[t.id].request_url && !scrapeDetailCache[t.id].response_sample && !scrapeDetailCache[t.id].last_error"
+                    v-if="!scrapeIdentifyDetail(scrapeDetailCache[t.id]) && !scrapeDetailCache[t.id].request_url && !scrapeDetailCache[t.id].response_sample && !scrapeDetailCache[t.id].last_error"
                     class="detail-empty"
                   >
                     无诊断信息(本地任务或尚未失败)
@@ -1215,6 +1315,24 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.detail-structured {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 768px) {
+  .detail-meta-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .detail-row {
   display: flex;
   flex-direction: column;
@@ -1256,6 +1374,43 @@ onBeforeUnmount(() => {
 .detail-pre.err-pre {
   color: #f56c6c;
   background: rgba(245, 108, 108, 0.08);
+}
+
+.detail-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detail-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--n-card-color, rgba(0, 0, 0, 0.04));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.detail-candidate-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.detail-candidate-pre {
+  margin: 0;
+  max-height: none;
+}
+
+.detail-count {
+  font-size: 11px;
+  color: var(--n-text-color-3, #888);
+  font-weight: 400;
+  margin-left: 4px;
 }
 
 .detail-empty {

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 )
 
@@ -15,6 +16,7 @@ type ScrapeDiag struct {
 	URL      string
 	Status   int
 	Body     string
+	Detail   string
 	Attempts int
 }
 
@@ -59,4 +61,16 @@ func (d *ScrapeDiag) Record(url string, status int, body []byte, ok bool) {
 	} else {
 		d.Body = ""
 	}
+}
+
+// SetDetail 记录结构化任务诊断,供非 HTTP 失败(如 identify no match)落到队列详情。
+func (d *ScrapeDiag) SetDetail(v any) {
+	if d == nil || v == nil {
+		return
+	}
+	raw, err := json.Marshal(v)
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	d.Detail = string(raw)
 }

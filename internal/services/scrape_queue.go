@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -24,10 +25,11 @@ const (
 )
 
 // Priority 默认值约定(数值越小越优先):
-//   0 = refresh(用户手动"重新刮削",最高)
-//   1 = identify(ingest 新增 item 后自动入队)
-//   3 = scan 触发的任务(Phase 3)
-//   5 = backfill(BackfillTask 批量入队)
+//
+//	0 = refresh(用户手动"重新刮削",最高)
+//	1 = identify(ingest 新增 item 后自动入队)
+//	3 = scan 触发的任务(Phase 3)
+//	5 = backfill(BackfillTask 批量入队)
 const (
 	ScrapePriorityRefresh  = 0
 	ScrapePriorityIdentify = 1
@@ -73,6 +75,8 @@ func (q *ScrapeQueue) Enqueue(ctx context.Context, itemID string, taskType Scrap
 		                      THEN 0 ELSE scrape_queue.retry_count END,
 		   last_error  = CASE WHEN scrape_queue.status IN ('done', 'failed')
 		                      THEN NULL ELSE scrape_queue.last_error END,
+		   detail_json = CASE WHEN scrape_queue.status IN ('done', 'failed')
+		                      THEN NULL ELSE scrape_queue.detail_json END,
 		   updated_at  = NOW()`,
 		itemID, string(taskType), priority,
 	)
@@ -97,6 +101,8 @@ func (q *ScrapeQueue) EnqueueBatch(ctx context.Context, itemIDs []string, taskTy
 		                      THEN 0 ELSE scrape_queue.retry_count END,
 		   last_error  = CASE WHEN scrape_queue.status IN ('done', 'failed')
 		                      THEN NULL ELSE scrape_queue.last_error END,
+		   detail_json = CASE WHEN scrape_queue.status IN ('done', 'failed')
+		                      THEN NULL ELSE scrape_queue.detail_json END,
 		   updated_at  = NOW()`,
 		itemIDs, string(taskType), priority,
 	)
@@ -143,12 +149,12 @@ func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error)
 }
 
 // Done 标记成功完成。保留一段时间供审计,后续由 PruneDone 清理。
-// 同时清空诊断三列,避免前端偶然看到过时的 URL/body。
+// 同时清空 HTTP 诊断列和结构化 detail_json,避免前端看到过时信息。
 func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
 	_, _ = q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'done', last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
 		        updated_at = NOW()
 		  WHERE id = $1`,
 		id)
@@ -160,6 +166,7 @@ func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
 func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, diag *ScrapeDiag) {
 	var reqURL, respBody interface{}
 	var respStatus interface{}
+	var detailJSON interface{}
 	if diag != nil && diag.Attempts > 0 {
 		reqURL = diag.URL
 		if diag.Status > 0 {
@@ -169,14 +176,17 @@ func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, di
 			respBody = diag.Body
 		}
 	}
+	if diag != nil && diag.Detail != "" {
+		detailJSON = diag.Detail
+	}
 	_, _ = q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'failed', retry_count = retry_count + 1,
 		        last_error = $2,
-		        request_url = $3, response_status = $4, response_sample = $5,
+		        request_url = $3, response_status = $4, response_sample = $5, detail_json = $6::jsonb,
 		        updated_at = NOW()
 		  WHERE id = $1`,
-		id, truncateError(errMsg), reqURL, respStatus, respBody)
+		id, truncateError(errMsg), reqURL, respStatus, respBody, detailJSON)
 }
 
 // Fail 标记失败并按指数退避排下次运行。超过 maxRetry 就落成 failed。
@@ -184,6 +194,7 @@ func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, di
 func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string, diag *ScrapeDiag) {
 	var reqURL, respBody interface{}
 	var respStatus interface{}
+	var detailJSON interface{}
 	if diag != nil && diag.Attempts > 0 {
 		reqURL = diag.URL
 		if diag.Status > 0 {
@@ -193,16 +204,19 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 			respBody = diag.Body
 		}
 	}
+	if diag != nil && diag.Detail != "" {
+		detailJSON = diag.Detail
+	}
 
 	if retryCount+1 >= maxRetry {
 		_, _ = q.pool.Exec(ctx,
 			`UPDATE scrape_queue
 			    SET status = 'failed', retry_count = retry_count + 1,
 			        last_error = $2,
-			        request_url = $3, response_status = $4, response_sample = $5,
+			        request_url = $3, response_status = $4, response_sample = $5, detail_json = $6::jsonb,
 			        updated_at = NOW()
 			  WHERE id = $1`,
-			id, truncateError(errMsg), reqURL, respStatus, respBody)
+			id, truncateError(errMsg), reqURL, respStatus, respBody, detailJSON)
 		return
 	}
 	backoff := retryBackoff(retryCount + 1)
@@ -210,11 +224,11 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 		`UPDATE scrape_queue
 		    SET status = 'pending', retry_count = retry_count + 1,
 		        last_error = $2, next_run_at = NOW() + $3::interval,
-		        request_url = $4, response_status = $5, response_sample = $6,
+		        request_url = $4, response_status = $5, response_sample = $6, detail_json = $7::jsonb,
 		        updated_at = NOW()
 		  WHERE id = $1`,
 		id, truncateError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())),
-		reqURL, respStatus, respBody)
+		reqURL, respStatus, respBody, detailJSON)
 }
 
 // RecentTask 给前端队列面板用:最近失败/运行中任务。
@@ -324,13 +338,13 @@ func (q *ScrapeQueue) RecentCount(ctx context.Context, status string) (int64, er
 }
 
 // RetryTask 把单个 failed 任务重置为 pending(立即重试)。
-// 同时清诊断三列,下次失败时由 worker 重新写入。
+// 同时清空诊断字段,下次失败时由 worker 重新写入。
 func (q *ScrapeQueue) RetryTask(ctx context.Context, id int64) error {
 	_, err := q.pool.Exec(ctx,
 		`UPDATE scrape_queue
 		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
 		        last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
 		        updated_at = NOW()
 		  WHERE id = $1 AND status = 'failed'`,
 		id)
@@ -343,7 +357,7 @@ func (q *ScrapeQueue) RetryAllFailed(ctx context.Context) (int64, error) {
 		`UPDATE scrape_queue
 		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
 		        last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL,
+		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
 		        updated_at = NOW()
 		  WHERE status = 'failed'`)
 	if err != nil {
@@ -352,13 +366,14 @@ func (q *ScrapeQueue) RetryAllFailed(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// TaskDetail 是 Recent 单行 + 诊断三列,详情接口专用。
+// TaskDetail 是 Recent 单行 + HTTP/结构化诊断字段,详情接口专用。
 // response_sample 可能几十 KB,列表接口不返回这个,只在点开时按 id 拉取。
 type TaskDetail struct {
 	RecentTask
 	RequestURL     string `json:"request_url,omitempty"`
 	ResponseStatus *int   `json:"response_status,omitempty"`
 	ResponseSample string `json:"response_sample,omitempty"`
+	DetailJSON     any    `json:"detail_json,omitempty"`
 }
 
 // GetTaskDetail 按 id 拉一条任务的完整信息(含 response_sample)。
@@ -366,20 +381,24 @@ func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail,
 	var t TaskDetail
 	var tt string
 	var reqURL, respSample *string
+	var detailJSON []byte
 	var respStatus *int
 	err := q.pool.QueryRow(ctx,
 		`SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
+		        COALESCE(i.file_path, ''), COALESCE(i.series_name, ''),
+		        i.index_number, i.parent_index_number,
 		        sq.task_type, sq.status, sq.priority, sq.retry_count,
 		        COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at,
-		        sq.request_url, sq.response_status, sq.response_sample
+		        sq.request_url, sq.response_status, sq.response_sample, sq.detail_json
 		   FROM scrape_queue sq
 		   LEFT JOIN items i ON i.id = sq.item_id
 		  WHERE sq.id = $1`,
 		id,
 	).Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
+		&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
 		&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
 		&t.NextRunAt, &t.UpdatedAt,
-		&reqURL, &respStatus, &respSample)
+		&reqURL, &respStatus, &respSample, &detailJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +409,12 @@ func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail,
 	t.ResponseStatus = respStatus
 	if respSample != nil {
 		t.ResponseSample = *respSample
+	}
+	if len(detailJSON) > 0 {
+		var detail any
+		if err := json.Unmarshal(detailJSON, &detail); err == nil {
+			t.DetailJSON = detail
+		}
 	}
 	return &t, nil
 }

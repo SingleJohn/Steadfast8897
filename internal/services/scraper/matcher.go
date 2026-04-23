@@ -17,10 +17,10 @@ import (
 var ErrNoMatch = errors.New("scraper: no match")
 
 const (
-	DefaultThreshold    = 0.72
-	cacheTTLSuccess     = 7 * 24 * time.Hour
-	cacheTTLEmpty       = 24 * time.Hour
-	candidateTopN       = 5
+	DefaultThreshold = 0.72
+	cacheTTLSuccess  = 7 * 24 * time.Hour
+	cacheTTLEmpty    = 24 * time.Hour
+	candidateTopN    = 5
 )
 
 // Matcher 负责把 ParsedName 映射到一个 provider 内部 ID。
@@ -68,14 +68,14 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 		return id, nil
 	}
 
-	attempts := buildSearchAttempts(parsed)
+	attempts := BuildSearchAttempts(parsed)
 	for _, a := range attempts {
-		if strings.TrimSpace(a.query) == "" {
+		if strings.TrimSpace(a.Query) == "" {
 			continue
 		}
-		candidates, err := m.searchCached(ctx, t, a.query, a.year)
+		candidates, err := m.searchCached(ctx, t, a.Query, a.Year)
 		if err != nil {
-			slog.Debug("[Matcher] search error", "query", a.query, "error", err)
+			slog.Debug("[Matcher] search error", "query", a.Query, "error", err)
 			continue
 		}
 		best := pickBest(candidates, parsed)
@@ -83,7 +83,7 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 			continue
 		}
 		slog.Debug("[Matcher] candidate",
-			"provider", m.provider.Name(), "source", a.source, "query", a.query, "provider_id", best.cand.ProviderID,
+			"provider", m.provider.Name(), "source", a.Source, "query", a.Query, "provider_id", best.cand.ProviderID,
 			"title", best.cand.Title, "score", best.score)
 		if best.score >= m.threshold {
 			return &Identity{
@@ -91,7 +91,7 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 				ProviderID:  best.cand.ProviderID,
 				ExternalIDs: cloneIDs(best.cand.ExternalIDs),
 				Score:       best.score,
-				Source:      a.source,
+				Source:      a.Source,
 			}, nil
 		}
 	}
@@ -99,14 +99,14 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 }
 
 func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType) ([]ScoredCandidate, error) {
-	attempts := buildSearchAttempts(parsed)
+	attempts := BuildSearchAttempts(parsed)
 	seen := make(map[string]struct{})
 	out := make([]ScoredCandidate, 0, candidateTopN)
 	for _, a := range attempts {
-		if strings.TrimSpace(a.query) == "" {
+		if strings.TrimSpace(a.Query) == "" {
 			continue
 		}
-		candidates, err := m.searchCached(ctx, t, a.query, a.year)
+		candidates, err := m.searchCached(ctx, t, a.Query, a.Year)
 		if err != nil {
 			continue
 		}
@@ -133,7 +133,7 @@ func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType
 				Score:         scoreCandidate(cand, parsed),
 				Popularity:    cand.Popularity,
 				PosterURL:     cand.PosterURL,
-				Source:        a.source,
+				Source:        a.Source,
 			})
 		}
 	}
@@ -201,35 +201,36 @@ func (m *Matcher) tryExternalID(ctx context.Context, p ParsedName, kind string) 
 	}, nil
 }
 
-type searchAttempt struct {
-	source string
-	query  string
-	year   *int32
+type SearchAttempt struct {
+	Source string
+	Query  string
+	Year   *int32
 }
 
-func buildSearchAttempts(p ParsedName) []searchAttempt {
-	var out []searchAttempt
+// BuildSearchAttempts 返回识别阶段会依次尝试的搜索 query 序列。
+func BuildSearchAttempts(p ParsedName) []SearchAttempt {
+	var out []SearchAttempt
 	if p.OriginalTitle != "" {
-		out = append(out, searchAttempt{"orig_title+year", p.OriginalTitle, p.Year})
+		out = append(out, SearchAttempt{"orig_title+year", p.OriginalTitle, p.Year})
 	}
 	if p.Title != "" && p.Title != p.OriginalTitle {
-		out = append(out, searchAttempt{"title+year", p.Title, p.Year})
+		out = append(out, SearchAttempt{"title+year", p.Title, p.Year})
 	}
 	if p.Year != nil {
 		if p.OriginalTitle != "" {
-			out = append(out, searchAttempt{"orig_title_no_year", p.OriginalTitle, nil})
+			out = append(out, SearchAttempt{"orig_title_no_year", p.OriginalTitle, nil})
 		}
 		if p.Title != "" && p.Title != p.OriginalTitle {
-			out = append(out, searchAttempt{"title_no_year", p.Title, nil})
+			out = append(out, SearchAttempt{"title_no_year", p.Title, nil})
 		}
 	}
 	if len(out) == 0 {
 		return out
 	}
 	// 最后兜底：主 query 的首个 token（对抗 `Name.EXTRA.STUFF` 残留噪声）
-	primary := out[0].query
+	primary := out[0].Query
 	if token := firstCoreToken(primary); token != "" && token != primary {
-		out = append(out, searchAttempt{"first_token", token, nil})
+		out = append(out, SearchAttempt{"first_token", token, nil})
 	}
 	return out
 }
@@ -331,13 +332,17 @@ func bestTitleSimilarity(c Candidate, p ParsedName) float64 {
 	}
 	var best float64
 	for _, pair := range pairs {
-		a := normalizeForCompare(pair[0])
-		b := normalizeForCompare(pair[1])
-		if a == "" || b == "" {
-			continue
-		}
-		if s := jaroWinkler(a, b); s > best {
-			best = s
+		avs := titleCompareVariants(pair[0])
+		bvs := titleCompareVariants(pair[1])
+		for _, a := range avs {
+			for _, b := range bvs {
+				if a == "" || b == "" {
+					continue
+				}
+				if s := jaroWinkler(a, b); s > best {
+					best = s
+				}
+			}
 		}
 	}
 	return best
@@ -386,12 +391,135 @@ func normalizeForCompare(s string) string {
 	for _, r := range s {
 		switch {
 		case unicode.IsLetter(r), unicode.IsDigit(r):
-			b.WriteRune(r)
+			b.WriteRune(normalizeDigitRune(r))
 		case r == ' ':
 			b.WriteRune(' ')
 		}
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+func titleCompareVariants(s string) []string {
+	base := normalizeForCompare(s)
+	if base == "" {
+		return nil
+	}
+	out := []string{base}
+	if withArabic := normalizeChineseNumerals(base); withArabic != "" && withArabic != base {
+		out = append(out, withArabic)
+	}
+	return out
+}
+
+func normalizeDigitRune(r rune) rune {
+	if r >= '０' && r <= '９' {
+		return '0' + (r - '０')
+	}
+	return r
+}
+
+func normalizeChineseNumerals(s string) string {
+	if s == "" {
+		return ""
+	}
+	var out strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); {
+		if !isChineseNumeralRune(runes[i]) {
+			out.WriteRune(runes[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(runes) && isChineseNumeralRune(runes[j]) {
+			j++
+		}
+		token := string(runes[i:j])
+		if arabic, ok := chineseNumeralTokenToArabic(token); ok {
+			out.WriteString(arabic)
+		} else {
+			out.WriteString(token)
+		}
+		i = j
+	}
+	return out.String()
+}
+
+func isChineseNumeralRune(r rune) bool {
+	_, ok := chineseDigitValue[r]
+	if ok {
+		return true
+	}
+	_, ok = chineseUnitValue[r]
+	return ok
+}
+
+var chineseDigitValue = map[rune]int{
+	'零': 0, '〇': 0,
+	'一': 1, '壹': 1,
+	'二': 2, '贰': 2, '两': 2, '俩': 2,
+	'三': 3, '叁': 3,
+	'四': 4, '肆': 4,
+	'五': 5, '伍': 5,
+	'六': 6, '陆': 6,
+	'七': 7, '柒': 7,
+	'八': 8, '捌': 8,
+	'九': 9, '玖': 9,
+}
+
+var chineseUnitValue = map[rune]int{
+	'十': 10, '拾': 10,
+	'百': 100, '佰': 100,
+	'千': 1000, '仟': 1000,
+	'万': 10000, '萬': 10000,
+}
+
+func chineseNumeralTokenToArabic(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	if !strings.ContainsAny(token, "十拾百佰千仟万萬") {
+		var out strings.Builder
+		for _, r := range token {
+			v, ok := chineseDigitValue[r]
+			if !ok {
+				return "", false
+			}
+			out.WriteString(strconv.Itoa(v))
+		}
+		return out.String(), true
+	}
+
+	total := 0
+	section := 0
+	number := 0
+	for _, r := range token {
+		if v, ok := chineseDigitValue[r]; ok {
+			number = v
+			continue
+		}
+		unit, ok := chineseUnitValue[r]
+		if !ok {
+			return "", false
+		}
+		if unit < 10000 {
+			if number == 0 {
+				number = 1
+			}
+			section += number * unit
+			number = 0
+			continue
+		}
+		if number == 0 && section == 0 {
+			section = 1
+		}
+		total += (section + number) * unit
+		section = 0
+		number = 0
+	}
+	total += section + number
+	return strconv.Itoa(total), true
 }
 
 // jaroWinkler 在 rune 上实现的 Jaro-Winkler 相似度。

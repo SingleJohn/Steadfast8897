@@ -80,6 +80,47 @@ type identifyCandidateRecord struct {
 	CreatedAt  time.Time              `json:"created_at"`
 }
 
+type identifyFailureDetail struct {
+	Stage           string                           `json:"stage"`
+	Reason          string                           `json:"reason"`
+	Threshold       float64                          `json:"threshold"`
+	AutoApply       bool                             `json:"auto_apply"`
+	Providers       []string                         `json:"providers,omitempty"`
+	Parsed          identifyFailureParsed            `json:"parsed"`
+	SearchAttempts  []identifyFailureSearchAttempt   `json:"search_attempts,omitempty"`
+	CandidatesTotal int                              `json:"candidates_total"`
+	BestScore       *float64                         `json:"best_score,omitempty"`
+	Candidates      []identifyFailureCandidateRecord `json:"candidates,omitempty"`
+}
+
+type identifyFailureParsed struct {
+	Title         string            `json:"title,omitempty"`
+	OriginalTitle string            `json:"original_title,omitempty"`
+	Year          *int32            `json:"year,omitempty"`
+	IDs           map[string]string `json:"ids,omitempty"`
+	MediaHint     string            `json:"media_hint,omitempty"`
+	Junk          []string          `json:"junk,omitempty"`
+}
+
+type identifyFailureSearchAttempt struct {
+	Source string `json:"source"`
+	Query  string `json:"query"`
+	Year   *int32 `json:"year,omitempty"`
+}
+
+type identifyFailureCandidateRecord struct {
+	Provider      string            `json:"provider"`
+	ProviderID    string            `json:"provider_id"`
+	Title         string            `json:"title"`
+	OriginalTitle string            `json:"original_title,omitempty"`
+	Year          *int32            `json:"year,omitempty"`
+	Score         float64           `json:"score"`
+	Popularity    float64           `json:"popularity,omitempty"`
+	Source        string            `json:"source,omitempty"`
+	ExternalIDs   map[string]string `json:"external_ids,omitempty"`
+	PosterURL     string            `json:"poster_url,omitempty"`
+}
+
 func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 	var rawKey *string
 	err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'tmdb_api_key'").Scan(&rawKey)
@@ -1714,7 +1755,9 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 			// 捞一次候选列表,用于诊断日志 + (可选)人工确认队列。
 			// 无论 AutoApply 如何都需要,有 cache 不会多发 TMDB 请求。
 			candidates, _ := agg.Candidates(ctx, parsed, mediaType)
-			logIdentifyFailure(itemID, parsed, candidates, runtimeCfg.ConfidenceThreshold)
+			detail := buildIdentifyFailureDetail(parsed, candidates, runtimeCfg.ConfidenceThreshold, agg.Providers(), runtimeCfg.AutoApply)
+			DiagFrom(ctx).SetDetail(detail)
+			logIdentifyFailure(itemID, detail)
 
 			if !runtimeCfg.AutoApply {
 				if len(candidates) > 0 {
@@ -1765,46 +1808,101 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, tmdbID > 0, models.PlatformScanSourceSearch)
 }
 
-// logIdentifyFailure 打印识别失败时的完整诊断:parsed 解析结果 + top-5 候选 + 每个候选打分 / 年份 / 来源 + 阈值。
-// 日志 level=Info 方便过滤,不会被 Debug 隐藏。
-func logIdentifyFailure(itemID string, parsed scraper.ParsedName, candidates []scraper.ScoredCandidate, threshold float64) {
-	const topN = 5
-	shown := candidates
-	if len(shown) > topN {
-		shown = shown[:topN]
-	}
-	type briefCand struct {
-		Provider string  `json:"provider"`
-		ID       string  `json:"id"`
-		Title    string  `json:"title"`
-		Year     string  `json:"year"`
-		Score    float64 `json:"score"`
-		Source   string  `json:"source"`
-	}
-	out := make([]briefCand, 0, len(shown))
-	for _, c := range shown {
-		yr := ""
-		if c.Year != nil {
-			yr = strconv.FormatInt(int64(*c.Year), 10)
+func buildIdentifyFailureDetail(
+	parsed scraper.ParsedName,
+	candidates []scraper.ScoredCandidate,
+	threshold float64,
+	providers []string,
+	autoApply bool,
+) identifyFailureDetail {
+	attempts := scraper.BuildSearchAttempts(parsed)
+	searchAttempts := make([]identifyFailureSearchAttempt, 0, len(attempts))
+	for _, a := range attempts {
+		if strings.TrimSpace(a.Query) == "" {
+			continue
 		}
-		out = append(out, briefCand{
-			Provider: c.Provider, ID: c.ProviderID,
-			Title: c.Title, Year: yr,
-			Score: roundFloat(c.Score, 3), Source: c.Source,
+		searchAttempts = append(searchAttempts, identifyFailureSearchAttempt{
+			Source: a.Source,
+			Query:  a.Query,
+			Year:   a.Year,
 		})
 	}
-	reason := "no candidate from any provider"
-	if len(candidates) > 0 {
-		reason = fmt.Sprintf("best score %.3f < threshold %.2f", candidates[0].Score, threshold)
+
+	detail := identifyFailureDetail{
+		Stage:     "identify",
+		Threshold: roundFloat(threshold, 3),
+		AutoApply: autoApply,
+		Providers: append([]string(nil), providers...),
+		Parsed: identifyFailureParsed{
+			Title:         parsed.Title,
+			OriginalTitle: parsed.OriginalTitle,
+			Year:          parsed.Year,
+			IDs:           cloneStringMap(parsed.IDs),
+			MediaHint:     parsed.MediaHint,
+			Junk:          append([]string(nil), parsed.Junk...),
+		},
+		SearchAttempts:  searchAttempts,
+		CandidatesTotal: len(candidates),
+		Candidates:      make([]identifyFailureCandidateRecord, 0, len(candidates)),
 	}
+	if len(candidates) == 0 {
+		detail.Reason = "no candidate returned by providers"
+		return detail
+	}
+
+	bestScore := roundFloat(candidates[0].Score, 3)
+	detail.BestScore = &bestScore
+	detail.Reason = fmt.Sprintf("best score %.3f below threshold %.3f", candidates[0].Score, threshold)
+	for _, c := range candidates {
+		detail.Candidates = append(detail.Candidates, identifyFailureCandidateRecord{
+			Provider:      c.Provider,
+			ProviderID:    c.ProviderID,
+			Title:         c.Title,
+			OriginalTitle: c.OriginalTitle,
+			Year:          c.Year,
+			Score:         roundFloat(c.Score, 3),
+			Popularity:    roundFloat(c.Popularity, 3),
+			Source:        c.Source,
+			ExternalIDs:   cloneStringMap(c.ExternalIDs),
+			PosterURL:     strings.TrimSpace(c.PosterURL),
+		})
+	}
+	return detail
+}
+
+// logIdentifyFailure 打印识别失败时的完整诊断:parsed 解析结果 + 搜索尝试 + top 候选 + 阈值。
+// 日志 level=Info 方便过滤,不会被 Debug 隐藏。
+func logIdentifyFailure(itemID string, detail identifyFailureDetail) {
 	slog.Info("[Identify] failed",
 		"item_id", itemID,
-		"parsed_title", parsed.Title, "parsed_original", parsed.OriginalTitle,
-		"parsed_year", formatYear(parsed.Year), "parsed_ids", parsed.IDs,
-		"threshold", threshold,
-		"candidates_total", len(candidates),
-		"top_candidates", out,
-		"reason", reason)
+		"parsed_title", detail.Parsed.Title,
+		"parsed_original", detail.Parsed.OriginalTitle,
+		"parsed_year", formatYear(detail.Parsed.Year),
+		"parsed_ids", detail.Parsed.IDs,
+		"providers", detail.Providers,
+		"threshold", detail.Threshold,
+		"search_attempts", detail.SearchAttempts,
+		"candidates_total", detail.CandidatesTotal,
+		"top_candidates", detail.Candidates,
+		"reason", detail.Reason)
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		vv := strings.TrimSpace(v)
+		if vv == "" {
+			continue
+		}
+		dst[k] = vv
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
 }
 
 func formatYear(y *int32) string {
