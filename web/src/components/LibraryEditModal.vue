@@ -342,16 +342,19 @@ const scrapeEffective = ref<Record<string, any>>({})
 const enableProvidersOn = ref(false)
 const enableThresholdOn = ref(false)
 const enableAutoApplyOn = ref(false)
+const enableAdultFilterOn = ref(false)
 
 const override = reactive<{
   providersEnabled: string[]
   confidenceThreshold: number
   autoApply: boolean
+  adultContentFilterEnabled: boolean
   fieldPriority: FieldPriorityMap
 }>({
   providersEnabled: [],
   confidenceThreshold: 0.72,
   autoApply: true,
+  adultContentFilterEnabled: true,
   fieldPriority: {},
 })
 const fieldToAdd = ref<string | null>(null)
@@ -402,9 +405,11 @@ async function loadScrapeConfig(id?: string) {
       enableProvidersOn.value = false
       enableThresholdOn.value = false
       enableAutoApplyOn.value = false
+      enableAdultFilterOn.value = false
       override.providersEnabled = [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
       override.confidenceThreshold = resp.effective?.ConfidenceThreshold ?? 0.72
       override.autoApply = resp.effective?.AutoApply ?? true
+      override.adultContentFilterEnabled = resp.effective?.AdultContentFilterEnabled ?? true
       override.fieldPriority = {}
       return
     }
@@ -413,11 +418,13 @@ async function loadScrapeConfig(id?: string) {
     enableProvidersOn.value = Array.isArray(ov.providers_enabled)
     enableThresholdOn.value = typeof ov.confidence_threshold === 'number'
     enableAutoApplyOn.value = typeof ov.auto_apply === 'boolean'
+    enableAdultFilterOn.value = typeof ov.adult_content_filter_enabled === 'boolean'
     override.providersEnabled = Array.isArray(ov.providers_enabled)
       ? [...ov.providers_enabled]
       : [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
     override.confidenceThreshold = ov.confidence_threshold ?? resp.effective?.ConfidenceThreshold ?? 0.72
     override.autoApply = ov.auto_apply ?? resp.effective?.AutoApply ?? true
+    override.adultContentFilterEnabled = ov.adult_content_filter_enabled ?? resp.effective?.AdultContentFilterEnabled ?? true
     override.fieldPriority = ov.field_priority ? { ...ov.field_priority } : {}
   } catch {
     // 读失败静默,保留上次值
@@ -438,11 +445,13 @@ async function handleSaveScrapeCfg() {
     if (enableProvidersOn.value) ov.providers_enabled = [...override.providersEnabled]
     if (enableThresholdOn.value) ov.confidence_threshold = override.confidenceThreshold
     if (enableAutoApplyOn.value) ov.auto_apply = override.autoApply
+    if (enableAdultFilterOn.value) ov.adult_content_filter_enabled = override.adultContentFilterEnabled
     if (Object.keys(override.fieldPriority).length > 0) {
       ov.field_priority = { ...override.fieldPriority }
     }
     const isEmpty = !ov.providers_enabled &&
       ov.confidence_threshold === undefined && ov.auto_apply === undefined &&
+      ov.adult_content_filter_enabled === undefined &&
       !ov.field_priority
     if (isEmpty) {
       await updateLibraryScrapeConfig(props.libraryId, { inherit: true, override: null })
@@ -597,7 +606,7 @@ async function handleSaveScrapeCfg() {
         <div v-if="scrapeMode === 'inherit'" class="em-inherit-preview">
           <div class="hint-text">
             当前生效:启用源 {{ (scrapeEffective.ProvidersEnabled || []).map((p: string) => providerLabel(p)).join(' / ') || '(无)' }};
-            阈值 {{ scrapeEffective.ConfidenceThreshold ?? '-' }}
+            阈值 {{ scrapeEffective.ConfidenceThreshold ?? '-' }}; 成人内容过滤 {{ scrapeEffective.AdultContentFilterEnabled === false ? '关闭' : '开启' }}
           </div>
         </div>
 
@@ -637,6 +646,16 @@ async function handleSaveScrapeCfg() {
             </label>
             <div v-if="enableAutoApplyOn" class="em-override-body">
               <n-checkbox v-model:checked="override.autoApply">低于阈值时自动采纳(否则进人工确认队列)</n-checkbox>
+            </div>
+          </div>
+
+          <div class="em-override-block">
+            <label class="em-override-head">
+              <input type="checkbox" v-model="enableAdultFilterOn" />
+              <span>覆盖"成人内容过滤"</span>
+            </label>
+            <div v-if="enableAdultFilterOn" class="em-override-body">
+              <n-checkbox v-model:checked="override.adultContentFilterEnabled">拦截成人影视内容候选，识别失败时保持刮削前原样</n-checkbox>
             </div>
           </div>
 

@@ -103,8 +103,8 @@ func hashRuntimeConfig(cfg scraper.RuntimeConfig) uint64 {
 	}
 	h.Write([]byte{3})
 
-	fmt.Fprintf(h, "t=%.4f;a=%t",
-		cfg.ConfidenceThreshold, cfg.AutoApply)
+	fmt.Fprintf(h, "t=%.4f;a=%t;adult_filter=%t",
+		cfg.ConfidenceThreshold, cfg.AutoApply, cfg.AdultContentFilterEnabled)
 	h.Write([]byte{4})
 
 	credTag := func(s string) byte {

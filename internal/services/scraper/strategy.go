@@ -12,11 +12,12 @@ import "strings"
 //
 // Provider 凭据(TVDB/Fanart/Douban Cookie 等)不在此结构内 —— 永远全局。
 type ConfigOverride struct {
-	ProvidersEnabled    *[]string           `json:"providers_enabled,omitempty"`
-	ProviderPriority    map[string]int      `json:"provider_priority,omitempty"`
-	FieldPriority       map[string][]string `json:"field_priority,omitempty"`
-	ConfidenceThreshold *float64            `json:"confidence_threshold,omitempty"`
-	AutoApply           *bool               `json:"auto_apply,omitempty"`
+	ProvidersEnabled          *[]string           `json:"providers_enabled,omitempty"`
+	ProviderPriority          map[string]int      `json:"provider_priority,omitempty"`
+	FieldPriority             map[string][]string `json:"field_priority,omitempty"`
+	ConfidenceThreshold       *float64            `json:"confidence_threshold,omitempty"`
+	AutoApply                 *bool               `json:"auto_apply,omitempty"`
+	AdultContentFilterEnabled *bool               `json:"adult_content_filter_enabled,omitempty"`
 }
 
 // IsEmpty 判断 override 是否全为 nil(= 完全继承)。
@@ -28,7 +29,8 @@ func (o *ConfigOverride) IsEmpty() bool {
 		len(o.ProviderPriority) == 0 &&
 		len(o.FieldPriority) == 0 &&
 		o.ConfidenceThreshold == nil &&
-		o.AutoApply == nil
+		o.AutoApply == nil &&
+		o.AdultContentFilterEnabled == nil
 }
 
 // MergeOverride 把库级 override 合并到全局 cfg,返回最终生效配置。
@@ -78,6 +80,9 @@ func MergeOverride(global RuntimeConfig, override *ConfigOverride) RuntimeConfig
 
 	if override.AutoApply != nil {
 		out.AutoApply = *override.AutoApply
+	}
+	if override.AdultContentFilterEnabled != nil {
+		out.AdultContentFilterEnabled = *override.AdultContentFilterEnabled
 	}
 
 	return out

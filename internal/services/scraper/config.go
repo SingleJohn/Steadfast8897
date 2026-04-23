@@ -30,19 +30,21 @@ type ProviderCredentials struct {
 }
 
 type RuntimeConfig struct {
-	ProvidersEnabled    []string
-	ProviderPriority    map[string]int
-	FieldPriority       map[string][]string
-	ConfidenceThreshold float64
-	AutoApply           bool
-	Credentials         ProviderCredentials
+	ProvidersEnabled          []string
+	ProviderPriority          map[string]int
+	FieldPriority             map[string][]string
+	ConfidenceThreshold       float64
+	AutoApply                 bool
+	AdultContentFilterEnabled bool
+	Credentials               ProviderCredentials
 }
 
 func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 	cfg := RuntimeConfig{
-		ProvidersEnabled:    []string{"tmdb", "bangumi", "douban", "tvdb", "fanart"},
-		ConfidenceThreshold: DefaultThreshold,
-		AutoApply:           true,
+		ProvidersEnabled:          []string{"tmdb", "bangumi", "douban", "tvdb", "fanart"},
+		ConfidenceThreshold:       DefaultThreshold,
+		AutoApply:                 true,
+		AdultContentFilterEnabled: true,
 		Credentials: ProviderCredentials{
 			DoubanUA:  defaultDoubanUA,
 			BangumiUA: defaultBangumiUA,
@@ -78,6 +80,9 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 	}
 	if v := loadConfigValue(ctx, pool, "scrape_auto_apply"); v != "" {
 		cfg.AutoApply = parseBool(v, true)
+	}
+	if v := loadConfigValue(ctx, pool, "scrape_adult_content_filter_enabled"); v != "" {
+		cfg.AdultContentFilterEnabled = parseBool(v, true)
 	}
 	if v := loadConfigValue(ctx, pool, "douban_ua"); v != "" {
 		cfg.Credentials.DoubanUA = strings.TrimSpace(v)

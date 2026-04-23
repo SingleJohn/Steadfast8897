@@ -81,16 +81,20 @@ type identifyCandidateRecord struct {
 }
 
 type identifyFailureDetail struct {
-	Stage           string                           `json:"stage"`
-	Reason          string                           `json:"reason"`
-	Threshold       float64                          `json:"threshold"`
-	AutoApply       bool                             `json:"auto_apply"`
-	Providers       []string                         `json:"providers,omitempty"`
-	Parsed          identifyFailureParsed            `json:"parsed"`
-	SearchAttempts  []identifyFailureSearchAttempt   `json:"search_attempts,omitempty"`
-	CandidatesTotal int                              `json:"candidates_total"`
-	BestScore       *float64                         `json:"best_score,omitempty"`
-	Candidates      []identifyFailureCandidateRecord `json:"candidates,omitempty"`
+	Stage                  string                           `json:"stage"`
+	Reason                 string                           `json:"reason"`
+	Threshold              float64                          `json:"threshold"`
+	AutoApply              bool                             `json:"auto_apply"`
+	AdultFilterEnabled     bool                             `json:"adult_filter_enabled"`
+	Providers              []string                         `json:"providers,omitempty"`
+	Parsed                 identifyFailureParsed            `json:"parsed"`
+	Matched                *identifyFailureMatched          `json:"matched,omitempty"`
+	SearchAttempts         []identifyFailureSearchAttempt   `json:"search_attempts,omitempty"`
+	CandidatesTotal        int                              `json:"candidates_total"`
+	BlockedCandidatesTotal int                              `json:"blocked_candidates_total,omitempty"`
+	BestScore              *float64                         `json:"best_score,omitempty"`
+	Candidates             []identifyFailureCandidateRecord `json:"candidates,omitempty"`
+	BlockedCandidates      []identifyFailureCandidateRecord `json:"blocked_candidates,omitempty"`
 }
 
 type identifyFailureParsed struct {
@@ -108,17 +112,28 @@ type identifyFailureSearchAttempt struct {
 	Year   *int32 `json:"year,omitempty"`
 }
 
+type identifyFailureMatched struct {
+	Provider    string            `json:"provider"`
+	ProviderID  string            `json:"provider_id"`
+	Source      string            `json:"source,omitempty"`
+	Score       float64           `json:"score,omitempty"`
+	ExternalIDs map[string]string `json:"external_ids,omitempty"`
+}
+
 type identifyFailureCandidateRecord struct {
-	Provider      string            `json:"provider"`
-	ProviderID    string            `json:"provider_id"`
-	Title         string            `json:"title"`
-	OriginalTitle string            `json:"original_title,omitempty"`
-	Year          *int32            `json:"year,omitempty"`
-	Score         float64           `json:"score"`
-	Popularity    float64           `json:"popularity,omitempty"`
-	Source        string            `json:"source,omitempty"`
-	ExternalIDs   map[string]string `json:"external_ids,omitempty"`
-	PosterURL     string            `json:"poster_url,omitempty"`
+	Provider       string            `json:"provider"`
+	ProviderID     string            `json:"provider_id"`
+	Title          string            `json:"title"`
+	OriginalTitle  string            `json:"original_title,omitempty"`
+	Year           *int32            `json:"year,omitempty"`
+	Score          float64           `json:"score"`
+	Popularity     float64           `json:"popularity,omitempty"`
+	Source         string            `json:"source,omitempty"`
+	ExternalIDs    map[string]string `json:"external_ids,omitempty"`
+	PosterURL      string            `json:"poster_url,omitempty"`
+	Blocked        bool              `json:"blocked,omitempty"`
+	AdultReasons   []string          `json:"adult_reasons,omitempty"`
+	Certifications []string          `json:"certifications,omitempty"`
 }
 
 func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
@@ -538,7 +553,7 @@ func (c *TmdbClient) SearchMovieMulti(ctx context.Context, name string, year *in
 }
 
 func (c *TmdbClient) searchMovieOnce(ctx context.Context, name string, year *int32) ([]map[string]interface{}, error) {
-	u := fmt.Sprintf("%s/search/movie?api_key={API_KEY}&language=%s&query=%s",
+	u := fmt.Sprintf("%s/search/movie?api_key={API_KEY}&language=%s&query=%s&include_adult=false",
 		TMDB_BASE, c.language, url.QueryEscape(name))
 	if year != nil {
 		u += fmt.Sprintf("&year=%d", *year)
@@ -562,7 +577,7 @@ func (c *TmdbClient) searchMovieOnce(ctx context.Context, name string, year *int
 
 // SearchTVMulti returns up to 20 TMDB TV search results.
 func (c *TmdbClient) SearchTVMulti(ctx context.Context, name string) ([]map[string]interface{}, error) {
-	u := fmt.Sprintf("%s/search/tv?api_key={API_KEY}&language=%s&query=%s",
+	u := fmt.Sprintf("%s/search/tv?api_key={API_KEY}&language=%s&query=%s&include_adult=false",
 		TMDB_BASE, c.language, url.QueryEscape(name))
 	data, err := c.tmdbGet(ctx, u)
 	if err != nil {
@@ -582,13 +597,13 @@ func (c *TmdbClient) SearchTVMulti(ctx context.Context, name string) ([]map[stri
 }
 
 func (c *TmdbClient) GetMovieDetails(ctx context.Context, tmdbID int64) (map[string]interface{}, error) {
-	u := fmt.Sprintf("%s/movie/%d?api_key={API_KEY}&language=%s&append_to_response=credits",
+	u := fmt.Sprintf("%s/movie/%d?api_key={API_KEY}&language=%s&append_to_response=credits,release_dates",
 		TMDB_BASE, tmdbID, c.language)
 	return c.tmdbGet(ctx, u)
 }
 
 func (c *TmdbClient) GetTVDetails(ctx context.Context, tmdbID int64) (map[string]interface{}, error) {
-	u := fmt.Sprintf("%s/tv/%d?api_key={API_KEY}&language=%s&append_to_response=credits",
+	u := fmt.Sprintf("%s/tv/%d?api_key={API_KEY}&language=%s&append_to_response=credits,content_ratings",
 		TMDB_BASE, tmdbID, c.language)
 	return c.tmdbGet(ctx, u)
 }
@@ -972,6 +987,9 @@ func replaceIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID s
 			"source":         cand.Source,
 			"popularity":     cand.Popularity,
 			"poster_url":     cand.PosterURL,
+			"adult_content":  cand.AdultContent,
+			"adult_reasons":  cand.AdultReasons,
+			"certifications": cand.Certifications,
 		})
 		var year interface{}
 		if cand.Year != nil {
@@ -1159,9 +1177,14 @@ func tmdbDetailsFromRaw(details map[string]interface{}, t scraper.MediaType, id 
 	}
 
 	d := &scraper.Details{
-		Provider:    "tmdb",
-		ProviderID:  strconv.FormatInt(id, 10),
-		ExternalIDs: map[string]string{"tmdb": strconv.FormatInt(id, 10)},
+		Provider:       "tmdb",
+		ProviderID:     strconv.FormatInt(id, 10),
+		ExternalIDs:    map[string]string{"tmdb": strconv.FormatInt(id, 10)},
+		Certifications: extractTMDBCertifications(details, t),
+	}
+	if adult, ok := details["adult"].(bool); ok && adult {
+		d.AdultContent = true
+		d.AdultReasons = []string{"tmdb:adult=true"}
 	}
 	if s, ok := details[titleKey].(string); ok {
 		d.Title = s
@@ -1268,6 +1291,66 @@ func tmdbDetailsFromRaw(details map[string]interface{}, t scraper.MediaType, id 
 	return d
 }
 
+func extractTMDBCertifications(details map[string]interface{}, t scraper.MediaType) []string {
+	if details == nil {
+		return nil
+	}
+	var out []string
+	switch t {
+	case scraper.MediaMovie:
+		rd, ok := details["release_dates"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		results, ok := rd["results"].([]interface{})
+		if !ok {
+			return nil
+		}
+		for _, item := range results {
+			rm, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			releases, ok := rm["release_dates"].([]interface{})
+			if !ok {
+				continue
+			}
+			for _, rel := range releases {
+				relMap, ok := rel.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if cert, ok := relMap["certification"].(string); ok {
+					if s := strings.TrimSpace(cert); s != "" {
+						out = append(out, s)
+					}
+				}
+			}
+		}
+	case scraper.MediaSeries:
+		cr, ok := details["content_ratings"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		results, ok := cr["results"].([]interface{})
+		if !ok {
+			return nil
+		}
+		for _, item := range results {
+			rm, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if rating, ok := rm["rating"].(string); ok {
+				if s := strings.TrimSpace(rating); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return dedupeNonEmptyStrings(out)
+}
+
 func candidatesFromTMDB(results []map[string]interface{}, kind string) []scraper.Candidate {
 	titleKey, origKey, dateKey := "title", "original_title", "release_date"
 	if kind == "tv" {
@@ -1300,6 +1383,10 @@ func candidatesFromTMDB(results []map[string]interface{}, kind string) []scraper
 		}
 		if posterPath, ok := r["poster_path"].(string); ok && strings.TrimSpace(posterPath) != "" {
 			cand.PosterURL = fmt.Sprintf("%s/w500%s", TMDB_IMAGE_BASE, posterPath)
+		}
+		if adult, ok := r["adult"].(bool); ok && adult {
+			cand.AdultContent = true
+			cand.AdultReasons = []string{"tmdb:adult=true"}
 		}
 		out = append(out, cand)
 	}
@@ -1958,6 +2045,26 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 		}
 		merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
 		if fillErr != nil {
+			var adultErr *scraper.ErrAdultContentFiltered
+			if errors.As(fillErr, &adultErr) {
+				detail := buildAdultBlockedDetail(
+					"fill",
+					"fill blocked by adult-content filter",
+					parsed,
+					runtimeCfg,
+					agg.Providers(),
+					ident,
+					nil,
+					adultErr.Blocked,
+				)
+				DiagFrom(ctx).SetDetail(detail)
+				logScrapeFailureDetail(itemID, detail)
+				tmdbSetIdentifyAttempted(ctx, pool, itemID)
+				if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, models.PlatformScanSourceTMDB, "fill blocked by adult-content filter"); markErr != nil {
+					slog.Warn("[TMDB] mark adult-content filtered fill failed", "item_id", itemID, "error", markErr)
+				}
+				return nil, fillErr
+			}
 			return nil, fmt.Errorf("fill details: %w", fillErr)
 		}
 		tmdbSetIdentifyAttempted(ctx, pool, itemID)
@@ -1968,13 +2075,34 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	if err != nil {
 		reason := err.Error()
 		source := models.PlatformScanSourceSearch
+		var adultErr *scraper.ErrAdultContentFiltered
+		if errors.As(err, &adultErr) {
+			detail := buildAdultBlockedDetail(
+				"identify",
+				"identify blocked by adult-content filter",
+				parsed,
+				runtimeCfg,
+				agg.Providers(),
+				nil,
+				nil,
+				adultErr.Blocked,
+			)
+			DiagFrom(ctx).SetDetail(detail)
+			logScrapeFailureDetail(itemID, detail)
+			tmdbSetIdentifyAttempted(ctx, pool, itemID)
+			reason = "identify blocked by adult-content filter"
+			if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, source, reason); markErr != nil {
+				slog.Warn("[TMDB] mark platform scan unidentified failed", "item_id", itemID, "error", markErr)
+			}
+			return nil, err
+		}
 		if errors.Is(err, scraper.ErrNoMatch) {
 			// 捞一次候选列表,用于诊断日志 + (可选)人工确认队列。
 			// 无论 AutoApply 如何都需要,有 cache 不会多发 TMDB 请求。
 			candidates, _ := agg.Candidates(ctx, parsed, mediaType)
-			detail := buildIdentifyFailureDetail(parsed, candidates, runtimeCfg.ConfidenceThreshold, agg.Providers(), runtimeCfg.AutoApply)
+			detail := buildIdentifyFailureDetail(parsed, candidates, runtimeCfg.ConfidenceThreshold, agg.Providers(), runtimeCfg.AutoApply, runtimeCfg.AdultContentFilterEnabled)
 			DiagFrom(ctx).SetDetail(detail)
-			logIdentifyFailure(itemID, detail)
+			logScrapeFailureDetail(itemID, detail)
 
 			if !runtimeCfg.AutoApply {
 				if len(candidates) > 0 {
@@ -2004,6 +2132,26 @@ func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string
 	tmdbID := resolveTMDBIDFromIdentity(ident)
 	merged, fillErr := agg.Fill(ctx, ident, parsed, mediaType)
 	if fillErr != nil {
+		var adultErr *scraper.ErrAdultContentFiltered
+		if errors.As(fillErr, &adultErr) {
+			detail := buildAdultBlockedDetail(
+				"fill",
+				"fill blocked by adult-content filter",
+				parsed,
+				runtimeCfg,
+				agg.Providers(),
+				ident,
+				nil,
+				adultErr.Blocked,
+			)
+			DiagFrom(ctx).SetDetail(detail)
+			logScrapeFailureDetail(itemID, detail)
+			tmdbSetIdentifyAttempted(ctx, pool, itemID)
+			if markErr := models.MarkPlatformScanUnidentified(ctx, pool, itemID, models.PlatformScanSourceSearch, "fill blocked by adult-content filter"); markErr != nil {
+				slog.Warn("[TMDB] mark adult-content filtered fill failed", "item_id", itemID, "error", markErr)
+			}
+			return nil, fillErr
+		}
 		return nil, fmt.Errorf("fill details: %w", fillErr)
 	}
 	// 非 TMDB primary 时,Fill 内部辅源 TMDB 可能通过 imdb 跨源映射拿到 tmdb_id,
@@ -2031,6 +2179,7 @@ func buildIdentifyFailureDetail(
 	threshold float64,
 	providers []string,
 	autoApply bool,
+	adultFilterEnabled bool,
 ) identifyFailureDetail {
 	attempts := scraper.BuildSearchAttempts(parsed)
 	searchAttempts := make([]identifyFailureSearchAttempt, 0, len(attempts))
@@ -2046,10 +2195,11 @@ func buildIdentifyFailureDetail(
 	}
 
 	detail := identifyFailureDetail{
-		Stage:     "identify",
-		Threshold: roundFloat(threshold, 3),
-		AutoApply: autoApply,
-		Providers: append([]string(nil), providers...),
+		Stage:              "identify",
+		Threshold:          roundFloat(threshold, 3),
+		AutoApply:          autoApply,
+		AdultFilterEnabled: adultFilterEnabled,
+		Providers:          append([]string(nil), providers...),
 		Parsed: identifyFailureParsed{
 			Title:         parsed.Title,
 			OriginalTitle: parsed.OriginalTitle,
@@ -2071,36 +2221,123 @@ func buildIdentifyFailureDetail(
 	detail.BestScore = &bestScore
 	detail.Reason = fmt.Sprintf("best score %.3f below threshold %.3f", candidates[0].Score, threshold)
 	for _, c := range candidates {
-		detail.Candidates = append(detail.Candidates, identifyFailureCandidateRecord{
-			Provider:      c.Provider,
-			ProviderID:    c.ProviderID,
-			Title:         c.Title,
-			OriginalTitle: c.OriginalTitle,
-			Year:          c.Year,
-			Score:         roundFloat(c.Score, 3),
-			Popularity:    roundFloat(c.Popularity, 3),
-			Source:        c.Source,
-			ExternalIDs:   cloneStringMap(c.ExternalIDs),
-			PosterURL:     strings.TrimSpace(c.PosterURL),
+		detail.Candidates = append(detail.Candidates, identifyFailureCandidateRecordFromScored(c, false))
+	}
+	return detail
+}
+
+func buildAdultBlockedDetail(
+	stage string,
+	reason string,
+	parsed scraper.ParsedName,
+	cfg scraper.RuntimeConfig,
+	providers []string,
+	ident *scraper.Identity,
+	candidates []scraper.ScoredCandidate,
+	blocked []scraper.AdultBlockedCandidate,
+) identifyFailureDetail {
+	searchAttempts := make([]identifyFailureSearchAttempt, 0)
+	if strings.EqualFold(strings.TrimSpace(stage), "identify") {
+		for _, a := range scraper.BuildSearchAttempts(parsed) {
+			if strings.TrimSpace(a.Query) == "" {
+				continue
+			}
+			searchAttempts = append(searchAttempts, identifyFailureSearchAttempt{
+				Source: a.Source,
+				Query:  a.Query,
+				Year:   a.Year,
+			})
+		}
+	}
+	detail := identifyFailureDetail{
+		Stage:              strings.TrimSpace(stage),
+		Reason:             strings.TrimSpace(reason),
+		Threshold:          roundFloat(cfg.ConfidenceThreshold, 3),
+		AutoApply:          cfg.AutoApply,
+		AdultFilterEnabled: cfg.AdultContentFilterEnabled,
+		Providers:          append([]string(nil), providers...),
+		Parsed: identifyFailureParsed{
+			Title:         parsed.Title,
+			OriginalTitle: parsed.OriginalTitle,
+			Year:          parsed.Year,
+			IDs:           cloneStringMap(parsed.IDs),
+			MediaHint:     parsed.MediaHint,
+			Junk:          append([]string(nil), parsed.Junk...),
+		},
+		SearchAttempts:         searchAttempts,
+		CandidatesTotal:        len(candidates),
+		BlockedCandidatesTotal: len(blocked),
+		Candidates:             make([]identifyFailureCandidateRecord, 0, len(candidates)),
+		BlockedCandidates:      make([]identifyFailureCandidateRecord, 0, len(blocked)),
+	}
+	if ident != nil {
+		detail.Matched = &identifyFailureMatched{
+			Provider:    ident.Provider,
+			ProviderID:  ident.ProviderID,
+			Source:      ident.Source,
+			Score:       roundFloat(ident.Score, 3),
+			ExternalIDs: cloneStringMap(ident.ExternalIDs),
+		}
+	}
+	for _, cand := range candidates {
+		detail.Candidates = append(detail.Candidates, identifyFailureCandidateRecordFromScored(cand, false))
+	}
+	for _, item := range blocked {
+		detail.BlockedCandidates = append(detail.BlockedCandidates, identifyFailureCandidateRecord{
+			Provider:       item.Provider,
+			ProviderID:     item.ProviderID,
+			Title:          item.Title,
+			OriginalTitle:  item.OriginalTitle,
+			Year:           item.Year,
+			Score:          roundFloat(item.Score, 3),
+			Popularity:     roundFloat(item.Popularity, 3),
+			Source:         item.Source,
+			ExternalIDs:    cloneStringMap(item.ExternalIDs),
+			PosterURL:      strings.TrimSpace(item.PosterURL),
+			Blocked:        true,
+			AdultReasons:   append([]string(nil), item.AdultReasons...),
+			Certifications: append([]string(nil), item.Certifications...),
 		})
 	}
 	return detail
 }
 
-// logIdentifyFailure 打印识别失败时的完整诊断:parsed 解析结果 + 搜索尝试 + top 候选 + 阈值。
-// 日志 level=Info 方便过滤,不会被 Debug 隐藏。
-func logIdentifyFailure(itemID string, detail identifyFailureDetail) {
-	slog.Info("[Identify] failed",
+func identifyFailureCandidateRecordFromScored(c scraper.ScoredCandidate, blocked bool) identifyFailureCandidateRecord {
+	return identifyFailureCandidateRecord{
+		Provider:       c.Provider,
+		ProviderID:     c.ProviderID,
+		Title:          c.Title,
+		OriginalTitle:  c.OriginalTitle,
+		Year:           c.Year,
+		Score:          roundFloat(c.Score, 3),
+		Popularity:     roundFloat(c.Popularity, 3),
+		Source:         c.Source,
+		ExternalIDs:    cloneStringMap(c.ExternalIDs),
+		PosterURL:      strings.TrimSpace(c.PosterURL),
+		Blocked:        blocked,
+		AdultReasons:   append([]string(nil), c.AdultReasons...),
+		Certifications: append([]string(nil), c.Certifications...),
+	}
+}
+
+// logScrapeFailureDetail 打印识别/填充失败时的完整诊断。
+func logScrapeFailureDetail(itemID string, detail identifyFailureDetail) {
+	slog.Info("[Scrape] failed",
 		"item_id", itemID,
+		"stage", detail.Stage,
 		"parsed_title", detail.Parsed.Title,
 		"parsed_original", detail.Parsed.OriginalTitle,
 		"parsed_year", formatYear(detail.Parsed.Year),
 		"parsed_ids", detail.Parsed.IDs,
 		"providers", detail.Providers,
 		"threshold", detail.Threshold,
+		"adult_filter_enabled", detail.AdultFilterEnabled,
+		"matched", detail.Matched,
 		"search_attempts", detail.SearchAttempts,
 		"candidates_total", detail.CandidatesTotal,
+		"blocked_candidates_total", detail.BlockedCandidatesTotal,
 		"top_candidates", detail.Candidates,
+		"blocked_candidates", detail.BlockedCandidates,
 		"reason", detail.Reason)
 }
 
@@ -2135,6 +2372,30 @@ func roundFloat(v float64, digits int) float64 {
 		p *= 10
 	}
 	return float64(int64(v*p+0.5)) / p
+}
+
+func dedupeNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // resolveTMDBIDFromIdentity 从 Identity 提取 tmdb_id;兼容 Provider=tmdb 的直达

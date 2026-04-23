@@ -31,6 +31,7 @@ func (a *Aggregator) Fill(ctx context.Context, match *Identity, parsed ParsedNam
 			providers = append(providers, p)
 		}
 	}
+	adultFilterEnabled := a.adultContentFilterEnabled
 	a.mu.RUnlock()
 	if len(providers) == 0 {
 		return nil, ErrNoMatch
@@ -53,6 +54,15 @@ func (a *Aggregator) Fill(ctx context.Context, match *Identity, parsed ParsedNam
 	}
 	if primaryDetails == nil {
 		return nil, ErrNoMatch
+	}
+	if adultFilterEnabled {
+		if assessment := AssessDetailsAdult(primaryDetails); assessment.Blocked {
+			return nil, &ErrAdultContentFiltered{
+				Blocked: []AdultBlockedCandidate{
+					BlockedCandidateFromDetails(primaryDetails, "fill_primary"),
+				},
+			}
+		}
 	}
 
 	// 构造辅源 Search 的种子(TMDB 一般返回中/英文标题)。

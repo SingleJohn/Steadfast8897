@@ -40,6 +40,7 @@ const scrapeSaveMode = ref('database')
 const autoScrape = ref(false)
 const confidenceThreshold = ref<number>(0.72)
 const autoApplyEnabled = ref(true)
+const adultContentFilterEnabled = ref(true)
 const savingConfig = ref(false)
 const scraping = ref(false)
 
@@ -353,6 +354,7 @@ async function handleSaveConfig() {
       scrape_save_mode: scrapeSaveMode.value,
       scrape_confidence_threshold: String(confidenceThreshold.value),
       scrape_auto_apply: String(autoApplyEnabled.value),
+      scrape_adult_content_filter_enabled: String(adultContentFilterEnabled.value),
     })
     showToast('基础设置已保存', 'success')
   } catch {
@@ -492,6 +494,7 @@ onMounted(() => {
     const threshold = parseFloat(cfg.scrape_confidence_threshold)
     confidenceThreshold.value = Number.isFinite(threshold) && threshold > 0 && threshold <= 1 ? threshold : 0.72
     autoApplyEnabled.value = cfg.scrape_auto_apply !== 'false'
+    adultContentFilterEnabled.value = cfg.scrape_adult_content_filter_enabled !== 'false'
     bangumiUA.value = cfg.bangumi_ua || ''
     doubanCookie.value = cfg.douban_cookie || ''
     tvdbApiKey.value = cfg.tvdb_api_key || ''
@@ -599,6 +602,13 @@ onMounted(() => {
               <div class="hint-text">低于阈值的候选自动采纳,否则进入人工确认队列。</div>
             </div>
             <n-switch v-model:value="autoApplyEnabled" :round="false" />
+          </div>
+          <div class="switch-section-compact">
+            <div class="switch-copy">
+              <div class="switch-title">成人内容过滤</div>
+              <div class="hint-text">拦截成人影视内容候选；命中时按识别失败处理，不覆盖现有元数据。</div>
+            </div>
+            <n-switch v-model:value="adultContentFilterEnabled" :round="false" />
           </div>
         </div>
       </n-form>

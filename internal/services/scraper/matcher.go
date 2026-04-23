@@ -28,9 +28,10 @@ const (
 // Matcher 负责把 ParsedName 映射到一个 provider 内部 ID。
 // 它按 (ID 直达 → 带打分的搜索 → 降级链) 的顺序尝试，命中阈值即返回。
 type Matcher struct {
-	provider  Provider
-	cache     Cache
-	threshold float64
+	provider                  Provider
+	cache                     Cache
+	threshold                 float64
+	adultContentFilterEnabled bool
 }
 
 func NewMatcher(p Provider, c Cache) *Matcher {
@@ -42,6 +43,11 @@ func (m *Matcher) WithThreshold(t float64) *Matcher {
 	if t > 0 && t <= 1 {
 		m.threshold = t
 	}
+	return m
+}
+
+func (m *Matcher) WithAdultContentFilter(enabled bool) *Matcher {
+	m.adultContentFilterEnabled = enabled
 	return m
 }
 
@@ -71,6 +77,8 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 	}
 
 	attempts := BuildSearchAttempts(parsed)
+	var blocked []AdultBlockedCandidate
+	hadVisibleCandidate := false
 	for _, a := range attempts {
 		if strings.TrimSpace(a.Query) == "" {
 			continue
@@ -79,6 +87,13 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 		if err != nil {
 			slog.Debug("[Matcher] search error", "query", a.Query, "error", err)
 			continue
+		}
+		candidates, blockedNow := m.filterAdultCandidates(candidates, parsed, a.Source)
+		if len(blockedNow) > 0 {
+			blocked = MergeAdultBlockedCandidates(blocked, blockedNow)
+		}
+		if len(candidates) > 0 {
+			hadVisibleCandidate = true
 		}
 		best := pickBest(candidates, parsed)
 		if best == nil {
@@ -106,6 +121,9 @@ func (m *Matcher) Identify(ctx context.Context, parsed ParsedName, t MediaType) 
 			}, nil
 		}
 	}
+	if !hadVisibleCandidate && len(blocked) > 0 {
+		return nil, &ErrAdultContentFiltered{Blocked: blocked}
+	}
 	return nil, ErrNoMatch
 }
 
@@ -121,6 +139,7 @@ func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType
 		if err != nil {
 			continue
 		}
+		candidates, _ = m.filterAdultCandidates(candidates, parsed, a.Source)
 		limit := len(candidates)
 		if limit > candidateTopN {
 			limit = candidateTopN
@@ -135,16 +154,19 @@ func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType
 			}
 			seen[key] = struct{}{}
 			out = append(out, ScoredCandidate{
-				Provider:      m.provider.Name(),
-				ProviderID:    cand.ProviderID,
-				ExternalIDs:   cloneIDs(cand.ExternalIDs),
-				Title:         cand.Title,
-				OriginalTitle: cand.OriginalTitle,
-				Year:          cand.Year,
-				Score:         scoreCandidate(cand, parsed),
-				Popularity:    cand.Popularity,
-				PosterURL:     cand.PosterURL,
-				Source:        a.Source,
+				Provider:       m.provider.Name(),
+				ProviderID:     cand.ProviderID,
+				ExternalIDs:    cloneIDs(cand.ExternalIDs),
+				Title:          cand.Title,
+				OriginalTitle:  cand.OriginalTitle,
+				Year:           cand.Year,
+				Score:          scoreCandidate(cand, parsed),
+				Popularity:     cand.Popularity,
+				PosterURL:      cand.PosterURL,
+				Source:         a.Source,
+				AdultContent:   cand.AdultContent,
+				AdultReasons:   append([]string(nil), cand.AdultReasons...),
+				Certifications: append([]string(nil), cand.Certifications...),
 			})
 		}
 	}
@@ -155,6 +177,28 @@ func (m *Matcher) Candidates(ctx context.Context, parsed ParsedName, t MediaType
 		out = out[:candidateTopN]
 	}
 	return out, nil
+}
+
+func (m *Matcher) filterAdultCandidates(candidates []Candidate, parsed ParsedName, source string) ([]Candidate, []AdultBlockedCandidate) {
+	if !m.adultContentFilterEnabled || len(candidates) == 0 {
+		return candidates, nil
+	}
+	filtered := make([]Candidate, 0, len(candidates))
+	var blocked []AdultBlockedCandidate
+	for _, cand := range candidates {
+		assessment := AssessCandidateAdult(cand)
+		if !assessment.Blocked {
+			filtered = append(filtered, cand)
+			continue
+		}
+		blocked = append(blocked, BlockedCandidateFromCandidate(
+			m.provider.Name(),
+			cand,
+			source,
+			scoreCandidate(cand, parsed),
+		))
+	}
+	return filtered, blocked
 }
 
 func (m *Matcher) tryOwnIDDirect(p ParsedName) *Identity {

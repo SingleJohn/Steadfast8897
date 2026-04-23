@@ -24,13 +24,16 @@ type Query struct {
 // Candidate 是从 Provider 搜索返回的一条候选结果。
 // ProviderID 是 provider 内部主键；跨源归一统一依赖 ExternalIDs。
 type Candidate struct {
-	ProviderID    string
-	Title         string
-	OriginalTitle string
-	Year          *int32
-	Popularity    float64
-	PosterURL     string
-	ExternalIDs   map[string]string
+	ProviderID     string
+	Title          string
+	OriginalTitle  string
+	Year           *int32
+	Popularity     float64
+	PosterURL      string
+	ExternalIDs    map[string]string
+	AdultContent   bool
+	AdultReasons   []string
+	Certifications []string
 }
 
 // Identity 是识别阶段的产物，不含字段级详情；交给后续 Fill 阶段去拉取。
@@ -43,16 +46,19 @@ type Identity struct {
 }
 
 type ScoredCandidate struct {
-	Provider    string
-	ProviderID  string
-	ExternalIDs map[string]string
-	Title       string
-	OriginalTitle string
-	Year        *int32
-	Score       float64
-	Popularity  float64
-	PosterURL   string
-	Source      string
+	Provider       string
+	ProviderID     string
+	ExternalIDs    map[string]string
+	Title          string
+	OriginalTitle  string
+	Year           *int32
+	Score          float64
+	Popularity     float64
+	PosterURL      string
+	Source         string
+	AdultContent   bool
+	AdultReasons   []string
+	Certifications []string
 }
 
 // Actor 是 Provider 统一返回的演职员记录。与 services.NfoActor 对齐。
@@ -68,24 +74,27 @@ type Actor struct {
 // 做字段级合并。M3 阶段由 TmdbClient 实现，但暂不替代 applyTMDBDetails 的
 // raw-map 流程；字段持续稳定后再切换。
 type Details struct {
-	Provider      string
-	ProviderID    string
-	ExternalIDs   map[string]string
-	Platforms     []string
-	Title         string
-	OriginalTitle string
-	Overview      string
-	Tagline       string
-	Year          *int32
-	Premiered     string
-	Rating        *float64
-	Genres        []string
-	Studios       []string
-	Actors        []Actor
-	Directors     []string
-	PosterURLs    []string
-	BackdropURLs  []string
-	SeasonPosters map[int32]string
+	Provider       string
+	ProviderID     string
+	ExternalIDs    map[string]string
+	Platforms      []string
+	Title          string
+	OriginalTitle  string
+	Overview       string
+	Tagline        string
+	Year           *int32
+	Premiered      string
+	Rating         *float64
+	Genres         []string
+	Studios        []string
+	Actors         []Actor
+	Directors      []string
+	PosterURLs     []string
+	BackdropURLs   []string
+	SeasonPosters  map[int32]string
+	AdultContent   bool
+	AdultReasons   []string
+	Certifications []string
 }
 
 // Cache 是 scraper 包对外声明的缓存接口，避免反向依赖 services。

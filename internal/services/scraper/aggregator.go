@@ -21,18 +21,20 @@ import (
 //
 // Candidates 仍保留多源并发,供未匹配面板人工确认使用。
 type Aggregator struct {
-	mu        sync.RWMutex
-	providers []Provider
-	cache     Cache
-	threshold float64
-	policy    FieldPolicy
+	mu                        sync.RWMutex
+	providers                 []Provider
+	cache                     Cache
+	threshold                 float64
+	policy                    FieldPolicy
+	adultContentFilterEnabled bool
 }
 
 func NewAggregator(cache Cache) *Aggregator {
 	return &Aggregator{
-		cache:     cache,
-		threshold: DefaultThreshold,
-		policy:    DefaultFieldPolicy(),
+		cache:                     cache,
+		threshold:                 DefaultThreshold,
+		policy:                    DefaultFieldPolicy(),
+		adultContentFilterEnabled: true,
 	}
 }
 
@@ -99,17 +101,28 @@ func (a *Aggregator) SetThreshold(t float64) {
 	a.threshold = t
 }
 
+func (a *Aggregator) SetAdultContentFilterEnabled(enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.adultContentFilterEnabled = enabled
+}
+
 // Identify 按 Priority 升序逐个 provider 尝试 Matcher.Identify,
 // 首个返回非 nil Identity 即采纳;非 TMDB winner 尝试映射回 tmdb_id。
 // providers 参数已由 snapshot 按 Priority 升序过滤返回。
 func (a *Aggregator) Identify(ctx context.Context, parsed ParsedName, t MediaType) (*Identity, error) {
-	providers, threshold, cache := a.snapshot(t)
+	providers, threshold, cache, adultFilterEnabled := a.snapshot(t)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no provider supports media type %s", t)
 	}
+	var blocked []AdultBlockedCandidate
 	for _, p := range providers {
-		id, err := NewMatcher(p, cache).WithThreshold(threshold).Identify(ctx, parsed, t)
+		id, err := NewMatcher(p, cache).WithThreshold(threshold).WithAdultContentFilter(adultFilterEnabled).Identify(ctx, parsed, t)
 		if err != nil || id == nil {
+			var adultErr *ErrAdultContentFiltered
+			if errors.As(err, &adultErr) {
+				blocked = MergeAdultBlockedCandidates(blocked, adultErr.Blocked)
+			}
 			continue
 		}
 		if id.Provider != "tmdb" {
@@ -121,17 +134,20 @@ func (a *Aggregator) Identify(ctx context.Context, parsed ParsedName, t MediaTyp
 		}
 		return id, nil
 	}
+	if len(blocked) > 0 {
+		return nil, &ErrAdultContentFiltered{Blocked: blocked}
+	}
 	return nil, ErrNoMatch
 }
 
 // Candidates 返回聚合后的候选列表,按分数降序。用于 identify_candidates 人工确认。
 // 保留多源并发:人工纠错时需要看到所有来源的候选,方便用户手动挑。
 func (a *Aggregator) Candidates(ctx context.Context, parsed ParsedName, t MediaType) ([]ScoredCandidate, error) {
-	providers, threshold, cache := a.snapshot(t)
+	providers, threshold, cache, adultFilterEnabled := a.snapshot(t)
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no provider supports media type %s", t)
 	}
-	all, _ := concurrentCandidates(ctx, providers, cache, parsed, t, threshold)
+	all, _ := concurrentCandidates(ctx, providers, cache, parsed, t, threshold, adultFilterEnabled)
 	sort.SliceStable(all, func(i, j int) bool {
 		return all[i].Score > all[j].Score
 	})
@@ -162,7 +178,7 @@ func (a *Aggregator) RegisteredProviders() []Provider {
 	return out
 }
 
-func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache) {
+func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	ps := make([]Provider, 0, len(a.providers))
@@ -171,7 +187,7 @@ func (a *Aggregator) snapshot(t MediaType) ([]Provider, float64, Cache) {
 			ps = append(ps, p)
 		}
 	}
-	return ps, a.threshold, a.cache
+	return ps, a.threshold, a.cache, a.adultContentFilterEnabled
 }
 
 func (a *Aggregator) sortLocked() {
@@ -219,7 +235,7 @@ func (a *Aggregator) remapToTMDB(ctx context.Context, id *Identity) *Identity {
 
 // ---------- 并发 Candidates ----------
 
-func concurrentCandidates(ctx context.Context, providers []Provider, cache Cache, parsed ParsedName, t MediaType, threshold float64) ([]ScoredCandidate, error) {
+func concurrentCandidates(ctx context.Context, providers []Provider, cache Cache, parsed ParsedName, t MediaType, threshold float64, adultFilterEnabled bool) ([]ScoredCandidate, error) {
 	type result struct {
 		items []ScoredCandidate
 		err   error
@@ -231,7 +247,7 @@ func concurrentCandidates(ctx context.Context, providers []Provider, cache Cache
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			items, err := NewMatcher(p, cache).WithThreshold(threshold).Candidates(ctx, parsed, t)
+			items, err := NewMatcher(p, cache).WithThreshold(threshold).WithAdultContentFilter(adultFilterEnabled).Candidates(ctx, parsed, t)
 			ch <- result{items: items, err: err}
 		}()
 	}

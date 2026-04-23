@@ -552,6 +552,7 @@ export interface ScrapeConfigOverride {
   field_priority?: FieldPriorityMap;
   confidence_threshold?: number;
   auto_apply?: boolean;
+  adult_content_filter_enabled?: boolean;
 }
 
 export interface LibraryScrapeConfigResponse {
@@ -563,6 +564,7 @@ export interface LibraryScrapeConfigResponse {
     FieldPriority?: FieldPriorityMap;
     ConfidenceThreshold?: number;
     AutoApply?: boolean;
+    AdultContentFilterEnabled?: boolean;
   };
 }
 

@@ -58,20 +58,22 @@ func getScrapeDefaults(c *gin.Context) {
 // effectiveScrapeConfig 是前端可见的 effective DTO。
 // 所有凭据明文从不序列化。字段名保持 PascalCase 以匹配历史前端合约。
 type effectiveScrapeConfig struct {
-	ProvidersEnabled    []string            `json:"ProvidersEnabled"`
-	ProviderPriority    map[string]int      `json:"ProviderPriority"`
-	FieldPriority       map[string][]string `json:"FieldPriority"`
-	ConfidenceThreshold float64             `json:"ConfidenceThreshold"`
-	AutoApply           bool                `json:"AutoApply"`
+	ProvidersEnabled          []string            `json:"ProvidersEnabled"`
+	ProviderPriority          map[string]int      `json:"ProviderPriority"`
+	FieldPriority             map[string][]string `json:"FieldPriority"`
+	ConfidenceThreshold       float64             `json:"ConfidenceThreshold"`
+	AutoApply                 bool                `json:"AutoApply"`
+	AdultContentFilterEnabled bool                `json:"AdultContentFilterEnabled"`
 }
 
 func effectiveFromRuntime(cfg scraper.RuntimeConfig) effectiveScrapeConfig {
 	return effectiveScrapeConfig{
-		ProvidersEnabled:    cfg.ProvidersEnabled,
-		ProviderPriority:    cfg.ProviderPriority,
-		FieldPriority:       cfg.FieldPriority,
-		ConfidenceThreshold: cfg.ConfidenceThreshold,
-		AutoApply:           cfg.AutoApply,
+		ProvidersEnabled:          cfg.ProvidersEnabled,
+		ProviderPriority:          cfg.ProviderPriority,
+		FieldPriority:             cfg.FieldPriority,
+		ConfidenceThreshold:       cfg.ConfidenceThreshold,
+		AutoApply:                 cfg.AutoApply,
+		AdultContentFilterEnabled: cfg.AdultContentFilterEnabled,
 	}
 }
 
@@ -161,4 +163,3 @@ func putLibraryScrapeConfig(c *gin.Context) {
 	services.InvalidateScrapeAggregator()
 	c.Status(http.StatusNoContent)
 }
-
