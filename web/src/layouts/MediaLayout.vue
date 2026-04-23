@@ -11,6 +11,7 @@ import {
   SettingsOutline,
 } from '@vicons/ionicons5'
 import { useAuthStore } from '@/stores/auth'
+import { useBranding } from '@/composables/useBranding'
 import { useUiStore } from '@/stores/ui'
 import ThemeDrawer from '@/components/ThemeDrawer.vue'
 import { getViews, logout as apiLogout } from '@/api/client'
@@ -18,6 +19,7 @@ import { getViews, logout as apiLogout } from '@/api/client'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const branding = useBranding()
 const ui = useUiStore()
 const message = useMessage()
 
@@ -158,6 +160,7 @@ onMounted(() => {
   ui.forceDark = true
   window.addEventListener('scroll', handleScroll, { passive: true })
   handleScroll()
+  void branding.loadBranding()
   void loadLibraryNav()
 })
 
@@ -184,8 +187,9 @@ onUnmounted(() => {
           >
             <n-icon :size="18"><ArrowBackOutline /></n-icon>
           </button>
-          <router-link class="brand-mark" :to="{ name: 'home' }" aria-label="FYMS 首页">
-            FYMS
+          <router-link class="brand-mark" :to="{ name: 'home' }" :aria-label="`${branding.serverName.value || 'FYMS'} 首页`">
+            <img v-if="branding.iconUrl.value" :src="branding.iconUrl.value" class="brand-mark__icon" alt="" />
+            <span class="brand-mark__text">{{ branding.serverName.value || 'FYMS' }}</span>
           </router-link>
           <nav class="topbar-nav" aria-label="主导航">
             <router-link
@@ -326,6 +330,9 @@ onUnmounted(() => {
 
 /* ---- Brand mark ---- */
 .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-family: 'Manrope', 'Inter', system-ui, sans-serif;
   font-weight: 900;
   font-size: 22px;
@@ -334,6 +341,15 @@ onUnmounted(() => {
   color: var(--app-accent-red, #e50914);
   text-decoration: none;
   text-transform: uppercase;
+}
+.brand-mark__icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+  flex-shrink: 0;
+}
+.brand-mark__text {
+  display: block;
 }
 .brand-mark:hover {
   filter: brightness(1.15);
@@ -525,6 +541,10 @@ onUnmounted(() => {
   }
   .brand-mark {
     font-size: 19px;
+  }
+  .brand-mark__icon {
+    width: 20px;
+    height: 20px;
   }
   .search-form {
     display: none;

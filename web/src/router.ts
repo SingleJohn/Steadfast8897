@@ -8,7 +8,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  *   网关（submenu）    →  /admin/gateway/{emby-sources|path-rules|backends}
  *   观测中心（submenu）→  /admin/observability/gateway/{traffic|redirect|ip-stats}
  *                         /admin/observability/service/{playback|stats|logs|tasks}
- *   系统（submenu）    →  /admin/system/{users|api-keys|webhook|backup|emby-migrate}
+ *   系统（submenu）    →  /admin/system/{users|api-keys|branding|webhook|backup|emby-migrate}
  *
  * 菜单由 AdminLayout 根据路由 meta 动态生成：
  *   - section / sectionLabel / sectionOrder / sectionIcon：一级模块归属
@@ -393,6 +393,22 @@ const router = createRouter({
           },
         },
         {
+          path: 'system/branding',
+          name: 'system_branding',
+          component: () => import('./pages/tools/BrandingTab.vue'),
+          meta: {
+            title: '系统品牌',
+            navLabel: '系统品牌',
+            icon: 'server',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 3,
+            requiresAdmin: true,
+          },
+        },
+        {
           path: 'system/webhook',
           name: 'system_webhook',
           component: () => import('./pages/tools/WebhookTab.vue'),
@@ -404,7 +420,7 @@ const router = createRouter({
             sectionLabel: '系统',
             sectionIcon: 'system',
             sectionOrder: 5,
-            order: 3,
+            order: 4,
             requiresAdmin: true,
           },
         },
@@ -420,7 +436,7 @@ const router = createRouter({
             sectionLabel: '系统',
             sectionIcon: 'system',
             sectionOrder: 5,
-            order: 4,
+            order: 5,
             requiresAdmin: true,
           },
         },
@@ -436,7 +452,7 @@ const router = createRouter({
             sectionLabel: '系统',
             sectionIcon: 'system',
             sectionOrder: 5,
-            order: 5,
+            order: 6,
             requiresAdmin: true,
           },
         },
@@ -456,6 +472,7 @@ const router = createRouter({
             const tab = (to.query.tab as string) || ''
             const map: Record<string, string> = {
               'api-keys': 'system_api_keys',
+              branding: 'system_branding',
               webhook: 'system_webhook',
               backup: 'system_backup',
               'emby-migrate': 'system_emby_migrate',
@@ -465,6 +482,7 @@ const router = createRouter({
         },
         { path: 'apikeys', redirect: { name: 'system_api_keys' } },
         { path: 'api-keys', redirect: { name: 'system_api_keys' } },
+        { path: 'branding', redirect: { name: 'system_branding' } },
         { path: 'webhook', redirect: { name: 'system_webhook' } },
         { path: 'backup', redirect: { name: 'system_backup' } },
         { path: 'emby-migrate', redirect: { name: 'system_emby_migrate' } },

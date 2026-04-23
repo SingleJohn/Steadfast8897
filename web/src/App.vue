@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { NConfigProvider, NGlobalStyle, NMessageProvider, darkTheme } from 'naive-ui'
-import { watchEffect } from 'vue'
+import { onMounted, watchEffect } from 'vue'
+import { useRoute } from 'vue-router'
 
+import { useBranding } from '@/composables/useBranding'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
+const route = useRoute()
+const branding = useBranding()
 
 function toRgbTuple(color: string): string | null {
   const raw = String(color || '').trim().replace(/^#/, '')
@@ -35,6 +39,15 @@ watchEffect(() => {
   }
   root.style.setProperty('--app-radius', `${ui.radius}px`)
   root.style.setProperty('--app-glass-blur', `${ui.glassBlur}px`)
+})
+
+watchEffect(() => {
+  const title = typeof route.meta?.title === 'string' ? route.meta.title : ''
+  branding.applyDocumentTitle(title)
+})
+
+onMounted(() => {
+  void branding.loadBranding()
 })
 </script>
 

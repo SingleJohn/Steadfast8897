@@ -28,6 +28,7 @@ import {
 import SystemMetricsPill from '@/components/SystemMetricsPill.vue'
 import ThemeDrawer from '@/components/ThemeDrawer.vue'
 import { AppIcons, type IconComponent } from '@/icons/appIcons'
+import { useBranding } from '@/composables/useBranding'
 import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import { logout as apiLogout } from '@/api/client'
@@ -36,6 +37,7 @@ const router = useRouter()
 const route = useRoute()
 const ui = useUiStore()
 const auth = useAuthStore()
+const branding = useBranding()
 const message = useMessage()
 
 const isMobile = useMediaQuery('(max-width: 768px)')
@@ -251,7 +253,10 @@ async function onMenuSelect(key: string) {
   await router.push({ name: key })
 }
 
-watch(() => route.path, () => { mobileMenuOpen.value = false })
+watch(() => route.path, () => {
+  mobileMenuOpen.value = false
+  void branding.loadBranding()
+}, { immediate: true })
 </script>
 
 <template>
@@ -269,10 +274,11 @@ watch(() => route.path, () => { mobileMenuOpen.value = false })
     >
       <div class="brand" @click="router.push({ name: 'admin_overview' })">
         <div class="brand-logo">
-          <n-icon :size="20"><component :is="AppIcons.overview" /></n-icon>
+          <img v-if="branding.iconUrl.value" :src="branding.iconUrl.value" class="brand-logo-image" alt="" />
+          <n-icon v-else :size="20"><component :is="AppIcons.overview" /></n-icon>
         </div>
         <transition name="fade">
-          <span v-show="!ui.siderCollapsed" class="brand-text">FYMS 管理</span>
+          <span v-show="!ui.siderCollapsed" class="brand-text">{{ branding.serverName.value || 'FYMS' }} 管理</span>
         </transition>
       </div>
 
@@ -403,6 +409,12 @@ watch(() => route.path, () => { mobileMenuOpen.value = false })
   place-items: center;
   flex-shrink: 0;
   box-shadow: 0 4px 6px -1px rgba(var(--app-primary-rgb), 0.3);
+}
+
+.brand-logo-image {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .brand-text {

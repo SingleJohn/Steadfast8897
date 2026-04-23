@@ -132,6 +132,16 @@ export async function getSystemInfo() {
   return request<any>('/System/Info/Public');
 }
 
+export interface BrandingConfig {
+  ServerName: string
+  IconUrl?: string
+  HasIcon?: boolean
+}
+
+export async function getBrandingConfig() {
+  return request<BrandingConfig>('/Branding/Configuration')
+}
+
 export type UpdateStatus = {
   status: string
   message: string

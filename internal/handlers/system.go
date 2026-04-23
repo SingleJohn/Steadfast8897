@@ -60,14 +60,15 @@ func getLocalIP() string {
 	return "127.0.0.1"
 }
 
-func systemInfo(state *AppState, public bool) gin.H {
+func systemInfo(ctx context.Context, state *AppState, public bool) gin.H {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	updateStatus := state.Updater.GetStatus(context.Background())
+	branding := services.LoadBrandingConfig(ctx, state.DB, state.Config)
 
 	port := state.Config.Port
 	info := gin.H{
-		"ServerName":             state.Config.ServerName,
+		"ServerName":             branding.ServerName,
 		"Version":                state.Config.Version,
 		"Id":                     state.Config.ServerID,
 		"OperatingSystem":        runtime.GOOS,
@@ -75,6 +76,9 @@ func systemInfo(state *AppState, public bool) gin.H {
 		"StartupWizardCompleted": true,
 		"LocalAddress":           fmt.Sprintf("http://%s:%d", getLocalIP(), port),
 		"CanSelfRestart":         true,
+	}
+	if branding.IconURL != "" {
+		info["BrandIconUrl"] = branding.IconURL
 	}
 
 	if !public {
@@ -132,11 +136,11 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 }
 
 func getSystemInfo(c *gin.Context) {
-	c.JSON(http.StatusOK, systemInfo(GetState(c), false))
+	c.JSON(http.StatusOK, systemInfo(c.Request.Context(), GetState(c), false))
 }
 
 func getSystemInfoPublic(c *gin.Context) {
-	c.JSON(http.StatusOK, systemInfo(GetState(c), true))
+	c.JSON(http.StatusOK, systemInfo(c.Request.Context(), GetState(c), true))
 }
 
 func ping(c *gin.Context) {
@@ -212,6 +216,19 @@ func postConfiguration(c *gin.Context) {
 	needLimiterApply := false
 	for key, raw := range updates {
 		valStr := configValueString(raw)
+		switch key {
+		case services.BrandServerNameKey:
+			valStr = strings.TrimSpace(valStr)
+			if valStr == "" {
+				valStr = state.Config.ServerName
+			}
+		case services.BrandIconSVGKey:
+			valStr = strings.TrimSpace(valStr)
+			if valStr != "" && !services.IsSVGDocument(valStr) {
+				c.JSON(http.StatusBadRequest, gin.H{"message": "brand_icon_svg must be a valid svg document"})
+				return
+			}
+		}
 		_, err := state.DB.Exec(ctx,
 			`INSERT INTO system_config (key, value) VALUES ($1, $2)
 			 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
@@ -265,10 +282,15 @@ func configPage(c *gin.Context) {
 }
 
 func branding(c *gin.Context) {
+	state := GetState(c)
+	brandingCfg := services.LoadBrandingConfig(c.Request.Context(), state.DB, state.Config)
 	c.JSON(http.StatusOK, gin.H{
 		"LoginDisclaimer":     "",
 		"CustomCss":           "",
 		"SplashscreenEnabled": false,
+		"ServerName":          brandingCfg.ServerName,
+		"IconUrl":             brandingCfg.IconURL,
+		"HasIcon":             brandingCfg.HasIcon,
 	})
 }
 

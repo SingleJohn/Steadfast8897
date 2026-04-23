@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { NInput, NButton, NIcon } from 'naive-ui'
 import { PersonOutline, LockClosedOutline, ShieldCheckmarkOutline } from '@vicons/ionicons5'
 import { useAuth } from '../composables/useAuth'
+import { useBranding } from '@/composables/useBranding'
 import {
   login as apiLogin,
   getStartupConfig,
@@ -13,6 +14,7 @@ import {
 
 const { login } = useAuth()
 const router = useRouter()
+const branding = useBranding()
 
 const username = ref('')
 const password = ref('')
@@ -35,6 +37,7 @@ function triggerShake() {
 }
 
 onMounted(() => {
+  void branding.loadBranding()
   getStartupConfig()
     .then((config) => {
       if (!config.IsComplete) isSetup.value = true
@@ -178,7 +181,8 @@ async function onSubmit() {
       <!-- Logo -->
       <div class="login-logo">
         <div class="login-logo__icon">
-          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <img v-if="branding.iconUrl.value" :src="branding.iconUrl.value" alt="" class="login-logo__image" />
+          <svg v-else viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect width="40" height="40" rx="10" fill="url(#logo-grad)" />
             <path d="M12 13h16v2H14v4h12v2H14v6h-2V13z" fill="#fff" fill-opacity="0.95" />
             <defs>
@@ -189,7 +193,7 @@ async function onSubmit() {
             </defs>
           </svg>
         </div>
-        <span class="login-logo__text">FYMS</span>
+        <span class="login-logo__text">{{ branding.serverName.value || 'FYMS' }}</span>
       </div>
 
       <!-- Badge for setup mode -->
@@ -257,7 +261,7 @@ async function onSubmit() {
       </form>
 
       <p class="login-footer">
-        {{ isSetup ? '此账户将拥有完整的管理员权限' : '安全连接到您的 FYMS 实例' }}
+        {{ isSetup ? '此账户将拥有完整的管理员权限' : `安全连接到您的 ${branding.serverName.value || 'FYMS'} 实例` }}
       </p>
     </div>
   </div>
@@ -371,6 +375,13 @@ async function onSubmit() {
 .login-logo__icon svg {
   width: 100%;
   height: 100%;
+  filter: drop-shadow(0 2px 8px rgba(0, 164, 220, 0.3));
+}
+
+.login-logo__image {
+  width: 100%;
+  height: 100%;
+  display: block;
   filter: drop-shadow(0 2px 8px rgba(0, 164, 220, 0.3));
 }
 

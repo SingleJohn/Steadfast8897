@@ -13,6 +13,7 @@ import CardSkeleton from '../components/CardSkeleton.vue'
 import HeroCarousel from '../components/HeroCarousel.vue'
 import LibraryTabs from '../components/LibraryTabs.vue'
 import SwiperRow from '../components/SwiperRow.vue'
+import { useBranding } from '@/composables/useBranding'
 import { useAuthStore } from '../stores/auth'
 
 interface LibrarySection {
@@ -23,6 +24,7 @@ interface LibrarySection {
 
 const router = useRouter()
 const auth = useAuthStore()
+const branding = useBranding()
 
 const heroItems = ref<any[]>([])
 const resumeItems = ref<any[]>([])
@@ -121,7 +123,7 @@ onMounted(() => {
         <path d="M17 17h5" />
       </svg>
     </div>
-    <h2 class="empty-title">欢迎使用 FYMS</h2>
+    <h2 class="empty-title">欢迎使用 {{ branding.serverName.value || 'FYMS' }}</h2>
     <p class="empty-desc">
       {{ auth.isAdmin ? '当前还没有可浏览的媒体内容。先去添加媒体库并触发扫描，首页会自动展示最新内容。' : '当前还没有可浏览的媒体内容，请联系管理员完成媒体库接入与扫描。' }}
     </p>
