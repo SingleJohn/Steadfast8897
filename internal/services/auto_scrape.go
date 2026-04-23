@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,57 @@ var autoScrapeRunning sync.Map // libraryID -> *atomic.Bool
 var autoScrapeLastRun sync.Map // libraryID -> time.Time
 
 const autoScrapeCooldown = 30 * time.Second
+
+func autoScrapeEnabled(ctx context.Context, pool *pgxpool.Pool) bool {
+	var autoEnabled *string
+	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'auto_scrape_enabled'").Scan(&autoEnabled)
+	return autoEnabled != nil && *autoEnabled == "true"
+}
+
+// enqueueIdentifyIfEligible 把"新建即入队 identify"的资格判断集中到一处,与 autoScrape 的
+// 过滤边界保持一致:
+//   - 仅顶层 Movie/Series
+//   - 仍缺 overview
+//   - 未建立任何 item_external_ids
+//   - 非 NFO 托管条目
+func enqueueIdentifyIfEligible(ctx context.Context, pool *pgxpool.Pool, itemID string, priority int16, source string) bool {
+	if !autoScrapeEnabled(ctx, pool) {
+		return false
+	}
+
+	var itemType, overview, platformSource string
+	var hasExternalIDs bool
+	err := pool.QueryRow(ctx,
+		`SELECT type,
+		        COALESCE(overview, ''),
+		        COALESCE(platform_scan_source, ''),
+		        EXISTS (
+		            SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+		        )
+		   FROM items
+		  WHERE id = $1::uuid
+		    AND type IN ('Movie', 'Series')`,
+		itemID,
+	).Scan(&itemType, &overview, &platformSource, &hasExternalIDs)
+	if err != nil {
+		slog.Warn("[AutoScrape] Check item eligibility failed",
+			"item", itemID, "source", source, "error", err)
+		return false
+	}
+	if strings.TrimSpace(overview) != "" || hasExternalIDs || platformSource == "nfo" {
+		return false
+	}
+
+	if err := NewScrapeQueue(pool).Enqueue(ctx, itemID, ScrapeTaskIdentify, priority); err != nil {
+		slog.Warn("[AutoScrape] Enqueue identify failed",
+			"item", itemID, "source", source, "error", err)
+		return false
+	}
+
+	slog.Info("[AutoScrape] Enqueued identify task",
+		"item", itemID, "type", itemType, "source", source, "priority", priority)
+	return true
+}
 
 // autoScrapeNewItems 把本 library 里"还缺 overview"且"未在 cooldown"的
 // Movie/Series 一批入队到 scrape_queue,task_type=identify。
@@ -47,9 +99,7 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 	// 即使 auto_scrape_enabled=false 也占用窗口 —— 否则高频触发会反复查 system_config。
 	autoScrapeLastRun.Store(libraryID, time.Now())
 
-	var autoEnabled *string
-	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'auto_scrape_enabled'").Scan(&autoEnabled)
-	if autoEnabled == nil || *autoEnabled != "true" {
+	if !autoScrapeEnabled(ctx, pool) {
 		return
 	}
 

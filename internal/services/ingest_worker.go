@@ -367,7 +367,6 @@ func (w *IngestWorker) processMovieCreate(ctx context.Context, libID string, e I
 	name := filepath.Base(path)
 	existing := map[string]bool{}
 	scanOneMovie(ctx, w.pool, libID, name, path, isDir, existing)
-	go autoScrapeNewItems(ctx, w.pool, libID)
 	return nil
 }
 
@@ -378,7 +377,6 @@ func (w *IngestWorker) processTvCreate(ctx context.Context, libID string, e Inge
 		return nil
 	}
 	scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
-	go autoScrapeNewItems(ctx, w.pool, libID)
 	return nil
 }
 

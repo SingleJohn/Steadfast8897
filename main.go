@@ -108,9 +108,12 @@ func main() {
 	scanProgress := services.NewScanProgressTracker(pool)
 	probeTask := services.NewProbeTask()
 	ingestWorker := services.NewIngestWorker(pool, cache)
-	fileWatcher := services.NewFileWatcher(ingestWorker)
 	scrapeQueue := services.NewScrapeQueue(pool)
 	scrapeWorker := services.NewScrapeWorker(pool, scrapeQueue, tmdbLimiter)
+	refreshQueue := services.NewRefreshQueue(pool)
+	refreshWorker := services.NewRefreshWorker(pool, refreshQueue, scrapeQueue)
+	refreshScheduler := services.NewRefreshScheduler(pool, refreshQueue)
+	fileWatcher := services.NewFileWatcher(ingestWorker, refreshScheduler)
 
 	var proxyURL *string
 	pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'tmdb_proxy'").Scan(&proxyURL)
@@ -157,6 +160,8 @@ func main() {
 		Ingest:         ingestWorker,
 		ScrapeQueue:    scrapeQueue,
 		ScrapeWorker:   scrapeWorker,
+		RefreshQueue:   refreshQueue,
+		RefreshWorker:  refreshWorker,
 		LogBuffer:      logBuffer,
 		HTTPClient:     httpClient,
 		Updater:        updater,
@@ -206,6 +211,7 @@ func main() {
 	go cleanupTask.ResumeAfterRestart(context.Background())
 	go ingestWorker.Run(ctx)
 	go scrapeWorker.Run(ctx)
+	go refreshWorker.Run(ctx)
 	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)
 	fileWatcher.Start(ctx, pool, cache)
 

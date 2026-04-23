@@ -40,11 +40,10 @@ func FindImage(dir string, prefixes []string) *string {
 }
 
 func FindImageCached(cache DirCache, prefixes []string) *string {
-	imageExts := map[string]bool{"jpg": true, "jpeg": true, "png": true, "webp": true}
 	for _, entry := range cache {
 		name, path := entry[0], entry[1]
 		ext := strings.TrimPrefix(filepath.Ext(name), ".")
-		if !imageExts[ext] {
+		if !isSupportedImageExt(ext) {
 			continue
 		}
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
@@ -70,7 +69,6 @@ func FindEpisodeThumbCached(cache DirCache, videoBasename string) *string {
 	if stem == "" {
 		return nil
 	}
-	imageExts := map[string]bool{"jpg": true, "jpeg": true, "png": true, "webp": true}
 	candidates := []string{
 		stem + "-thumb",
 		stem + ".thumb",
@@ -80,7 +78,7 @@ func FindEpisodeThumbCached(cache DirCache, videoBasename string) *string {
 		for _, entry := range cache {
 			name, path := entry[0], entry[1]
 			ext := strings.TrimPrefix(filepath.Ext(name), ".")
-			if !imageExts[ext] {
+			if !isSupportedImageExt(ext) {
 				continue
 			}
 			s := strings.TrimSuffix(name, filepath.Ext(name))
@@ -117,6 +115,72 @@ func GenerateImageTag(filePath string) *string {
 	return &tag
 }
 
+func isSupportedImageExt(ext string) bool {
+	switch strings.ToLower(strings.TrimPrefix(ext, ".")) {
+	case "jpg", "jpeg", "png", "webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeImageComparePath(path string) string {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return ""
+	}
+	if os.PathSeparator == '\\' {
+		return strings.ToLower(path)
+	}
+	return path
+}
+
+func isManagedNamedImagePath(currentPath string, dir string, prefixes []string) bool {
+	currentPath = strings.TrimSpace(currentPath)
+	dir = strings.TrimSpace(dir)
+	if currentPath == "" || dir == "" {
+		return false
+	}
+	if normalizeImageComparePath(filepath.Dir(currentPath)) != normalizeImageComparePath(dir) {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(currentPath))
+	if !isSupportedImageExt(filepath.Ext(base)) {
+		return false
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(stem, prefix) || strings.HasSuffix(stem, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isManagedEpisodeThumbPath(currentPath string, dir string, videoBasename string) bool {
+	currentPath = strings.TrimSpace(currentPath)
+	dir = strings.TrimSpace(dir)
+	videoBasename = strings.TrimSpace(videoBasename)
+	if currentPath == "" || dir == "" || videoBasename == "" {
+		return false
+	}
+	if normalizeImageComparePath(filepath.Dir(currentPath)) != normalizeImageComparePath(dir) {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(currentPath))
+	if !isSupportedImageExt(filepath.Ext(base)) {
+		return false
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	videoStem := strings.ToLower(strings.TrimSuffix(videoBasename, filepath.Ext(videoBasename)))
+	switch stem {
+	case videoStem, videoStem + "-thumb", videoStem + ".thumb":
+		return true
+	default:
+		return false
+	}
+}
+
 func syncItemArtwork(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -126,27 +190,61 @@ func syncItemArtwork(
 	backdrop *string,
 	backdropTag *string,
 ) {
-	if (poster == nil || *poster == "") && (backdrop == nil || *backdrop == "") {
-		return
+	if err := syncItemArtworkWithClear(ctx, pool, itemID, poster, posterTag, false, backdrop, backdropTag, false); err != nil {
+		slog.Warn("[Scan] Failed to sync artwork", "itemId", itemID, "error", err)
+	}
+}
+
+func syncItemArtworkWithClear(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	itemID uuid.UUID,
+	poster *string,
+	posterTag *string,
+	clearPoster bool,
+	backdrop *string,
+	backdropTag *string,
+	clearBackdrop bool,
+) error {
+	if (poster == nil || *poster == "") &&
+		(backdrop == nil || *backdrop == "") &&
+		!clearPoster && !clearBackdrop {
+		return nil
 	}
 
 	_, err := pool.Exec(ctx,
 		`UPDATE items
-		 SET primary_image_path = CASE WHEN NULLIF($2, '') IS NOT NULL THEN $2 ELSE primary_image_path END,
-		     primary_image_tag = CASE WHEN NULLIF($3, '') IS NOT NULL THEN $3 ELSE primary_image_tag END,
-		     backdrop_image_path = CASE WHEN NULLIF($4, '') IS NOT NULL THEN $4 ELSE backdrop_image_path END,
-		     backdrop_image_tag = CASE WHEN NULLIF($5, '') IS NOT NULL THEN $5 ELSE backdrop_image_tag END,
+		 SET primary_image_path = CASE
+		                            WHEN $4 THEN NULL
+		                            WHEN NULLIF($2, '') IS NOT NULL THEN $2
+		                            ELSE primary_image_path
+		                          END,
+		     primary_image_tag = CASE
+		                           WHEN $4 THEN NULL
+		                           WHEN NULLIF($3, '') IS NOT NULL THEN $3
+		                           ELSE primary_image_tag
+		                         END,
+		     backdrop_image_path = CASE
+		                             WHEN $7 THEN NULL
+		                             WHEN NULLIF($5, '') IS NOT NULL THEN $5
+		                             ELSE backdrop_image_path
+		                           END,
+		     backdrop_image_tag = CASE
+		                            WHEN $7 THEN NULL
+		                            WHEN NULLIF($6, '') IS NOT NULL THEN $6
+		                            ELSE backdrop_image_tag
+		                          END,
 		     updated_at = NOW()
 		 WHERE id = $1::uuid`,
 		itemID,
 		derefStr(poster),
 		derefStr(posterTag),
+		clearPoster,
 		derefStr(backdrop),
 		derefStr(backdropTag),
+		clearBackdrop,
 	)
-	if err != nil {
-		slog.Warn("[Scan] Failed to sync artwork", "itemId", itemID, "error", err)
-	}
+	return err
 }
 
 func ReadMediainfoJSON(filePath string) map[string]interface{} {

@@ -172,6 +172,7 @@ func scanOneShow(
 	//    只有在找到的 Series.file_path 为 NULL 时才复用并惰性回填;若 file_path
 	//    已有值且 ≠ 当前 showPath,视为"同名不同目录"的另一部剧,不复用。
 	var seriesID string
+	createdSeries := false
 	findExistingByPath := func(path string) string {
 		var id uuid.UUID
 		if err := pool.QueryRow(ctx,
@@ -238,6 +239,7 @@ func scanOneShow(
 		).Scan(&insertedID)
 		if err == nil && insertedID != nil {
 			seriesID = insertedID.String()
+			createdSeries = true
 		} else {
 			// ON CONFLICT(多半是并发同路径插入) → 再按 file_path 查一次拿 UUID
 			seriesID = findExistingByPath(showPath)
@@ -249,6 +251,9 @@ func scanOneShow(
 
 	if nfoData != nil {
 		ApplyNfoDataWithPlatformSource(ctx, pool, seriesID, nfoData, models.PlatformScanSourceNFO)
+	}
+	if createdSeries {
+		enqueueIdentifyIfEligible(ctx, pool, seriesID, ScrapePriorityIdentify, "scan.series.create")
 	}
 
 	entries, err := os.ReadDir(showPath)
@@ -387,15 +392,20 @@ func scanOneShow(
 
 	// 分支 1:已刮削 Series 下新增 Episode → 增量补 name/image,避免新集停在占位符。
 	if seriesScraped && len(newEpisodeSeasonIDs) > 0 {
-		queue := NewScrapeQueue(pool)
-		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
 		seasonIDs := make([]string, 0, len(newEpisodeSeasonIDs))
 		for sid := range newEpisodeSeasonIDs {
 			seasonIDs = append(seasonIDs, sid)
 		}
-		_, _ = queue.EnqueueBatch(ctx, seasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
-		slog.Info("[Scan] New episodes under scraped series, enqueued backfill",
-			"series", seriesID, "show", finalShowName, "seasons", len(seasonIDs))
+		if err := enqueueSeriesSubtreeRemote(ctx, NewScrapeQueue(pool), seriesID, seasonIDs, ScrapePriorityScan, seriesSubtreeRemotePlan{
+			EnqueueEpisodeNames:  true,
+			EnqueueEpisodeImages: true,
+		}); err != nil {
+			slog.Warn("[Scan] enqueue subtree complement for new episodes failed",
+				"series", seriesID, "show", finalShowName, "error", err)
+		} else {
+			slog.Info("[Scan] New episodes under scraped series, enqueued subtree complement",
+				"series", seriesID, "show", finalShowName, "seasons", len(seasonIDs))
+		}
 	}
 
 	// 分支 2:NFO 扫入且 Series 有 tmdb_id → 补 TMDB 独有字段。
@@ -403,25 +413,20 @@ func scanOneShow(
 	// 这里是唯一的兜底入口。UNIQUE(item_id,task_type) 会去重,重扫不会放大工作量。
 	// 包含所有现存季(不限 new),下游任务按 "字段为空才覆盖" 语义自检,不会覆盖已有数据。
 	if seriesScraped && nfoData != nil {
-		queue := NewScrapeQueue(pool)
-		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillActorImg, ScrapePriorityScan)
-		_ = queue.Enqueue(ctx, seriesID, ScrapeTaskBackfillEpisodeName, ScrapePriorityScan)
-		rows, err := pool.Query(ctx,
-			"SELECT id::text FROM items WHERE parent_id = $1::uuid AND type = 'Season'",
-			seriesID)
-		if err == nil {
-			var allSeasonIDs []string
-			for rows.Next() {
-				var id string
-				if rows.Scan(&id) == nil {
-					allSeasonIDs = append(allSeasonIDs, id)
-				}
-			}
-			rows.Close()
-			if len(allSeasonIDs) > 0 {
-				_, _ = queue.EnqueueBatch(ctx, allSeasonIDs, ScrapeTaskBackfillEpisodeImg, ScrapePriorityScan)
-			}
-			slog.Info("[Scan] NFO series, enqueued TMDB complement",
+		allSeasonIDs, err := loadSeriesSeasonIDs(ctx, pool, seriesID)
+		if err != nil {
+			slog.Warn("[Scan] load series seasons for subtree complement failed",
+				"series", seriesID, "show", finalShowName, "error", err)
+		}
+		if err := enqueueSeriesSubtreeRemote(ctx, NewScrapeQueue(pool), seriesID, allSeasonIDs, ScrapePriorityScan, seriesSubtreeRemotePlan{
+			EnqueueEpisodeNames:  true,
+			EnqueueEpisodeImages: true,
+			EnqueueActorImages:   true,
+		}); err != nil {
+			slog.Warn("[Scan] enqueue NFO subtree complement failed",
+				"series", seriesID, "show", finalShowName, "error", err)
+		} else {
+			slog.Info("[Scan] NFO series, enqueued TMDB subtree complement",
 				"series", seriesID, "show", finalShowName,
 				"tmdb_id", *seriesTmdbID, "seasons", len(allSeasonIDs))
 		}

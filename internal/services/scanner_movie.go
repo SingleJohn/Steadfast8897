@@ -282,6 +282,7 @@ func scanOneMovie(
 					enqueueMovieNfoComplement(ctx, pool, insertedID.String())
 				}
 			}
+			enqueueIdentifyIfEligible(ctx, pool, insertedID.String(), ScrapePriorityIdentify, "scan.movie.create")
 		} else if err == pgx.ErrNoRows {
 			// CONFLICT 唯一来源是 idx_items_filepath_unique(同 file_path),优先按 file_path 查;
 			// 同时一次性修正旧数据里被识别为 STREAM/BDMV 的错误 name。
@@ -363,6 +364,7 @@ func scanOneMovie(
 					enqueueMovieNfoComplement(ctx, pool, insertedID.String())
 				}
 			}
+			enqueueIdentifyIfEligible(ctx, pool, insertedID.String(), ScrapePriorityIdentify, "scan.movie.create")
 		} else if err == pgx.ErrNoRows {
 			if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, fullPath); existingID != nil {
 				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)

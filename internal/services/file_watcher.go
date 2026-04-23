@@ -21,14 +21,15 @@ import (
 // 现在它只把 fsnotify 原始事件翻译成 IngestEvent 丢给 IngestWorker,
 // 500ms 窗口的 Rename 合并、目录级 Delete、路径归属判断都在 worker 侧做。
 type FileWatcher struct {
-	mu      sync.Mutex
-	running bool
-	stopCh  chan struct{}
-	ingest  *IngestWorker
+	mu        sync.Mutex
+	running   bool
+	stopCh    chan struct{}
+	ingest    *IngestWorker
+	refreshes *RefreshScheduler
 }
 
-func NewFileWatcher(ingest *IngestWorker) *FileWatcher {
-	return &FileWatcher{ingest: ingest}
+func NewFileWatcher(ingest *IngestWorker, refreshes *RefreshScheduler) *FileWatcher {
+	return &FileWatcher{ingest: ingest, refreshes: refreshes}
 }
 
 func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *CacheService) {
@@ -135,7 +136,7 @@ func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *Cac
 // fsnotify 的 Op 是位掩码(Create|Write|Remove|Rename|Chmod),一次 Event 可能触发多种
 // 语义,分开 Submit。
 func (fw *FileWatcher) handle(watcher *fsnotify.Watcher, event fsnotify.Event) {
-	if fw.ingest == nil {
+	if fw.ingest == nil && fw.refreshes == nil {
 		return
 	}
 	path := event.Name
@@ -152,18 +153,30 @@ func (fw *FileWatcher) handle(watcher *fsnotify.Watcher, event fsnotify.Event) {
 		if isDir {
 			_ = addRecursive(watcher, path)
 		}
+		if !isDir && fw.refreshes != nil && classifySidecarPath(path) != "" {
+			fw.refreshes.OnSidecarChange(path)
+			return
+		}
 		fw.ingest.Submit(IngestEvent{
 			Kind: EventCreate, Path: path, IsDir: isDir,
 			Source: "fsnotify", DetectedAt: now,
 		})
 	}
 	if event.Has(fsnotify.Write) {
+		if !isDir && fw.refreshes != nil && classifySidecarPath(path) != "" {
+			fw.refreshes.OnSidecarChange(path)
+			return
+		}
 		fw.ingest.Submit(IngestEvent{
 			Kind: EventModify, Path: path, IsDir: isDir,
 			Source: "fsnotify", DetectedAt: now,
 		})
 	}
 	if event.Has(fsnotify.Remove) {
+		if fw.refreshes != nil && classifySidecarPath(path) != "" {
+			fw.refreshes.OnSidecarChange(path)
+			return
+		}
 		// 删除时文件已不存在,无法确定 isDir;processDelete 用 `= $1 OR LIKE $2/%`
 		// 兜底目录级删除,与 isDir 无关。
 		fw.ingest.Submit(IngestEvent{
@@ -172,6 +185,10 @@ func (fw *FileWatcher) handle(watcher *fsnotify.Watcher, event fsnotify.Event) {
 		})
 	}
 	if event.Has(fsnotify.Rename) {
+		if fw.refreshes != nil && classifySidecarPath(path) != "" {
+			fw.refreshes.OnSidecarChange(path)
+			return
+		}
 		// fsnotify 的 Rename 语义:原路径被改名。新路径通常以 Create 紧随其后。
 		// 跨目录 mv → 先 Rename(旧) 后 Create(新),renameBuffer 在 500ms 内合并成 Rename。
 		// 若 stat 原路径还在(Windows 某些场景),按 Create 处理。

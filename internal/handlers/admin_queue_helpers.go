@@ -26,3 +26,10 @@ func persistScrapeWorkerCount(c *gin.Context, n int) error {
 	state := GetState(c)
 	return services.WriteSystemConfigValue(c.Request.Context(), state.DB, "scrape_worker_count", strconv.Itoa(n))
 }
+
+// persistRefreshWorkerCount 把 refresh_worker_count 写入 system_config,
+// 重启后 RefreshWorker 启动会通过 loadDesiredCount 读到这个值。
+func persistRefreshWorkerCount(c *gin.Context, n int) error {
+	state := GetState(c)
+	return services.WriteSystemConfigValue(c.Request.Context(), state.DB, "refresh_worker_count", strconv.Itoa(n))
+}

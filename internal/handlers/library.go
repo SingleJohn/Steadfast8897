@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/dto"
@@ -50,7 +51,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.DELETE("/Items/:itemId/Images/:imageType", adminMW, deleteImage)
 
 	u.POST("/Library/Refresh", adminMW, refreshAll)
-	u.POST("/Items/:itemId/Refresh", adminMW, scrapeItem)
+	u.POST("/Items/:itemId/Refresh", adminMW, refreshItem)
 
 	u.GET("/Library/VirtualFolders", authMW, getVirtualFolders)
 	u.GET("/Library/VirtualFolders/Query", authMW, getVirtualFolders)
@@ -87,7 +88,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Browse", adminMW, browseDir)
 	u.GET("/Library/BrowseDirectories", adminMW, browseDirGet)
 
-	u.POST("/Library/Refresh/Metadata", adminMW, scrapeAll)
+	u.POST("/Library/Refresh/Metadata", adminMW, refreshLibraryMetadata)
 
 	// M7.Backfill: 存量数据回填(画质标签 / Episode 标题 / Episode 缩略图)
 	u.POST("/Library/Backfill/Start", adminMW, func(c *gin.Context) { startBackfill(c, state) })
@@ -1317,11 +1318,48 @@ func deleteImage(c *gin.Context) {
 
 func refreshAll(c *gin.Context) {
 	state := GetState(c)
-	go func() {
-		ctx := context.Background()
-		services.ScanAllLibraries(ctx, state.DB, state.Cache, state.ScanProgress, state.Ingest)
-	}()
-	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+	req, hasBody, err := parseLibraryRefreshRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	scopes, err := resolveLibraryRefreshScopes(req, hasBody, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	scanStarted := shouldRunLibraryScan(req, hasBody, true)
+	opts := buildLibraryRefreshOptions(req)
+	if opts.ValidateOnly && opts.AllowRemote {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "validate_only 不支持 allow_remote=true"})
+		return
+	}
+	if len(scopes) > 0 && state.RefreshQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "refresh queue not ready"})
+		return
+	}
+
+	resp := gin.H{"status": "accepted", "scan_started": scanStarted}
+	if len(scopes) > 0 {
+		scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(c.Request.Context(), state, nil, scopes, opts)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		resp["queued_tasks"] = queuedTasks
+		resp["scope_items"] = scopeItems
+		resp["allow_remote"] = opts.AllowRemote
+		resp["validate_only"] = opts.ValidateOnly
+	}
+
+	if scanStarted {
+		go func() {
+			ctx := context.Background()
+			services.ScanAllLibraries(ctx, state.DB, state.Cache, state.ScanProgress, state.Ingest)
+		}()
+	}
+	c.JSON(http.StatusAccepted, resp)
 }
 
 func refreshSingle(c *gin.Context) {
@@ -1605,6 +1643,313 @@ func getProbeProgress(c *gin.Context) {
 	c.JSON(http.StatusOK, buildEffectiveProbeProgress(c.Request.Context(), state))
 }
 
+type itemRefreshRequest struct {
+	Scope              string `json:"scope"`
+	Metadata           *bool  `json:"metadata"`
+	Images             *bool  `json:"images"`
+	ReplaceAllMetadata bool   `json:"replace_all_metadata"`
+	ReplaceAllImages   bool   `json:"replace_all_images"`
+	ValidateOnly       bool   `json:"validate_only"`
+	AllowRemote        *bool  `json:"allow_remote"`
+	RefreshSubtree     bool   `json:"refresh_subtree"`
+}
+
+type libraryRefreshRequest struct {
+	Scan               *bool  `json:"scan"`
+	Scope              string `json:"scope"`
+	Metadata           *bool  `json:"metadata"`
+	Images             *bool  `json:"images"`
+	ReplaceAllMetadata bool   `json:"replace_all_metadata"`
+	ReplaceAllImages   bool   `json:"replace_all_images"`
+	ValidateOnly       bool   `json:"validate_only"`
+	AllowRemote        *bool  `json:"allow_remote"`
+	RefreshSubtree     bool   `json:"refresh_subtree"`
+}
+
+func parseItemRefreshRequest(c *gin.Context) (itemRefreshRequest, error) {
+	var req itemRefreshRequest
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return req, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return req, nil
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+func parseLibraryRefreshRequest(c *gin.Context) (libraryRefreshRequest, bool, error) {
+	var req libraryRefreshRequest
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return req, false, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return req, false, nil
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return req, true, err
+	}
+	return req, true, nil
+}
+
+func (r libraryRefreshRequest) toItemRefreshRequest() itemRefreshRequest {
+	return itemRefreshRequest{
+		Scope:              r.Scope,
+		Metadata:           r.Metadata,
+		Images:             r.Images,
+		ReplaceAllMetadata: r.ReplaceAllMetadata,
+		ReplaceAllImages:   r.ReplaceAllImages,
+		ValidateOnly:       r.ValidateOnly,
+		AllowRemote:        r.AllowRemote,
+		RefreshSubtree:     r.RefreshSubtree,
+	}
+}
+
+func hasExplicitLibraryRefresh(req libraryRefreshRequest) bool {
+	return strings.TrimSpace(req.Scope) != "" ||
+		req.Metadata != nil ||
+		req.Images != nil ||
+		req.ReplaceAllMetadata ||
+		req.ReplaceAllImages ||
+		req.ValidateOnly ||
+		req.AllowRemote != nil ||
+		req.RefreshSubtree
+}
+
+func isSubtreeRefreshScope(scope string) bool {
+	return strings.EqualFold(strings.TrimSpace(scope), string(services.RefreshScopeSubtree))
+}
+
+func shouldRunLibraryScan(req libraryRefreshRequest, hasBody bool, defaultScan bool) bool {
+	if req.Scan != nil {
+		return *req.Scan
+	}
+	if hasBody && hasExplicitLibraryRefresh(req) {
+		return false
+	}
+	return defaultScan
+}
+
+func resolveLibraryRefreshScopes(req libraryRefreshRequest, hasBody bool, defaultScopes []services.RefreshScope) ([]services.RefreshScope, error) {
+	if !hasBody || !hasExplicitLibraryRefresh(req) {
+		return defaultScopes, nil
+	}
+	return resolveItemRefreshScopes(req.toItemRefreshRequest())
+}
+
+func buildLibraryRefreshOptions(req libraryRefreshRequest) services.RefreshOptions {
+	opts := services.DefaultRefreshOptionsForSource(services.RefreshSourceManual)
+	opts.AllowRemote = false
+	opts.ReplaceAllMetadata = req.ReplaceAllMetadata
+	opts.ReplaceAllImages = req.ReplaceAllImages
+	opts.ValidateOnly = req.ValidateOnly
+	opts.RefreshSubtree = req.RefreshSubtree || isSubtreeRefreshScope(req.Scope)
+	if req.AllowRemote != nil {
+		opts.AllowRemote = *req.AllowRemote
+	}
+	return opts
+}
+
+func refreshItemTypesForScope(scope services.RefreshScope) []string {
+	switch scope {
+	case services.RefreshScopeMetadata:
+		return []string{"Movie", "Series", "Episode"}
+	case services.RefreshScopeImages:
+		return []string{"Movie", "Series", "Season", "Episode"}
+	case services.RefreshScopeSubtree:
+		return []string{"Series"}
+	default:
+		return nil
+	}
+}
+
+func loadLibraryRefreshTargetIDs(ctx context.Context, pool *pgxpool.Pool, libraryID *uuid.UUID, scope services.RefreshScope) ([]string, error) {
+	types := refreshItemTypesForScope(scope)
+	if len(types) == 0 {
+		return nil, fmt.Errorf("unsupported batch refresh scope: %s", scope)
+	}
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if libraryID != nil {
+		rows, err = pool.Query(ctx,
+			`SELECT id::text
+			   FROM items i
+			   JOIN libraries l ON l.id = i.library_id
+			  WHERE i.library_id = $1::uuid
+			    AND l.deleted_at IS NULL
+			    AND i.merged_to_id IS NULL
+			    AND i.type = ANY($2::text[])
+			  ORDER BY i.created_at ASC`,
+			*libraryID, types,
+		)
+	} else {
+		rows, err = pool.Query(ctx,
+			`SELECT id::text
+			   FROM items i
+			   JOIN libraries l ON l.id = i.library_id
+			  WHERE l.deleted_at IS NULL
+			    AND i.merged_to_id IS NULL
+			    AND i.type = ANY($1::text[])
+			  ORDER BY i.created_at ASC`,
+			types,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func enqueueLibraryRefreshScopes(ctx context.Context, state *AppState, libraryID *uuid.UUID, scopes []services.RefreshScope, opts services.RefreshOptions) (map[string]int, int64, error) {
+	scopeItems := make(map[string]int, len(scopes))
+	var queuedTasks int64
+	for _, scope := range scopes {
+		itemIDs, err := loadLibraryRefreshTargetIDs(ctx, state.DB, libraryID, scope)
+		if err != nil {
+			return nil, 0, err
+		}
+		scopeItems[string(scope)] = len(itemIDs)
+		n, err := state.RefreshQueue.EnqueueBatch(ctx, itemIDs, scope, services.RefreshSourceManual, services.RefreshPriorityManual, opts)
+		if err != nil {
+			return nil, 0, err
+		}
+		queuedTasks += n
+	}
+	return scopeItems, queuedTasks, nil
+}
+
+func resolveItemRefreshScopes(req itemRefreshRequest) ([]services.RefreshScope, error) {
+	scope := strings.ToLower(strings.TrimSpace(req.Scope))
+	switch scope {
+	case "", string(services.RefreshScopeMetadata), string(services.RefreshScopeImages):
+	case string(services.RefreshScopeSubtree):
+		req.RefreshSubtree = true
+	default:
+		return nil, fmt.Errorf("unsupported refresh scope: %s", req.Scope)
+	}
+
+	if req.RefreshSubtree {
+		return []services.RefreshScope{services.RefreshScopeSubtree}, nil
+	}
+
+	wantMetadata := scope == string(services.RefreshScopeMetadata)
+	wantImages := scope == string(services.RefreshScopeImages)
+	explicitSelection := scope != ""
+	if req.Metadata != nil {
+		wantMetadata = *req.Metadata
+		explicitSelection = true
+	}
+	if req.Images != nil {
+		wantImages = *req.Images
+		explicitSelection = true
+	}
+	if !wantMetadata && !wantImages {
+		if explicitSelection {
+			return nil, fmt.Errorf("no refresh scope selected")
+		}
+		wantMetadata = true
+	}
+
+	scopes := make([]services.RefreshScope, 0, 2)
+	if wantMetadata {
+		scopes = append(scopes, services.RefreshScopeMetadata)
+	}
+	if wantImages {
+		scopes = append(scopes, services.RefreshScopeImages)
+	}
+	return scopes, nil
+}
+
+func refreshItem(c *gin.Context) {
+	state := GetState(c)
+	if state.RefreshQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "refresh queue not ready"})
+		return
+	}
+
+	itemID := c.Param("itemId")
+	ctx := c.Request.Context()
+	item, err := models.GetItemByID(ctx, state.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if item == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+		return
+	}
+
+	req, err := parseItemRefreshRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+
+	scopes, err := resolveItemRefreshScopes(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	for _, scope := range scopes {
+		if scope == services.RefreshScopeSubtree && item.ItemType != "Series" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "subtree refresh 仅支持 Series"})
+			return
+		}
+	}
+
+	opts := services.DefaultRefreshOptionsForSource(services.RefreshSourceManual)
+	opts.ReplaceAllMetadata = req.ReplaceAllMetadata
+	opts.ReplaceAllImages = req.ReplaceAllImages
+	opts.ValidateOnly = req.ValidateOnly
+	opts.RefreshSubtree = req.RefreshSubtree || isSubtreeRefreshScope(req.Scope)
+	if req.AllowRemote != nil {
+		opts.AllowRemote = *req.AllowRemote
+	}
+	if opts.ValidateOnly && opts.AllowRemote {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "validate_only 不支持 allow_remote=true"})
+		return
+	}
+
+	for _, scope := range scopes {
+		if err := state.RefreshQueue.Enqueue(ctx, itemID, scope, services.RefreshSourceManual, services.RefreshPriorityManual, opts); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+	}
+
+	scopeNames := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scopeNames = append(scopeNames, string(scope))
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":            true,
+		"queued":        true,
+		"item_id":       itemID,
+		"item_type":     item.ItemType,
+		"scopes":        scopeNames,
+		"allow_remote":  opts.AllowRemote,
+		"validate_only": opts.ValidateOnly,
+		"message":       "已加入刷新队列，稍后自动生效",
+	})
+}
+
 func scrapeItem(c *gin.Context) {
 	state := GetState(c)
 	itemID := c.Param("itemId")
@@ -1776,6 +2121,44 @@ func scrapeAll(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"enqueued": n})
 }
 
+func refreshLibraryMetadata(c *gin.Context) {
+	state := GetState(c)
+	if state.RefreshQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "refresh queue not ready"})
+		return
+	}
+
+	req, hasBody, err := parseLibraryRefreshRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	scopes, err := resolveLibraryRefreshScopes(req, hasBody, []services.RefreshScope{services.RefreshScopeMetadata})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	opts := buildLibraryRefreshOptions(req)
+	if opts.ValidateOnly && opts.AllowRemote {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "validate_only 不支持 allow_remote=true"})
+		return
+	}
+
+	scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(c.Request.Context(), state, nil, scopes, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{
+		"status":        "accepted",
+		"queued_tasks":  queuedTasks,
+		"scope_items":   scopeItems,
+		"allow_remote":  opts.AllowRemote,
+		"validate_only": opts.ValidateOnly,
+	})
+}
+
 // stopScrape 是旧 API 的兼容 no-op。刮削已由 scrape_queue 驱动,
 // 单条失败任务请在后台任务面板重试/取消,整体"停止刮削"已无语义。
 func stopScrape(c *gin.Context) {
@@ -1828,8 +2211,8 @@ func mergeVersions(c *gin.Context, state *AppState) {
 		"SELECT COUNT(*) FROM items WHERE merged_to_id IS NOT NULL").Scan(&totalSecondaries)
 
 	c.JSON(http.StatusOK, gin.H{
-		"merged":           merged,
-		"total_primaries":  totalPrimaries,
+		"merged":            merged,
+		"total_primaries":   totalPrimaries,
 		"total_secondaries": totalSecondaries,
 	})
 }
@@ -1946,11 +2329,49 @@ func refreshSingleLibrary(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
 	}
-	go func() {
-		bg := context.Background()
-		services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
-	}()
-	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+
+	req, hasBody, err := parseLibraryRefreshRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	scopes, err := resolveLibraryRefreshScopes(req, hasBody, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	scanStarted := shouldRunLibraryScan(req, hasBody, true)
+	opts := buildLibraryRefreshOptions(req)
+	if opts.ValidateOnly && opts.AllowRemote {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "validate_only 不支持 allow_remote=true"})
+		return
+	}
+	if len(scopes) > 0 && state.RefreshQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "refresh queue not ready"})
+		return
+	}
+
+	resp := gin.H{"status": "accepted", "scan_started": scanStarted, "library_id": lib.ID.String()}
+	if len(scopes) > 0 {
+		scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(ctx, state, &lib.ID, scopes, opts)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		resp["queued_tasks"] = queuedTasks
+		resp["scope_items"] = scopeItems
+		resp["allow_remote"] = opts.AllowRemote
+		resp["validate_only"] = opts.ValidateOnly
+	}
+
+	if scanStarted {
+		go func() {
+			bg := context.Background()
+			services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
+		}()
+	}
+	c.JSON(http.StatusAccepted, resp)
 }
 
 func uploadLibraryImage(c *gin.Context) {

@@ -422,12 +422,37 @@ export async function getUserDetail(userId: string) {
 }
 
 // Metadata scraping
-export async function scrapeItemMetadata(itemId: string) {
-  return request<any>(`/Items/${itemId}/Refresh`, { method: 'POST' });
+export type ItemRefreshOptions = {
+  scope?: 'metadata' | 'images' | 'subtree'
+  metadata?: boolean
+  images?: boolean
+  replace_all_metadata?: boolean
+  replace_all_images?: boolean
+  validate_only?: boolean
+  allow_remote?: boolean
+  refresh_subtree?: boolean
+}
+
+export type ItemRefreshResponse = {
+  ok: boolean
+  queued: boolean
+  item_id: string
+  item_type?: string
+  scopes: string[]
+  allow_remote: boolean
+  validate_only: boolean
+  message?: string
+}
+
+export async function scrapeItemMetadata(itemId: string, options?: ItemRefreshOptions) {
+  return request<ItemRefreshResponse>(`/Items/${itemId}/Refresh`, {
+    method: 'POST',
+    body: options ? JSON.stringify(options) : undefined,
+  });
 }
 
 export async function scrapeAllMetadata() {
-  return request<any>('/Library/Refresh/Metadata', { method: 'POST' });
+  return request<any>('/Library/Scrape/All', { method: 'POST' });
 }
 
 export async function searchTmdbForItem(itemId: string, query: string, year?: number) {
@@ -782,7 +807,48 @@ export type MetricsSnapshot = {
   scrape_failed?: number;
   scrape_done?: number;
   scrape_worker_count?: number;
+  refresh_pending?: number;
+  refresh_running?: number;
+  refresh_failed?: number;
+  refresh_done?: number;
+  refresh_worker_count?: number;
   tmdb_requests_total?: number;
+};
+
+export type RefreshQueueStats = {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+};
+
+export type RefreshQueueTask = {
+  id: number;
+  item_id: string;
+  item_name: string;
+  item_type: string;
+  file_path?: string;
+  series_name?: string;
+  index_number?: number;
+  parent_index_number?: number;
+  scope: string;
+  source: string;
+  status: string;
+  priority: number;
+  retry_count: number;
+  last_error?: string;
+  next_run_at: string;
+  updated_at: string;
+};
+
+export type RefreshQueueTaskDetail = RefreshQueueTask & {
+  options: {
+    replace_all_metadata?: boolean;
+    replace_all_images?: boolean;
+    validate_only?: boolean;
+    allow_remote?: boolean;
+    refresh_subtree?: boolean;
+  };
 };
 
 export async function getScrapeQueueStats() {
@@ -810,6 +876,31 @@ export async function retryAllFailedScrapeQueueTasks() {
   return requestJson<{ reset: number }>('/Admin/ScrapeQueue/RetryAllFailed', { method: 'POST' });
 }
 
+export async function getRefreshQueueStats() {
+  return requestJson<RefreshQueueStats>('/Admin/RefreshQueue/Stats');
+}
+
+export async function getRefreshQueueRecent(opts: { status?: 'failed' | 'running' | 'pending' | 'done' | ''; limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.offset != null) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return requestJson<{ tasks: RefreshQueueTask[]; total: number }>(`/Admin/RefreshQueue/Recent${qs ? '?' + qs : ''}`);
+}
+
+export async function getRefreshQueueTaskDetail(id: number) {
+  return requestJson<RefreshQueueTaskDetail>(`/Admin/RefreshQueue/Task/${id}`);
+}
+
+export async function retryRefreshQueueTask(id: number) {
+  return request<any>(`/Admin/RefreshQueue/Retry/${id}`, { method: 'POST' });
+}
+
+export async function retryAllFailedRefreshQueueTasks() {
+  return requestJson<{ reset: number }>('/Admin/RefreshQueue/RetryAllFailed', { method: 'POST' });
+}
+
 export async function getMetricsSnapshot() {
   return requestJson<MetricsSnapshot>('/Admin/Metrics/Snapshot');
 }
@@ -827,6 +918,13 @@ export async function setIngestWorkerCount(count: number) {
 
 export async function setScrapeWorkerCount(count: number) {
   return requestJson<{ count: number }>('/Admin/Scrape/Workers', {
+    method: 'POST',
+    body: JSON.stringify({ count }),
+  });
+}
+
+export async function setRefreshWorkerCount(count: number) {
+  return requestJson<{ count: number }>('/Admin/Refresh/Workers', {
     method: 'POST',
     body: JSON.stringify({ count }),
   });

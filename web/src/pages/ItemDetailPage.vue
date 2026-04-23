@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NSkeleton, NIcon, NSpace, NModal, NInput, NInputNumber, NSpin } from 'naive-ui'
+import { NButton, NSkeleton, NIcon, NSpace, NModal, NInput, NInputNumber, NSpin, useMessage } from 'naive-ui'
 import {
   CheckmarkDoneOutline,
   Heart,
@@ -18,6 +18,7 @@ import QualityBadge from '@/components/QualityBadge.vue'
 const route = useRoute()
 const router = useRouter()
 const { auth } = useAuth()
+const message = useMessage()
 
 const setBackdrop = inject<(url: string) => void>('setBackdrop', () => {})
 
@@ -238,8 +239,14 @@ async function handlePlayed() {
 async function handleScrape() {
   if (!item.value) return
   scraping.value = true
-  try { await scrapeItemMetadata(item.value.Id); item.value = await getItem(item.value.Id) }
-  catch { /* ignore */ } finally { scraping.value = false }
+  try {
+    const res = await scrapeItemMetadata(item.value.Id)
+    message.success(res.message || '已加入刷新队列')
+  } catch (e: any) {
+    message.error(e?.message || '刷新入队失败')
+  } finally {
+    scraping.value = false
+  }
 }
 
 function handleGenreClick(genreId: string) {

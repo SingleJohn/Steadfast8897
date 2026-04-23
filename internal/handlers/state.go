@@ -25,6 +25,8 @@ type AppState struct {
 	Ingest         *services.IngestWorker
 	ScrapeQueue    *services.ScrapeQueue
 	ScrapeWorker   *services.ScrapeWorker
+	RefreshQueue   *services.RefreshQueue
+	RefreshWorker  *services.RefreshWorker
 	LogBuffer      *services.LogBuffer
 	HTTPClient     *http.Client
 	Updater        *services.Updater

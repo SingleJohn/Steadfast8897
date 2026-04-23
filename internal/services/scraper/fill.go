@@ -8,6 +8,12 @@ import (
 	"sync"
 )
 
+const (
+	secondarySearchThreshold = 0.82
+	secondaryTitleThreshold  = 0.88
+	secondaryYearThreshold   = 0.60
+)
+
 // Fill 基于识别出的 Identity,并发拉取所有已注册 provider 的 Details,
 // 按 Priority 升序做字段级合并,返回 MergedDetails。
 //
@@ -71,7 +77,7 @@ func (a *Aggregator) Fill(ctx context.Context, match *Identity, parsed ParsedNam
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			d := fetchSecondary(ctx, p, t, match, seed)
+			d := fetchSecondary(ctx, p, t, match, seed, parsed)
 			ch <- slot{provider: p, details: d}
 		}()
 	}
@@ -112,8 +118,9 @@ func (a *Aggregator) Fill(ctx context.Context, match *Identity, parsed ParsedNam
 	return merged, nil
 }
 
-// fetchSecondary 辅源抓取:外部 ID 直达优先,失败则 Search 打分挑 top1。
-func fetchSecondary(ctx context.Context, p Provider, t MediaType, match *Identity, seed Query) *Details {
+// fetchSecondary 辅源抓取:外部 ID 直达优先,失败则 Search 后重打分;
+// 只有标题/年份都足够稳时才允许整源参与 merge。
+func fetchSecondary(ctx context.Context, p Provider, t MediaType, match *Identity, seed Query, parsed ParsedName) *Details {
 	// 1. 对应 provider 的 ID(如 bangumi:xx)直接 GetByID
 	if v, ok := match.ExternalIDs[p.Name()]; ok {
 		if id := strings.TrimSpace(v); id != "" && id != "0" {
@@ -139,16 +146,36 @@ func fetchSecondary(ctx context.Context, p Provider, t MediaType, match *Identit
 			return d
 		}
 	}
-	// 3. Search + 取 top1
+	// 3. Search + 重打分,不再直接拿 top1 污染主识别结果
 	cands, err := p.Search(ctx, t, seed)
 	if err != nil || len(cands) == 0 {
 		return nil
 	}
-	top := cands[0]
-	if strings.TrimSpace(top.ProviderID) == "" {
+	target := ParsedName{
+		Title:         firstNonEmpty(seed.Title, parsed.Title),
+		OriginalTitle: firstNonEmpty(seed.OriginalTitle, parsed.OriginalTitle),
+		Year:          firstNonNilYear(seed.Year, parsed.Year),
+	}
+	best := pickBest(cands, target)
+	if best == nil || strings.TrimSpace(best.cand.ProviderID) == "" {
 		return nil
 	}
-	d, err := p.GetByID(ctx, t, top.ProviderID)
+
+	titleSim := bestTitleSimilarity(best.cand, target)
+	yearFit := yearScore(best.cand.Year, target.Year)
+	if best.score < secondarySearchThreshold || titleSim < secondaryTitleThreshold ||
+		(target.Year != nil && best.cand.Year != nil && yearFit < secondaryYearThreshold) {
+		slog.Info("[Aggregator] secondary search rejected",
+			"provider", p.Name(),
+			"provider_id", best.cand.ProviderID,
+			"title", best.cand.Title,
+			"score", best.score,
+			"title_similarity", titleSim,
+			"year_fit", yearFit)
+		return nil
+	}
+
+	d, err := p.GetByID(ctx, t, best.cand.ProviderID)
 	if err != nil {
 		return nil
 	}

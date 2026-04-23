@@ -21,20 +21,40 @@ import {
   getScrapeQueueTaskDetail,
   retryScrapeQueueTask,
   retryAllFailedScrapeQueueTasks,
+  getRefreshQueueStats,
+  getRefreshQueueRecent,
+  getRefreshQueueTaskDetail,
+  retryRefreshQueueTask,
+  retryAllFailedRefreshQueueTasks,
   getMetricsSnapshot,
   invalidateScrapeCache,
   scrapeAllMetadata,
   setIngestWorkerCount,
   setScrapeWorkerCount,
+  setRefreshWorkerCount,
   type ScrapeQueueStats,
   type ScrapeQueueTask,
   type ScrapeQueueTaskDetail,
+  type RefreshQueueStats,
+  type RefreshQueueTask,
+  type RefreshQueueTaskDetail,
   type MetricsSnapshot,
 } from '@/api/client'
 
+type TaskListTab = 'failed' | 'running'
+type DisplayTask = {
+  item_type: string
+  series_name?: string
+  index_number?: number
+  parent_index_number?: number
+  item_name: string
+  item_id: string
+}
+
 const { showToast } = useToast()
 
-const stats = ref<ScrapeQueueStats>({ pending: 0, running: 0, done: 0, failed: 0 })
+const scrapeStats = ref<ScrapeQueueStats>({ pending: 0, running: 0, done: 0, failed: 0 })
+const refreshStats = ref<RefreshQueueStats>({ pending: 0, running: 0, done: 0, failed: 0 })
 const metrics = ref<MetricsSnapshot>({})
 const loading = ref(false)
 const firstLoaded = ref(false)
@@ -43,128 +63,221 @@ const ingestWorkerInput = ref<number>(4)
 const ingestWorkerSaving = ref(false)
 const scrapeWorkerInput = ref<number>(4)
 const scrapeWorkerSaving = ref(false)
+const refreshWorkerInput = ref<number>(1)
+const refreshWorkerSaving = ref(false)
 const scrapeAllLoading = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 5000
-
-// 任务列表按 status 分 Tab,每个 Tab 独立分页。
-const activeTab = ref<'failed' | 'running'>('failed')
 const PAGE_SIZE = 50
-const failedPage = ref(1)
-const runningPage = ref(1)
-const failedTasks = ref<ScrapeQueueTask[]>([])
-const runningTasks = ref<ScrapeQueueTask[]>([])
-const failedTotal = ref(0)
-const runningTotal = ref(0)
-const listLoading = ref(false)
 
-const currentList = computed(() =>
-  activeTab.value === 'failed' ? failedTasks.value : runningTasks.value,
+const scrapeActiveTab = ref<TaskListTab>('failed')
+const scrapeFailedPage = ref(1)
+const scrapeRunningPage = ref(1)
+const scrapeFailedTasks = ref<ScrapeQueueTask[]>([])
+const scrapeRunningTasks = ref<ScrapeQueueTask[]>([])
+const scrapeFailedTotal = ref(0)
+const scrapeRunningTotal = ref(0)
+const scrapeListLoading = ref(false)
+const scrapeExpandedId = ref<number | null>(null)
+const scrapeDetailCache = reactive<Record<number, ScrapeQueueTaskDetail>>({})
+const scrapeDetailLoading = ref<number | null>(null)
+const scrapeDetailError = reactive<Record<number, string>>({})
+
+const refreshActiveTab = ref<TaskListTab>('failed')
+const refreshFailedPage = ref(1)
+const refreshRunningPage = ref(1)
+const refreshFailedTasks = ref<RefreshQueueTask[]>([])
+const refreshRunningTasks = ref<RefreshQueueTask[]>([])
+const refreshFailedTotal = ref(0)
+const refreshRunningTotal = ref(0)
+const refreshListLoading = ref(false)
+const refreshExpandedId = ref<number | null>(null)
+const refreshDetailCache = reactive<Record<number, RefreshQueueTaskDetail>>({})
+const refreshDetailLoading = ref<number | null>(null)
+const refreshDetailError = reactive<Record<number, string>>({})
+
+const scrapeCurrentList = computed(() =>
+  scrapeActiveTab.value === 'failed' ? scrapeFailedTasks.value : scrapeRunningTasks.value,
 )
-const currentTotal = computed(() =>
-  activeTab.value === 'failed' ? failedTotal.value : runningTotal.value,
+const scrapeCurrentTotal = computed(() =>
+  scrapeActiveTab.value === 'failed' ? scrapeFailedTotal.value : scrapeRunningTotal.value,
 )
-const currentPage = computed({
-  get: () => (activeTab.value === 'failed' ? failedPage.value : runningPage.value),
-  set: (v) => {
-    if (activeTab.value === 'failed') failedPage.value = v
-    else runningPage.value = v
+const scrapeCurrentPage = computed({
+  get: () => (scrapeActiveTab.value === 'failed' ? scrapeFailedPage.value : scrapeRunningPage.value),
+  set: (v: number) => {
+    if (scrapeActiveTab.value === 'failed') scrapeFailedPage.value = v
+    else scrapeRunningPage.value = v
   },
 })
 
-const expandedId = ref<number | null>(null)
-const detailCache = reactive<Record<number, ScrapeQueueTaskDetail>>({})
-const detailLoading = ref<number | null>(null)
-const detailError = reactive<Record<number, string>>({})
+const refreshCurrentList = computed(() =>
+  refreshActiveTab.value === 'failed' ? refreshFailedTasks.value : refreshRunningTasks.value,
+)
+const refreshCurrentTotal = computed(() =>
+  refreshActiveTab.value === 'failed' ? refreshFailedTotal.value : refreshRunningTotal.value,
+)
+const refreshCurrentPage = computed({
+  get: () => (refreshActiveTab.value === 'failed' ? refreshFailedPage.value : refreshRunningPage.value),
+  set: (v: number) => {
+    if (refreshActiveTab.value === 'failed') refreshFailedPage.value = v
+    else refreshRunningPage.value = v
+  },
+})
 
-async function loadTaskList() {
-  listLoading.value = true
+async function loadScrapeTaskList() {
+  scrapeListLoading.value = true
   try {
-    const status = activeTab.value
-    const page = status === 'failed' ? failedPage.value : runningPage.value
+    const status = scrapeActiveTab.value
+    const page = status === 'failed' ? scrapeFailedPage.value : scrapeRunningPage.value
     const r = await getScrapeQueueRecent({
       status,
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     })
     if (status === 'failed') {
-      failedTasks.value = r.tasks || []
-      failedTotal.value = r.total ?? 0
+      scrapeFailedTasks.value = r.tasks || []
+      scrapeFailedTotal.value = r.total ?? 0
     } else {
-      runningTasks.value = r.tasks || []
-      runningTotal.value = r.total ?? 0
+      scrapeRunningTasks.value = r.tasks || []
+      scrapeRunningTotal.value = r.total ?? 0
     }
   } catch {
     // 静默;下次轮询自动重试
   } finally {
-    listLoading.value = false
+    scrapeListLoading.value = false
+  }
+}
+
+async function loadRefreshTaskList() {
+  refreshListLoading.value = true
+  try {
+    const status = refreshActiveTab.value
+    const page = status === 'failed' ? refreshFailedPage.value : refreshRunningPage.value
+    const r = await getRefreshQueueRecent({
+      status,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+    })
+    if (status === 'failed') {
+      refreshFailedTasks.value = r.tasks || []
+      refreshFailedTotal.value = r.total ?? 0
+    } else {
+      refreshRunningTasks.value = r.tasks || []
+      refreshRunningTotal.value = r.total ?? 0
+    }
+  } catch {
+    // 静默;下次轮询自动重试
+  } finally {
+    refreshListLoading.value = false
   }
 }
 
 async function refresh() {
   loading.value = true
   try {
-    const [s, m] = await Promise.allSettled([
+    const [scrapeStatsRes, refreshStatsRes, metricsRes] = await Promise.allSettled([
       getScrapeQueueStats(),
+      getRefreshQueueStats(),
       getMetricsSnapshot(),
     ])
-    if (s.status === 'fulfilled') stats.value = s.value
-    if (m.status === 'fulfilled') {
-      metrics.value = m.value
-      // 用户未在编辑时同步输入框,避免正在改的值被轮询覆盖
-      if (!ingestWorkerSaving.value && typeof m.value.ingest_worker_count === 'number') {
-        ingestWorkerInput.value = m.value.ingest_worker_count
+    if (scrapeStatsRes.status === 'fulfilled') scrapeStats.value = scrapeStatsRes.value
+    if (refreshStatsRes.status === 'fulfilled') refreshStats.value = refreshStatsRes.value
+    if (metricsRes.status === 'fulfilled') {
+      metrics.value = metricsRes.value
+      if (!ingestWorkerSaving.value && typeof metricsRes.value.ingest_worker_count === 'number') {
+        ingestWorkerInput.value = metricsRes.value.ingest_worker_count
       }
-      if (!scrapeWorkerSaving.value && typeof m.value.scrape_worker_count === 'number') {
-        scrapeWorkerInput.value = m.value.scrape_worker_count
+      if (!scrapeWorkerSaving.value && typeof metricsRes.value.scrape_worker_count === 'number') {
+        scrapeWorkerInput.value = metricsRes.value.scrape_worker_count
+      }
+      if (!refreshWorkerSaving.value && typeof metricsRes.value.refresh_worker_count === 'number') {
+        refreshWorkerInput.value = metricsRes.value.refresh_worker_count
       }
     }
-    await loadTaskList()
+    await Promise.allSettled([loadScrapeTaskList(), loadRefreshTaskList()])
     firstLoaded.value = true
   } finally {
     loading.value = false
   }
 }
 
-// 切 Tab 或翻页时重新拉列表(但只拉当前 Tab,不动 stats/metrics)
-watch([activeTab, failedPage, runningPage], () => {
-  expandedId.value = null
-  loadTaskList()
+watch([scrapeActiveTab, scrapeFailedPage, scrapeRunningPage], () => {
+  scrapeExpandedId.value = null
+  loadScrapeTaskList()
 })
 
-async function handleRetry(id: number) {
+watch([refreshActiveTab, refreshFailedPage, refreshRunningPage], () => {
+  refreshExpandedId.value = null
+  loadRefreshTaskList()
+})
+
+async function handleScrapeRetry(id: number) {
   try {
     await retryScrapeQueueTask(id)
     showToast('已重置为 pending', 'success')
-    delete detailCache[id]
-    delete detailError[id]
-    if (expandedId.value === id) expandedId.value = null
+    delete scrapeDetailCache[id]
+    delete scrapeDetailError[id]
+    if (scrapeExpandedId.value === id) scrapeExpandedId.value = null
     await refresh()
   } catch (e: any) {
     showToast(e.message || '重试失败', 'error')
   }
 }
 
-async function fetchDetail(id: number) {
-  detailLoading.value = id
-  delete detailError[id]
+async function fetchScrapeDetail(id: number) {
+  scrapeDetailLoading.value = id
+  delete scrapeDetailError[id]
   try {
-    detailCache[id] = await getScrapeQueueTaskDetail(id)
+    scrapeDetailCache[id] = await getScrapeQueueTaskDetail(id)
   } catch (e: any) {
-    detailError[id] = e?.message || '加载失败'
+    scrapeDetailError[id] = e?.message || '加载失败'
   } finally {
-    if (detailLoading.value === id) detailLoading.value = null
+    if (scrapeDetailLoading.value === id) scrapeDetailLoading.value = null
   }
 }
 
-async function toggleExpand(id: number) {
-  if (expandedId.value === id) {
-    expandedId.value = null
+async function toggleScrapeExpand(id: number) {
+  if (scrapeExpandedId.value === id) {
+    scrapeExpandedId.value = null
     return
   }
-  expandedId.value = id
-  if (!detailCache[id]) await fetchDetail(id)
+  scrapeExpandedId.value = id
+  if (!scrapeDetailCache[id]) await fetchScrapeDetail(id)
+}
+
+async function handleRefreshRetry(id: number) {
+  try {
+    await retryRefreshQueueTask(id)
+    showToast('已重置为 pending', 'success')
+    delete refreshDetailCache[id]
+    delete refreshDetailError[id]
+    if (refreshExpandedId.value === id) refreshExpandedId.value = null
+    await refresh()
+  } catch (e: any) {
+    showToast(e.message || '重试失败', 'error')
+  }
+}
+
+async function fetchRefreshDetail(id: number) {
+  refreshDetailLoading.value = id
+  delete refreshDetailError[id]
+  try {
+    refreshDetailCache[id] = await getRefreshQueueTaskDetail(id)
+  } catch (e: any) {
+    refreshDetailError[id] = e?.message || '加载失败'
+  } finally {
+    if (refreshDetailLoading.value === id) refreshDetailLoading.value = null
+  }
+}
+
+async function toggleRefreshExpand(id: number) {
+  if (refreshExpandedId.value === id) {
+    refreshExpandedId.value = null
+    return
+  }
+  refreshExpandedId.value = id
+  if (!refreshDetailCache[id]) await fetchRefreshDetail(id)
 }
 
 function statusTagType(status?: number): 'success' | 'warning' | 'error' | 'default' {
@@ -184,10 +297,28 @@ function formatResponseBody(s?: string): string {
   }
 }
 
-async function handleRetryAll() {
+function formatRefreshOptions(options?: RefreshQueueTaskDetail['options']): string {
+  if (!options) return '默认'
+  const lines = Object.entries(options)
+    .filter(([, value]) => Boolean(value))
+    .map(([key, value]) => `${key}: ${String(value)}`)
+  return lines.length > 0 ? lines.join('\n') : '默认'
+}
+
+async function handleRetryAllScrape() {
   try {
     const r = await retryAllFailedScrapeQueueTasks()
     showToast(`已重置 ${r.reset} 个失败任务`, 'success')
+    await refresh()
+  } catch (e: any) {
+    showToast(e.message || '批量重置失败', 'error')
+  }
+}
+
+async function handleRetryAllRefresh() {
+  try {
+    const r = await retryAllFailedRefreshQueueTasks()
+    showToast(`已重置 ${r.reset} 个刷新失败任务`, 'success')
     await refresh()
   } catch (e: any) {
     showToast(e.message || '批量重置失败', 'error')
@@ -247,12 +378,16 @@ async function handleSaveScrapeWorker() {
   }
 }
 
-function statusColor(status: string): 'success' | 'warning' | 'error' | 'default' {
-  switch (status) {
-    case 'done': return 'success'
-    case 'running': return 'warning'
-    case 'failed': return 'error'
-    default: return 'default'
+async function handleSaveRefreshWorker() {
+  refreshWorkerSaving.value = true
+  try {
+    const r = await setRefreshWorkerCount(refreshWorkerInput.value)
+    showToast(`刷新 worker 数已调整为 ${r.count}`, 'success')
+    await refresh()
+  } catch (e: any) {
+    showToast(e.message || '保存失败', 'error')
+  } finally {
+    refreshWorkerSaving.value = false
   }
 }
 
@@ -267,6 +402,25 @@ function taskTypeLabel(t: string): string {
   return m[t] || t
 }
 
+function refreshScopeLabel(scope: string): string {
+  const m: Record<string, string> = {
+    metadata: '元数据',
+    images: '图片',
+    subtree: '子树',
+  }
+  return m[scope] || scope
+}
+
+function refreshSourceLabel(source: string): string {
+  const m: Record<string, string> = {
+    manual: '手动',
+    scan: '扫库',
+    fsnotify: '文件监控',
+    sidecar: '边车文件',
+  }
+  return m[source] || source
+}
+
 function formatDate(s?: string): string {
   if (!s) return ''
   try {
@@ -276,8 +430,7 @@ function formatDate(s?: string): string {
   }
 }
 
-// 给 Episode / Season 拼一个 "S01E05" 风格的角标;Movie / Series 顶层返回空字符串。
-function episodeTag(t: ScrapeQueueTask): string {
+function episodeTag(t: DisplayTask): string {
   const s = t.parent_index_number
   const e = t.index_number
   if (t.item_type === 'Episode' && s != null && e != null) {
@@ -289,8 +442,7 @@ function episodeTag(t: ScrapeQueueTask): string {
   return ''
 }
 
-// 主展示名:Episode 显示 "剧集名 S01E05",其他直接 item_name
-function displayTitle(t: ScrapeQueueTask): string {
+function displayTitle(t: DisplayTask): string {
   const ep = episodeTag(t)
   if (t.series_name && ep) return `${t.series_name} · ${ep}`
   if (t.series_name) return t.series_name
@@ -301,6 +453,7 @@ onMounted(() => {
   refresh()
   pollTimer = setInterval(refresh, POLL_INTERVAL)
 })
+
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
@@ -308,7 +461,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="queue-tab">
-    <!-- ============ 入库流水线(Ingest)============ -->
     <NCard class="pipeline-card">
       <div class="pipeline-header">
         <div class="pipeline-title">
@@ -326,11 +478,11 @@ onBeforeUnmount(() => {
           <span class="metric-sub">当前 buffer 中未消费</span>
         </div>
         <div class="metric-item">
-          <span class="metric-label">溢出累计</span>
           <span
             class="metric-value"
             :class="{ warn: (metrics.ingest_overflow_total ?? 0) > 0 }"
           >{{ metrics.ingest_overflow_total ?? '-' }}</span>
+          <span class="metric-label">溢出累计</span>
           <span class="metric-sub">自启动以来丢弃的事件</span>
         </div>
         <div class="metric-item worker-item">
@@ -348,12 +500,11 @@ onBeforeUnmount(() => {
               保存
             </NButton>
           </div>
-          <span class="metric-sub">[1, 64] · 扫库/监控并发(根据数据库性能合理控制数量,会导致数据库CPU占用增加)</span>
+          <span class="metric-sub">[1, 64] · 扫库/监控并发</span>
         </div>
       </div>
     </NCard>
 
-    <!-- ============ 刮削流水线(Scrape)============ -->
     <NCard class="pipeline-card">
       <div class="pipeline-header">
         <div class="pipeline-title">
@@ -365,27 +516,25 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- KPI -->
       <div class="kpi-grid">
         <div class="kpi-card">
           <div class="kpi-label">Pending</div>
-          <div class="kpi-value pending">{{ stats.pending }}</div>
+          <div class="kpi-value pending">{{ scrapeStats.pending }}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Running</div>
-          <div class="kpi-value running">{{ stats.running }}</div>
+          <div class="kpi-value running">{{ scrapeStats.running }}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Failed</div>
-          <div class="kpi-value failed">{{ stats.failed }}</div>
+          <div class="kpi-value failed">{{ scrapeStats.failed }}</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Done</div>
-          <div class="kpi-value done">{{ stats.done }}</div>
+          <div class="kpi-value done">{{ scrapeStats.done }}</div>
         </div>
       </div>
 
-      <!-- Metrics + Worker 控件 -->
       <div class="metrics-grid">
         <div class="metric-item">
           <span class="metric-label">TMDB 请求累计</span>
@@ -411,7 +560,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- 管控按钮 -->
       <div class="manage-row">
         <NButton size="small" @click="refresh" :loading="loading">
           <template #icon><NIcon><RefreshOutline /></NIcon></template>
@@ -432,11 +580,11 @@ onBeforeUnmount(() => {
           </template>
           改了 tmdb_api_key / providers 配置后点一次,Aggregator/TmdbClient 缓存重建,免重启。
         </NPopconfirm>
-        <NPopconfirm @positive-click="handleRetryAll">
+        <NPopconfirm @positive-click="handleRetryAllScrape">
           <template #trigger>
-            <NButton size="small" type="warning" :disabled="stats.failed === 0">
+            <NButton size="small" type="warning" :disabled="scrapeStats.failed === 0">
               <template #icon><NIcon><RefreshOutline /></NIcon></template>
-              重试全部失败 ({{ stats.failed }})
+              重试全部失败 ({{ scrapeStats.failed }})
             </NButton>
           </template>
           把所有 failed 任务重置为 pending,立即重试。
@@ -444,26 +592,97 @@ onBeforeUnmount(() => {
       </div>
     </NCard>
 
-    <!-- ============ 任务列表(按 status 分 Tab + 分页)============ -->
+    <NCard class="pipeline-card">
+      <div class="pipeline-header">
+        <div class="pipeline-title">
+          <span class="pipeline-badge refreshq">刷新</span>
+          <span class="pipeline-name">Refresh · refresh_queue 表 → 本地 metadata / artwork</span>
+        </div>
+        <div class="pipeline-hint">
+          本地优先的 item-level refresh 队列。sidecar 变更、手动刷新都会在这里汇聚，只有 metadata 且允许远程时才桥接到 scrape。
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Pending</div>
+          <div class="kpi-value pending">{{ refreshStats.pending }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Running</div>
+          <div class="kpi-value running">{{ refreshStats.running }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Failed</div>
+          <div class="kpi-value failed">{{ refreshStats.failed }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Done</div>
+          <div class="kpi-value done">{{ refreshStats.done }}</div>
+        </div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-item">
+          <span class="metric-label">Worker 数</span>
+          <div class="worker-control">
+            <NInputNumber
+              v-model:value="refreshWorkerInput"
+              :min="1"
+              :max="8"
+              size="small"
+              style="width: 90px"
+            />
+            <NButton size="small" type="primary" :loading="refreshWorkerSaving" @click="handleSaveRefreshWorker">
+              <template #icon><NIcon><SaveOutline /></NIcon></template>
+              保存
+            </NButton>
+          </div>
+          <span class="metric-sub">[1, 8] · 本地 refresh 并发</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">远程桥接规则</span>
+          <span class="metric-value small">metadata only</span>
+          <span class="metric-sub">仅 `allow_remote=true` 且 scope=metadata 时进入 scrape_queue</span>
+        </div>
+      </div>
+
+      <div class="manage-row">
+        <NButton size="small" @click="refresh" :loading="loading">
+          <template #icon><NIcon><RefreshOutline /></NIcon></template>
+          手动刷新
+        </NButton>
+        <NPopconfirm @positive-click="handleRetryAllRefresh">
+          <template #trigger>
+            <NButton size="small" type="warning" :disabled="refreshStats.failed === 0">
+              <template #icon><NIcon><RefreshOutline /></NIcon></template>
+              重试全部失败 ({{ refreshStats.failed }})
+            </NButton>
+          </template>
+          把所有 failed refresh 任务重置为 pending,立即重试。
+        </NPopconfirm>
+      </div>
+    </NCard>
+
     <NCard class="tasks-card">
-      <NTabs v-model:value="activeTab" type="line" size="small" animated>
-        <NTabPane name="failed" :tab="`失败 (${stats.failed})`" />
-        <NTabPane name="running" :tab="`运行中 (${stats.running})`" />
+      <div class="card-heading">Scrape 队列任务</div>
+      <NTabs v-model:value="scrapeActiveTab" type="line" size="small" animated>
+        <NTabPane name="failed" :tab="`失败 (${scrapeStats.failed})`" />
+        <NTabPane name="running" :tab="`运行中 (${scrapeStats.running})`" />
       </NTabs>
 
-      <NSpin :show="listLoading && !firstLoaded">
+      <NSpin :show="scrapeListLoading && !firstLoaded">
         <EmptyState
-          v-if="firstLoaded && currentList.length === 0"
-          :description="activeTab === 'failed' ? '暂无失败任务' : '暂无运行中任务'"
+          v-if="firstLoaded && scrapeCurrentList.length === 0"
+          :description="scrapeActiveTab === 'failed' ? '暂无失败任务' : '暂无运行中任务'"
         />
         <div v-else class="task-list">
-          <div v-for="t in currentList" :key="t.id" class="task-item">
+          <div v-for="t in scrapeCurrentList" :key="t.id" class="task-item">
             <div
               class="task-row"
-              :class="[`status-${t.status}`, { expanded: expandedId === t.id }]"
-              @click="toggleExpand(t.id)"
+              :class="[`status-${t.status}`, { expanded: scrapeExpandedId === t.id }]"
+              @click="toggleScrapeExpand(t.id)"
             >
-              <!-- 顶行:标题 + 类型标签 + 操作按钮 -->
               <div class="task-head">
                 <div class="task-head-left">
                   <NTag size="small" class="type-tag">{{ taskTypeLabel(t.task_type) }}</NTag>
@@ -477,15 +696,14 @@ onBeforeUnmount(() => {
                     size="tiny"
                     type="primary"
                     ghost
-                    @click.stop="handleRetry(t.id)"
+                    @click.stop="handleScrapeRetry(t.id)"
                   >
                     重试
                   </NButton>
-                  <span class="expand-caret">{{ expandedId === t.id ? '▾' : '▸' }}</span>
+                  <span class="expand-caret">{{ scrapeExpandedId === t.id ? '▾' : '▸' }}</span>
                 </div>
               </div>
 
-              <!-- 次行:物理路径 + 错误摘要 -->
               <div class="task-sub" @click.stop>
                 <code v-if="t.file_path" class="file-path" :title="t.file_path">{{ t.file_path }}</code>
                 <span v-else class="file-path empty">(无物理路径)</span>
@@ -495,36 +713,37 @@ onBeforeUnmount(() => {
                 {{ t.last_error }}
               </div>
             </div>
-            <div v-if="expandedId === t.id" class="task-detail">
-              <NSpin :show="detailLoading === t.id && !detailCache[t.id]">
-                <div v-if="detailError[t.id]" class="detail-error">
-                  加载详情失败:{{ detailError[t.id] }}
+
+            <div v-if="scrapeExpandedId === t.id" class="task-detail">
+              <NSpin :show="scrapeDetailLoading === t.id && !scrapeDetailCache[t.id]">
+                <div v-if="scrapeDetailError[t.id]" class="detail-error">
+                  加载详情失败:{{ scrapeDetailError[t.id] }}
                 </div>
-                <div v-else-if="detailCache[t.id]" class="detail-body">
-                  <div class="detail-row" v-if="detailCache[t.id].file_path">
+                <div v-else-if="scrapeDetailCache[t.id]" class="detail-body">
+                  <div class="detail-row" v-if="scrapeDetailCache[t.id].file_path">
                     <div class="detail-label">File Path</div>
-                    <code class="detail-url">{{ detailCache[t.id].file_path }}</code>
+                    <code class="detail-url">{{ scrapeDetailCache[t.id].file_path }}</code>
                   </div>
-                  <div class="detail-row" v-if="detailCache[t.id].request_url">
+                  <div class="detail-row" v-if="scrapeDetailCache[t.id].request_url">
                     <div class="detail-label">Request URL</div>
-                    <code class="detail-url">{{ detailCache[t.id].request_url }}</code>
+                    <code class="detail-url">{{ scrapeDetailCache[t.id].request_url }}</code>
                   </div>
-                  <div class="detail-row" v-if="detailCache[t.id].response_status">
+                  <div class="detail-row" v-if="scrapeDetailCache[t.id].response_status">
                     <div class="detail-label">HTTP Status</div>
-                    <NTag :type="statusTagType(detailCache[t.id].response_status)" size="small">
-                      {{ detailCache[t.id].response_status }}
+                    <NTag :type="statusTagType(scrapeDetailCache[t.id].response_status)" size="small">
+                      {{ scrapeDetailCache[t.id].response_status }}
                     </NTag>
                   </div>
-                  <div class="detail-row" v-if="detailCache[t.id].last_error">
+                  <div class="detail-row" v-if="scrapeDetailCache[t.id].last_error">
                     <div class="detail-label">Error</div>
-                    <pre class="detail-pre err-pre">{{ detailCache[t.id].last_error }}</pre>
+                    <pre class="detail-pre err-pre">{{ scrapeDetailCache[t.id].last_error }}</pre>
                   </div>
-                  <div class="detail-row" v-if="detailCache[t.id].response_sample">
+                  <div class="detail-row" v-if="scrapeDetailCache[t.id].response_sample">
                     <div class="detail-label">Response Body</div>
-                    <pre class="detail-pre">{{ formatResponseBody(detailCache[t.id].response_sample) }}</pre>
+                    <pre class="detail-pre">{{ formatResponseBody(scrapeDetailCache[t.id].response_sample) }}</pre>
                   </div>
                   <div
-                    v-if="!detailCache[t.id].request_url && !detailCache[t.id].response_sample && !detailCache[t.id].last_error"
+                    v-if="!scrapeDetailCache[t.id].request_url && !scrapeDetailCache[t.id].response_sample && !scrapeDetailCache[t.id].last_error"
                     class="detail-empty"
                   >
                     无诊断信息(本地任务或尚未失败)
@@ -535,15 +754,110 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="currentTotal > PAGE_SIZE" class="pagination-row">
+        <div v-if="scrapeCurrentTotal > PAGE_SIZE" class="pagination-row">
           <NPagination
-            v-model:page="currentPage"
-            :page-count="Math.ceil(currentTotal / PAGE_SIZE)"
+            v-model:page="scrapeCurrentPage"
+            :page-count="Math.ceil(scrapeCurrentTotal / PAGE_SIZE)"
             :page-size="PAGE_SIZE"
             :page-slot="7"
             size="small"
           />
-          <span class="pagination-info">共 {{ currentTotal }} 条</span>
+          <span class="pagination-info">共 {{ scrapeCurrentTotal }} 条</span>
+        </div>
+      </NSpin>
+    </NCard>
+
+    <NCard class="tasks-card">
+      <div class="card-heading">Refresh 队列任务</div>
+      <NTabs v-model:value="refreshActiveTab" type="line" size="small" animated>
+        <NTabPane name="failed" :tab="`失败 (${refreshStats.failed})`" />
+        <NTabPane name="running" :tab="`运行中 (${refreshStats.running})`" />
+      </NTabs>
+
+      <NSpin :show="refreshListLoading && !firstLoaded">
+        <EmptyState
+          v-if="firstLoaded && refreshCurrentList.length === 0"
+          :description="refreshActiveTab === 'failed' ? '暂无失败任务' : '暂无运行中任务'"
+        />
+        <div v-else class="task-list">
+          <div v-for="t in refreshCurrentList" :key="t.id" class="task-item">
+            <div
+              class="task-row"
+              :class="[`status-${t.status}`, { expanded: refreshExpandedId === t.id }]"
+              @click="toggleRefreshExpand(t.id)"
+            >
+              <div class="task-head">
+                <div class="task-head-left">
+                  <NTag size="small" class="type-tag">{{ refreshScopeLabel(t.scope) }}</NTag>
+                  <NTag size="small" class="source-tag">{{ refreshSourceLabel(t.source) }}</NTag>
+                  <span class="task-title">{{ displayTitle(t) }}</span>
+                  <span v-if="t.item_type" class="task-type-hint">{{ t.item_type }}</span>
+                  <span v-if="t.retry_count > 0" class="meta-pill warn">重试 {{ t.retry_count }}</span>
+                </div>
+                <div class="task-head-right" @click.stop>
+                  <NButton
+                    v-if="t.status === 'failed'"
+                    size="tiny"
+                    type="primary"
+                    ghost
+                    @click.stop="handleRefreshRetry(t.id)"
+                  >
+                    重试
+                  </NButton>
+                  <span class="expand-caret">{{ refreshExpandedId === t.id ? '▾' : '▸' }}</span>
+                </div>
+              </div>
+
+              <div class="task-sub" @click.stop>
+                <code v-if="t.file_path" class="file-path" :title="t.file_path">{{ t.file_path }}</code>
+                <span v-else class="file-path empty">(无物理路径)</span>
+                <span class="meta-dim">下次 {{ formatDate(t.next_run_at) }}</span>
+              </div>
+              <div v-if="t.last_error" class="task-error" :title="t.last_error">
+                {{ t.last_error }}
+              </div>
+            </div>
+
+            <div v-if="refreshExpandedId === t.id" class="task-detail">
+              <NSpin :show="refreshDetailLoading === t.id && !refreshDetailCache[t.id]">
+                <div v-if="refreshDetailError[t.id]" class="detail-error">
+                  加载详情失败:{{ refreshDetailError[t.id] }}
+                </div>
+                <div v-else-if="refreshDetailCache[t.id]" class="detail-body">
+                  <div class="detail-row" v-if="refreshDetailCache[t.id].file_path">
+                    <div class="detail-label">File Path</div>
+                    <code class="detail-url">{{ refreshDetailCache[t.id].file_path }}</code>
+                  </div>
+                  <div class="detail-row">
+                    <div class="detail-label">Scope / Source</div>
+                    <pre class="detail-pre">{{ refreshScopeLabel(refreshDetailCache[t.id].scope) }} / {{ refreshSourceLabel(refreshDetailCache[t.id].source) }}</pre>
+                  </div>
+                  <div class="detail-row">
+                    <div class="detail-label">Options</div>
+                    <pre class="detail-pre">{{ formatRefreshOptions(refreshDetailCache[t.id].options) }}</pre>
+                  </div>
+                  <div class="detail-row" v-if="refreshDetailCache[t.id].last_error">
+                    <div class="detail-label">Error</div>
+                    <pre class="detail-pre err-pre">{{ refreshDetailCache[t.id].last_error }}</pre>
+                  </div>
+                  <div v-if="!refreshDetailCache[t.id].last_error" class="detail-empty">
+                    当前无错误诊断,主要看 options/source/scope 即可。
+                  </div>
+                </div>
+              </NSpin>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="refreshCurrentTotal > PAGE_SIZE" class="pagination-row">
+          <NPagination
+            v-model:page="refreshCurrentPage"
+            :page-count="Math.ceil(refreshCurrentTotal / PAGE_SIZE)"
+            :page-size="PAGE_SIZE"
+            :page-slot="7"
+            size="small"
+          />
+          <span class="pagination-info">共 {{ refreshCurrentTotal }} 条</span>
         </div>
       </NSpin>
     </NCard>
@@ -557,10 +871,6 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-/* ============ Pipeline section ============ */
-.pipeline-card {
-  /* 让每个 pipeline section 顶部留出一个 header 区块 */
-}
 .pipeline-header {
   display: flex;
   flex-direction: column;
@@ -569,11 +879,13 @@ onBeforeUnmount(() => {
   padding-bottom: 12px;
   border-bottom: 1px dashed var(--n-border-color, rgba(0, 0, 0, 0.08));
 }
+
 .pipeline-title {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
 .pipeline-badge {
   font-size: 12px;
   font-weight: 600;
@@ -582,32 +894,49 @@ onBeforeUnmount(() => {
   color: #fff;
   letter-spacing: 0.03em;
 }
+
 .pipeline-badge.ingest {
   background: #409eff;
 }
+
 .pipeline-badge.scrape {
   background: #9b59b6;
 }
+
+.pipeline-badge.refreshq {
+  background: #18a058;
+}
+
 .pipeline-name {
   font-size: 14px;
   font-weight: 500;
   color: var(--n-text-color-2, #555);
 }
+
 .pipeline-hint {
   font-size: 12px;
   color: var(--n-text-color-3, #888);
   line-height: 1.5;
 }
 
-/* ============ KPI grid ============ */
+.card-heading {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--n-text-color-1);
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 14px;
 }
+
 @media (max-width: 768px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .kpi-card {
@@ -617,30 +946,46 @@ onBeforeUnmount(() => {
   border: 1px solid var(--n-border-color, rgba(0, 0, 0, 0.06));
   border-radius: 6px;
 }
+
 .kpi-label {
   font-size: 12px;
   color: var(--n-text-color-3, #888);
   margin-bottom: 6px;
 }
+
 .kpi-value {
   font-size: 26px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.kpi-value.pending { color: #909399; }
-.kpi-value.running { color: #e6a23c; }
-.kpi-value.failed { color: #f56c6c; }
-.kpi-value.done { color: #67c23a; }
 
-/* ============ Metrics grid ============ */
+.kpi-value.pending {
+  color: #909399;
+}
+
+.kpi-value.running {
+  color: #e6a23c;
+}
+
+.kpi-value.failed {
+  color: #f56c6c;
+}
+
+.kpi-value.done {
+  color: #67c23a;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 12px;
 }
+
 @media (max-width: 768px) {
-  .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .metric-item {
@@ -648,29 +993,35 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 4px;
 }
+
 .metric-label {
   font-size: 12px;
   color: var(--n-text-color-3, #888);
 }
+
 .metric-value {
   font-size: 20px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
+
+.metric-value.small {
+  font-size: 16px;
+}
+
 .metric-value.warn {
   color: #e6a23c;
 }
+
 .metric-sub {
   font-size: 11px;
   color: var(--n-text-color-3, #999);
 }
+
 .worker-control {
   display: flex;
   gap: 8px;
   align-items: center;
-}
-.worker-item {
-  grid-column: span 1;
 }
 
 .manage-row {
@@ -679,24 +1030,24 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-/* ============ 任务列表(两行布局,主题色友好)============ */
 .task-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin-top: 8px;
 }
+
 .task-item {
   display: flex;
   flex-direction: column;
 }
+
 .task-row {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
   border-radius: 6px;
-  /* 透明底 + 明显边框:暗色/亮色主题下都能看清文字 */
   background: transparent;
   border: 1px solid var(--n-border-color);
   border-left-width: 3px;
@@ -704,40 +1055,47 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s;
 }
+
 .task-row:hover {
   background: var(--n-action-color);
 }
+
 .task-row.expanded {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
+
 .task-row.status-failed {
   border-left-color: #f56c6c;
 }
+
 .task-row.status-running {
   border-left-color: #e6a23c;
 }
 
-/* 顶行:标题区 + 操作区 */
 .task-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
 }
+
 .task-head-left {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1;
   min-width: 0;
+  flex-wrap: wrap;
 }
+
 .task-head-right {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
+
 .task-title {
   font-weight: 500;
   color: var(--n-text-color-1);
@@ -747,21 +1105,24 @@ onBeforeUnmount(() => {
   min-width: 0;
   flex-shrink: 1;
 }
+
 .task-type-hint {
   font-size: 12px;
   color: var(--n-text-color-3);
   flex-shrink: 0;
 }
-.type-tag {
+
+.type-tag,
+.source-tag {
   flex-shrink: 0;
 }
+
 .expand-caret {
   font-size: 11px;
   color: var(--n-text-color-3);
   user-select: none;
 }
 
-/* 次行:物理路径 + 次要元数据 */
 .task-sub {
   display: flex;
   align-items: center;
@@ -769,6 +1130,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
   min-width: 0;
 }
+
 .file-path {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: var(--n-text-color-2);
@@ -783,19 +1145,20 @@ onBeforeUnmount(() => {
   user-select: all;
   cursor: text;
 }
+
 .file-path.empty {
   color: var(--n-text-color-3);
   font-style: italic;
   background: transparent;
   cursor: default;
 }
+
 .meta-dim {
   color: var(--n-text-color-3);
   flex-shrink: 0;
   white-space: nowrap;
 }
 
-/* 错误摘要:完整展示,不截断 */
 .task-error {
   font-size: 12px;
   color: #f56c6c;
@@ -817,6 +1180,7 @@ onBeforeUnmount(() => {
   color: var(--n-text-color-2);
   flex-shrink: 0;
 }
+
 .meta-pill.warn {
   background: rgba(230, 162, 60, 0.15);
   color: #e6a23c;
@@ -831,7 +1195,6 @@ onBeforeUnmount(() => {
   background: var(--n-action-color);
 }
 
-/* 分页器 */
 .pagination-row {
   display: flex;
   justify-content: center;
@@ -840,20 +1203,24 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   padding-top: 8px;
 }
+
 .pagination-info {
   font-size: 12px;
   color: var(--n-text-color-3);
 }
+
 .detail-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+
 .detail-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
+
 .detail-label {
   font-size: 11px;
   font-weight: 600;
@@ -861,6 +1228,7 @@ onBeforeUnmount(() => {
   color: var(--n-text-color-3, #888);
   letter-spacing: 0.04em;
 }
+
 .detail-url {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
@@ -870,6 +1238,7 @@ onBeforeUnmount(() => {
   word-break: break-all;
   user-select: all;
 }
+
 .detail-pre {
   margin: 0;
   padding: 8px 10px;
@@ -883,15 +1252,18 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
 .detail-pre.err-pre {
   color: #f56c6c;
   background: rgba(245, 108, 108, 0.08);
 }
+
 .detail-empty {
   font-size: 12px;
   color: var(--n-text-color-3, #888);
   font-style: italic;
 }
+
 .detail-error {
   font-size: 12px;
   color: #f56c6c;
