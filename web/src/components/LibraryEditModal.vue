@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
-  NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
+  NButton, NCheckbox, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
 } from 'naive-ui'
-import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline, SparklesOutline } from '@vicons/ionicons5'
+import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline, SparklesOutline, ReorderFourOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
   addLibraryPath, removeLibraryPath, refreshSingleLibrary,
@@ -13,6 +13,15 @@ import {
   type FieldPriorityMap, type ScrapeConfigOverride, type CoverStyle,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
+import {
+  buildOrderedProviders,
+  buildProviderPriorityMap,
+  defaultScrapeProviders,
+  getScrapeFieldLabel,
+  getScrapeProviderLabel,
+  normalizeProviderList,
+  scrapeProviderMeta,
+} from '../utils/scrapeConfigUi'
 
 const props = defineProps<{
   libraryId: string | null
@@ -310,29 +319,9 @@ async function onGenerateCover(style: string) {
 
 // ===== 元数据源(Phase 6) =====
 
-const providerOptions = [
-  { label: 'TMDB', value: 'tmdb' },
-  { label: 'TVDB', value: 'tvdb' },
-  { label: 'Bangumi', value: 'bangumi' },
-  { label: '豆瓣', value: 'douban' },
-  { label: 'Fanart.tv', value: 'fanart' },
-]
-const providerLabel = (n: string) => providerOptions.find((o) => o.value === n)?.label || n
-
-const fieldLabels: Record<string, string> = {
-  overview: '简介',
-  title: '标题',
-  original_title: '原始标题',
-  tagline: '标语',
-  premiered: '首映日期',
-  year: '年份',
-  rating: '评分',
-  actors: '演员',
-  poster: '海报',
-  backdrop: '背景图',
-  season_poster: '季海报',
-}
-const fieldLabel = (n: string) => fieldLabels[n] || n
+const defaultProviders = defaultScrapeProviders
+const providerLabel = getScrapeProviderLabel
+const fieldLabel = getScrapeFieldLabel
 
 const scrapeMode = ref<'inherit' | 'custom'>('inherit')
 const savingScrapeCfg = ref(false)
@@ -340,6 +329,7 @@ const scrapeDefaults = ref<{ providers: string[]; field_names: string[]; default
 const scrapeEffective = ref<Record<string, any>>({})
 
 const enableProvidersOn = ref(false)
+const enablePriorityOn = ref(false)
 const enableThresholdOn = ref(false)
 const enableAutoApplyOn = ref(false)
 const enableAdultFilterOn = ref(false)
@@ -357,21 +347,123 @@ const override = reactive<{
   adultContentFilterEnabled: true,
   fieldPriority: {},
 })
+const providerOrder = ref<string[]>([...defaultProviders])
+const draggingIndex = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+
+const fieldDragging = ref<{ field: string; index: number } | null>(null)
+const fieldDragOver = ref<{ field: string; index: number } | null>(null)
 const fieldToAdd = ref<string | null>(null)
 
-const availableFieldsToAdd = () => {
+const effectiveProvidersEnabled = computed(() => {
+  const fallback = normalizeProviderList(scrapeEffective.value.ProvidersEnabled, scrapeDefaults.value?.providers || defaultProviders)
+  return enableProvidersOn.value
+    ? normalizeProviderList(override.providersEnabled, [])
+    : fallback
+})
+
+const activeProviderOrder = computed(() => {
+  const basis = providerOrder.value.length > 0 ? providerOrder.value : (scrapeDefaults.value?.providers || defaultProviders)
+  return basis.filter((name) => effectiveProvidersEnabled.value.includes(name))
+})
+
+const effectivePreviewSummary = computed(() => {
+  const enabled = activeProviderOrder.value.map(providerLabel).join(' / ') || '(无)'
+  const threshold = scrapeEffective.value.ConfidenceThreshold ?? '-'
+  const autoApply = scrapeEffective.value.AutoApply === false ? '关闭' : '开启'
+  const adultFilter = scrapeEffective.value.AdultContentFilterEnabled === false ? '关闭' : '开启'
+  return `当前生效: 启用源 ${enabled}; 阈值 ${threshold}; 自动采纳 ${autoApply}; 成人内容过滤 ${adultFilter}`
+})
+
+const availableFieldsToAdd = computed(() => {
   if (!scrapeDefaults.value) return []
   const used = new Set(Object.keys(override.fieldPriority))
   return scrapeDefaults.value.field_names
     .filter((f) => !used.has(f))
     .map((f) => ({ label: fieldLabel(f), value: f }))
+})
+
+function isProviderEnabled(name: string) {
+  return effectiveProvidersEnabled.value.includes(name)
 }
+
+function toggleProvider(name: string) {
+  if (!enableProvidersOn.value) return
+  if (override.providersEnabled.includes(name)) {
+    override.providersEnabled = override.providersEnabled.filter((n) => n !== name)
+  } else {
+    override.providersEnabled = [...override.providersEnabled, name]
+  }
+}
+
+function onDragStart(index: number, e: DragEvent) {
+  if (!enablePriorityOn.value) return
+  draggingIndex.value = index
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onDragOver(index: number, e: DragEvent) {
+  if (!enablePriorityOn.value || draggingIndex.value === null) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  if (dragOverIndex.value !== index) dragOverIndex.value = index
+}
+
+function onDrop(index: number, e: DragEvent) {
+  if (!enablePriorityOn.value) return
+  e.preventDefault()
+  const from = draggingIndex.value
+  draggingIndex.value = null
+  dragOverIndex.value = null
+  if (from === null || from === index) return
+  const next = [...providerOrder.value]
+  const [moved] = next.splice(from, 1)
+  next.splice(index, 0, moved)
+  providerOrder.value = next
+}
+
+function onDragEnd() {
+  draggingIndex.value = null
+  dragOverIndex.value = null
+}
+
+function moveProvider(index: number, delta: number) {
+  if (!enablePriorityOn.value) return
+  const target = index + delta
+  if (target < 0 || target >= providerOrder.value.length) return
+  const next = [...providerOrder.value]
+  ;[next[index], next[target]] = [next[target], next[index]]
+  providerOrder.value = next
+}
+
+function syncOverrideFieldPriority() {
+  if (Object.keys(override.fieldPriority).length === 0) return
+  const enabled = new Set(effectiveProvidersEnabled.value)
+  const basis = activeProviderOrder.value
+  const next: FieldPriorityMap = {}
+  for (const [field, list] of Object.entries(override.fieldPriority)) {
+    const kept = list.filter((p) => enabled.has(p))
+    for (const p of basis) {
+      if (!kept.includes(p)) kept.push(p)
+    }
+    if (kept.length > 0) next[field] = kept
+  }
+  override.fieldPriority = next
+}
+
+watch(
+  () => [effectiveProvidersEnabled.value.join(','), activeProviderOrder.value.join(',')],
+  () => { syncOverrideFieldPriority() },
+)
 
 function addFieldOverride() {
   const f = fieldToAdd.value
   if (!f || !scrapeDefaults.value) return
   const defaults = scrapeDefaults.value.default_policy[f] ?? []
-  const basis = override.providersEnabled.length > 0 ? override.providersEnabled : (scrapeEffective.value.ProvidersEnabled || defaults)
+  const basis = activeProviderOrder.value.length > 0 ? activeProviderOrder.value : defaults
   override.fieldPriority[f] = defaults.filter((p) => basis.includes(p))
   for (const p of basis) {
     if (!override.fieldPriority[f].includes(p)) override.fieldPriority[f].push(p)
@@ -391,6 +483,49 @@ function moveOverrideField(f: string, idx: number, delta: number) {
   ;[cur[idx], cur[t]] = [cur[t], cur[idx]]
 }
 
+function onFieldPillDragStart(field: string, index: number, e: DragEvent) {
+  fieldDragging.value = { field, index }
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onFieldPillDragOver(field: string, index: number, e: DragEvent) {
+  const d = fieldDragging.value
+  if (!d || d.field !== field) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const cur = fieldDragOver.value
+  if (!cur || cur.field !== field || cur.index !== index) {
+    fieldDragOver.value = { field, index }
+  }
+}
+
+function onFieldPillDrop(field: string, index: number, e: DragEvent) {
+  e.preventDefault()
+  const from = fieldDragging.value
+  fieldDragging.value = null
+  fieldDragOver.value = null
+  if (!from || from.field !== field || from.index === index) return
+  const cur = [...(override.fieldPriority[field] ?? [])]
+  const [moved] = cur.splice(from.index, 1)
+  cur.splice(index, 0, moved)
+  override.fieldPriority[field] = cur
+}
+
+function onFieldPillDragEnd() {
+  fieldDragging.value = null
+  fieldDragOver.value = null
+}
+
+function onFieldPillDragLeave(field: string, index: number) {
+  const cur = fieldDragOver.value
+  if (cur && cur.field === field && cur.index === index) {
+    fieldDragOver.value = null
+  }
+}
+
 async function loadScrapeConfig(id?: string) {
   const libId = id || props.libraryId
   if (!libId) return
@@ -400,28 +535,41 @@ async function loadScrapeConfig(id?: string) {
     }
     const resp = await getLibraryScrapeConfig(libId)
     scrapeEffective.value = resp.effective || {}
+
+    const defaultOrder = scrapeDefaults.value?.providers || defaultProviders
+    const effectiveEnabled = normalizeProviderList(resp.effective?.ProvidersEnabled, defaultOrder)
+    const effectiveOrder = buildOrderedProviders(resp.effective?.ProviderPriority, defaultOrder, effectiveEnabled)
+    providerOrder.value = [...effectiveOrder]
+
     if (resp.inherit || !resp.override) {
       scrapeMode.value = 'inherit'
       enableProvidersOn.value = false
+      enablePriorityOn.value = false
       enableThresholdOn.value = false
       enableAutoApplyOn.value = false
       enableAdultFilterOn.value = false
-      override.providersEnabled = [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
+      override.providersEnabled = [...effectiveEnabled]
       override.confidenceThreshold = resp.effective?.ConfidenceThreshold ?? 0.72
       override.autoApply = resp.effective?.AutoApply ?? true
       override.adultContentFilterEnabled = resp.effective?.AdultContentFilterEnabled ?? true
       override.fieldPriority = {}
       return
     }
+
     scrapeMode.value = 'custom'
     const ov = resp.override
     enableProvidersOn.value = Array.isArray(ov.providers_enabled)
+    enablePriorityOn.value = !!(ov.provider_priority && Object.keys(ov.provider_priority).length > 0)
     enableThresholdOn.value = typeof ov.confidence_threshold === 'number'
     enableAutoApplyOn.value = typeof ov.auto_apply === 'boolean'
     enableAdultFilterOn.value = typeof ov.adult_content_filter_enabled === 'boolean'
     override.providersEnabled = Array.isArray(ov.providers_enabled)
       ? [...ov.providers_enabled]
-      : [...(resp.effective?.ProvidersEnabled || scrapeDefaults.value.providers)]
+      : [...effectiveEnabled]
+    if (enablePriorityOn.value) {
+      const overrideOrder = buildOrderedProviders(ov.provider_priority, defaultOrder, override.providersEnabled)
+      providerOrder.value = [...overrideOrder]
+    }
     override.confidenceThreshold = ov.confidence_threshold ?? resp.effective?.ConfidenceThreshold ?? 0.72
     override.autoApply = ov.auto_apply ?? resp.effective?.AutoApply ?? true
     override.adultContentFilterEnabled = ov.adult_content_filter_enabled ?? resp.effective?.AdultContentFilterEnabled ?? true
@@ -443,13 +591,17 @@ async function handleSaveScrapeCfg() {
     }
     const ov: ScrapeConfigOverride = {}
     if (enableProvidersOn.value) ov.providers_enabled = [...override.providersEnabled]
+    if (enablePriorityOn.value) ov.provider_priority = buildProviderPriorityMap(providerOrder.value)
     if (enableThresholdOn.value) ov.confidence_threshold = override.confidenceThreshold
     if (enableAutoApplyOn.value) ov.auto_apply = override.autoApply
     if (enableAdultFilterOn.value) ov.adult_content_filter_enabled = override.adultContentFilterEnabled
-    if (Object.keys(override.fieldPriority).length > 0) {
-      ov.field_priority = { ...override.fieldPriority }
+    const fieldPriorityEntries = Object.entries(override.fieldPriority)
+      .filter(([, providers]) => Array.isArray(providers) && providers.length > 0)
+    if (fieldPriorityEntries.length > 0) {
+      ov.field_priority = Object.fromEntries(fieldPriorityEntries)
     }
     const isEmpty = !ov.providers_enabled &&
+      !ov.provider_priority &&
       ov.confidence_threshold === undefined && ov.auto_apply === undefined &&
       ov.adult_content_filter_enabled === undefined &&
       !ov.field_priority
@@ -604,30 +756,69 @@ async function handleSaveScrapeCfg() {
         </div>
 
         <div v-if="scrapeMode === 'inherit'" class="em-inherit-preview">
-          <div class="hint-text">
-            当前生效:启用源 {{ (scrapeEffective.ProvidersEnabled || []).map((p: string) => providerLabel(p)).join(' / ') || '(无)' }};
-            阈值 {{ scrapeEffective.ConfidenceThreshold ?? '-' }}; 成人内容过滤 {{ scrapeEffective.AdultContentFilterEnabled === false ? '关闭' : '开启' }}
-          </div>
+          <div class="hint-text">{{ effectivePreviewSummary }}</div>
         </div>
 
         <div v-else class="em-scrape-overrides">
-          <!-- 启用的源 -->
           <div class="em-override-block">
-            <label class="em-override-head">
-              <input type="checkbox" v-model="enableProvidersOn" />
-              <span>覆盖启用的源</span>
-            </label>
-            <div v-if="enableProvidersOn" class="em-override-body">
-              <n-checkbox-group v-model:value="override.providersEnabled">
-                <div class="em-provider-grid">
-                  <n-checkbox v-for="opt in providerOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
+            <div class="em-override-head em-override-head-split">
+              <label class="em-toggle-opt">
+                <input type="checkbox" v-model="enableProvidersOn" />
+                <span>覆盖启用的源</span>
+              </label>
+              <label class="em-toggle-opt">
+                <input type="checkbox" v-model="enablePriorityOn" />
+                <span>覆盖源顺序</span>
+              </label>
+            </div>
+            <div class="em-override-body em-override-body-column">
+              <div class="em-provider-list">
+                <div
+                  v-for="(name, idx) in providerOrder"
+                  :key="name"
+                  class="em-provider-row"
+                  :class="{
+                    dragging: draggingIndex === idx,
+                    'drag-over': dragOverIndex === idx && draggingIndex !== idx,
+                    disabled: !isProviderEnabled(name),
+                    'order-locked': !enablePriorityOn,
+                  }"
+                  :style="{ '--accent': scrapeProviderMeta[name]?.accent }"
+                  :draggable="enablePriorityOn"
+                  @dragstart="onDragStart(idx, $event)"
+                  @dragover="onDragOver(idx, $event)"
+                  @drop="onDrop(idx, $event)"
+                  @dragend="onDragEnd"
+                  @dragleave="dragOverIndex === idx ? (dragOverIndex = null) : null"
+                >
+                  <div class="em-provider-handle" :title="enablePriorityOn ? '拖拽调序' : '继承全局顺序'">
+                    <n-icon><ReorderFourOutline /></n-icon>
+                  </div>
+                  <label class="em-provider-check" @click.stop>
+                    <input type="checkbox" :checked="isProviderEnabled(name)" :disabled="!enableProvidersOn" @change="toggleProvider(name)" />
+                  </label>
+                  <div class="em-provider-info">
+                    <div class="em-provider-name">
+                      {{ scrapeProviderMeta[name]?.label || name }}
+                      <span v-if="scrapeProviderMeta[name]?.badge" class="em-provider-badge">{{ scrapeProviderMeta[name]?.badge }}</span>
+                    </div>
+                    <div class="em-provider-desc">{{ scrapeProviderMeta[name]?.desc }}</div>
+                  </div>
+                  <span class="em-provider-index">{{ idx + 1 }}</span>
+                  <div class="em-provider-move">
+                    <n-button quaternary circle size="tiny" :disabled="!enablePriorityOn || idx === 0" @click.stop="moveProvider(idx, -1)">
+                      <template #icon><n-icon><ArrowUpOutline /></n-icon></template>
+                    </n-button>
+                    <n-button quaternary circle size="tiny" :disabled="!enablePriorityOn || idx === providerOrder.length - 1" @click.stop="moveProvider(idx, 1)">
+                      <template #icon><n-icon><ArrowDownOutline /></n-icon></template>
+                    </n-button>
+                  </div>
                 </div>
-              </n-checkbox-group>
-              <div class="hint-text">TVDB / Fanart / 豆瓣 Cookie 等凭据始终读全局,此处只控制"是否启用"。</div>
+              </div>
+              <div class="hint-text">TVDB / Fanart / 豆瓣 Cookie 等凭据始终读全局，这里只覆盖启用状态与顺序。</div>
             </div>
           </div>
 
-          <!-- 识别阈值 -->
           <div class="em-override-block">
             <label class="em-override-head">
               <input type="checkbox" v-model="enableThresholdOn" />
@@ -638,7 +829,6 @@ async function handleSaveScrapeCfg() {
             </div>
           </div>
 
-          <!-- 自动采纳 -->
           <div class="em-override-block">
             <label class="em-override-head">
               <input type="checkbox" v-model="enableAutoApplyOn" />
@@ -659,13 +849,12 @@ async function handleSaveScrapeCfg() {
             </div>
           </div>
 
-          <!-- 字段级覆盖 -->
           <div class="em-override-block">
             <div class="em-field-head">
               <span>字段来源(仅覆盖列出的字段,其余继承)</span>
               <n-select
                 v-model:value="fieldToAdd"
-                :options="availableFieldsToAdd()"
+                :options="availableFieldsToAdd"
                 placeholder="+ 添加字段"
                 size="tiny"
                 :menu-props="solidModalMenuProps"
@@ -681,7 +870,19 @@ async function handleSaveScrapeCfg() {
                   v-for="(pname, idx) in override.fieldPriority[f]"
                   :key="pname"
                   class="em-field-pill"
+                  :class="{
+                    dragging: fieldDragging?.field === f && fieldDragging?.index === idx,
+                    'drag-over': fieldDragOver?.field === f && fieldDragOver?.index === idx,
+                  }"
+                  :style="{ '--accent': scrapeProviderMeta[pname]?.accent }"
+                  draggable="true"
+                  @dragstart="onFieldPillDragStart(f, idx, $event)"
+                  @dragover="onFieldPillDragOver(f, idx, $event)"
+                  @drop="onFieldPillDrop(f, idx, $event)"
+                  @dragend="onFieldPillDragEnd"
+                  @dragleave="onFieldPillDragLeave(f, idx)"
                 >
+                  <span class="em-pill-handle">⋮⋮</span>
                   <span class="em-pill-idx">{{ idx + 1 }}</span>
                   <span>{{ providerLabel(pname) }}</span>
                   <n-button quaternary circle size="tiny" :disabled="idx === 0" @click="moveOverrideField(f, idx, -1)">
@@ -1025,6 +1226,17 @@ async function handleSaveScrapeCfg() {
 .em-override-head input {
   accent-color: var(--app-primary);
 }
+.em-override-head-split {
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.em-toggle-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
 .em-override-body {
   padding-top: 8px;
   padding-left: 20px;
@@ -1033,11 +1245,98 @@ async function handleSaveScrapeCfg() {
   gap: 8px;
   align-items: center;
 }
-.em-provider-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 4px 12px;
+.em-override-body-column {
+  flex-direction: column;
+  align-items: stretch;
+  padding-left: 0;
+}
+.em-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   width: 100%;
+}
+.em-provider-row {
+  display: grid;
+  grid-template-columns: 22px 22px 1fr auto 40px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255,255,255,0.02);
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.em-provider-row.dragging {
+  opacity: 0.4;
+}
+.em-provider-row.drag-over {
+  border-color: var(--app-primary);
+  background: rgba(var(--app-primary-rgb, 59,130,246), 0.08);
+}
+.em-provider-row.disabled .em-provider-info {
+  opacity: 0.45;
+}
+.em-provider-row.order-locked .em-provider-handle {
+  cursor: default;
+  opacity: 0.28;
+}
+.em-provider-handle {
+  color: var(--app-text-muted);
+  opacity: 0.55;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.em-provider-row:hover .em-provider-handle {
+  opacity: 0.9;
+}
+.em-provider-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.em-provider-check input {
+  accent-color: var(--accent, var(--app-primary));
+  cursor: pointer;
+}
+.em-provider-info {
+  min-width: 0;
+}
+.em-provider-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+.em-provider-desc {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  margin-top: 2px;
+}
+.em-provider-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, var(--app-primary)) 18%, transparent);
+  color: var(--accent, var(--app-primary));
+}
+.em-provider-index {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  opacity: 0.65;
+  min-width: 18px;
+  text-align: right;
+}
+.em-provider-move {
+  display: flex;
 }
 .em-field-head {
   display: flex;
@@ -1070,13 +1369,32 @@ async function handleSaveScrapeCfg() {
 .em-field-pill {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   padding: 2px 4px 2px 8px;
-  border-radius: 12px;
-  background: rgba(128,128,128,0.06);
-  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #888) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #888) 30%, transparent);
   font-size: 11px;
   color: var(--app-text);
+  cursor: grab;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.em-field-pill:hover {
+  background: color-mix(in srgb, var(--accent, #888) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #888) 50%, transparent);
+}
+.em-field-pill.dragging {
+  opacity: 0.4;
+}
+.em-field-pill.drag-over {
+  transform: translateX(3px);
+  border-color: color-mix(in srgb, var(--accent, var(--app-primary)) 75%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, var(--app-primary)) 40%, transparent);
+}
+.em-pill-handle {
+  color: var(--app-text-muted);
+  opacity: 0.55;
+  font-size: 11px;
 }
 .em-pill-idx {
   font-variant-numeric: tabular-nums;
@@ -1096,5 +1414,8 @@ async function handleSaveScrapeCfg() {
   .em-banner { flex-direction: column; }
   .em-cover-wrap { width: 100%; }
   .em-fields { grid-template-columns: 1fr !important; }
+  .em-field-row { grid-template-columns: 1fr; }
+  .em-provider-row { grid-template-columns: 22px 22px 1fr auto; }
+  .em-provider-index { display: none; }
 }
 </style>

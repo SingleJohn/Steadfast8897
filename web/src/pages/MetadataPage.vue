@@ -17,6 +17,15 @@ import {
   type BackfillStage, type FieldPriorityMap,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
+import {
+  buildOrderedProviders,
+  buildProviderPriorityMap,
+  defaultScrapeProviders,
+  getScrapeFieldLabel,
+  getScrapeProviderLabel,
+  scrapeFieldLabels,
+  scrapeProviderMeta,
+} from '@/utils/scrapeConfigUi'
 
 const { showToast } = useToast()
 const router = useRouter()
@@ -64,15 +73,9 @@ async function refreshScrapeSummary() {
 
 // ===== 刮削源 =====
 // providerMeta: sidebar 每行展示 + detail 区域表单分支所需的元信息
-const providerMeta: Record<string, { label: string; badge?: string; desc: string; accent: string }> = {
-  tmdb:    { label: 'TMDB',      badge: '基准', desc: '主识别源 · 电影/剧集',       accent: '#0ea5e9' },
-  tvdb:    { label: 'TVDB',                    desc: '剧集元数据 · 季海报',         accent: '#16a34a' },
-  bangumi: { label: 'Bangumi',                 desc: '动画/ACG',                    accent: '#f472b6' },
-  douban:  { label: '豆瓣',                    desc: '中文简介/评分',               accent: '#10b981' },
-  fanart:  { label: 'Fanart.tv',               desc: '仅图片补充',                  accent: '#f97316' },
-}
-const defaultProviders = Object.keys(providerMeta)
-const providerLabel = (name: string) => providerMeta[name]?.label || name
+const providerMeta = scrapeProviderMeta
+const defaultProviders = defaultScrapeProviders
+const providerLabel = getScrapeProviderLabel
 
 // providerOrder = 显示+优先级顺序; providersEnabled = 勾选启用集合
 // 二者合并呈现为一个可拖拽 + checkbox 的 sidebar 列表。
@@ -146,20 +149,11 @@ const fieldNames = ref<string[]>([])
 const defaultPolicy = ref<FieldPriorityMap>({})
 const fieldPriority = ref<FieldPriorityMap>({})
 
-const fieldLabels: Record<string, string> = {
-  overview: '简介 Overview',
-  title: '标题 Title',
-  original_title: '原始标题 Original Title',
-  tagline: '标语 Tagline',
-  premiered: '首映日期 Premiered',
-  year: '年份 Year',
-  rating: '评分 Rating',
-  actors: '演员 Actors',
-  poster: '海报 Poster',
-  backdrop: '背景图 Backdrop',
-  season_poster: '季海报 Season Poster',
+const fieldLabel = (n: string) => {
+  const base = getScrapeFieldLabel(n)
+  const extra = scrapeFieldLabels[n] ? ` ${n.replace(/_/g, ' ').replace(/\b\w/g, (s) => s.toUpperCase())}` : ''
+  return `${base}${extra}`
 }
-const fieldLabel = (n: string) => fieldLabels[n] || n
 
 // 字段 pill 拖拽排序状态(按字段独立)
 const fieldDragging = ref<{ field: string; index: number } | null>(null)
@@ -367,8 +361,7 @@ async function handleSaveConfig() {
 async function handleSaveScrapeSources() {
   savingScrapeSources.value = true
   try {
-    const priorityObj: Record<string, number> = {}
-    providerOrder.value.forEach((name, i) => { priorityObj[name] = i + 1 })
+    const priorityObj = buildProviderPriorityMap(providerOrder.value)
     await updateSystemConfig({
       tmdb_api_key: tmdbApiKeys.value.filter((k) => k.trim()).join(','),
       scrape_providers_enabled: JSON.stringify(providersEnabled.value),
@@ -475,18 +468,11 @@ onMounted(() => {
     }
     try {
       const savedPriority = cfg.scrape_provider_priority ? JSON.parse(cfg.scrape_provider_priority) : null
-      if (savedPriority && typeof savedPriority === 'object') {
-        const sorted = Object.keys(savedPriority)
-          .filter((k) => typeof savedPriority[k] === 'number' && defaultProviders.includes(k))
-          .sort((a, b) => savedPriority[a] - savedPriority[b])
-        const merged = [...sorted]
-        for (const name of defaultProviders) {
-          if (!merged.includes(name)) merged.push(name)
-        }
-        providerOrder.value = merged
-      } else {
-        providerOrder.value = [...defaultProviders]
-      }
+      providerOrder.value = buildOrderedProviders(
+        savedPriority && typeof savedPriority === 'object' ? savedPriority : null,
+        defaultProviders,
+        providersEnabled.value,
+      )
     } catch {
       providerOrder.value = [...defaultProviders]
     }
