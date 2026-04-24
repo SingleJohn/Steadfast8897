@@ -2595,7 +2595,7 @@ func generateLibraryCover(c *gin.Context) {
 	}
 	defer release()
 
-	paths, err := coverart.PickPosterPaths(ctx, state.DB, id)
+	materials, err := coverart.PickMaterials(ctx, state.DB, id)
 	if err != nil {
 		if err == coverart.ErrNoPosters {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "媒体库暂无可用海报素材,请先扫描入库"})
@@ -2612,7 +2612,8 @@ func generateLibraryCover(c *gin.Context) {
 		LibraryName:    lib.Name,
 		CollectionType: lib.CollectionType,
 		ItemCount:      int(itemCount),
-		PosterPaths:    paths,
+		PosterPaths:    coverart.PosterPathsFromMaterials(materials),
+		Materials:      materials,
 		Options:        body.Options,
 		OutputWidth:    1920,
 		OutputHeight:   1080,

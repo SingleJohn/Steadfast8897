@@ -24,16 +24,25 @@ var ErrFontMissing = errors.New("coverart: font asset missing (put NotoSansSC-Bo
 var ErrBusy = errors.New("coverart: generation already in progress for this library")
 
 // Input 描述一次封面渲染所需的全部输入。
-// PosterPaths 由 fetch.go 填充,长度为 PosterCount(不足时循环补齐)。
+// PosterPaths/Materials 由 fetch.go 填充,长度为 PosterCount(不足时循环补齐)。
 type Input struct {
 	LibraryID      uuid.UUID
 	LibraryName    string
 	CollectionType string // movies / tvshows / ...
 	ItemCount      int    // 媒体库下 item 总数,用于右上角数量角标(0 则不展示)
 	PosterPaths    []string
+	Materials      []Material
 	Options        map[string]any // 风格特化参数,预留给未来风格
 	OutputWidth    int            // 默认 1920
 	OutputHeight   int            // 默认 1080
+}
+
+// Material 是生成封面可用的一组媒体素材。
+// PosterPath 用于竖版卡片,BackdropPath 用于横版背景,Title 用于可选的海报标题条。
+type Material struct {
+	Title        string
+	PosterPath   string
+	BackdropPath string
 }
 
 // Output 封装渲染结果;Mime/Quality 用于 handler 写回磁盘时复用。

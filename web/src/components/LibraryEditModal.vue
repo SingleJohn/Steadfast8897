@@ -60,12 +60,26 @@ const coverStyles = ref<CoverStyle[]>([])
 const coverStylesLoaded = ref(false)
 const generatingCover = ref(false)
 const showStylePicker = ref(false)
+const showcaseIcon = ref('auto')
+const showcaseShowPosterTitles = ref(true)
+const showcaseShowCount = ref(true)
 
 const typeOptions = [
   { label: '电影', value: 'movies' },
   { label: '电视剧', value: 'tvshows' },
 ]
 const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧' }
+const showcaseIconOptions = [
+  { label: '自动', value: 'auto' },
+  { label: '电影', value: 'movie' },
+  { label: '电视', value: 'tv' },
+  { label: '音乐', value: 'music' },
+  { label: '动漫', value: 'anime' },
+  { label: '纪录片', value: 'documentary' },
+  { label: '少儿', value: 'kids' },
+  { label: '媒体', value: 'media' },
+]
+const hasShowcaseStyle = computed(() => coverStyles.value.some(s => s.name === 'showcase'))
 const solidModalMenuProps = { class: 'solid-modal-menu' }
 const forceSolidModalStyle = {
   '--n-color': 'var(--app-modal-solid-card)',
@@ -301,7 +315,7 @@ async function onGenerateCover(style: string) {
   generatingCover.value = true
   showStylePicker.value = false
   try {
-    const res = await generateLibraryCover(props.libraryId, style)
+    const res = await generateLibraryCover(props.libraryId, style, coverOptionsForStyle(style))
     imageTag.value = res.ImageTag
     coverKey.value++
     showToast('封面已生成', 'success')
@@ -394,6 +408,18 @@ function toggleProvider(name: string) {
   } else {
     override.providersEnabled = [...override.providersEnabled, name]
   }
+}
+
+function coverOptionsForStyle(style: string) {
+  if (style !== 'showcase') return undefined
+  const options: Record<string, any> = {
+    ShowPosterTitles: showcaseShowPosterTitles.value,
+    ShowCount: showcaseShowCount.value,
+  }
+  if (showcaseIcon.value !== 'auto') {
+    options.Icon = showcaseIcon.value
+  }
+  return options
 }
 
 function onDragStart(index: number, e: DragEvent) {
@@ -680,6 +706,19 @@ async function handleSaveScrapeCfg() {
             >
               {{ s.label }}
             </button>
+            <div v-if="hasShowcaseStyle" class="em-showcase-options">
+              <div class="em-style-picker-title">横幅陈列选项</div>
+              <n-select
+                v-model:value="showcaseIcon"
+                size="tiny"
+                :options="showcaseIconOptions"
+                :menu-props="solidModalMenuProps"
+              />
+              <div class="em-showcase-checks">
+                <n-checkbox v-model:checked="showcaseShowPosterTitles" size="small">海报标题</n-checkbox>
+                <n-checkbox v-model:checked="showcaseShowCount" size="small">数量</n-checkbox>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1099,6 +1138,20 @@ async function handleSaveScrapeCfg() {
 }
 .em-style-opt:hover { border-color: var(--app-primary); color: var(--app-primary); }
 .em-style-opt:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.em-showcase-options {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.em-showcase-checks {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
 
 .em-url-input {
   display: flex;
