@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
-  NButton, NInput, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
+  NButton, NCheckbox, NInput, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
 } from 'naive-ui'
 import { FolderOutline } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
@@ -14,6 +14,7 @@ import {
   getLibraries, addLibrary, refreshLibrary,
   getSystemConfig, updateSystemConfig, browseDirectories,
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
+  listCoverStyles, generateAllLibraryCovers, type CoverStyle,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
 
@@ -66,9 +67,87 @@ const platformScanning = ref(false)
 const platformTask = ref<any>(null)
 const platformPosition = ref<'before' | 'after'>('after')
 const showLibraryItemCount = ref(true)
+const coverStyles = ref<CoverStyle[]>([])
+const coverStylesLoaded = ref(false)
+const showGenerateAllCovers = ref(false)
+const generatingAllCovers = ref(false)
+const batchCoverStyle = ref('')
+const batchShowcaseIcon = ref('auto')
+const batchShowcaseShowPosterTitles = ref(true)
+const batchShowcaseShowCount = ref(true)
+const batchCoverResult = ref<any>(null)
+const showcaseIconOptions = [
+  { label: '自动', value: 'auto' },
+  { label: '电影', value: 'movie' },
+  { label: '电视', value: 'tv' },
+  { label: '音乐', value: 'music' },
+  { label: '动漫', value: 'anime' },
+  { label: '纪录片', value: 'documentary' },
+  { label: '少儿', value: 'kids' },
+  { label: '媒体', value: 'media' },
+]
+const coverStyleOptions = computed(() => coverStyles.value.map((s) => ({ label: s.label, value: s.name })))
+const batchIsShowcase = computed(() => batchCoverStyle.value === 'showcase')
+const canGenerateAllCovers = computed(() => libraries.value.length > 0 && coverStyles.value.length > 0 && !!batchCoverStyle.value && !generatingAllCovers.value)
+const batchCoverIssues = computed(() => batchCoverResult.value?.Items?.filter((it: any) => it.Status !== 'success') || [])
 
 async function loadPlatforms() {
   try { platformsData.value = await getPlatforms() } catch {}
+}
+
+async function ensureCoverStylesLoaded() {
+  if (coverStylesLoaded.value) return
+  try {
+    coverStyles.value = await listCoverStyles()
+    if (!batchCoverStyle.value && coverStyles.value.length > 0) {
+      batchCoverStyle.value = coverStyles.value.find((s) => s.name === 'showcase')?.name || coverStyles.value[0].name
+    }
+  } catch {
+    coverStylesLoaded.value = false
+    showToast('加载封面风格失败', 'error')
+    return
+  } finally {
+    if (coverStyles.value.length > 0) coverStylesLoaded.value = true
+  }
+}
+
+async function openGenerateAllCovers() {
+  batchCoverResult.value = null
+  showGenerateAllCovers.value = true
+  await ensureCoverStylesLoaded()
+}
+
+function batchCoverOptionsForStyle(style: string) {
+  if (style !== 'showcase') return undefined
+  const options: Record<string, any> = {
+    ShowPosterTitles: batchShowcaseShowPosterTitles.value,
+    ShowCount: batchShowcaseShowCount.value,
+  }
+  if (batchShowcaseIcon.value !== 'auto') {
+    options.Icon = batchShowcaseIcon.value
+  }
+  return options
+}
+
+async function handleGenerateAllCovers() {
+  if (!canGenerateAllCovers.value) return
+  generatingAllCovers.value = true
+  batchCoverResult.value = null
+  try {
+    const res = await generateAllLibraryCovers(batchCoverStyle.value, batchCoverOptionsForStyle(batchCoverStyle.value))
+    batchCoverResult.value = res
+    await onLibraryUpdated()
+    const parts = [`成功 ${res.Success}`]
+    if (res.Skipped) parts.push(`跳过 ${res.Skipped}`)
+    if (res.Failed) parts.push(`失败 ${res.Failed}`)
+    showToast(`封面批量生成完成：${parts.join('，')}`, res.Failed ? 'info' : 'success')
+  } catch (e: any) {
+    const msg = String(e?.message || '')
+    if (msg.includes('424')) showToast('字体资源缺失,请参见 internal/services/coverart/assets/fonts/ 下的 README', 'error')
+    else showToast('批量生成封面失败', 'error')
+  } finally {
+    generatingAllCovers.value = false
+  }
 }
 
 async function loadTaskSummary() {
@@ -369,6 +448,7 @@ onUnmounted(() => {
       <n-tab-pane name="libraries" tab="媒体库">
         <n-space justify="center" class="libraries-actions">
           <n-button secondary @click="showAddLib = true">+ 添加媒体库</n-button>
+          <n-button secondary :disabled="libraries.length === 0" @click="openGenerateAllCovers">生成所有封面</n-button>
           <n-button type="primary" @click="handleScan" :disabled="scanning || scanProgress.some((s: any) => s.Status === 'scanning')" :loading="scanning">
             {{ scanProgress.some((s: any) => s.Status === 'scanning') ? '扫描中...' : '扫描所有媒体库' }}
           </n-button>
@@ -528,6 +608,49 @@ onUnmounted(() => {
       </n-tab-pane>
     </n-tabs>
 
+    <n-modal v-model:show="showGenerateAllCovers" preset="card" title="生成所有媒体库封面" :style="[forceSolidModalStyle, { width: '520px', maxWidth: '92vw' }]" class="solid-modal-card force-solid-modal">
+      <div class="form-group">
+        <label class="form-label">封面风格</label>
+        <n-select
+          v-model:value="batchCoverStyle"
+          :options="coverStyleOptions"
+          :loading="!coverStylesLoaded"
+          :menu-props="solidModalMenuProps"
+          placeholder="选择风格"
+        />
+      </div>
+      <div v-if="batchIsShowcase" class="batch-cover-options">
+        <div class="form-group">
+          <label class="form-label">预制图标</label>
+          <n-select
+            v-model:value="batchShowcaseIcon"
+            :options="showcaseIconOptions"
+            :menu-props="solidModalMenuProps"
+          />
+        </div>
+        <div class="batch-cover-checks">
+          <n-checkbox v-model:checked="batchShowcaseShowPosterTitles">显示海报标题</n-checkbox>
+          <n-checkbox v-model:checked="batchShowcaseShowCount">显示媒体数量</n-checkbox>
+        </div>
+      </div>
+      <div v-if="batchCoverResult" class="batch-cover-result">
+        <div>共 {{ batchCoverResult.Total }} 个媒体库，成功 {{ batchCoverResult.Success }}，跳过 {{ batchCoverResult.Skipped }}，失败 {{ batchCoverResult.Failed }}</div>
+        <div v-if="batchCoverIssues.length > 0" class="batch-cover-result-list">
+          <div v-for="item in batchCoverIssues" :key="item.Id" class="batch-cover-result-item">
+            {{ item.Name }}：{{ item.Message || item.Status }}
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showGenerateAllCovers = false">关闭</n-button>
+          <n-button type="primary" :loading="generatingAllCovers" :disabled="!canGenerateAllCovers" @click="handleGenerateAllCovers">
+            生成全部
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
     <!-- Add Library Modal -->
     <n-modal v-model:show="showAddLib" preset="card" title="添加媒体库" :style="[forceSolidModalStyle, { width: '500px', maxWidth: '90vw' }]" class="solid-modal-card force-solid-modal">
       <form @submit.prevent="handleAddLibrary">
@@ -668,6 +791,34 @@ onUnmounted(() => {
 .form-group { margin-bottom: 20px; }
 .form-label { display: block; font-size: 12px; color: var(--app-text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; }
 .path-chip { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--app-modal-panel-bg-soft, var(--app-surface-1, rgba(255,255,255,0.04))); border-radius: 4px; margin-bottom: 4px; font-size: 13px; color: var(--app-text); }
+
+.batch-cover-options {
+  padding-top: 4px;
+}
+.batch-cover-checks {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.batch-cover-result {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border, rgba(255,255,255,0.06));
+  border-radius: 6px;
+  background: var(--app-modal-panel-bg-soft, rgba(255,255,255,0.04));
+  color: var(--app-text);
+  font-size: 13px;
+}
+.batch-cover-result-list {
+  margin-top: 8px;
+  max-height: 160px;
+  overflow: auto;
+  color: var(--app-text-muted);
+}
+.batch-cover-result-item + .batch-cover-result-item {
+  margin-top: 4px;
+}
 
 .dir-current { background: var(--app-modal-panel-bg-soft, var(--app-surface-1, rgba(0,0,0,0.3))); padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; color: var(--app-primary); word-break: break-all; font-family: monospace; }
 .dir-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-size: 14px; color: var(--app-text); }

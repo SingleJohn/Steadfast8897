@@ -390,6 +390,30 @@ export async function generateLibraryCover(
   );
 }
 
+export type GenerateAllLibraryCoversResult = {
+  Style: string;
+  Total: number;
+  Success: number;
+  Skipped: number;
+  Failed: number;
+  Items: Array<{
+    Id: string;
+    Name: string;
+    Status: 'success' | 'skipped' | 'failed';
+    Message?: string;
+  }>;
+};
+
+export async function generateAllLibraryCovers(
+  style: string,
+  options?: Record<string, any>,
+) {
+  return request<GenerateAllLibraryCoversResult>(`/Library/CoverArt/GenerateAll`, {
+    method: 'POST',
+    body: JSON.stringify({ Style: style, Options: options ?? null }),
+  });
+}
+
 // User management
 export async function getAllUsers() {
   return request<any[]>('/Users');

@@ -64,6 +64,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/VirtualFolders/:id/Image/Generate", adminMW, generateLibraryCover)
 	u.DELETE("/Library/VirtualFolders/:id/Image", adminMW, deleteLibraryImage)
 	u.GET("/Library/CoverArt/Styles", authMW, listCoverArtStyles)
+	u.POST("/Library/CoverArt/GenerateAll", adminMW, generateAllLibraryCovers)
 	u.GET("/Library/Scan/Progress", getScanProgress)
 
 	u.POST("/Library/Probe/Start", adminMW, startProbe)
@@ -2548,6 +2549,11 @@ func listCoverArtStyles(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+type generateLibraryCoverBody struct {
+	Style   string         `json:"Style"`
+	Options map[string]any `json:"Options"`
+}
+
 // generateLibraryCover 调用 coverart 风格生成封面,写入磁盘并更新 DB。
 // POST /Library/VirtualFolders/:id/Image/Generate
 // body: { "Style": string, "Options"?: map[string]any }
@@ -2566,47 +2572,52 @@ func generateLibraryCover(c *gin.Context) {
 		return
 	}
 
-	var body struct {
-		Style   string         `json:"Style"`
-		Options map[string]any `json:"Options"`
-	}
+	var body generateLibraryCoverBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
 		return
 	}
-	style := strings.TrimSpace(body.Style)
-	if style == "" {
-		// 默认取第一个注册的风格
-		if list := coverart.List(); len(list) > 0 {
-			style = list[0].Name()
-		}
-	}
-	gen, ok := coverart.Get(style)
+	gen, style, ok := resolveCoverGenerator(body.Style)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style: " + style})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style: " + strings.TrimSpace(body.Style)})
 		return
 	}
 
-	// 同库串行,防止并发写入
-	release, err := coverart.AcquireBusy(id)
+	tag, err := renderAndSaveLibraryCover(ctx, state, lib, gen, body.Options)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"message": "generation already in progress"})
-		return
+		switch {
+		case err == coverart.ErrBusy:
+			c.JSON(http.StatusConflict, gin.H{"message": "generation already in progress"})
+			return
+		case err == coverart.ErrNoPosters:
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "媒体库暂无可用海报素材,请先扫描入库"})
+			return
+		case err == coverart.ErrFontMissing:
+			c.JSON(http.StatusFailedDependency, gin.H{"message": err.Error()})
+			return
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "render failed: " + err.Error()})
+			return
+		}
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"ImageTag": tag, "Style": style})
+}
+
+func renderAndSaveLibraryCover(ctx context.Context, state *AppState, lib *models.Library, gen coverart.Generator, options map[string]any) (string, error) {
+	release, err := coverart.AcquireBusy(lib.ID)
+	if err != nil {
+		return "", err
 	}
 	defer release()
 
-	materials, err := coverart.PickMaterials(ctx, state.DB, id)
+	idStr := lib.ID.String()
+	materials, err := coverart.PickMaterials(ctx, state.DB, lib.ID)
 	if err != nil {
-		if err == coverart.ErrNoPosters {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "媒体库暂无可用海报素材,请先扫描入库"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+		return "", err
 	}
 
 	itemCount, _ := models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
-
 	out, err := gen.Render(ctx, coverart.Input{
 		LibraryID:      lib.ID,
 		LibraryName:    lib.Name,
@@ -2614,47 +2625,124 @@ func generateLibraryCover(c *gin.Context) {
 		ItemCount:      int(itemCount),
 		PosterPaths:    coverart.PosterPathsFromMaterials(materials),
 		Materials:      materials,
-		Options:        body.Options,
+		Options:        options,
 		OutputWidth:    1920,
 		OutputHeight:   1080,
 	})
 	if err != nil {
-		if err == coverart.ErrFontMissing {
-			c.JSON(http.StatusFailedDependency, gin.H{"message": err.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "render failed: " + err.Error()})
-		return
+		return "", err
 	}
 
 	imgDir := filepath.Join("data", "library-images", idStr)
 	if err := os.MkdirAll(imgDir, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+		return "", err
 	}
 	fpath := filepath.Join(imgDir, "primary.jpg")
 	f, err := os.Create(fpath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+		return "", err
 	}
 	if err := imaging.Encode(f, out.Image, imaging.JPEG, imaging.JPEGQuality(out.Quality)); err != nil {
 		_ = f.Close()
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "encode failed: " + err.Error()})
-		return
+		return "", fmt.Errorf("encode failed: %w", err)
 	}
 	if err := f.Close(); err != nil {
+		return "", err
+	}
+
+	tag := uuid.New().String()
+	if err := models.UpdateLibraryImage(ctx, state.DB, lib.ID, fpath, tag); err != nil {
+		return "", err
+	}
+	return tag, nil
+}
+
+func resolveCoverGenerator(style string) (coverart.Generator, string, bool) {
+	style = strings.TrimSpace(style)
+	if style == "" {
+		if list := coverart.List(); len(list) > 0 {
+			style = list[0].Name()
+		}
+	}
+	gen, ok := coverart.Get(style)
+	return gen, style, ok
+}
+
+// generateAllLibraryCovers 统一生成所有普通媒体库封面。
+// POST /Library/CoverArt/GenerateAll
+// body: { "Style": string, "Options"?: map[string]any }
+func generateAllLibraryCovers(c *gin.Context) {
+	state := GetState(c)
+	ctx := c.Request.Context()
+
+	var body generateLibraryCoverBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	gen, style, ok := resolveCoverGenerator(body.Style)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style: " + strings.TrimSpace(body.Style)})
+		return
+	}
+
+	libs, err := models.GetAllLibraries(ctx, state.DB)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
-	tag := uuid.New().String()
-	if err := models.UpdateLibraryImage(ctx, state.DB, id, fpath, tag); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+	type item struct {
+		ID      string `json:"Id"`
+		Name    string `json:"Name"`
+		Status  string `json:"Status"`
+		Message string `json:"Message,omitempty"`
 	}
-	invalidateViewsCache(c, state)
-	c.JSON(http.StatusOK, gin.H{"ImageTag": tag, "Style": style})
+	items := make([]item, 0, len(libs))
+	success, skipped, failed := 0, 0, 0
+	for i := range libs {
+		lib := &libs[i]
+		tag, err := renderAndSaveLibraryCover(ctx, state, lib, gen, body.Options)
+		if err == nil {
+			success++
+			items = append(items, item{ID: lib.ID.String(), Name: lib.Name, Status: "success", Message: tag})
+			continue
+		}
+		if err == coverart.ErrFontMissing {
+			c.JSON(http.StatusFailedDependency, gin.H{"message": err.Error()})
+			return
+		}
+		if err == coverart.ErrNoPosters || err == coverart.ErrBusy {
+			skipped++
+			items = append(items, item{ID: lib.ID.String(), Name: lib.Name, Status: "skipped", Message: coverBatchMessage(err)})
+			continue
+		}
+		failed++
+		items = append(items, item{ID: lib.ID.String(), Name: lib.Name, Status: "failed", Message: err.Error()})
+	}
+
+	if success > 0 {
+		invalidateViewsCache(c, state)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"Style":   style,
+		"Total":   len(libs),
+		"Success": success,
+		"Skipped": skipped,
+		"Failed":  failed,
+		"Items":   items,
+	})
+}
+
+func coverBatchMessage(err error) string {
+	switch err {
+	case coverart.ErrNoPosters:
+		return "媒体库暂无可用海报素材"
+	case coverart.ErrBusy:
+		return "已有生成任务进行中"
+	default:
+		return err.Error()
+	}
 }
 
 type updateLibraryInfoBody struct {
