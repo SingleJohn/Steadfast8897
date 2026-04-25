@@ -33,7 +33,7 @@ const (
 	showcasePosterH     = 348
 	showcasePosterGap   = 28
 	showcasePosterX     = 620
-	showcasePosterY     = 355
+	showcasePosterY     = 470
 	showcaseCorner      = 9
 )
 
@@ -276,7 +276,9 @@ func drawShowcasePosters(base *image.RGBA, materials []Material, posters []image
 		rounded := roundCorners(fitted, showcaseCorner)
 		card := withDropShadow(rounded, 0, 8, 10, 0.55)
 		cb := card.Bounds()
-		draw.Draw(base, image.Rect(x-18, y-18, x-18+cb.Dx(), y-18+cb.Dy()), card, cb.Min, draw.Over)
+		cardX := x - (cb.Dx()-showcasePosterW)/2
+		cardY := y - (cb.Dy()-showcasePosterH)/2
+		draw.Draw(base, image.Rect(cardX, cardY, cardX+cb.Dx(), cardY+cb.Dy()), card, cb.Min, draw.Over)
 
 		border := color.RGBA{255, 255, 255, 86}
 		drawStrokeRoundedRect(base, image.Rect(x, y, x+showcasePosterW, y+showcasePosterH), showcaseCorner, 2, border)
