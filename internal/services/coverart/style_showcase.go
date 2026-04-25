@@ -11,6 +11,7 @@ import (
 
 	"github.com/disintegration/imaging"
 	"golang.org/x/image/font"
+	"golang.org/x/image/math/fixed"
 )
 
 type showcaseStyle struct{}
@@ -32,7 +33,7 @@ const (
 	showcasePosterH     = 348
 	showcasePosterGap   = 28
 	showcasePosterX     = 620
-	showcasePosterY     = 270
+	showcasePosterY     = 355
 	showcaseCorner      = 9
 )
 
@@ -59,7 +60,7 @@ func (showcaseStyle) Render(ctx context.Context, in Input) (Output, error) {
 	showPosterTitles := optionBool(in.Options, "ShowPosterTitles", true)
 	showCount := optionBool(in.Options, "ShowCount", true)
 
-	drawShowcaseIcon(base, icon, 174, 176, 130)
+	drawShowcaseIcon(base, icon, 174, 261, 130)
 	if err := drawShowcaseText(base, in.LibraryName, in.CollectionType, in.ItemCount, showCount); err != nil {
 		return Output{}, err
 	}
@@ -188,8 +189,8 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 	defer titleFace.Close()
 
 	metrics := titleFace.Metrics()
-	titleY := 455
-	drawStringWithShadow(base, name, 174, titleY, titleFace, color.RGBA{255, 255, 255, 255})
+	titleY := 540
+	drawShowcaseString(base, name, 174, titleY, titleFace)
 
 	subFace, err := makeFace(40)
 	if err != nil {
@@ -197,7 +198,7 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 	}
 	defer subFace.Close()
 	sub := showcaseSubtitle(collectionType, name)
-	drawStringWithShadow(base, sub, 178, titleY+metrics.Descent.Round()+62, subFace, color.RGBA{255, 255, 255, 235})
+	drawShowcaseString(base, sub, 178, titleY+metrics.Descent.Round()+62, subFace)
 
 	lineY := titleY + metrics.Descent.Round() + 94
 	drawFilledRect(base, image.Rect(178, lineY, 252, lineY+4), color.RGBA{255, 255, 255, 210})
@@ -212,9 +213,28 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 		if strings.EqualFold(collectionType, "music") {
 			text = "共 " + strconv.Itoa(count) + " 张专辑"
 		}
-		drawStringWithShadow(base, text, 178, lineY+68, countFace, color.RGBA{255, 255, 255, 235})
+		drawShowcaseString(base, text, 178, lineY+68, countFace)
 	}
 	return nil
+}
+
+func drawShowcaseString(dst *image.RGBA, text string, x, y int, face font.Face) {
+	shadow := image.NewUniform(color.RGBA{0, 0, 0, 92})
+	fill := image.NewUniform(color.RGBA{255, 255, 255, 255})
+	sd := &font.Drawer{
+		Dst:  dst,
+		Src:  shadow,
+		Face: face,
+		Dot:  fixed.P(x+1, y+2),
+	}
+	sd.DrawString(text)
+	md := &font.Drawer{
+		Dst:  dst,
+		Src:  fill,
+		Face: face,
+		Dot:  fixed.P(x, y),
+	}
+	md.DrawString(text)
 }
 
 func bestFaceForWidth(text string, minSize, maxSize, maxW float64) (font.Face, error) {
