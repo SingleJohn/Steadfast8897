@@ -35,6 +35,7 @@ const (
 	showcasePosterX     = 520
 	showcasePosterY     = 500
 	showcaseCorner      = 9
+	showcaseTextX       = 120
 )
 
 func (showcaseStyle) Render(ctx context.Context, in Input) (Output, error) {
@@ -60,7 +61,7 @@ func (showcaseStyle) Render(ctx context.Context, in Input) (Output, error) {
 	showPosterTitles := optionBool(in.Options, "ShowPosterTitles", true)
 	showCount := optionBool(in.Options, "ShowCount", true)
 
-	drawShowcaseIcon(base, icon, 174, 261, 130)
+	drawShowcaseIcon(base, icon, showcaseTextX, 261, 130)
 	if err := drawShowcaseText(base, in.LibraryName, in.CollectionType, in.ItemCount, showCount); err != nil {
 		return Output{}, err
 	}
@@ -190,7 +191,7 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 
 	metrics := titleFace.Metrics()
 	titleY := 540
-	drawShowcaseString(base, name, 174, titleY, titleFace)
+	drawShowcaseString(base, name, showcaseTextX, titleY, titleFace)
 
 	subFace, err := makeFace(40)
 	if err != nil {
@@ -198,10 +199,11 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 	}
 	defer subFace.Close()
 	sub := showcaseSubtitle(collectionType, name)
-	drawShowcaseString(base, sub, 178, titleY+metrics.Descent.Round()+62, subFace)
+	subX := showcaseTextX + 4
+	drawShowcaseString(base, sub, subX, titleY+metrics.Descent.Round()+62, subFace)
 
 	lineY := titleY + metrics.Descent.Round() + 94
-	drawFilledRect(base, image.Rect(178, lineY, 252, lineY+4), color.RGBA{255, 255, 255, 210})
+	drawFilledRect(base, image.Rect(subX, lineY, subX+74, lineY+4), color.RGBA{255, 255, 255, 210})
 
 	if showCount && count > 0 {
 		countFace, err := makeFace(44)
@@ -213,7 +215,7 @@ func drawShowcaseText(base *image.RGBA, name, collectionType string, count int, 
 		if strings.EqualFold(collectionType, "music") {
 			text = "共 " + strconv.Itoa(count) + " 张专辑"
 		}
-		drawShowcaseString(base, text, 178, lineY+68, countFace)
+		drawShowcaseString(base, text, subX, lineY+68, countFace)
 	}
 	return nil
 }
@@ -260,7 +262,7 @@ func bestFaceForWidth(text string, minSize, maxSize, maxW float64) (font.Face, e
 }
 
 func drawShowcasePosters(base *image.RGBA, materials []Material, posters []image.Image, showTitles bool) error {
-	titleFace, err := makeFace(28)
+	titleFace, err := makeFace(27)
 	if err != nil {
 		return err
 	}
@@ -287,7 +289,7 @@ func drawShowcasePosters(base *image.RGBA, materials []Material, posters []image
 		}
 		barH := 82
 		bar := image.Rect(x+2, y+showcasePosterH-barH, x+showcasePosterW-2, y+showcasePosterH-2)
-		drawRoundedBottomOverlay(base, bar, showcaseCorner-2, color.RGBA{0, 0, 0, 180})
+		drawRoundedBottomOverlay(base, bar, showcaseCorner-2, color.RGBA{0, 0, 0, 150})
 		title := ""
 		if len(materials) > 0 {
 			title = materials[i%len(materials)].Title
@@ -300,9 +302,19 @@ func drawShowcasePosters(base *image.RGBA, materials []Material, posters []image
 		tm := titleFace.Metrics()
 		tx := x + (showcasePosterW-tw)/2
 		ty := y + showcasePosterH - barH/2 + (tm.Ascent.Round()-tm.Descent.Round())/2
-		drawStringWithShadow(base, title, tx, ty, titleFace, color.RGBA{255, 255, 255, 245})
+		drawPlainString(base, title, tx, ty, titleFace, color.RGBA{218, 222, 228, 235})
 	}
 	return nil
+}
+
+func drawPlainString(dst *image.RGBA, text string, x, y int, face font.Face, fg color.RGBA) {
+	d := &font.Drawer{
+		Dst:  dst,
+		Src:  image.NewUniform(fg),
+		Face: face,
+		Dot:  fixed.P(x, y),
+	}
+	d.DrawString(text)
 }
 
 func showcaseSubtitle(collectionType, name string) string {
