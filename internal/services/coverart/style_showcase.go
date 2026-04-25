@@ -29,11 +29,11 @@ const (
 	showcaseCanvasH = 1080
 
 	showcasePosterCount = 5
-	showcasePosterW     = 232
-	showcasePosterH     = 348
-	showcasePosterGap   = 28
-	showcasePosterX     = 620
-	showcasePosterY     = 470
+	showcasePosterW     = 250
+	showcasePosterH     = 450
+	showcasePosterGap   = 30
+	showcasePosterX     = 520
+	showcasePosterY     = 500
 	showcaseCorner      = 9
 )
 
@@ -285,7 +285,7 @@ func drawShowcasePosters(base *image.RGBA, materials []Material, posters []image
 		if !showTitles {
 			continue
 		}
-		barH := 70
+		barH := 82
 		bar := image.Rect(x+2, y+showcasePosterH-barH, x+showcasePosterW-2, y+showcasePosterH-2)
 		drawRoundedBottomOverlay(base, bar, showcaseCorner-2, color.RGBA{0, 0, 0, 180})
 		title := ""
