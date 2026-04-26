@@ -1967,14 +1967,23 @@ func searchTmdbForItem(c *gin.Context) {
 	state := GetState(c)
 	itemID := c.Param("itemId")
 	var body struct {
-		Query string `json:"query"`
-		Year  *int32 `json:"year,omitempty"`
+		Query  string `json:"query"`
+		Year   *int32 `json:"year,omitempty"`
+		TmdbID *int64 `json:"tmdbId,omitempty"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供搜索关键词"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请求参数无效"})
 		return
 	}
-	results, err := services.SearchTMDBForItem(c.Request.Context(), state.DB, itemID, body.Query, body.Year)
+	if body.TmdbID == nil && strings.TrimSpace(body.Query) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供搜索关键词或 TMDB ID"})
+		return
+	}
+	if body.TmdbID != nil && *body.TmdbID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请提供有效的 TMDB ID"})
+		return
+	}
+	results, err := services.SearchTMDBForItem(c.Request.Context(), state.DB, itemID, strings.TrimSpace(body.Query), body.Year, body.TmdbID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return

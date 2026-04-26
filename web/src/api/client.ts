@@ -35,10 +35,14 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
     const isJson = contentType.includes('application/json')
     const body = isJson ? await res.json().catch(() => null) : await res.text().catch(() => '')
     if (!res.ok) {
-      const errMsg =
-        typeof body === 'object' && body && 'error' in body && typeof body.error === 'string'
-          ? body.error
-          : `Request failed: ${res.status}`
+      let errMsg = `Request failed: ${res.status}`
+      if (typeof body === 'object' && body && 'error' in body && typeof body.error === 'string') {
+        errMsg = body.error
+      } else if (typeof body === 'object' && body && 'message' in body && typeof body.message === 'string') {
+        errMsg = body.message
+      } else if (typeof body === 'string' && body) {
+        errMsg = body
+      }
       throw new ApiError(errMsg, res.status)
     }
     return body as T
@@ -489,16 +493,22 @@ export async function scrapeAllMetadata() {
   return request<any>('/Library/Scrape/All', { method: 'POST' });
 }
 
-export async function searchTmdbForItem(itemId: string, query: string, year?: number) {
-  return request<any>(`/Items/${itemId}/SearchTmdb`, {
+export async function searchTmdbForItem(itemId: string, params: { query?: string; year?: number; tmdbId?: number }) {
+  return requestJson<any>(`/Items/${itemId}/SearchTmdb`, {
     method: 'POST',
-    body: JSON.stringify({ query, year: year || undefined }),
+    timeoutMs: 20_000,
+    body: JSON.stringify({
+      query: params.query || undefined,
+      year: params.year || undefined,
+      tmdbId: params.tmdbId || undefined,
+    }),
   });
 }
 
 export async function scrapeItemByTmdbId(itemId: string, tmdbId: number) {
-  return request<any>(`/Items/${itemId}/ScrapeByTmdbId`, {
+  return requestJson<any>(`/Items/${itemId}/ScrapeByTmdbId`, {
     method: 'POST',
+    timeoutMs: 30_000,
     body: JSON.stringify({ tmdbId }),
   });
 }

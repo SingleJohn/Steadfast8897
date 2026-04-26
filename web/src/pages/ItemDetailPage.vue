@@ -33,11 +33,13 @@ const brokenPeopleImages = ref<Record<string, boolean>>({})
 
 // 自定义刮削
 const showCustomScrape = ref(false)
+const customTmdbId = ref<number | null>(null)
 const customQuery = ref('')
 const customYear = ref<number | null>(null)
 const tmdbResults = ref<any[]>([])
 const tmdbSearching = ref(false)
 const tmdbApplying = ref<number | null>(null)
+const hasSearchedTmdb = ref(false)
 const forceSolidModalStyle = {
   '--n-color': 'var(--app-modal-solid-card)',
   '--n-color-modal': 'var(--app-modal-solid-card)',
@@ -50,33 +52,58 @@ async function openCustomScrape() {
   if (!item.value) return
   customQuery.value = item.value.Name || ''
   customYear.value = item.value.ProductionYear || null
+  customTmdbId.value = null
   tmdbResults.value = []
   tmdbApplying.value = null
+  hasSearchedTmdb.value = false
   showCustomScrape.value = true
+}
+
+async function handleTmdbIdSearch() {
+  if (!item.value || !customTmdbId.value || customTmdbId.value <= 0) return
+  tmdbSearching.value = true
+  hasSearchedTmdb.value = true
+  tmdbResults.value = []
+  try {
+    const res = await searchTmdbForItem(item.value.Id, { tmdbId: customTmdbId.value })
+    tmdbResults.value = res.results || []
+    if (!tmdbResults.value.length) message.warning('未找到对应的 TMDB 条目')
+  } catch (e: any) {
+    tmdbResults.value = []
+    message.error(e?.message || 'TMDB ID 搜索失败')
+  } finally {
+    tmdbSearching.value = false
+  }
 }
 
 async function handleTmdbSearch() {
   if (!item.value || !customQuery.value.trim()) return
   tmdbSearching.value = true
+  hasSearchedTmdb.value = true
   tmdbResults.value = []
   try {
-    const res = await searchTmdbForItem(item.value.Id, customQuery.value.trim(), customYear.value || undefined)
+    const res = await searchTmdbForItem(item.value.Id, { query: customQuery.value.trim(), year: customYear.value || undefined })
     tmdbResults.value = res.results || []
+    if (!tmdbResults.value.length) message.warning('未找到匹配的 TMDB 结果')
   } catch (e: any) {
     tmdbResults.value = []
+    message.error(e?.message || 'TMDB 搜索失败')
   } finally {
     tmdbSearching.value = false
   }
 }
 
 async function handleApplyTmdb(tmdbId: number) {
-  if (!item.value) return
+  if (!item.value || tmdbApplying.value !== null) return
   tmdbApplying.value = tmdbId
   try {
     await scrapeItemByTmdbId(item.value.Id, tmdbId)
     showCustomScrape.value = false
     item.value = await getItem(item.value.Id)
-  } catch { /* ignore */ } finally {
+    message.success('已应用 TMDB 元数据')
+  } catch (e: any) {
+    message.error(e?.message || '应用 TMDB 元数据失败')
+  } finally {
     tmdbApplying.value = null
   }
 }
@@ -549,10 +576,23 @@ function handleGenreClick(genreId: string) {
       class="solid-modal-card force-solid-modal custom-scrape-modal"
       :bordered="false"
     >
+      <div class="tmdb-id-search-bar">
+        <n-input-number
+          v-model:value="customTmdbId"
+          :min="1"
+          :precision="0"
+          placeholder="输入 TMDB ID 精确搜索"
+          clearable
+          style="flex: 1"
+          @keyup.enter="handleTmdbIdSearch"
+        />
+        <n-button type="primary" :loading="tmdbSearching" @click="handleTmdbIdSearch" :disabled="tmdbSearching || !customTmdbId || customTmdbId <= 0">搜索 ID</n-button>
+      </div>
+      <div class="tmdb-search-divider"><span>或通过名称搜索</span></div>
       <div class="tmdb-search-bar">
         <n-input v-model:value="customQuery" placeholder="输入名称搜索 TMDB" clearable @keyup.enter="handleTmdbSearch" style="flex: 1" />
         <n-input-number v-model:value="customYear" :min="1900" :max="2030" placeholder="年份" clearable style="width: 110px" />
-        <n-button type="primary" :loading="tmdbSearching" @click="handleTmdbSearch" :disabled="!customQuery.trim()">搜索</n-button>
+        <n-button type="primary" :loading="tmdbSearching" @click="handleTmdbSearch" :disabled="tmdbSearching || !customQuery.trim()">搜索</n-button>
       </div>
       <div v-if="tmdbSearching" class="tmdb-loading"><n-spin /></div>
       <div v-else-if="tmdbResults.length" class="tmdb-results">
@@ -573,7 +613,7 @@ function handleGenreClick(genreId: string) {
           <div v-if="tmdbApplying === r.id" class="tmdb-applying"><n-spin size="small" /></div>
         </div>
       </div>
-      <div v-else-if="!tmdbSearching && customQuery" class="tmdb-empty-state">点击搜索查找 TMDB 结果</div>
+      <div v-else-if="!tmdbSearching" class="tmdb-empty-state">{{ hasSearchedTmdb ? '未找到 TMDB 结果' : '输入 TMDB ID 或名称后点击搜索' }}</div>
     </n-modal>
   </div>
 </template>
@@ -1443,7 +1483,24 @@ function handleGenreClick(genreId: string) {
 }
 
 /* ═══ 自定义刮削弹窗 ═══ */
+.tmdb-id-search-bar,
 .tmdb-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.tmdb-id-search-bar { margin-bottom: 10px; }
+.tmdb-search-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+.tmdb-search-divider::before,
+.tmdb-search-divider::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: rgba(71, 85, 105, 0.72);
+}
 .tmdb-loading { text-align: center; padding: 32px 0; }
 .tmdb-results { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .tmdb-result-card {

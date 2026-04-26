@@ -1986,8 +1986,8 @@ func ScrapeItemByProviderID(ctx context.Context, pool *pgxpool.Pool, itemID, pro
 	return applyMergedDetails(ctx, pool, itemID, client, meta.ItemType, tmdbID, merged, tmdbID > 0, models.PlatformScanSourceSearch)
 }
 
-// SearchTMDBForItem searches TMDB for an item by custom query, returning multiple results.
-func SearchTMDBForItem(ctx context.Context, pool *pgxpool.Pool, itemID, query string, year *int32) ([]map[string]interface{}, error) {
+// SearchTMDBForItem searches TMDB for an item by custom query or explicit TMDB ID.
+func SearchTMDBForItem(ctx context.Context, pool *pgxpool.Pool, itemID, query string, year *int32, tmdbID *int64) ([]map[string]interface{}, error) {
 	client := TmdbClientFromConfig(ctx, pool)
 	if client == nil {
 		return nil, fmt.Errorf("TMDB API 密钥未配置")
@@ -1998,12 +1998,49 @@ func SearchTMDBForItem(ctx context.Context, pool *pgxpool.Pool, itemID, query st
 	}
 	switch meta.ItemType {
 	case "Movie":
+		if tmdbID != nil {
+			details, err := client.GetMovieDetails(ctx, *tmdbID)
+			if err != nil {
+				return nil, fmt.Errorf("未找到电影类型的 TMDB 条目: %w", err)
+			}
+			if details == nil || details["id"] == nil {
+				return nil, fmt.Errorf("未找到电影类型的 TMDB 条目")
+			}
+			return []map[string]interface{}{tmdbCandidateFromDetails(details, "Movie")}, nil
+		}
 		return client.SearchMovieMulti(ctx, query, year)
 	case "Series":
+		if tmdbID != nil {
+			details, err := client.GetTVDetails(ctx, *tmdbID)
+			if err != nil {
+				return nil, fmt.Errorf("未找到剧集类型的 TMDB 条目: %w", err)
+			}
+			if details == nil || details["id"] == nil {
+				return nil, fmt.Errorf("未找到剧集类型的 TMDB 条目")
+			}
+			return []map[string]interface{}{tmdbCandidateFromDetails(details, "Series")}, nil
+		}
 		return client.SearchTVMulti(ctx, query)
 	default:
 		return nil, fmt.Errorf("不支持的类型: %s", meta.ItemType)
 	}
+}
+
+func tmdbCandidateFromDetails(details map[string]interface{}, itemType string) map[string]interface{} {
+	out := map[string]interface{}{
+		"id":           details["id"],
+		"poster_path":  details["poster_path"],
+		"overview":     details["overview"],
+		"vote_average": details["vote_average"],
+	}
+	if itemType == "Movie" {
+		out["title"] = details["title"]
+		out["release_date"] = details["release_date"]
+	} else {
+		out["name"] = details["name"]
+		out["first_air_date"] = details["first_air_date"]
+	}
+	return out
 }
 
 func ScrapeItemWithClient(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient) (map[string]interface{}, error) {
