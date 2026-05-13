@@ -303,6 +303,33 @@ func queryAny(c *gin.Context, keys ...string) string {
 	return ""
 }
 
+// itemTypeCanonical 把客户端传入的各种大小写形式映射到 FYMS 数据库 items.type
+// 的标准值。Lenna 等客户端会传 "movie" 全小写,SQL 精确匹配 i.type='Movie'
+// 时查不到任何记录导致媒体库为空。
+var itemTypeCanonical = map[string]string{
+	"movie":            "Movie",
+	"series":           "Series",
+	"episode":          "Episode",
+	"season":           "Season",
+	"boxset":           "BoxSet",
+	"playlist":         "Playlist",
+	"musicvideo":       "MusicVideo",
+	"video":            "Video",
+	"audio":            "Audio",
+	"folder":           "Folder",
+	"collectionfolder": "CollectionFolder",
+	"userview":         "UserView",
+	"musicalbum":       "MusicAlbum",
+	"musicartist":      "MusicArtist",
+}
+
+func normalizeItemType(s string) string {
+	if v, ok := itemTypeCanonical[strings.ToLower(strings.TrimSpace(s))]; ok {
+		return v
+	}
+	return s
+}
+
 func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOptions, error) {
 	opts := &models.ItemQueryOptions{}
 
@@ -320,7 +347,7 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 		for _, t := range strings.Split(s, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {
-				opts.IncludeItemTypes = append(opts.IncludeItemTypes, t)
+				opts.IncludeItemTypes = append(opts.IncludeItemTypes, normalizeItemType(t))
 			}
 		}
 	}
