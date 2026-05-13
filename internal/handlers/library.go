@@ -130,9 +130,21 @@ func matchUserOrAdmin(c *gin.Context, userID string) bool {
 	return u.ID == userID
 }
 
+// resolveUserID 优先取 URL path 上的 :userId；为空时（如 DS One 这类客户端
+// 仅依赖 token 反查）回退到当前已认证用户。
+func resolveUserID(c *gin.Context) string {
+	if uid := c.Param("userId"); uid != "" {
+		return uid
+	}
+	if u := middleware.GetAuthUser(c); u != nil {
+		return u.ID
+	}
+	return ""
+}
+
 func getUserViews(c *gin.Context) {
 	state := GetState(c)
-	userID := c.Param("userId")
+	userID := resolveUserID(c)
 	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -367,7 +379,7 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 
 func getItems(c *gin.Context) {
 	state := GetState(c)
-	pathUser := c.Param("userId")
+	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -421,7 +433,7 @@ func getItems(c *gin.Context) {
 
 func getResumeItems(c *gin.Context) {
 	state := GetState(c)
-	pathUser := c.Param("userId")
+	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -474,7 +486,7 @@ func getResumeItems(c *gin.Context) {
 
 func getLatestItems(c *gin.Context) {
 	state := GetState(c)
-	pathUser := c.Param("userId")
+	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -843,7 +855,7 @@ func strVal(s *string) string {
 
 func getItemDetail(c *gin.Context) {
 	state := GetState(c)
-	pathUser := c.Param("userId")
+	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -2832,7 +2844,7 @@ func browseDirGet(c *gin.Context) {
 
 func getLatestBatch(c *gin.Context) {
 	state := GetState(c)
-	pathUser := c.Param("userId")
+	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return

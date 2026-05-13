@@ -63,7 +63,7 @@ type GenreItem struct {
 
 type StudioItem struct {
 	Name string `json:"Name"`
-	ID   string `json:"Id,omitempty"`
+	ID   string `json:"Id"`
 }
 
 type MediaSourceInfo struct {

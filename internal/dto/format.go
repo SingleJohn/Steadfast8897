@@ -4,7 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/uuid"
 )
+
+// studioNamespace 用于由 studio name 生成稳定 UUID。Emby/Jellyfin 客户端
+// （包括 VidHub）要求 Studios[].Id 必填且为 UUID 形式。
+var studioNamespace = uuid.MustParse("b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e")
+
+func studioStableID(name string) string {
+	return uuid.NewSHA1(studioNamespace, []byte(name)).String()
+}
 
 // FormatItemDtoList 列表场景：跳过 strm 文件解析（避免大量磁盘 IO）
 func FormatItemDtoList(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
@@ -147,7 +157,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 		dto.DateCreated = &t
 	}
 	if item.Studio != nil && *item.Studio != "" {
-		dto.Studios = []StudioItem{{Name: *item.Studio}}
+		dto.Studios = []StudioItem{{Name: *item.Studio, ID: studioStableID(*item.Studio)}}
 	}
 	dto.ProductionLocations = []string{}
 
