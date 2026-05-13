@@ -39,6 +39,13 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.GET("/Users/:userId/Items/Latest", authMW, getLatestItems)
 	u.GET("/Users/:userId/Items/:itemId", authMW, getItemDetail)
 
+	// Forward 等客户端会省略 :userId 段直接请求 /Users/Views、/Users/Items 等;
+	// 这里挂上无 userId 段的兼容路由,handler 通过 resolveUserID 从 token 取 userId。
+	u.GET("/Users/Views", authMW, getUserViews)
+	u.GET("/Users/Items", authMW, getItems)
+	u.GET("/Users/Items/Resume", authMW, getResumeItems)
+	u.GET("/Users/Items/Latest", authMW, getLatestItems)
+
 	u.GET("/Items/:itemId/Similar", optAuthMW, getSimilarItems)
 
 	u.POST("/Library/VirtualFolders", adminMW, addLibrary)
@@ -101,6 +108,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Backfill/Reset/EpisodeImage", adminMW, func(c *gin.Context) { resetBackfillEpisodeImage(c, state) })
 
 	u.GET("/Users/:userId/Items/LatestBatch", authMW, getLatestBatch)
+	u.GET("/Users/Items/LatestBatch", authMW, getLatestBatch)
 
 	u.GET("/Genres", getGenres)
 

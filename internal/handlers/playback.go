@@ -184,6 +184,12 @@ func RegisterPlaybackRoutes(group *gin.RouterGroup, state *AppState, authMW gin.
 	group.DELETE("/Users/:userId/PlayedItems/:itemId", authMW, MarkUnplayed)
 	group.POST("/Users/:userId/FavoriteItems/:itemId", authMW, MarkFavorite)
 	group.DELETE("/Users/:userId/FavoriteItems/:itemId", authMW, UnmarkFavorite)
+
+	// 兼容省略 :userId 段的客户端(Forward 等),从 token 反查用户。
+	group.POST("/Users/PlayedItems/:itemId", authMW, MarkPlayed)
+	group.DELETE("/Users/PlayedItems/:itemId", authMW, MarkUnplayed)
+	group.POST("/Users/FavoriteItems/:itemId", authMW, MarkFavorite)
+	group.DELETE("/Users/FavoriteItems/:itemId", authMW, UnmarkFavorite)
 }
 
 func authMatchesUser(c *gin.Context, userID string) bool {
@@ -512,7 +518,7 @@ func OnPlaybackStopped(c *gin.Context) {
 
 func MarkPlayed(c *gin.Context) {
 	st := GetState(c)
-	userID := c.Param("userId")
+	userID := resolveUserID(c)
 	if !authMatchesUser(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -538,7 +544,7 @@ func MarkPlayed(c *gin.Context) {
 
 func MarkUnplayed(c *gin.Context) {
 	st := GetState(c)
-	userID := c.Param("userId")
+	userID := resolveUserID(c)
 	if !authMatchesUser(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -564,7 +570,7 @@ func MarkUnplayed(c *gin.Context) {
 
 func MarkFavorite(c *gin.Context) {
 	st := GetState(c)
-	userID := c.Param("userId")
+	userID := resolveUserID(c)
 	if !authMatchesUser(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
@@ -589,7 +595,7 @@ func MarkFavorite(c *gin.Context) {
 
 func UnmarkFavorite(c *gin.Context) {
 	st := GetState(c)
-	userID := c.Param("userId")
+	userID := resolveUserID(c)
 	if !authMatchesUser(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
