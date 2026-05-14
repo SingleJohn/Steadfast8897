@@ -181,5 +181,8 @@ func ScanLibrary(
 				slog.Info("[Scan] MergeVersions completed", "merged", merged)
 			}
 		}()
+		// probe_on_ingest 开关打开时,扫库结束自动跑一遍 ffprobe 补齐
+		// 新入库的 media_version 的 mediainfo / runtime_ticks。
+		go MaybeTriggerAutoProbe(ctx, pool)
 	}()
 }

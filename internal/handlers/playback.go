@@ -194,17 +194,6 @@ func RegisterPlaybackRoutes(group *gin.RouterGroup, state *AppState, authMW gin.
 	group.POST("/Users/Items/:itemId/HideFromResume", authMW, HideFromResume)
 }
 
-func authMatchesUser(c *gin.Context, userID string) bool {
-	auth := middleware.GetAuthUser(c)
-	if auth == nil {
-		return false
-	}
-	if auth.IsAdmin {
-		return true
-	}
-	return auth.ID == userID
-}
-
 func deviceIDFromRequest(c *gin.Context) string {
 	return strOrPtr(middleware.GetAuthInfo(c).DeviceID, "unknown")
 }
@@ -521,7 +510,7 @@ func OnPlaybackStopped(c *gin.Context) {
 func MarkPlayed(c *gin.Context) {
 	st := GetState(c)
 	userID := resolveUserID(c)
-	if !authMatchesUser(c, userID) {
+	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
@@ -547,7 +536,7 @@ func MarkPlayed(c *gin.Context) {
 func MarkUnplayed(c *gin.Context) {
 	st := GetState(c)
 	userID := resolveUserID(c)
-	if !authMatchesUser(c, userID) {
+	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
@@ -573,7 +562,7 @@ func MarkUnplayed(c *gin.Context) {
 func MarkFavorite(c *gin.Context) {
 	st := GetState(c)
 	userID := resolveUserID(c)
-	if !authMatchesUser(c, userID) {
+	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
@@ -598,7 +587,7 @@ func MarkFavorite(c *gin.Context) {
 func UnmarkFavorite(c *gin.Context) {
 	st := GetState(c)
 	userID := resolveUserID(c)
-	if !authMatchesUser(c, userID) {
+	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
@@ -626,7 +615,7 @@ func UnmarkFavorite(c *gin.Context) {
 func HideFromResume(c *gin.Context) {
 	st := GetState(c)
 	userID := resolveUserID(c)
-	if !authMatchesUser(c, userID) {
+	if !matchUserOrAdmin(c, userID) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}

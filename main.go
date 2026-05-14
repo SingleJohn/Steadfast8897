@@ -107,6 +107,7 @@ func main() {
 	progressBuffer := services.NewProgressBuffer(pool)
 	scanProgress := services.NewScanProgressTracker(pool)
 	probeTask := services.NewProbeTask()
+	services.RegisterAutoProbeTask(probeTask)
 	ingestWorker := services.NewIngestWorker(pool, cache)
 	scrapeQueue := services.NewScrapeQueue(pool)
 	scrapeWorker := services.NewScrapeWorker(pool, scrapeQueue, tmdbLimiter)

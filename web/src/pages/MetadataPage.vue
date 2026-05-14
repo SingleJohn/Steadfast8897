@@ -244,6 +244,7 @@ const probeProgress = computed(() => {
 })
 const probeThreads = ref('5')
 const probePathMappings = ref<{ from: string; to: string }[]>([])
+const probeOnIngest = ref(false)
 const savingProbe = ref(false)
 
 // ===== Backfill 存量回填 =====
@@ -414,6 +415,7 @@ async function saveProbeSettingsOnly() {
     await updateSystemConfig({
       probe_threads: probeThreads.value,
       probe_path_mappings: JSON.stringify(probePathMappings.value.filter((m) => m.from && m.to)),
+      probe_on_ingest: probeOnIngest.value ? 'true' : 'false',
     })
     showToast('探测设置已保存', 'success')
   } catch {
@@ -427,6 +429,7 @@ async function startProbeJob() {
     await updateSystemConfig({
       probe_threads: probeThreads.value,
       probe_path_mappings: JSON.stringify(probePathMappings.value.filter((m) => m.from && m.to)),
+      probe_on_ingest: probeOnIngest.value ? 'true' : 'false',
     })
     await startProbe(parseInt(probeThreads.value, 10))
     await refreshTaskSummary()
@@ -518,6 +521,7 @@ onMounted(() => {
 
     try { probePathMappings.value = cfg.probe_path_mappings ? JSON.parse(cfg.probe_path_mappings) : [] } catch { probePathMappings.value = [] }
     probeThreads.value = cfg.probe_threads || '5'
+    probeOnIngest.value = cfg.probe_on_ingest === 'true'
   }).catch(() => {})
   void refreshBackfillConfig()
 })
@@ -855,6 +859,12 @@ onMounted(() => {
               <n-grid-item span="1">
                 <n-form-item label="并发线程">
                   <n-select v-model:value="probeThreads" :options="probeThreadsOptions" :disabled="probeProgress?.status === 'running'" size="small" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item span="1">
+                <n-form-item label="新入库自动探测">
+                  <n-switch v-model:value="probeOnIngest" :disabled="probeProgress?.status === 'running'" />
+                  <span class="hint-text" style="margin-left: 10px">扫库结束后,若有未探测的 media_version 则自动跑一次 ffprobe</span>
                 </n-form-item>
               </n-grid-item>
             </n-grid>

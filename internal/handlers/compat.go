@@ -1051,7 +1051,9 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		seen := map[string]bool{}
 		var placeholders []string
 		for _, t := range typeList {
-			t = strings.TrimSpace(t)
+			// 先按 itemTypeCanonical 规范化大小写,Lenna 等客户端会传 "movie" 小写,
+			// 直接精确匹配 i.type='movie' 会查不到记录。
+			t = normalizeItemType(strings.TrimSpace(t))
 			if t == "" {
 				continue
 			}
@@ -1295,7 +1297,9 @@ func searchHints(c *gin.Context, state *AppState) {
 		typeList := strings.Split(includeTypes, ",")
 		var placeholders []string
 		for _, t := range typeList {
-			t = strings.TrimSpace(t)
+			// 规范化大小写, 与 parseItemQueryOptions 行为一致, Lenna 等客户端
+			// 传 "movie" 小写时仍能命中 SQL 精确匹配 i.type='Movie'.
+			t = normalizeItemType(strings.TrimSpace(t))
 			if t == "" {
 				continue
 			}
