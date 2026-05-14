@@ -35,6 +35,21 @@ func (a *ProbeAdapter) Kind() taskcenter.Kind { return taskcenter.KindProbe }
 func (a *ProbeAdapter) Snapshot() taskcenter.Snapshot {
 	p := a.Task.GetProgress()
 	status := mapLegacyStatus(p.Status)
+
+	// 与 handlers/library.go::buildEffectiveProbeProgress 行为对齐:
+	// 任务非运行态时,从 DB 实时计算 missing / versionsTotal。
+	// 否则 idle 状态下 counters 永远是 0,前端探测按钮的 disabled 判定
+	// (missingCount === 0 && status === 'idle') 永远为真,导致无法点击。
+	if status != taskcenter.StatusRunning && status != taskcenter.StatusStopping && a.DB != nil {
+		ctx := context.Background()
+		if cnt, err := services.GetMissingMediainfoCount(ctx, a.DB); err == nil {
+			p.MissingCount = cnt
+		}
+		if total, err := services.GetTotalMediaVersionsCount(ctx, a.DB); err == nil {
+			p.VersionsTotal = total
+		}
+	}
+
 	snap := taskcenter.Snapshot{
 		Kind:        taskcenter.KindProbe,
 		Status:      status,
