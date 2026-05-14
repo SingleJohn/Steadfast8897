@@ -108,6 +108,10 @@ type MediaStreamInfo struct {
 	Title        *string `json:"Title,omitempty"`
 	IsDefault    bool    `json:"IsDefault"`
 	IsForced     bool    `json:"IsForced"`
+	// IsExternal 标识流是否来自外部文件(独立字幕等)。Yamby (Kotlin Serialization)
+	// 对该字段强制必填,缺失会抛 SerializationException。当前 FYMS 不解析外挂
+	// 字幕,所有流都来自容器内嵌,该字段默认 false 即可。
+	IsExternal   bool    `json:"IsExternal"`
 	Width        *int32  `json:"Width,omitempty"`
 	Height       *int32  `json:"Height,omitempty"`
 	BitRate      *int64  `json:"BitRate,omitempty"`
