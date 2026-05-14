@@ -207,7 +207,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		}
 		switch f {
 		case "IsResumable":
-			conditions = append(conditions, "uid.playback_position_ticks > 0")
+			conditions = append(conditions, "uid.playback_position_ticks > 0 AND uid.is_hidden_from_resume = FALSE")
 		case "IsFavorite":
 			conditions = append(conditions, "uid.is_favorite = TRUE")
 		case "IsUnplayed":
@@ -827,6 +827,18 @@ func UpsertUserItemData(ctx context.Context, pool *pgxpool.Pool, userID, itemID 
 		   played = COALESCE($6, user_item_data.played),
 		   last_played_date = NOW()`,
 		userID, itemID, position, playCount, isFavorite, played)
+	return err
+}
+
+// SetHiddenFromResume 仅更新 is_hidden_from_resume 标记,不动 playback_position
+// 等其它字段。用于 HideFromResume 端点:客户端从"继续观看"列表移除条目时,
+// 位置数据保留,可通过 Hide=false 再恢复显示。
+func SetHiddenFromResume(ctx context.Context, pool *pgxpool.Pool, userID, itemID string, hidden bool) error {
+	_, err := pool.Exec(ctx,
+		`INSERT INTO user_item_data (user_id, item_id, is_hidden_from_resume)
+		 VALUES ($1::uuid, $2::uuid, $3)
+		 ON CONFLICT (user_id, item_id) DO UPDATE SET is_hidden_from_resume = $3`,
+		userID, itemID, hidden)
 	return err
 }
 

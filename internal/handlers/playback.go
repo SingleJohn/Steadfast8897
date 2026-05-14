@@ -184,12 +184,14 @@ func RegisterPlaybackRoutes(group *gin.RouterGroup, state *AppState, authMW gin.
 	group.DELETE("/Users/:userId/PlayedItems/:itemId", authMW, MarkUnplayed)
 	group.POST("/Users/:userId/FavoriteItems/:itemId", authMW, MarkFavorite)
 	group.DELETE("/Users/:userId/FavoriteItems/:itemId", authMW, UnmarkFavorite)
+	group.POST("/Users/:userId/Items/:itemId/HideFromResume", authMW, HideFromResume)
 
 	// 兼容省略 :userId 段的客户端(Forward 等),从 token 反查用户。
 	group.POST("/Users/PlayedItems/:itemId", authMW, MarkPlayed)
 	group.DELETE("/Users/PlayedItems/:itemId", authMW, MarkUnplayed)
 	group.POST("/Users/FavoriteItems/:itemId", authMW, MarkFavorite)
 	group.DELETE("/Users/FavoriteItems/:itemId", authMW, UnmarkFavorite)
+	group.POST("/Users/Items/:itemId/HideFromResume", authMW, HideFromResume)
 }
 
 func authMatchesUser(c *gin.Context, userID string) bool {
@@ -616,6 +618,37 @@ func UnmarkFavorite(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"IsFavorite": false})
+}
+
+// HideFromResume 处理 POST /Users/:userId/Items/:itemId/HideFromResume?Hide=true|false
+// Emby 客户端用于把某条目从"继续观看"列表中隐藏(或恢复显示),不丢失播放位置。
+// Hide 参数缺省时默认 true,符合 Emby 行为。
+func HideFromResume(c *gin.Context) {
+	st := GetState(c)
+	userID := resolveUserID(c)
+	if !authMatchesUser(c, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+	itemID := c.Param("itemId")
+	resolved, err := models.ResolveToUUID(c.Request.Context(), st.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	iid := itemID
+	if resolved != nil {
+		iid = *resolved
+	}
+	hide := true
+	if v := strings.TrimSpace(c.Query("Hide")); v != "" {
+		hide = strings.EqualFold(v, "true") || v == "1"
+	}
+	if err := models.SetHiddenFromResume(c.Request.Context(), st.DB, userID, iid, hide); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"HiddenFromResume": hide})
 }
 
 // --- Helpers ---
