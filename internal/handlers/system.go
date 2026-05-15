@@ -113,6 +113,9 @@ func systemInfo(ctx context.Context, state *AppState, public bool) gin.H {
 func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.HandlerFunc) {
 	group.GET("/System/Info", getSystemInfo)
 	group.GET("/System/Info/Public", getSystemInfoPublic)
+	// Mac/部分 Emby 官方客户端发全小写路径，Gin 路由大小写敏感会 404，需显式别名
+	group.GET("/system/info", getSystemInfo)
+	group.GET("/system/info/public", getSystemInfoPublic)
 	group.GET("/System/Ping", ping)
 	group.POST("/System/Ping", ping)
 	group.POST("/System/Restart", adminMW, restart)
