@@ -155,6 +155,12 @@ func getSystemInfoPublic(c *gin.Context) {
 // 或 Authorization 头里 Client 是 Emby Theater / Emby for ... / Emby Web / Emby Mobile。
 // 前端用 Client="Media Server Web"，不会命中。
 func isEmbyOfficialClient(c *gin.Context) bool {
+	// Emby JS SDK 通用行为：所有 Emby 官方客户端 (Mac/iOS/Android/Web) 都会
+	// 设 X-Emby-Client 头。FYMS 前端不设此头，第三方客户端 (Infuse/Yamby
+	// /Hills 等) 也不用 Emby JS SDK，所以不会有这头。最可靠的命中条件。
+	if c.GetHeader("X-Emby-Client") != "" {
+		return true
+	}
 	ua := c.GetHeader("User-Agent")
 	if strings.Contains(ua, "Emby/") ||
 		strings.Contains(ua, "Emby Theater") ||
