@@ -176,7 +176,10 @@ func applyEmbyOfficialOverrides(c *gin.Context, info gin.H) {
 	if !isEmbyOfficialClient(c) {
 		return
 	}
-	info["Version"] = "4.9.99.99"
+	// 必须严格等于 4.7.14：Emby Mobile (com.emby.mobile) connectionmanager.js 里
+	// compareVersions 把返回值当 boolean 用，-1/1 都是 truthy → 任何 !== "4.7.14"
+	// 都会被判定为"需要更新"。这是该客户端的 bug，只能精确匹配 minServerVersion。
+	info["Version"] = "4.7.14"
 	info["ProductName"] = "Emby Server"
 }
 
