@@ -176,7 +176,7 @@ func applyEmbyOfficialOverrides(c *gin.Context, info gin.H) {
 	if !isEmbyOfficialClient(c) {
 		return
 	}
-	info["Version"] = "4.9.0.80"
+	info["Version"] = "4.9.99.99"
 	info["ProductName"] = "Emby Server"
 }
 
