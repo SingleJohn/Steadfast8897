@@ -136,11 +136,45 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 }
 
 func getSystemInfo(c *gin.Context) {
-	c.JSON(http.StatusOK, systemInfo(c.Request.Context(), GetState(c), false))
+	info := systemInfo(c.Request.Context(), GetState(c), false)
+	applyEmbyOfficialOverrides(c, info)
+	c.JSON(http.StatusOK, info)
 }
 
 func getSystemInfoPublic(c *gin.Context) {
-	c.JSON(http.StatusOK, systemInfo(c.Request.Context(), GetState(c), true))
+	info := systemInfo(c.Request.Context(), GetState(c), true)
+	applyEmbyOfficialOverrides(c, info)
+	c.JSON(http.StatusOK, info)
+}
+
+// isEmbyOfficialClient 识别 Emby 官方客户端，用于伪装 Version/ProductName 通过其严格校验。
+// 命中条件：UA 含 Emby/、Emby Theater、Emby for、EmbyAndroid；
+// 或 Authorization 头里 Client 是 Emby Theater / Emby for ... / Emby Web / Emby Mobile。
+// 前端用 Client="Media Server Web"，不会命中。
+func isEmbyOfficialClient(c *gin.Context) bool {
+	ua := c.GetHeader("User-Agent")
+	if strings.Contains(ua, "Emby/") ||
+		strings.Contains(ua, "Emby Theater") ||
+		strings.Contains(ua, "Emby for ") ||
+		strings.Contains(ua, "EmbyAndroid") {
+		return true
+	}
+	auth := c.GetHeader("X-Emby-Authorization")
+	if auth == "" {
+		auth = c.GetHeader("Authorization")
+	}
+	return strings.Contains(auth, `Client="Emby Theater"`) ||
+		strings.Contains(auth, `Client="Emby for `) ||
+		strings.Contains(auth, `Client="Emby Web"`) ||
+		strings.Contains(auth, `Client="Emby Mobile"`)
+}
+
+func applyEmbyOfficialOverrides(c *gin.Context, info gin.H) {
+	if !isEmbyOfficialClient(c) {
+		return
+	}
+	info["Version"] = "4.9.0.80"
+	info["ProductName"] = "Emby Server"
 }
 
 func ping(c *gin.Context) {
