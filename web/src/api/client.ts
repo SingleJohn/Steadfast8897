@@ -766,6 +766,9 @@ export async function setPlatformEnable(name: string, enabled: boolean) {
 export async function deletePlatformLibrary(id: string) {
   return request(`/Library/Platforms/${id}`, { method: 'DELETE' });
 }
+export async function updatePlatformSortOrder(orderedIds: string[]) {
+  return request('/Library/Platforms/SortOrder', { method: 'POST', body: JSON.stringify({ OrderedIds: orderedIds }) });
+}
 export async function scanPlatformStudios() {
   return requestJson<any>('/Library/Platforms/Scan', { method: 'POST' });
 }

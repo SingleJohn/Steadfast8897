@@ -125,6 +125,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Platforms/ScanFilename", adminMW, func(c *gin.Context) { scanPlatformByFilename(c, state) })
 	u.POST("/Library/Platforms/Rescrape", adminMW, func(c *gin.Context) { rescrapeMissingStudio(c, state) })
 	u.GET("/Library/Platforms/Rescrape/Progress", adminMW, func(c *gin.Context) { getRescrapeProgress(c, state) })
+	u.POST("/Library/Platforms/SortOrder", adminMW, func(c *gin.Context) { updatePlatformSortOrder(c, state) })
 }
 
 func matchUserOrAdmin(c *gin.Context, userID string) bool {
@@ -202,7 +203,7 @@ func getUserViews(c *gin.Context) {
 				unplayedCount = 0
 			}
 			entry := gin.H{
-				"Name":               p.PlatformName,
+				"Name":               models.PlatformDisplayName(p.PlatformName),
 				"ServerId":           sid,
 				"Id":                 vid,
 				"Etag":               vid,
@@ -210,7 +211,7 @@ func getUserViews(c *gin.Context) {
 				"IsFolder":           true,
 				"ChildCount":         p.ItemCount,
 				"RecursiveItemCount": p.ItemCount,
-				"SortName":           strings.ToLower(p.PlatformName),
+				"SortName":           fmt.Sprintf("%04d", p.SortOrder),
 				"ImageTags":          imgTags,
 				"BackdropImageTags":  []string{},
 				"PlatformLibrary":    true,
@@ -912,7 +913,7 @@ func getItemDetail(c *gin.Context) {
 			imgTags["Primary"] = itemID
 		}
 		resp := gin.H{
-			"Name":               platformName,
+			"Name":               models.PlatformDisplayName(platformName),
 			"ServerId":           state.Config.ServerID,
 			"Id":                 itemID,
 			"Etag":               itemID,
@@ -2970,9 +2971,11 @@ func getPlatforms(c *gin.Context, state *AppState) {
 		entry := gin.H{
 			"Id":             p.ID,
 			"PlatformName":   p.PlatformName,
+			"DisplayName":    models.PlatformDisplayName(p.PlatformName),
 			"Enabled":        p.Enabled,
 			"CollectionType": p.CollectionType,
 			"ItemCount":      p.ItemCount,
+			"SortOrder":      p.SortOrder,
 		}
 		if models.HasPlatformLogo(p.PlatformName) {
 			entry["LogoUrl"] = "/Library/Platforms/Logo?name=" + url.QueryEscape(p.PlatformName)
@@ -3018,6 +3021,22 @@ func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {
 func deletePlatform(c *gin.Context, state *AppState) {
 	id := c.Param("id")
 	if err := models.DeletePlatformLibrary(c.Request.Context(), state.DB, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+func updatePlatformSortOrder(c *gin.Context, state *AppState) {
+	var body struct {
+		OrderedIds []string `json:"OrderedIds"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.OrderedIds) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "OrderedIds required"})
+		return
+	}
+	if err := models.UpdatePlatformSortOrder(c.Request.Context(), state.DB, body.OrderedIds); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}

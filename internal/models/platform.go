@@ -19,6 +19,7 @@ type PlatformLibrary struct {
 	IconURL        *string
 	CreatedAt      time.Time
 	ItemCount      int64
+	SortOrder      int
 }
 
 type PlatformScanStatus string
@@ -56,7 +57,7 @@ type PlatformScanItem struct {
 
 func GetPlatformLibraries(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
 	rows, err := pool.Query(ctx,
-		`SELECT p.id::text, p.platform_name, p.enabled, p.collection_type, p.icon_url, p.created_at,
+		`SELECT p.id::text, p.platform_name, p.enabled, p.collection_type, p.icon_url, p.created_at, p.sort_order,
 		        COALESCE(c.cnt, 0) AS item_count
 		 FROM platform_libraries p
 		 LEFT JOIN (
@@ -65,7 +66,7 @@ func GetPlatformLibraries(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLi
 		     WHERE studio IS NOT NULL AND studio != '' AND type IN ('Movie','Series') AND merged_to_id IS NULL
 		     GROUP BY studio
 		 ) c ON c.studio = p.platform_name
-		 ORDER BY p.platform_name`)
+		 ORDER BY p.sort_order, p.platform_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,7 @@ func GetPlatformLibraries(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLi
 	var result []PlatformLibrary
 	for rows.Next() {
 		var p PlatformLibrary
-		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL, &p.CreatedAt, &p.ItemCount); err != nil {
+		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL, &p.CreatedAt, &p.SortOrder, &p.ItemCount); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -84,7 +85,7 @@ func GetPlatformLibraries(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLi
 
 func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
 	rows, err := pool.Query(ctx,
-		`SELECT p.id::text, p.platform_name, p.enabled, p.collection_type, p.icon_url, p.created_at,
+		`SELECT p.id::text, p.platform_name, p.enabled, p.collection_type, p.icon_url, p.created_at, p.sort_order,
 		        COALESCE(c.cnt, 0) AS item_count
 		 FROM platform_libraries p
 		 LEFT JOIN (
@@ -94,7 +95,7 @@ func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLib
 		     GROUP BY studio
 		 ) c ON c.studio = p.platform_name
 		 WHERE p.enabled = true
-		 ORDER BY p.platform_name`)
+		 ORDER BY p.sort_order, p.platform_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +104,7 @@ func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLib
 	var result []PlatformLibrary
 	for rows.Next() {
 		var p PlatformLibrary
-		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL, &p.CreatedAt, &p.ItemCount); err != nil {
+		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL, &p.CreatedAt, &p.SortOrder, &p.ItemCount); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -116,6 +117,18 @@ func SetPlatformEnabled(ctx context.Context, pool *pgxpool.Pool, platformName st
 		`UPDATE platform_libraries SET enabled = $1 WHERE platform_name = $2`,
 		enabled, platformName)
 	return err
+}
+
+// UpdatePlatformSortOrder assigns sort_order by the position of each id in orderedIDs.
+func UpdatePlatformSortOrder(ctx context.Context, pool *pgxpool.Pool, orderedIDs []string) error {
+	for i, id := range orderedIDs {
+		if _, err := pool.Exec(ctx,
+			`UPDATE platform_libraries SET sort_order = $1 WHERE id = $2::uuid`,
+			i, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, platformName string) error {
@@ -221,6 +234,15 @@ var PlatformLogoMap = []PlatformLogoEntry{
 	{[]string{"iqiyi", "爱奇艺"}, "logo/iQIYI - Dramas, Anime, Shows-iOS-1024x1024.png", GradientColor{{0x00, 0x1a, 0x08}, {0x00, 0x40, 0x18}, {0x00, 0x80, 0x30}}},
 	{[]string{"tencent", "腾讯"}, "logo/Tencent Video-iOS-1024x1024.png", GradientColor{{0x10, 0x18, 0x00}, {0x28, 0x38, 0x00}, {0x50, 0x68, 0x10}}},
 	{[]string{"youku", "优酷"}, "logo/YOUKU-Drama, Film, Show, Anime-iOS-1024x1024.png", GradientColor{{0x10, 0x15, 0x2e}, {0x1a, 0x30, 0x50}, {0x30, 0x58, 0x80}}},
+	{[]string{"mango", "芒果"}, "logo/Mango TV.png", GradientColor{{0x2e, 0x16, 0x00}, {0x5a, 0x30, 0x00}, {0x9a, 0x5a, 0x00}}},
+	{[]string{"tvn"}, "logo/tvN.png", GradientColor{{0x2a, 0x00, 0x10}, {0x52, 0x00, 0x22}, {0x8a, 0x12, 0x3c}}},
+	{[]string{"hunan", "湖南"}, "logo/Hunan Television.png", GradientColor{{0x2e, 0x1e, 0x00}, {0x55, 0x3c, 0x00}, {0x8a, 0x66, 0x10}}},
+	{[]string{"cctv"}, "logo/CCTV-8.png", GradientColor{{0x2a, 0x00, 0x00}, {0x52, 0x06, 0x06}, {0x8a, 0x12, 0x12}}},
+	{[]string{"tvb"}, "logo/TVB Jade.png", GradientColor{{0x00, 0x1a, 0x1c}, {0x00, 0x32, 0x38}, {0x00, 0x56, 0x60}}},
+	{[]string{"tokyo mx", "tokyo metropolitan"}, "logo/Tokyo MX.png", GradientColor{{0x00, 0x1c, 0x12}, {0x00, 0x3a, 0x28}, {0x06, 0x62, 0x46}}},
+	{[]string{"tv tokyo"}, "logo/TV Tokyo.png", GradientColor{{0x06, 0x0c, 0x22}, {0x12, 0x16, 0x40}, {0x24, 0x20, 0x58}}},
+	{[]string{"sbs"}, "logo/SBS.png", GradientColor{{0x00, 0x10, 0x2e}, {0x00, 0x22, 0x56}, {0x00, 0x3e, 0x8c}}},
+	{[]string{"fuji"}, "logo/Fuji TV.png", GradientColor{{0x00, 0x14, 0x26}, {0x00, 0x2c, 0x4c}, {0x00, 0x4c, 0x7c}}},
 }
 
 // PlatformLogoEntry lookup by name.
@@ -284,9 +306,30 @@ func normalizePlatformName(name string) string {
 			return "Tencent Video"
 		case "youku", "优酷":
 			return "YOUKU"
+		case "mango", "芒果":
+			return "Mango TV"
 		}
 	}
 	return strings.TrimSpace(name)
+}
+
+// PlatformDisplayName returns a localized display name for known platforms,
+// keeping the canonical (matching) studio name unchanged. Falls back to the
+// canonical name when no localized name is defined.
+func PlatformDisplayName(canonical string) string {
+	switch canonical {
+	case "Tencent Video":
+		return "腾讯视频"
+	case "iQIYI":
+		return "爱奇艺"
+	case "YOUKU":
+		return "优酷"
+	case "bilibili":
+		return "哔哩哔哩"
+	case "Mango TV":
+		return "芒果TV"
+	}
+	return canonical
 }
 
 func CanonicalPlatformName(name string) string {

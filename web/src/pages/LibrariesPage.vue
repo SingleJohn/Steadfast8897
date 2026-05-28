@@ -13,7 +13,7 @@ import { getPlatformIcon } from '@/icons/PlatformIcons'
 import {
   getLibraries, addLibrary, refreshLibrary,
   getSystemConfig, updateSystemConfig, browseDirectories,
-  getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
+  getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, updatePlatformSortOrder, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
   listCoverStyles, generateAllLibraryCovers, type CoverStyle,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
@@ -190,6 +190,18 @@ async function handleDeletePlatform(id: string) {
     await loadPlatforms()
     showToast('平台已删除', 'success')
   } catch { showToast('删除失败', 'error') }
+}
+
+async function movePlatform(idx: number, dir: number) {
+  const list = platformsData.value?.Platforms || []
+  const j = idx + dir
+  if (j < 0 || j >= list.length) return
+  const ids = list.map((p: any) => p.Id)
+  ;[ids[idx], ids[j]] = [ids[j], ids[idx]]
+  try {
+    await updatePlatformSortOrder(ids)
+    await loadPlatforms()
+  } catch { showToast('排序失败', 'error') }
 }
 
 async function handleScanStudios() {
@@ -542,14 +554,16 @@ onUnmounted(() => {
 
           <div style="margin-top: 16px; border-top: 1px solid var(--app-border, rgba(255,255,255,0.04)); padding-top: 16px">
             <div class="setting-label" style="margin-bottom: 12px">平台列表</div>
-            <div v-for="p in platformsData.Platforms" :key="p.Id" class="platform-row">
+            <div v-for="(p, idx) in platformsData.Platforms" :key="p.Id" class="platform-row">
               <img v-if="p.LogoUrl" :src="p.LogoUrl" class="platform-logo-icon" />
               <n-icon v-else size="28" style="margin-right: 10px; flex-shrink: 0"><component :is="getPlatformIcon(p.PlatformName)" /></n-icon>
               <div style="flex: 1">
-                <span class="platform-name">{{ p.PlatformName }}</span>
+                <span class="platform-name">{{ p.DisplayName || p.PlatformName }}</span>
                 <span class="platform-count">{{ p.ItemCount }} 部</span>
               </div>
-              <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.PlatformName, v)" size="small" />
+              <n-button text size="tiny" :disabled="idx === 0" @click="movePlatform(idx, -1)" title="上移">↑</n-button>
+              <n-button text size="tiny" :disabled="idx === platformsData.Platforms.length - 1" @click="movePlatform(idx, 1)" title="下移" style="margin-left: 2px">↓</n-button>
+              <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.PlatformName, v)" size="small" style="margin-left: 8px" />
               <n-button text type="error" size="tiny" @click="handleDeletePlatform(p.Id)" style="margin-left: 8px">&times;</n-button>
             </div>
           </div>

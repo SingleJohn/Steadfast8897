@@ -235,8 +235,13 @@ func ParseNfo(nfoPath string) *NfoData {
 		}
 	}
 
-	// Extract first <studio> tag
-	result.Studio = nfoTag(xmlTop, "studio")
+	// Extract first <studio> tag, normalized to the canonical platform name
+	// so NFO-sourced studios match platform libraries (e.g. "Youku" -> "YOUKU").
+	if s := nfoTag(xmlTop, "studio"); s != nil {
+		if canon := models.CanonicalPlatformName(*s); canon != "" {
+			result.Studio = &canon
+		}
+	}
 
 	return result
 }
