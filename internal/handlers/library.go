@@ -383,6 +383,9 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 	if s := strings.TrimSpace(queryAny(c, "SearchTerm", "searchTerm", "searchterm")); s != "" {
 		opts.SearchTerm = &s
 	}
+	if s := strings.TrimSpace(queryAny(c, "NameStartsWith", "nameStartsWith", "namestartswith")); s != "" {
+		opts.NameStartsWith = &s
+	}
 	if s := strings.TrimSpace(queryAny(c, "Filters", "filters")); s != "" {
 		for _, f := range strings.Split(s, ",") {
 			f = strings.TrimSpace(f)

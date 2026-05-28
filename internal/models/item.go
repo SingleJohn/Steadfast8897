@@ -27,6 +27,7 @@ type ItemQueryOptions struct {
 	Recursive        bool
 	LibraryID        *string
 	SearchTerm       *string
+	NameStartsWith   *string
 	Filters          []string
 	UserID           *string
 	GenreIDs         []string
@@ -162,6 +163,12 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	if options.SearchTerm != nil {
 		conditions = append(conditions, fmt.Sprintf("i.name ILIKE $%d", paramIdx))
 		params = append(params, "%"+*options.SearchTerm+"%")
+		paramIdx++
+	}
+
+	if options.NameStartsWith != nil {
+		conditions = append(conditions, fmt.Sprintf("i.name ILIKE $%d", paramIdx))
+		params = append(params, *options.NameStartsWith+"%")
 		paramIdx++
 	}
 
