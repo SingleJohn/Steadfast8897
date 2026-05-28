@@ -201,13 +201,12 @@ func getUserViews(c *gin.Context) {
 			} else {
 				unplayedCount = 0
 			}
-			platformEntries = append(platformEntries, gin.H{
+			entry := gin.H{
 				"Name":               p.PlatformName,
 				"ServerId":           sid,
 				"Id":                 vid,
 				"Etag":               vid,
 				"Type":               "CollectionFolder",
-				"CollectionType":     colType,
 				"IsFolder":           true,
 				"ChildCount":         p.ItemCount,
 				"RecursiveItemCount": p.ItemCount,
@@ -222,7 +221,12 @@ func getUserViews(c *gin.Context) {
 					"Played":                false,
 					"UnplayedItemCount":     unplayedCount,
 				},
-			})
+			}
+			// 混合库(colType 为空)省略 CollectionType, 客户端才会同时显示电影和剧集
+			if colType != "" {
+				entry["CollectionType"] = colType
+			}
+			platformEntries = append(platformEntries, entry)
 		}
 	}
 
@@ -913,7 +917,6 @@ func getItemDetail(c *gin.Context) {
 			"Id":                 itemID,
 			"Etag":               itemID,
 			"Type":               "CollectionFolder",
-			"CollectionType":     colType,
 			"IsFolder":           true,
 			"ChildCount":         count,
 			"RecursiveItemCount": count,
@@ -928,6 +931,10 @@ func getItemDetail(c *gin.Context) {
 				"Played":                false,
 				"UnplayedItemCount":     count,
 			},
+		}
+		// 混合库(colType 为空)省略 CollectionType, 客户端才会同时显示电影和剧集
+		if colType != "" {
+			resp["CollectionType"] = colType
 		}
 		c.JSON(http.StatusOK, resp)
 		return

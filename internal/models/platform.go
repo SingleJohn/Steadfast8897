@@ -164,14 +164,20 @@ func IsPlatformVirtualID(ctx context.Context, pool *pgxpool.Pool, id string) (st
 }
 
 // PlatformCollectionType returns the appropriate collection type based on item distribution.
+// 同时包含电影和剧集时返回空串(Emby 混合内容库语义),调用方据此省略 CollectionType,
+// 否则客户端会把整库当成电影库, 只显示电影而隐藏剧集。
 func PlatformCollectionType(ctx context.Context, pool *pgxpool.Pool, studio string) string {
 	var movieCount, seriesCount int64
 	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE studio = $1 AND type = 'Movie'", studio).Scan(&movieCount)
 	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE studio = $1 AND type = 'Series'", studio).Scan(&seriesCount)
-	if seriesCount > 0 && movieCount == 0 {
+	switch {
+	case seriesCount > 0 && movieCount == 0:
 		return "tvshows"
+	case movieCount > 0 && seriesCount == 0:
+		return "movies"
+	default:
+		return ""
 	}
-	return "movies"
 }
 
 // PlatformVirtualIDHash returns a deterministic emby-compatible numeric hash for a platform.
