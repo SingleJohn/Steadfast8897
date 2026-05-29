@@ -16,6 +16,13 @@ import (
 	"fyms/internal/dto"
 )
 
+// ProviderIDMatch 表示一个外部站点 ID 过滤条件(provider 名 + id 值)。
+// 用于支持 Emby 的 AnyProviderIdEquals=tmdb.755898 这类聚合客户端查询。
+type ProviderIDMatch struct {
+	Provider string // 已小写化的 provider 名,如 "tmdb" / "imdb" / "tvdb"
+	ID       string // 该 provider 下的 id 值,如 "755898"
+}
+
 type ItemQueryOptions struct {
 	ParentID         *string
 	ParentIDs        []string // 多库聚合;非空时覆盖 ParentID 单值
@@ -33,7 +40,8 @@ type ItemQueryOptions struct {
 	GenreIDs         []string
 	Years            []int
 	Studio           *string
-	LightMode        bool // 跳过 series_fallback JOIN，用于大批量列表
+	AnyProviderID    []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
+	LightMode        bool              // 跳过 series_fallback JOIN，用于大批量列表
 }
 
 type QueryResult struct {
@@ -198,6 +206,22 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		conditions = append(conditions, fmt.Sprintf("i.studio = $%d", paramIdx))
 		params = append(params, *options.Studio)
 		paramIdx++
+	}
+
+	// AnyProviderIdEquals 过滤:大小写不敏感匹配 provider key、精确匹配 id 值,
+	// 不依赖 provider_ids 里 key 的大小写(Tmdb/tmdb 均可)与 value 类型(字符串/数字均可)。
+	// 多个条件之间为 OR(任一命中)。
+	if len(options.AnyProviderID) > 0 {
+		ors := make([]string, len(options.AnyProviderID))
+		for i, p := range options.AnyProviderID {
+			ors[i] = fmt.Sprintf(
+				"EXISTS (SELECT 1 FROM jsonb_each_text(i.provider_ids) pe WHERE LOWER(pe.key) = $%d AND pe.value = $%d)",
+				paramIdx, paramIdx+1)
+			params = append(params, p.Provider, p.ID)
+			paramIdx += 2
+		}
+		conditions = append(conditions,
+			"i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
 	}
 
 	userJoin := ""

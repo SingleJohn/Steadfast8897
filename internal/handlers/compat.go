@@ -1139,6 +1139,33 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		idx++
 	}
 
+	// AnyProviderIdEquals=tmdb.755898 —— 聚合类客户端按外部站点 ID 跨源匹配。
+	// 大小写不敏感匹配 provider key、精确匹配 id 值;多个之间 OR。whereParts 会同时
+	// 作用于主查询 / count / representative CTE,这里只需追加一项。
+	if s := strings.TrimSpace(compatQueryAny(c, "AnyProviderIdEquals", "anyProviderIdEquals", "anyprovideridequals")); s != "" {
+		var ors []string
+		for _, raw := range strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' }) {
+			raw = strings.TrimSpace(raw)
+			dot := strings.Index(raw, ".")
+			if dot <= 0 || dot >= len(raw)-1 {
+				continue
+			}
+			provider := strings.ToLower(strings.TrimSpace(raw[:dot]))
+			id := strings.TrimSpace(raw[dot+1:])
+			if provider == "" || id == "" {
+				continue
+			}
+			ors = append(ors, fmt.Sprintf(
+				"EXISTS (SELECT 1 FROM jsonb_each_text(i.provider_ids) pe WHERE LOWER(pe.key) = $%d AND pe.value = $%d)",
+				idx, idx+1))
+			args = append(args, provider, id)
+			idx += 2
+		}
+		if len(ors) > 0 {
+			whereParts = append(whereParts, "i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
+		}
+	}
+
 	if len(whereParts) > 0 {
 		sql += " AND " + strings.Join(whereParts, " AND ")
 	}

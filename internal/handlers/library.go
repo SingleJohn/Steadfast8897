@@ -416,6 +416,23 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 		}
 	}
 
+	// AnyProviderIdEquals=tmdb.755898 —— 聚合类客户端用外部站点 ID 跨源匹配同一影片。
+	// 支持 ; 或 , 分隔多个,每个按第一个 "." 拆成 provider 与 id;provider 名小写化。
+	if s := strings.TrimSpace(queryAny(c, "AnyProviderIdEquals", "anyProviderIdEquals", "anyprovideridequals")); s != "" {
+		for _, raw := range strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' }) {
+			raw = strings.TrimSpace(raw)
+			dot := strings.Index(raw, ".")
+			if dot <= 0 || dot >= len(raw)-1 {
+				continue // 缺少 provider 或 id,跳过
+			}
+			provider := strings.ToLower(strings.TrimSpace(raw[:dot]))
+			id := strings.TrimSpace(raw[dot+1:])
+			if provider != "" && id != "" {
+				opts.AnyProviderID = append(opts.AnyProviderID, models.ProviderIDMatch{Provider: provider, ID: id})
+			}
+		}
+	}
+
 	opts.UserID = &userID
 	return opts, nil
 }
