@@ -129,7 +129,9 @@ const mediaBreakdown = computed(() => {
 })
 
 // ───────── Real-time counts ─────────
-const activeSessionCount = computed(() => sessions.value.length)
+// 只统计"正在播放"(有 NowPlayingItem)的会话,排除仅在线/保活的连接
+const playingSessions = computed(() => sessions.value.filter((s: any) => s.NowPlayingItem))
+const activeSessionCount = computed(() => playingSessions.value.length)
 const activeScanCount = computed(
   () => scanProgress.value.filter((sp) => sp.Status === 'scanning').length,
 )
@@ -625,16 +627,16 @@ onUnmounted(() => {
       <div class="main-grid">
         <!-- 左栏：会话 + 扫描进度 -->
         <div class="main-col">
-          <n-card class="section-card" title="活动会话" size="small">
+          <n-card class="section-card" title="正在播放" size="small">
             <template #header-extra>
               <span class="subtle-count">{{ activeSessionCount }}</span>
             </template>
-            <div v-if="sessions.length === 0" class="empty-state">
+            <div v-if="playingSessions.length === 0" class="empty-state">
               <n-icon :component="PeopleOutline" :size="22" />
-              <span>暂无活动会话</span>
+              <span>当前无人播放</span>
             </div>
             <ul v-else class="session-list">
-              <li v-for="s in sessions" :key="s.Id" class="session-item">
+              <li v-for="s in playingSessions" :key="s.Id" class="session-item">
                 <div class="session-avatar">{{ (s.UserName || '?')[0].toUpperCase() }}</div>
                 <div class="session-main">
                   <div class="session-row">
