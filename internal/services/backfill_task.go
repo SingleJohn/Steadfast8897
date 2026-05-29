@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,6 +236,19 @@ func ReadBoolSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, d
 // ReadSystemConfigValue 导出：读取任意字符串配置项，未设置返回空串。
 func ReadSystemConfigValue(ctx context.Context, pool *pgxpool.Pool, key string) string {
 	return readSystemConfigValue(ctx, pool, key)
+}
+
+// ReadIntSystemConfig 导出：读取整数配置项，未设置或解析失败时返回 def。
+func ReadIntSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, def int) int {
+	raw := readSystemConfigValue(ctx, pool, key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 // WriteSystemConfigValue 导出：写任意字符串配置项。

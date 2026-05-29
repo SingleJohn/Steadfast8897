@@ -456,6 +456,22 @@ const router = createRouter({
             requiresAdmin: true,
           },
         },
+        {
+          path: 'system/playback',
+          name: 'system_playback',
+          component: () => import('./pages/tools/PlaybackTab.vue'),
+          meta: {
+            title: '播放设置',
+            navLabel: '播放设置',
+            icon: 'play',
+            section: 'system',
+            sectionLabel: '系统',
+            sectionIcon: 'system',
+            sectionOrder: 5,
+            order: 7,
+            requiresAdmin: true,
+          },
+        },
 
         // ── 旧路径兼容：重定向到新路径
         { path: 'emby-sources', redirect: { name: 'gateway_emby_sources' } },

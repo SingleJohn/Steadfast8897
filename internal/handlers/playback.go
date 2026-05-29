@@ -479,11 +479,22 @@ func OnPlaybackStopped(c *gin.Context) {
 
 	item, _ := loadItemForPlayback(c.Request.Context(), st, body.ItemId)
 	var played *bool
+	pos := body.PositionTicks
 	if item != nil && item.RuntimeTicks != nil && *item.RuntimeTicks > 0 {
+		// 看完判定阈值可在系统设置里配置(playback_played_threshold,默认 90%)。
+		th := services.ReadIntSystemConfig(c.Request.Context(), st.DB, "playback_played_threshold", 90)
+		if th < 1 {
+			th = 1
+		}
+		if th > 100 {
+			th = 100
+		}
 		pct := body.PositionTicks * 100 / *item.RuntimeTicks
-		if pct >= 90 {
+		if pct >= int64(th) {
 			t := true
 			played = &t
+			// 看完后清零续播位置,让该集干净离开"继续观看",由 NextUp 推下一集。
+			pos = 0
 		}
 	}
 
@@ -497,7 +508,6 @@ func OnPlaybackStopped(c *gin.Context) {
 		playCount = &v
 	}
 
-	pos := body.PositionTicks
 	if err := models.UpsertUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID, &pos, playCount, nil, played); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
