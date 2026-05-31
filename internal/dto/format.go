@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,57 @@ var studioNamespace = uuid.MustParse("b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e")
 
 func studioStableID(name string) string {
 	return uuid.NewSHA1(studioNamespace, []byte(name)).String()
+}
+
+// normalizeProviderIDs 把 DB 里统一的小写 provider key（tmdb/imdb/tvdb...）在出口处
+// 补出 Emby 官方大小写 key（Tmdb/Imdb/Tvdb...），同时保留小写 key。
+// 这样取 "Imdb" 的聚合 app 和取 "imdb" 的 app 都能拿到值，多余 key 主流客户端忽略。
+// DB 存储层保持小写不变，只在序列化时转换。任何解析/序列化失败都原样返回，绝不丢数据。
+func normalizeProviderIDs(raw *json.RawMessage) *json.RawMessage {
+	if raw == nil || len(*raw) == 0 {
+		return raw
+	}
+	var m map[string]string
+	if err := json.Unmarshal(*raw, &m); err != nil || len(m) == 0 {
+		return raw
+	}
+	out := make(map[string]string, len(m)*2)
+	for k, v := range m {
+		lk := strings.ToLower(strings.TrimSpace(k))
+		if lk == "" || v == "" {
+			continue
+		}
+		out[lk] = v                      // 保留小写
+		out[canonicalProvider(lk)] = v   // 补官方大小写
+	}
+	if len(out) == 0 {
+		return raw
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return raw
+	}
+	rm := json.RawMessage(b)
+	return &rm
+}
+
+// canonicalProvider 已知 provider 用 Emby 官方写法，未知的首字母大写兜底。
+func canonicalProvider(lower string) string {
+	switch lower {
+	case "tmdb":
+		return "Tmdb"
+	case "imdb":
+		return "Imdb"
+	case "tvdb":
+		return "Tvdb"
+	case "tmdbcollection":
+		return "TmdbCollection"
+	default: // bangumi→Bangumi, douban→Douban 等
+		if lower == "" {
+			return lower
+		}
+		return strings.ToUpper(lower[:1]) + lower[1:]
+	}
 }
 
 // FormatItemDtoList 列表场景：跳过 strm 文件解析（避免大量磁盘 IO）
@@ -66,7 +118,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	dto.SeriesID = item.SeriesID
 	dto.SeriesName = item.SeriesName
 	dto.SeasonID = item.SeasonID
-	dto.ProviderIDs = item.ProviderIDs
+	dto.ProviderIDs = normalizeProviderIDs(item.ProviderIDs)
 
 	var displayPath *string
 	if item.ResolvedPath != nil {
