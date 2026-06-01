@@ -850,9 +850,9 @@ func GetUserItemData(ctx context.Context, pool *pgxpool.Pool, userID, itemID str
 func UpsertUserItemData(ctx context.Context, pool *pgxpool.Pool, userID, itemID string, position *int64, playCount *int32, isFavorite *bool, played *bool) error {
 	_, err := pool.Exec(ctx,
 		`INSERT INTO user_item_data (user_id, item_id, playback_position_ticks, play_count, is_favorite, played, last_played_date)
-		 VALUES ($1::uuid, $2::uuid, COALESCE($3, 0), COALESCE($4, 0), COALESCE($5, false), COALESCE($6, false), NOW())
+		 VALUES ($1::uuid, $2::uuid, COALESCE($3::bigint, 0), COALESCE($4, 0), COALESCE($5, false), COALESCE($6, false), NOW())
 		 ON CONFLICT (user_id, item_id) DO UPDATE SET
-		   playback_position_ticks = COALESCE($3, user_item_data.playback_position_ticks),
+		   playback_position_ticks = COALESCE($3::bigint, user_item_data.playback_position_ticks),
 		   play_count = COALESCE($4, user_item_data.play_count),
 		   is_favorite = COALESCE($5, user_item_data.is_favorite),
 		   played = COALESCE($6, user_item_data.played),
