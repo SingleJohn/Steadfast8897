@@ -1032,6 +1032,15 @@ func getItemDetail(c *gin.Context) {
 		return
 	}
 
+	// Infuse 8.x 对 MediaSource.Size(>2GB)做 32 位判断会溢出,导致在搜索结果点开
+	// 详情时即报 "File size exceeds limit" 而无法播放(继续观看列表不带 Size 故可播)。
+	// 对 Infuse 隐藏 Size(*int64 omitempty → 字段从 JSON 消失),与 getPlaybackInfo 一致。
+	if strings.Contains(c.GetHeader("User-Agent"), "Infuse") {
+		for i := range base.MediaSources {
+			base.MediaSources[i].Size = nil
+		}
+	}
+
 	// Rust converts DTO to JSON value then explicitly adds MediaSources/MediaStreams
 	// for Movie/Episode. We replicate that: marshal→map→inject fields.
 	rawJSON, _ := json.Marshal(base)

@@ -463,6 +463,7 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		if row.FilePath != nil && *row.FilePath != "" {
 			sources := buildItemMediaSources(ctx, state, id, row)
 			if len(sources) > 0 {
+				hideMediaSourceSizeForInfuse(c, sources)
 				d.MediaSources = sources
 				d.MediaStreams = sources[0].MediaStreams
 			}
@@ -1267,6 +1268,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			if needMediaSources {
 				sources := buildItemMediaSources(ctx, state, itemID, &row)
 				if len(sources) > 0 {
+					hideMediaSourceSizeForInfuse(c, sources)
 					result["MediaSources"] = sources
 					result["MediaStreams"] = sources[0].MediaStreams
 				}
@@ -1500,6 +1502,18 @@ func searchHints(c *gin.Context, state *AppState) {
 		hints = []gin.H{}
 	}
 	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": totalCount})
+}
+
+// hideMediaSourceSizeForInfuse 对 Infuse 客户端隐藏 MediaSource.Size。
+// Infuse 8.x 对 >2GB 的 Size 做 32 位判断会溢出,导致 "File size exceeds limit" 拒播。
+// *int64 omitempty 置 nil 后字段从 JSON 消失,其他客户端不受影响。
+func hideMediaSourceSizeForInfuse(c *gin.Context, sources []dto.MediaSourceInfo) {
+	if !strings.Contains(c.GetHeader("User-Agent"), "Infuse") {
+		return
+	}
+	for i := range sources {
+		sources[i].Size = nil
+	}
 }
 
 func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) []dto.MediaSourceInfo {
