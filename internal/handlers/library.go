@@ -476,13 +476,18 @@ func getItems(c *gin.Context) {
 	}
 
 	sid := state.Config.ServerID
+	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
 	items := make([]dto.BaseItemDto, 0, len(res.Items))
 	for i := range res.Items {
 		var ud *dto.UserDataRow
 		if i < len(res.UserData) {
 			ud = &res.UserData[i]
 		}
-		items = append(items, dto.FormatItemDtoList(&res.Items[i], sid, ud))
+		item := dto.FormatItemDtoList(&res.Items[i], sid, ud)
+		if needMediaSources {
+			applyListMediaSourceDisplay(c, ctx, state, &res.Items[i], &item)
+		}
+		items = append(items, item)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -602,12 +607,38 @@ func getLatestItems(c *gin.Context) {
 	}
 
 	sid := state.Config.ServerID
+	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
 	items := make([]dto.BaseItemDto, 0, len(rows))
 	for i := range rows {
-		items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
+		item := dto.FormatItemDto(&rows[i], sid, nil)
+		if needMediaSources {
+			applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
+		}
+		items = append(items, item)
 	}
 
 	c.JSON(http.StatusOK, items)
+}
+
+func applyListMediaSourceDisplay(c *gin.Context, ctx context.Context, state *AppState, row *dto.ItemRow, item *dto.BaseItemDto) {
+	if row == nil || item == nil || (row.ItemType != "Movie" && row.ItemType != "Episode") {
+		return
+	}
+	sources := buildItemMediaSources(ctx, state, row.ID, row)
+	if len(sources) == 0 {
+		return
+	}
+	hideMediaSourceSizeForInfuse(c, sources)
+	item.MediaSources = sources
+	item.MediaStreams = sources[0].MediaStreams
+	if strings.TrimSpace(sources[0].Path) != "" {
+		path := sources[0].Path
+		item.Path = &path
+	}
+	if strings.TrimSpace(sources[0].Container) != "" {
+		container := sources[0].Container
+		item.Container = &container
+	}
 }
 
 func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow, userID string, serverID string) (dto.BaseItemDto, error) {
@@ -730,14 +761,15 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		if len(versionStreams) == 0 && mvIdx == 0 {
 			versionStreams = streamDtos
 		}
+		displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
 		ms := dto.MediaSourceInfo{
 			ID:                    idStr,
-			Path:                  fpath,
-			Protocol:              "File",
+			Path:                  displayPath,
+			Protocol:              displayProtocol,
 			Type:                  "Default",
-			Container:             container,
+			Container:             displayContainer,
 			Name:                  name,
-			IsRemote:              false,
+			IsRemote:              displayRemote,
 			RunTimeTicks:          rt,
 			SupportsDirectPlay:    true,
 			SupportsDirectStream:  true,
@@ -746,7 +778,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			Bitrate:               bitrate,
 			Size:                  sz,
 			ReadAtNativeFramerate: false,
-			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, container, idStr),
+			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, displayContainer, idStr),
 			ETag:                  idStr,
 			Formats:               []string{},
 			FymsResolution:        resolution,
@@ -863,14 +895,15 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				}
 			}
 			srcName := sib.LibName + " - " + name
+			displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
 			ms := dto.MediaSourceInfo{
 				ID:                    idStr,
-				Path:                  fpath,
-				Protocol:              "File",
+				Path:                  displayPath,
+				Protocol:              displayProtocol,
 				Type:                  "Default",
-				Container:             container,
+				Container:             displayContainer,
 				Name:                  srcName,
-				IsRemote:              false,
+				IsRemote:              displayRemote,
 				RunTimeTicks:          rt,
 				SupportsDirectPlay:    true,
 				SupportsDirectStream:  true,
@@ -879,7 +912,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				Bitrate:               bitrate,
 				Size:                  sz,
 				ReadAtNativeFramerate: false,
-				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, container, idStr),
+				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, displayContainer, idStr),
 				ETag:                  idStr,
 				Formats:               []string{},
 				FymsResolution:        resolution,
@@ -894,6 +927,32 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 		mvRows.Close()
 	}
 	return merged
+}
+
+func mediaSourceDisplayInfo(filePath, container string) (string, string, string, bool) {
+	displayPath := filePath
+	displayContainer := container
+	displayProtocol := "File"
+	displayRemote := false
+	if strings.HasSuffix(strings.ToLower(filePath), ".strm") {
+		if rp := resolveStrmPath(filePath); rp != nil {
+			displayPath = rp.filePath
+			if rp.container != "" {
+				displayContainer = rp.container
+			}
+			displayRemote = rp.isRemote
+			if displayRemote {
+				displayProtocol = "Http"
+			}
+		}
+	}
+	if displayContainer == "" {
+		displayContainer = strings.TrimPrefix(strings.ToLower(filepath.Ext(displayPath)), ".")
+	}
+	if displayContainer == "" {
+		displayContainer = "mkv"
+	}
+	return displayPath, displayContainer, displayProtocol, displayRemote
 }
 
 func strOrPath(item *dto.ItemRow) string {
@@ -1032,12 +1091,15 @@ func getItemDetail(c *gin.Context) {
 		return
 	}
 
-	// Infuse 8.x 对 MediaSource.Size(>2GB)做 32 位判断会溢出,导致在搜索结果点开
-	// 详情时即报 "File size exceeds limit" 而无法播放(继续观看列表不带 Size 故可播)。
-	// 对 Infuse 隐藏 Size(*int64 omitempty → 字段从 JSON 消失),与 getPlaybackInfo 一致。
-	if strings.Contains(c.GetHeader("User-Agent"), "Infuse") {
-		for i := range base.MediaSources {
-			base.MediaSources[i].Size = nil
+	hideMediaSourceSizeForInfuse(c, base.MediaSources)
+	if len(base.MediaSources) > 0 {
+		if strings.TrimSpace(base.MediaSources[0].Path) != "" {
+			path := base.MediaSources[0].Path
+			base.Path = &path
+		}
+		if strings.TrimSpace(base.MediaSources[0].Container) != "" {
+			container := base.MediaSources[0].Container
+			base.Container = &container
 		}
 	}
 

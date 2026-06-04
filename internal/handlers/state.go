@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/config"
+	"fyms/internal/gateway"
 	"fyms/internal/services"
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
@@ -37,6 +38,7 @@ type AppState struct {
 	CleanupTask    *adapters.CleanupAdapter
 	SysMetrics     *sysmetrics.Collector
 	ImageCache     *ImageCache
+	GatewayRuntime *gateway.Runtime
 }
 
 func GetState(c *gin.Context) *AppState {

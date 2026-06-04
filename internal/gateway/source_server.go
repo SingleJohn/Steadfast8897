@@ -359,6 +359,28 @@ func (rt *Runtime) tryResolvePlaybackRoute(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
+// TryResolveSelfPlaybackRoute resolves a local FYMS item and attempts a 302 redirect
+// using the first enabled self-mode Emby source. It is used by the main Emby
+// compatible stream endpoint as a fallback when the resolved file path is not
+// available on the FYMS container filesystem.
+func (rt *Runtime) TryResolveSelfPlaybackRoute(w http.ResponseWriter, r *http.Request, itemID string) bool {
+	rt.mu.Lock()
+	cfg := rt.config
+	rt.mu.Unlock()
+	if cfg == nil {
+		return false
+	}
+	for _, src := range cfg.Sources {
+		if !src.Enabled || src.Upstream.Mode != "self" {
+			continue
+		}
+		if rt.tryResolvePlaybackRoute(w, r, src, itemID) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveSelfMediaPath calls the local FYMS management API to resolve the media path.
 // This uses the same Items API that external Emby upstream uses, which properly
 // resolves .strm files into actual media paths via buildItemMediaSources.

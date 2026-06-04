@@ -264,6 +264,7 @@ func main() {
 	if err := gwRuntime.Rebuild(ctx, gwCfg); err != nil {
 		slog.Error("Failed to start gateway runtime", "error", err)
 	}
+	state.GatewayRuntime = gwRuntime
 
 	authMW := middleware.RequireAuth(pool, cache, sessionManager)
 	adminMW := middleware.RequireAdmin(pool, cache, sessionManager)

@@ -393,15 +393,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		sources = []dto.MediaSourceInfo{}
 	}
 
-	// Infuse 8.x 对 strm 文件的 Size 用 32 位整数处理,大文件(>2GB)会溢出,
-	// 导致播放前误判 "File size exceeds limit (xxx bytes)" 而拒播。
-	// 对 Infuse 隐藏 Size(*int64 omitempty → 字段从 JSON 消失),让它正常发起
-	// DirectPlay;真实大小由播放流的 Content-Range 提供。其他客户端不受影响。
-	if strings.Contains(c.GetHeader("User-Agent"), "Infuse") {
-		for i := range sources {
-			sources[i].Size = nil
-		}
-	}
+	hideMediaSourceSizeForInfuse(c, sources)
 
 	c.JSON(http.StatusOK, gin.H{
 		"MediaSources":  sources,
@@ -584,6 +576,9 @@ func streamVideo(c *gin.Context, state *AppState) {
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		slog.Warn("[Stream] file not found on disk", "path", filePath, "err", err)
+		if state.GatewayRuntime != nil && state.GatewayRuntime.TryResolveSelfPlaybackRoute(c.Writer, c.Request, itemID) {
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"message": "File not found"})
 		return
 	}

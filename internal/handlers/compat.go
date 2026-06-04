@@ -1271,6 +1271,12 @@ func itemsSearch(c *gin.Context, state *AppState) {
 					hideMediaSourceSizeForInfuse(c, sources)
 					result["MediaSources"] = sources
 					result["MediaStreams"] = sources[0].MediaStreams
+					if strings.TrimSpace(sources[0].Path) != "" {
+						result["Path"] = sources[0].Path
+					}
+					if strings.TrimSpace(sources[0].Container) != "" {
+						result["Container"] = sources[0].Container
+					}
 				}
 			}
 			// Emby standard: MediaSourceCount tells clients how many versions exist.
@@ -1512,7 +1518,10 @@ func hideMediaSourceSizeForInfuse(c *gin.Context, sources []dto.MediaSourceInfo)
 		return
 	}
 	for i := range sources {
-		sources[i].Size = nil
+		if strings.HasSuffix(strings.ToLower(sources[i].Path), ".strm") ||
+			strings.EqualFold(sources[i].Container, "strm") {
+			sources[i].Size = nil
+		}
 	}
 }
 
