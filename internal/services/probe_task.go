@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ProbeProgress struct {
@@ -75,7 +75,17 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 
 	ctx := context.Background()
 	rows, err := pool.Query(ctx,
-		"SELECT mv.id, mv.item_id, mv.file_path, mv.name FROM media_versions mv WHERE mv.mediainfo IS NULL ORDER BY mv.id")
+		`SELECT mv.id, mv.item_id, mv.file_path, mv.name
+		 FROM media_versions mv
+		 WHERE mv.mediainfo IS NULL
+		    OR mv.runtime_ticks IS NULL
+		    OR mv.size IS NULL
+		    OR mv.bitrate IS NULL
+		    OR NOT (mv.mediainfo ? 'RunTimeTicks')
+		    OR NOT (mv.mediainfo ? 'Size')
+		    OR NOT (mv.mediainfo ? 'Bitrate')
+		    OR NOT (mv.mediainfo ? 'MediaStreams')
+		 ORDER BY mv.id`)
 	if err != nil {
 		return err
 	}
@@ -284,7 +294,17 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 
 func GetMissingMediainfoCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	var count int64
-	err := pool.QueryRow(ctx, "SELECT count(*) FROM media_versions WHERE mediainfo IS NULL").Scan(&count)
+	err := pool.QueryRow(ctx,
+		`SELECT count(*)
+		 FROM media_versions
+		 WHERE mediainfo IS NULL
+		    OR runtime_ticks IS NULL
+		    OR size IS NULL
+		    OR bitrate IS NULL
+		    OR NOT (mediainfo ? 'RunTimeTicks')
+		    OR NOT (mediainfo ? 'Size')
+		    OR NOT (mediainfo ? 'Bitrate')
+		    OR NOT (mediainfo ? 'MediaStreams')`).Scan(&count)
 	return count, err
 }
 

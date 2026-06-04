@@ -21,16 +21,17 @@ import (
 )
 
 type activePlayback struct {
-	itemID         string
-	itemName       string
-	itemType       string
-	seriesName     string
-	clientName     string
-	deviceName     string
-	clientIP       string
-	playMethod     string
-	startTimeMs    int64
-	lastProgressMs int64
+	itemID            string
+	itemName          string
+	itemType          string
+	seriesName        string
+	clientName        string
+	deviceName        string
+	clientIP          string
+	playMethod        string
+	startTimeMs       int64
+	lastProgressMs    int64
+	lastPositionTicks int64
 }
 
 var (
@@ -205,11 +206,11 @@ func nowPlayingFromItem(item *services.NowPlaying) *services.NowPlaying {
 // --- Request bodies ---
 
 type playbackBody struct {
-	ItemId         string `json:"ItemId"`
-	PositionTicks  int64  `json:"PositionTicks"`
-	IsPaused       bool   `json:"IsPaused"`
-	MediaSourceId  string `json:"MediaSourceId"`
-	PlaySessionId  string `json:"PlaySessionId"`
+	ItemId        string `json:"ItemId"`
+	PositionTicks int64  `json:"PositionTicks"`
+	IsPaused      bool   `json:"IsPaused"`
+	MediaSourceId string `json:"MediaSourceId"`
+	PlaySessionId string `json:"PlaySessionId"`
 }
 
 // --- Handlers ---
@@ -300,16 +301,17 @@ func OnPlaybackStart(c *gin.Context) {
 	}
 
 	activePlaybacks[playbackKey(auth.ID, deviceID)] = &activePlayback{
-		itemID:         resolvedItemID,
-		itemName:       itemName,
-		itemType:       itemType,
-		seriesName:     seriesName,
-		clientName:     clientName,
-		deviceName:     deviceName,
-		clientIP:       clientIP,
-		playMethod:     playMethod,
-		startTimeMs:    nowMs,
-		lastProgressMs: nowMs,
+		itemID:            resolvedItemID,
+		itemName:          itemName,
+		itemType:          itemType,
+		seriesName:        seriesName,
+		clientName:        clientName,
+		deviceName:        deviceName,
+		clientIP:          clientIP,
+		playMethod:        playMethod,
+		startTimeMs:       nowMs,
+		lastProgressMs:    nowMs,
+		lastPositionTicks: body.PositionTicks,
 	}
 	activePlaybacksMu.Unlock()
 
@@ -367,6 +369,7 @@ func OnPlaybackProgress(c *gin.Context) {
 	existing, ok := activePlaybacks[key]
 	if ok && existing.itemID == resolvedItemID {
 		existing.lastProgressMs = nowMs
+		existing.lastPositionTicks = body.PositionTicks
 	} else if ok {
 		durationSec := (nowMs - existing.startTimeMs) / 1000
 		if durationSec > 5 {
@@ -412,16 +415,17 @@ func OnPlaybackProgress(c *gin.Context) {
 			pm = "DirectPlay"
 		}
 		activePlaybacks[key] = &activePlayback{
-			itemID:         resolvedItemID,
-			itemName:       itemName,
-			itemType:       itemType,
-			seriesName:     seriesName,
-			clientName:     resolveClientName(strOrPtr(info.Client, ""), userAgent),
-			deviceName:     resolveDeviceName(strOrPtr(info.Device, ""), userAgent),
-			clientIP:       clientIP,
-			playMethod:     pm,
-			startTimeMs:    nowMs,
-			lastProgressMs: nowMs,
+			itemID:            resolvedItemID,
+			itemName:          itemName,
+			itemType:          itemType,
+			seriesName:        seriesName,
+			clientName:        resolveClientName(strOrPtr(info.Client, ""), userAgent),
+			deviceName:        resolveDeviceName(strOrPtr(info.Device, ""), userAgent),
+			clientIP:          clientIP,
+			playMethod:        pm,
+			startTimeMs:       nowMs,
+			lastProgressMs:    nowMs,
+			lastPositionTicks: body.PositionTicks,
 		}
 		activePlaybacksMu.Unlock()
 	}
@@ -480,6 +484,9 @@ func OnPlaybackStopped(c *gin.Context) {
 	item, _ := loadItemForPlayback(c.Request.Context(), st, body.ItemId)
 	var played *bool
 	pos := body.PositionTicks
+	if pos <= 0 && existed && session.lastPositionTicks > 0 {
+		pos = session.lastPositionTicks
+	}
 	if item != nil && item.RuntimeTicks != nil && *item.RuntimeTicks > 0 {
 		// 看完判定阈值可在系统设置里配置(playback_played_threshold,默认 90%)。
 		th := services.ReadIntSystemConfig(c.Request.Context(), st.DB, "playback_played_threshold", 90)
@@ -497,6 +504,10 @@ func OnPlaybackStopped(c *gin.Context) {
 			pos = 0
 		}
 	}
+	var position *int64
+	if pos > 0 || (played != nil && *played) {
+		position = &pos
+	}
 
 	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID)
 	var playCount *int32
@@ -508,7 +519,7 @@ func OnPlaybackStopped(c *gin.Context) {
 		playCount = &v
 	}
 
-	if err := models.UpsertUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID, &pos, playCount, nil, played); err != nil {
+	if err := models.UpsertUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID, position, playCount, nil, played); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
