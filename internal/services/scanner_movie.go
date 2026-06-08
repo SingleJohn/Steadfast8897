@@ -57,19 +57,6 @@ func looksLikeSeasonDir(name string) bool {
 	return strings.Contains(lower, "第") && strings.Contains(lower, "季")
 }
 
-func looksLikeShowDir(path string) bool {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && looksLikeSeasonDir(entry.Name()) {
-			return true
-		}
-	}
-	return false
-}
-
 // 结构化光盘目录名,这些目录名本身不应被当作电影/剧集的标题。
 var structuralDiscDirNames = map[string]bool{
 	"BDMV": true, "STREAM": true, "VIDEO_TS": true, "AUDIO_TS": true, "CERTIFICATE": true,
@@ -133,6 +120,27 @@ func findBdmvMovieRoot(filePath string) string {
 	return ""
 }
 
+// dirVideosAreDistinctMovies 判断同一目录下的多个视频是「各自独立的影片」还是
+// 「同一部电影的多个版本」。
+// 做法:把每个文件名解析成片名,只要出现 >=2 个不同的非空片名,就认定为合集目录,
+// 应把每个视频拆成独立电影;否则(片名一致或无法区分)按多版本目录合并处理。
+// 真·多版本(同名不同清晰度,如 X.1080p / X.2160p)解析后片名相同 → 返回 false 维持合并;
+// 即便此处误拆,后续 TMDB 识别到相同 tmdb_id 时 MergeMultiVersionItems 仍会自动合并回多版本。
+func dirVideosAreDistinctMovies(videoPaths []string) bool {
+	titles := make(map[string]struct{}, len(videoPaths))
+	for _, p := range videoPaths {
+		title := strings.ToLower(strings.TrimSpace(ParseMovieName(filepath.Base(p)).Name))
+		if title == "" {
+			continue
+		}
+		titles[title] = struct{}{}
+		if len(titles) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
 func collectMovieEntries(dir string, results *[]movieEntry) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -148,12 +156,12 @@ func collectMovieEntries(dir string, results *[]movieEntry) {
 			if IsExtrasDirName(name) {
 				continue
 			}
-			if looksLikeSeasonDir(name) {
-				continue
-			}
-			if looksLikeShowDir(fullPath) {
-				continue
-			}
+			// 电影库语义:每个含视频文件的目录都是一部独立电影,不含直接视频的目录递归进去。
+			// 不在这里做任何剧集/季判定 —— 否则:
+			//   1. 分组目录(如 .../独立创作者/)只要里面有一部名字含"第X季"的电影,
+			//      就会被 looksLikeShowDir 误判为剧集,导致整层连同所有电影被跳过;
+			//   2. 名字恰好含"第X季"/以季编号开头的单部电影目录会被 looksLikeSeasonDir 单独跳过。
+			// 季/剧集识别只属于 tvshows / mixed 库(各自走 collectShowEntries / collectMixedEntries)。
 			// BDMV 布局整目录作为一部电影,name 取电影根目录名,避免把 STREAM 当成电影名。
 			if isBdmvMovieDir(fullPath) {
 				vids := collectBdmvVideos(fullPath)
@@ -178,7 +186,16 @@ func collectMovieEntries(dir string, results *[]movieEntry) {
 				}
 			}
 			if len(videoPaths) > 0 {
-				*results = append(*results, movieEntry{name: name, fullPath: fullPath, isDir: true, videoPaths: videoPaths})
+				// 合集目录(一个目录里平铺多部各自独立的影片,如 .../9总全国探花/*.strm)
+				// 不能当成"一部电影的多个版本",否则目录名会变成唯一片名、各影片沦为它的版本。
+				// 解析文件名判定:出现 >=2 个不同片名即逐个拆成独立电影;同名(真·多版本)才合并。
+				if len(videoPaths) >= 2 && dirVideosAreDistinctMovies(videoPaths) {
+					for _, vp := range videoPaths {
+						*results = append(*results, movieEntry{name: filepath.Base(vp), fullPath: vp, isDir: false})
+					}
+				} else {
+					*results = append(*results, movieEntry{name: name, fullPath: fullPath, isDir: true, videoPaths: videoPaths})
+				}
 			} else {
 				collectMovieEntries(fullPath, results)
 			}
