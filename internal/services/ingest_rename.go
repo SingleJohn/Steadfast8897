@@ -86,12 +86,15 @@ func (rb *renameBuffer) OnCreate(e IngestEvent) bool {
 	rb.mu.Unlock()
 
 	rb.emit(IngestEvent{
-		Kind:       EventRename,
-		OldPath:    pd.path,
-		Path:       e.Path,
-		IsDir:      e.IsDir,
-		Source:     e.Source,
-		DetectedAt: e.DetectedAt,
+		Kind:           EventRename,
+		OldPath:        pd.path,
+		Path:           e.Path,
+		IsDir:          e.IsDir,
+		Source:         e.Source,
+		Tag:            e.Tag,
+		LibraryID:      e.LibraryID,
+		CollectionType: e.CollectionType,
+		DetectedAt:     e.DetectedAt,
 	})
 	return true
 }

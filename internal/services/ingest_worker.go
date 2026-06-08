@@ -310,10 +310,19 @@ func (w *IngestWorker) processCreate(ctx context.Context, e IngestEvent) error {
 		return nil
 	}
 
-	libID, colType, ok := w.libs.Match(e.Path)
-	if !ok {
-		slog.Debug("[Ingest] Create skipped: path outside any library", "path", e.Path)
-		return nil
+	libID := e.LibraryID
+	colType := e.CollectionType
+	if libID == "" || colType == "" {
+		if e.Source == "scan" {
+			slog.Warn("[Ingest] Scan create missing library context, falling back to path match",
+				"path", e.Path, "tag", e.Tag)
+		}
+		var ok bool
+		libID, colType, ok = w.libs.Match(e.Path)
+		if !ok {
+			slog.Debug("[Ingest] Create skipped: path outside any library", "path", e.Path, "source", e.Source)
+			return nil
+		}
 	}
 	switch colType {
 	case libraryTypeMovies:
@@ -588,10 +597,13 @@ func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 	}
 	// 老路径不在库里:当作新建处理
 	return w.processCreate(ctx, IngestEvent{
-		Kind:       EventCreate,
-		Path:       newPath,
-		IsDir:      false,
-		Source:     e.Source,
-		DetectedAt: time.Now(),
+		Kind:           EventCreate,
+		Path:           newPath,
+		IsDir:          false,
+		Source:         e.Source,
+		Tag:            e.Tag,
+		LibraryID:      e.LibraryID,
+		CollectionType: e.CollectionType,
+		DetectedAt:     time.Now(),
 	})
 }

@@ -134,7 +134,8 @@ func ScanLibraryWithOptions(
 			markMovieSeen(e)
 			ingest.Submit(IngestEvent{
 				Kind: EventCreate, Path: filepath.Clean(e.fullPath), IsDir: e.isDir,
-				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+				Source: "scan", Tag: libraryID,
+				LibraryID: libraryID, CollectionType: collectionType, DetectedAt: time.Now(),
 			})
 		}
 		markShowSeen := func(e showEntry) {
@@ -147,7 +148,8 @@ func ScanLibraryWithOptions(
 			markShowSeen(e)
 			ingest.Submit(IngestEvent{
 				Kind: EventCreate, Path: filepath.Clean(e.fullPath), IsDir: true,
-				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+				Source: "scan", Tag: libraryID,
+				LibraryID: libraryID, CollectionType: collectionType, DetectedAt: time.Now(),
 			})
 		}
 

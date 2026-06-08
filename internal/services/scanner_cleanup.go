@@ -79,7 +79,8 @@ func pruneMissingPaths(
 			}
 			ingest.Submit(IngestEvent{
 				Kind: EventDelete, Path: cleaned, IsDir: target.isDirEvent,
-				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+				Source: "scan", Tag: libraryID,
+				LibraryID: libraryID, CollectionType: collectionType, DetectedAt: time.Now(),
 			})
 			count++
 		}
