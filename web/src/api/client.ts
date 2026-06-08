@@ -225,13 +225,34 @@ export async function getLatestBatch(libraryIds: string[], limit = 16) {
 }
 
 // Images
-export function getImageUrl(itemId: string, type: string = 'Primary', maxWidth?: number): string {
+export type ImageUrlOptions = {
+  maxWidth?: number
+  maxHeight?: number
+  imageIndex?: number
+  tag?: string
+  format?: string
+  quality?: number
+}
+
+export function getImageUrl(itemId: string, type: string = 'Primary', maxWidthOrOptions?: number | ImageUrlOptions): string {
+  const options: ImageUrlOptions = typeof maxWidthOrOptions === 'number'
+    ? { maxWidth: maxWidthOrOptions }
+    : maxWidthOrOptions || {};
+  const imageIndex = options.imageIndex
   let url = `/Items/${itemId}/Images/${type}`;
-  const params: string[] = [];
-  if (maxWidth) params.push(`maxWidth=${maxWidth}`);
-  params.push('format=jpg');
-  params.push('quality=90');
-  if (params.length) url += '?' + params.join('&');
+  if (imageIndex !== undefined && imageIndex !== null && imageIndex >= 0) {
+    url += `/${imageIndex}`;
+  }
+
+  const params = new URLSearchParams();
+  if (options.maxWidth) params.set('maxWidth', String(options.maxWidth));
+  if (options.maxHeight) params.set('maxHeight', String(options.maxHeight));
+  params.set('format', options.format || 'jpg');
+  params.set('quality', String(options.quality || 90));
+  if (options.tag) params.set('tag', options.tag);
+
+  const qs = params.toString();
+  if (qs) url += '?' + qs;
   return url;
 }
 
