@@ -148,6 +148,13 @@ func main() {
 	sysCollector := sysmetrics.NewCollector(2*time.Second, bitrateEstimator.Estimate)
 
 	imageCache := handlers.NewImageCache(cfg, httpClient)
+	// 启动时从 system_config 加载"本地原图直读"开关(默认 false=直读)。
+	// postConfiguration 保存后会调 imageCache.SetCopyLocal 实时生效。
+	{
+		var copyLocalVal *string
+		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'image_cache_copy_local'").Scan(&copyLocalVal)
+		imageCache.SetCopyLocal(copyLocalVal != nil && *copyLocalVal == "true")
+	}
 
 	state := &handlers.AppState{
 		DB:             pool,

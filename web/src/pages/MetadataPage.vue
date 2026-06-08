@@ -46,6 +46,8 @@ const probeThreadsOptions = [1, 2, 3, 5, 8, 10, 15, 20].map((n) => ({ label: Str
 const tmdbLanguage = ref('zh-CN')
 const tmdbProxy = ref('')
 const scrapeSaveMode = ref('database')
+// 本地/挂载原图直读(不复制到 data/cache/sources)。对应 system_config.image_cache_copy_local 取反。
+const imageDirectRead = ref(true)
 const autoScrape = ref(false)
 const confidenceThreshold = ref<number>(0.72)
 const autoApplyEnabled = ref(true)
@@ -347,6 +349,7 @@ async function handleSaveConfig() {
       auto_scrape_enabled: String(autoScrape.value),
       tmdb_proxy: tmdbProxy.value,
       scrape_save_mode: scrapeSaveMode.value,
+      image_cache_copy_local: String(!imageDirectRead.value),
       scrape_confidence_threshold: String(confidenceThreshold.value),
       scrape_auto_apply: String(autoApplyEnabled.value),
       scrape_adult_content_filter_enabled: String(adultContentFilterEnabled.value),
@@ -460,6 +463,7 @@ onMounted(() => {
     autoScrape.value = cfg.auto_scrape_enabled === true || cfg.auto_scrape_enabled === 'true'
     tmdbProxy.value = cfg.tmdb_proxy || ''
     scrapeSaveMode.value = cfg.scrape_save_mode || 'database'
+    imageDirectRead.value = cfg.image_cache_copy_local !== 'true'
 
     try {
       const names = cfg.scrape_providers_enabled ? JSON.parse(cfg.scrape_providers_enabled) : null
@@ -599,6 +603,13 @@ onMounted(() => {
               <div class="hint-text">拦截成人影视内容候选；命中时按识别失败处理，不覆盖现有元数据。</div>
             </div>
             <n-switch v-model:value="adultContentFilterEnabled" :round="false" />
+          </div>
+          <div class="switch-section-compact">
+            <div class="switch-copy">
+              <div class="switch-title">本地原图直读</div>
+              <div class="hint-text">开启后媒体目录/挂载盘的原图直接读取，不复制到 data/cache（省空间）；关闭则缓存一份原图加速远端挂载。仅影响本地图，URL 源始终缓存。</div>
+            </div>
+            <n-switch v-model:value="imageDirectRead" :round="false" />
           </div>
         </div>
       </n-form>

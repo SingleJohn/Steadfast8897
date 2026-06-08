@@ -45,9 +45,6 @@ type AppConfig struct {
 	ImageCacheSourceDir  string
 	ImageCacheResizedDir string
 	ImageCacheMaxGB      int
-	// CopyLocalImages 为 true 时,非 data 目录下的本地/挂载原图会复制一份到 cache/sources;
-	// 默认 false:本地/挂载原图直读不复制(省 data 空间)。仅 URL 源始终下载缓存。
-	CopyLocalImages bool
 
 	UpdateImageRepo    string
 	UpdateGitHubRepo   string
@@ -99,7 +96,6 @@ func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 		ImageCacheSourceDir:  imgSourceDir,
 		ImageCacheResizedDir: imgResizedDir,
 		ImageCacheMaxGB:      envInt("IMAGE_CACHE_MAX_GB", 5),
-		CopyLocalImages:      envBool("FYMS_IMAGE_CACHE_COPY_LOCAL", false),
 
 		UpdateImageRepo:    envOr("FYMS_UPDATE_IMAGE_REPO", "eianz/fyms"),
 		UpdateGitHubRepo:   envOr("FYMS_UPDATE_GITHUB_REPO", "eianz/fyms"),
@@ -146,18 +142,6 @@ func envInt(key string, defaultVal int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
-		}
-	}
-	return defaultVal
-}
-
-func envBool(key string, defaultVal bool) bool {
-	if v := os.Getenv(key); v != "" {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "1", "true", "yes", "on":
-			return true
-		case "0", "false", "no", "off":
-			return false
 		}
 	}
 	return defaultVal

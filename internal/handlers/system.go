@@ -289,6 +289,11 @@ func postConfiguration(c *gin.Context) {
 			needViewsInvalidate = true
 		case "tmdb_rate_per_sec", "tmdb_rate_burst":
 			needLimiterApply = true
+		case "image_cache_copy_local":
+			// 本地原图是否复制到 cache/sources(false=直读)。实时生效,无需重启。
+			if state.ImageCache != nil {
+				state.ImageCache.SetCopyLocal(valStr == "true")
+			}
 		}
 		if strings.HasPrefix(key, "scrape_") ||
 			strings.HasPrefix(key, "tmdb_") ||

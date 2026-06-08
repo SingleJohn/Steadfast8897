@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -31,7 +32,7 @@ type ImageCache struct {
 	httpClient *http.Client
 	sf         singleflight.Group
 	dataDir    string
-	copyLocal  bool // false 时本地/挂载原图直读不复制到 sources
+	copyLocal  atomic.Bool // false(默认)时本地/挂载原图直读不复制到 sources;由 system_config 控制
 
 	touchMu sync.Mutex
 	touched map[string]time.Time
@@ -60,9 +61,15 @@ func NewImageCache(cfg *config.AppConfig, httpClient *http.Client) *ImageCache {
 		maxBytes:   int64(max) * 1024 * 1024 * 1024,
 		httpClient: httpClient,
 		dataDir:    absOrSelf(cfg.DataDir),
-		copyLocal:  cfg.CopyLocalImages,
 		touched:    make(map[string]time.Time),
 	}
+}
+
+// SetCopyLocal 运行时切换"本地/挂载原图是否复制到 cache/sources"。
+// false(默认)= 直读不复制(省 data 空间)。由 system_config 的 image_cache_copy_local 控制,
+// 启动时加载一次、postConfiguration 保存后实时生效。
+func (c *ImageCache) SetCopyLocal(v bool) {
+	c.copyLocal.Store(v)
 }
 
 // Materialize 返回可被本地快速读取的路径 + 源指纹。
@@ -84,7 +91,7 @@ func (c *ImageCache) materializeLocal(source string) (string, string, error) {
 	}
 	h := fingerprintLocal(source, st.Size(), st.ModTime())
 	// data 目录下的图(TMDB 下载)本就在本地;copyLocal=false 时,其它本地/挂载原图也直读不复制。
-	if c.isUnderDataDir(source) || !c.copyLocal {
+	if c.isUnderDataDir(source) || !c.copyLocal.Load() {
 		return source, h, nil
 	}
 	ext := strings.ToLower(filepath.Ext(source))
