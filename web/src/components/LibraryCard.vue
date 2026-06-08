@@ -38,14 +38,6 @@ const typeLabel = computed(() => {
   return '媒体'
 })
 
-const typeBadge = computed(() => {
-  const ct = props.lib.CollectionType
-  if (ct === 'movies') return '影片'
-  if (ct === 'tvshows') return '剧集'
-  if (ct === 'music') return '音乐'
-  return '媒体'
-})
-
 const emptyGradient = computed(() => {
   const ct = props.lib.CollectionType
   if (ct === 'movies') return 'linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%)'
@@ -78,29 +70,10 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
         class="lc-img"
         @error="onImgError"
       />
-      <!-- 无封面：渐变背景 + SVG 图标 -->
-      <div v-if="imgFailed" class="lc-placeholder" :style="{ background: emptyGradient }">
-        <svg v-if="lib.CollectionType === 'movies'" class="lc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-          <path d="M7 2v20" /><path d="M17 2v20" />
-          <path d="M2 12h20" /><path d="M2 7h5" /><path d="M2 17h5" />
-          <path d="M17 7h5" /><path d="M17 17h5" />
-        </svg>
-        <svg v-else-if="lib.CollectionType === 'tvshows'" class="lc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="7" width="20" height="15" rx="2" ry="2" />
-          <polyline points="17 2 12 7 7 2" />
-        </svg>
-        <svg v-else-if="lib.CollectionType === 'music'" class="lc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-        </svg>
-        <svg v-else class="lc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-        </svg>
-      </div>
+      <div v-if="imgFailed" class="lc-placeholder" :style="{ background: emptyGradient }" />
 
-      <!-- 底部渐变 + badge + 名称 -->
+      <!-- 底部渐变 + 名称 -->
       <div class="lc-gradient" :class="{ 'lc-gradient-noimg': imgFailed }">
-        <span class="lc-badge">{{ typeBadge }}</span>
         <h3 class="lc-name">{{ lib.Name }}</h3>
       </div>
 
@@ -128,7 +101,8 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
     <!-- 底部信息栏（带背景） -->
     <div class="lc-info">
       <span class="lc-meta">
-        {{ typeLabel }} ·
+        <span class="lc-type-label">{{ typeLabel }}</span>
+        <span class="lc-separator">·</span>
         <span
           class="lc-folder-wrap"
           :class="{ 'lc-folder-wrap-open': foldersOpen }"
@@ -154,8 +128,14 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
             </template>
           </span>
         </span>
-        <template v-if="isScanning"> · 扫描中 {{ scanPct }}%</template>
-        <template v-else-if="scanProg?.Status === 'completed'"> · ✓ 扫描完成</template>
+        <template v-if="isScanning">
+          <span class="lc-separator">·</span>
+          <span class="lc-scan-state">扫描中 {{ scanPct }}%</span>
+        </template>
+        <template v-else-if="scanProg?.Status === 'completed'">
+          <span class="lc-separator">·</span>
+          <span class="lc-scan-state">✓ 扫描完成</span>
+        </template>
       </span>
     </div>
   </div>
@@ -217,12 +197,6 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
   justify-content: center;
 }
 
-.lc-icon {
-  width: 56px;
-  height: 56px;
-  color: rgba(255, 255, 255, 0.12);
-}
-
 /* 底部渐变遮罩 */
 .lc-gradient {
   position: absolute;
@@ -237,19 +211,6 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
 }
 .lc-gradient-noimg {
   background: linear-gradient(0deg, rgba(0,0,0,0.5) 0%, transparent 60%);
-}
-
-.lc-badge {
-  align-self: flex-start;
-  padding: 3px 10px;
-  border-radius: 4px;
-  background: var(--app-primary, #10b981);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  margin-bottom: 6px;
-  line-height: 1.4;
 }
 
 .lc-count-badge {
@@ -336,12 +297,20 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
 }
 
 .lc-meta {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
   font-size: 12px;
   color: var(--app-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   white-space: nowrap;
+}
+
+.lc-type-label,
+.lc-separator,
+.lc-scan-state {
+  flex-shrink: 0;
 }
 
 .lc-folder-wrap {

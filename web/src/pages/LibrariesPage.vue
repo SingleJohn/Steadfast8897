@@ -4,7 +4,7 @@ import { useToast } from '@/composables/useToast'
 import {
   NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
 } from 'naive-ui'
-import { FolderOutline } from '@vicons/ionicons5'
+import { FolderOutline, MoveOutline } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
 import LibraryCard from '@/components/LibraryCard.vue'
 import LibraryEditModal from '@/components/LibraryEditModal.vue'
@@ -666,7 +666,9 @@ onUnmounted(() => {
               @dragstart.stop="handleLibraryDragStart(idx, $event)"
               @dragend.stop="handleLibraryDragEnd"
             >
-              <span aria-hidden="true">⋮⋮</span>
+              <n-icon size="17" aria-hidden="true">
+                <MoveOutline />
+              </n-icon>
             </button>
           </div>
         </div>
@@ -1011,9 +1013,7 @@ onUnmounted(() => {
   border-radius: 4px;
   background: rgba(0,0,0,0.58);
   color: rgba(255,255,255,0.84);
-  font-size: 15px;
   line-height: 1;
-  letter-spacing: -4px;
   cursor: grab;
   opacity: 0.72;
   box-shadow: 0 6px 16px rgba(0,0,0,0.28);
