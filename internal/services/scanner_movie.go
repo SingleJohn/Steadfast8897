@@ -325,10 +325,13 @@ func scanOneMovie(
 		}
 		parentDir := filepath.Dir(fullPath)
 		parentCache := CacheDir(parentDir)
-		poster := FindImageCached(parentCache, posterImagePrefixes)
-		backdrop := FindImageCached(parentCache, backdropImagePrefixes)
+		videoBasename := filepath.Base(fullPath)
+		allowGenericSidecars := allowGenericMovieSidecars(parentCache)
+		poster := FindMovieImageCached(parentCache, videoBasename, posterImagePrefixes, allowGenericSidecars)
+		backdrop := FindMovieImageCached(parentCache, videoBasename, backdropImagePrefixes, allowGenericSidecars)
 		posterTag := ptrAndThen(poster, GenerateImageTag)
 		backdropTag := ptrAndThen(backdrop, GenerateImageTag)
+		nfoPath := FindMovieNfoCached(parentCache, videoBasename, allowGenericSidecars)
 		if existing[fullPath] {
 			var itemID uuid.UUID
 			if err := pool.QueryRow(ctx,
@@ -336,9 +339,9 @@ func scanOneMovie(
 				libraryID, fullPath).Scan(&itemID); err == nil {
 				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
 				ensureMovieMediaVersions(ctx, pool, itemID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
-				// race 场景兜底:同目录下若有独立 movie.nfo,补 apply 一次。单文件布局的 NFO
-				// 通常与视频同名(如 xxx.mkv + xxx.nfo),FindNfoCached 也能识别。
-				if nfoPath := FindNfoCached(parentCache); nfoPath != nil {
+				// race 场景兜底:同名 NFO 比 video 晚到时,再次触发扫描可补 apply 一次。
+				// 多电影平铺目录只接受 <视频 basename>.nfo,避免串用目录里的第一个 NFO。
+				if nfoPath != nil {
 					if nfo := ParseNfo(*nfoPath); nfo != nil {
 						ApplyNfoDataWithPlatformSource(ctx, pool, itemID.String(), nfo, models.PlatformScanSourceNFO)
 						enqueueMovieNfoComplement(ctx, pool, itemID.String())
@@ -370,10 +373,10 @@ func scanOneMovie(
 		).Scan(&insertedID)
 		if err == nil && insertedID != nil {
 			ensureMovieMediaVersions(ctx, pool, *insertedID, [][2]string{{strings.ToLower(filepath.Base(fullPath)), fullPath}}, parentCache)
-			// 单文件布局首次新建:与目录布局新建分支对称,apply 同目录的 NFO。
+			// 单文件布局首次新建:与目录布局新建分支对称,apply 对应 NFO。
 			// 不加这段时,NFO 里的 tmdbid/plot/cast 要等下次扫描命中 existing 分支才被补上,
 			// 首扫期间 TMDB identify 会基于文件名再识别一轮,容易误判 + 覆盖 NFO 手工编辑。
-			if nfoPath := FindNfoCached(parentCache); nfoPath != nil {
+			if nfoPath != nil {
 				if nfo := ParseNfo(*nfoPath); nfo != nil {
 					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
 					enqueueMovieNfoComplement(ctx, pool, insertedID.String())

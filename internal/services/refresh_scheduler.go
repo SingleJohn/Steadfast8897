@@ -148,6 +148,9 @@ func (s *RefreshScheduler) resolveImageTargets(ctx context.Context, path string)
 	if ids := extractEpisodeIDsByThumbStem(s.loadEpisodesUnderDir(ctx, dir), stem); len(ids) > 0 {
 		return ids
 	}
+	if ids := extractMovieIDsByImageStem(s.loadMoviesUnderDir(ctx, dir), stem); len(ids) > 0 {
+		return ids
+	}
 	if ids := s.loadSeriesByDir(ctx, dir); len(ids) > 0 {
 		return ids
 	}
@@ -258,6 +261,9 @@ func classifySidecarPath(path string) string {
 			return "images"
 		}
 	}
+	if movieImageSidecarBaseStem(stem) != "" {
+		return "images"
+	}
 	return ""
 }
 
@@ -293,6 +299,39 @@ func extractMovieIDsByStem(items []moviePathItem, stem string) []string {
 		}
 	}
 	return ids
+}
+
+func extractMovieIDsByImageStem(items []moviePathItem, stem string) []string {
+	baseStem := movieImageSidecarBaseStem(stem)
+	if baseStem == "" {
+		baseStem = stem
+	}
+	var ids []string
+	for _, it := range items {
+		base := strings.ToLower(strings.TrimSuffix(filepath.Base(it.filePath), filepath.Ext(it.filePath)))
+		if base == baseStem {
+			ids = append(ids, it.id)
+		}
+	}
+	return ids
+}
+
+func movieImageSidecarBaseStem(stem string) string {
+	stem = strings.ToLower(strings.TrimSpace(stem))
+	if stem == "" {
+		return ""
+	}
+	for _, prefixes := range [][]string{posterImagePrefixes, backdropImagePrefixes} {
+		for _, prefix := range prefixes {
+			for _, sep := range []string{"-", ".", "_"} {
+				suffix := sep + prefix
+				if strings.HasSuffix(stem, suffix) && len(stem) > len(suffix) {
+					return strings.TrimSuffix(stem, suffix)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func extractEpisodeIDsByStem(items []episodePathItem, stem string) []string {

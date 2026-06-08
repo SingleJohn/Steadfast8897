@@ -288,7 +288,13 @@ func refreshItemLocalMetadata(ctx context.Context, pool *pgxpool.Pool, itemID st
 		if dir == "" {
 			return nil
 		}
-		if nfoPath := FindNfoCached(CacheDir(dir)); nfoPath != nil {
+		cache := CacheDir(dir)
+		videoBasename := ""
+		if info.FilePath != nil {
+			videoBasename = filepath.Base(*info.FilePath)
+		}
+		allowGenericSidecars := allowGenericMovieRefreshSidecars(ctx, pool, dir)
+		if nfoPath := FindMovieNfoCached(cache, videoBasename, allowGenericSidecars); nfoPath != nil {
 			if nfo := ParseNfo(*nfoPath); nfo != nil && !opts.ValidateOnly {
 				ApplyNfoDataWithPlatformSource(ctx, pool, itemID, nfo, models.PlatformScanSourceNFO)
 			}
@@ -341,8 +347,13 @@ func refreshItemLocalImages(ctx context.Context, pool *pgxpool.Pool, itemID stri
 			return nil
 		}
 		cache := CacheDir(dir)
-		poster := FindImageCached(cache, posterImagePrefixes)
-		backdrop := FindImageCached(cache, backdropImagePrefixes)
+		videoBasename := ""
+		if info.FilePath != nil {
+			videoBasename = filepath.Base(*info.FilePath)
+		}
+		allowGenericSidecars := allowGenericMovieRefreshSidecars(ctx, pool, dir)
+		poster := FindMovieImageCached(cache, videoBasename, posterImagePrefixes, allowGenericSidecars)
+		backdrop := FindMovieImageCached(cache, videoBasename, backdropImagePrefixes, allowGenericSidecars)
 		clearPoster := poster == nil && info.PrimaryImagePath != nil &&
 			isManagedNamedImagePath(*info.PrimaryImagePath, dir, posterImagePrefixes)
 		clearBackdrop := backdrop == nil && info.BackdropImagePath != nil &&
@@ -399,6 +410,24 @@ func refreshItemLocalImages(ctx context.Context, pool *pgxpool.Pool, itemID stri
 		)
 	}
 	return nil
+}
+
+func allowGenericMovieRefreshSidecars(ctx context.Context, pool *pgxpool.Pool, dir string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return true
+	}
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		   FROM items
+		  WHERE type = 'Movie'
+		    AND file_path IS NOT NULL
+		    AND (file_path = $1 OR file_path LIKE $2)`,
+		dir, dir+string(filepath.Separator)+"%").Scan(&count)
+	if err != nil {
+		return true
+	}
+	return count <= 1
 }
 
 func mediaDirFromItemPath(filePath *string) string {

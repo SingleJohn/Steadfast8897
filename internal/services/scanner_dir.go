@@ -58,6 +58,94 @@ func FindImageCached(cache DirCache, prefixes []string) *string {
 	return nil
 }
 
+func FindMovieNfoCached(cache DirCache, videoBasename string, allowGeneric bool) *string {
+	stem := movieSidecarStem(videoBasename)
+	if stem != "" {
+		want := stem + ".nfo"
+		for _, entry := range cache {
+			if entry[0] == want {
+				return &entry[1]
+			}
+		}
+	}
+	if allowGeneric {
+		return FindNfoCached(cache)
+	}
+	return nil
+}
+
+func FindMovieImageCached(cache DirCache, videoBasename string, prefixes []string, allowGeneric bool) *string {
+	stem := movieSidecarStem(videoBasename)
+	if stem != "" {
+		if hasImagePrefix(prefixes, "poster") {
+			if p := findImageByStemCached(cache, stem); p != nil {
+				return p
+			}
+		}
+		for _, prefix := range prefixes {
+			for _, sep := range []string{"-", ".", "_"} {
+				if p := findImageByStemCached(cache, stem+sep+prefix); p != nil {
+					return p
+				}
+			}
+		}
+	}
+	if allowGeneric {
+		return FindImageCached(cache, prefixes)
+	}
+	return nil
+}
+
+func findImageByStemCached(cache DirCache, wantStem string) *string {
+	wantStem = strings.ToLower(strings.TrimSpace(wantStem))
+	if wantStem == "" {
+		return nil
+	}
+	for _, entry := range cache {
+		name, path := entry[0], entry[1]
+		ext := strings.TrimPrefix(filepath.Ext(name), ".")
+		if !isSupportedImageExt(ext) {
+			continue
+		}
+		stem := strings.TrimSuffix(name, filepath.Ext(name))
+		if stem == wantStem {
+			return &path
+		}
+	}
+	return nil
+}
+
+func movieSidecarStem(videoBasename string) string {
+	videoBasename = strings.ToLower(strings.TrimSpace(filepath.Base(videoBasename)))
+	if videoBasename == "" {
+		return ""
+	}
+	return strings.TrimSuffix(videoBasename, filepath.Ext(videoBasename))
+}
+
+func hasImagePrefix(prefixes []string, want string) bool {
+	for _, prefix := range prefixes {
+		if prefix == want {
+			return true
+		}
+	}
+	return false
+}
+
+func allowGenericMovieSidecars(cache DirCache) bool {
+	return countVideoFilesInCache(cache) <= 1
+}
+
+func countVideoFilesInCache(cache DirCache) int {
+	var count int
+	for _, entry := range cache {
+		if IsVideoExt(filepath.Ext(entry[0])) {
+			count++
+		}
+	}
+	return count
+}
+
 // FindEpisodeThumbCached 在同目录(seasonCache)内查找 Episode 的本地分集封面,
 // 约定顺序(参考 Emby / Jellyfin 文件命名):
 //  1. <basename>-thumb.(jpg|png|webp|jpeg)
