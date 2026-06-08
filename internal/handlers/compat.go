@@ -1078,9 +1078,16 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		}
 	}
 	if parentID != "" {
-		if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, parentID); ok {
-			whereParts = append(whereParts, "i.studio = $"+strconv.Itoa(idx))
-			args = append(args, platformName)
+		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+			switch p.Dimension {
+			case models.PlatformDimActor:
+				whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $"+strconv.Itoa(idx)+" AND cm.role = 'Actor')")
+			case models.PlatformDimNumPrefix:
+				whereParts = append(whereParts, "substring(upper(i.catalog_number) from '^[A-Z]+') = $"+strconv.Itoa(idx))
+			default:
+				whereParts = append(whereParts, "i.studio = $"+strconv.Itoa(idx))
+			}
+			args = append(args, p.MatchValue)
 			idx++
 			// Only filter merged items in platform library queries
 			whereParts = append(whereParts, "i.merged_to_id IS NULL")

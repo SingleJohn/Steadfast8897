@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"fmt"
 	"image"
 	"image/color"
@@ -128,6 +129,51 @@ func servePlatformLogo(c *gin.Context, state *AppState, platformName string) {
 	c.File(cachePath)
 }
 
+// servePlatformCover 出虚拟库生成的封面图(本地文件),支持按 maxWidth/maxHeight 缩放缓存。
+func servePlatformCover(c *gin.Context, state *AppState, coverPath string) {
+	maxW := queryInt(c.Query("maxWidth"))
+	if maxW == 0 {
+		maxW = queryInt(c.Query("MaxWidth"))
+	}
+	if maxW == 0 {
+		maxW = queryInt(c.Query("Width"))
+	}
+	maxH := queryInt(c.Query("maxHeight"))
+	if maxH == 0 {
+		maxH = queryInt(c.Query("MaxHeight"))
+	}
+	if maxH == 0 {
+		maxH = queryInt(c.Query("Height"))
+	}
+	quality := queryIntDefault(c.Query("quality"), 90)
+	if quality < 1 || quality > 100 {
+		quality = 90
+	}
+
+	c.Header("Cache-Control", "public, max-age=31536000")
+	if maxW <= 0 && maxH <= 0 {
+		c.File(coverPath)
+		return
+	}
+
+	st, err := os.Stat(coverPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "cover not found"})
+		return
+	}
+	cacheName := fmt.Sprintf("platcover_%x_%d_%dx%d_q%d.jpg",
+		sha1.Sum([]byte(coverPath)), st.ModTime().Unix(), maxW, maxH, quality)
+	outPath := state.ImageCache.ResizedPath(cacheName)
+	if rst, serr := os.Stat(outPath); serr == nil && rst.Size() > 0 {
+		state.ImageCache.Touch(outPath)
+	} else if err := resizeImage(coverPath, outPath, maxW, maxH, quality, imaging.JPEG); err != nil {
+		slog.Warn("[Image] platform cover resize failed, serving original", "path", coverPath, "error", err)
+		c.File(coverPath)
+		return
+	}
+	c.File(outPath)
+}
+
 func drawGradient135(img *image.RGBA, colors models.GradientColor) {
 	b := img.Bounds()
 	w, h := float64(b.Dx()), float64(b.Dy())
@@ -163,8 +209,13 @@ func serveImage(c *gin.Context, state *AppState) {
 	imageType := c.Param("imageType")
 	imageIndex := c.Param("imageIndex")
 
-	if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, itemID); ok {
-		servePlatformLogo(c, state, platformName)
+	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
+		// 优先用生成的封面图;没有则回退已知平台的内置 logo
+		if p.CoverImagePath != nil && *p.CoverImagePath != "" && fileExists(*p.CoverImagePath) {
+			servePlatformCover(c, state, *p.CoverImagePath)
+			return
+		}
+		servePlatformLogo(c, state, p.PlatformName)
 		return
 	}
 

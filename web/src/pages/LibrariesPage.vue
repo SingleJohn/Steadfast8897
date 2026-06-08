@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
-  NButton, NCheckbox, NInput, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
+  NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
 } from 'naive-ui'
 import { FolderOutline } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
@@ -14,6 +14,7 @@ import {
   getLibraries, addLibrary, refreshLibrary,
   getSystemConfig, updateSystemConfig, browseDirectories,
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, updatePlatformSortOrder, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
+  discoverPlatformDimension, addPlatformsBatch, generatePlatformCover, generateAllPlatformCovers,
   listCoverStyles, generateAllLibraryCovers, type CoverStyle,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
@@ -166,9 +167,9 @@ async function toggleGlobalPlatform(enabled: boolean) {
   } catch { showToast('操作失败', 'error') }
 }
 
-async function togglePlatform(name: string, enabled: boolean) {
+async function togglePlatform(id: string, enabled: boolean) {
   try {
-    await setPlatformEnable(name, enabled)
+    await setPlatformEnable(id, enabled)
     await loadPlatforms()
   } catch { showToast('操作失败', 'error') }
 }
@@ -182,6 +183,71 @@ async function handleAddPlatform() {
     await loadPlatforms()
     showToast('平台已添加', 'success')
   } catch { showToast('添加失败', 'error') }
+}
+
+// ===== 多维度发现 =====
+const dimensionOptions = [
+  { label: '片商 (studio)', value: 'studio' },
+  { label: '番号前缀 (num_prefix)', value: 'num_prefix' },
+  { label: '演员 (actor)', value: 'actor' },
+]
+const discoverDimension = ref<'studio' | 'num_prefix' | 'actor'>('studio')
+const discoverSearch = ref('')
+const discoverMinCount = ref(1)
+const discoverLoading = ref(false)
+const discoverResults = ref<{ Value: string; Count: number; AlreadyAdded: boolean }[]>([])
+const discoverSelected = ref<string[]>([])
+
+async function runDiscover() {
+  discoverLoading.value = true
+  discoverSelected.value = []
+  try {
+    const res = await discoverPlatformDimension(discoverDimension.value, discoverSearch.value.trim(), discoverMinCount.value)
+    discoverResults.value = res.values || []
+    if (discoverResults.value.length === 0) showToast('没有扫描到可分类的值', 'info')
+  } catch (e: any) {
+    showToast(e?.message || '扫描失败', 'error')
+  } finally {
+    discoverLoading.value = false
+  }
+}
+
+async function addSelectedDimension() {
+  if (discoverSelected.value.length === 0) return
+  try {
+    const res = await addPlatformsBatch(discoverDimension.value, discoverSelected.value)
+    showToast(`已添加 ${res.added} 个虚拟库(默认关闭，可在下方启用)`, 'success')
+    discoverSelected.value = []
+    await runDiscover()
+    await loadPlatforms()
+  } catch { showToast('添加失败', 'error') }
+}
+
+// ===== 封面生成 =====
+const coverGenerating = ref<Record<string, boolean>>({})
+const coverGeneratingAll = ref(false)
+
+async function handleGenCover(id: string) {
+  coverGenerating.value = { ...coverGenerating.value, [id]: true }
+  try {
+    await generatePlatformCover(id)
+    await loadPlatforms()
+    showToast('封面已生成', 'success')
+  } catch (e: any) {
+    showToast(e?.message || '生成失败(可能没有海报素材)', 'error')
+  } finally {
+    coverGenerating.value = { ...coverGenerating.value, [id]: false }
+  }
+}
+
+async function handleGenAllCovers() {
+  coverGeneratingAll.value = true
+  try {
+    const res = await generateAllPlatformCovers()
+    showToast(`封面生成完成:成功 ${res.generated},跳过 ${res.skipped}`, 'success')
+    await loadPlatforms()
+  } catch { showToast('批量生成失败', 'error') }
+  finally { coverGeneratingAll.value = false }
 }
 
 async function handleDeletePlatform(id: string) {
@@ -552,24 +618,57 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <!-- 多维度发现:扫描本地数据 → 勾选添加 -->
           <div style="margin-top: 16px; border-top: 1px solid var(--app-border, rgba(255,255,255,0.04)); padding-top: 16px">
-            <div class="setting-label" style="margin-bottom: 12px">平台列表</div>
+            <div class="setting-label" style="margin-bottom: 8px">扫描分类（按维度发现，勾选后添加）</div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+              <n-select v-model:value="discoverDimension" :options="dimensionOptions" size="small" style="width: 180px" />
+              <n-input v-model:value="discoverSearch" placeholder="搜索（可选）" size="small" style="flex: 1; min-width: 120px" @keydown.enter.prevent="runDiscover" />
+              <n-input-number v-model:value="discoverMinCount" :min="1" size="small" style="width: 110px" title="最少影片数" />
+              <n-button secondary size="small" :loading="discoverLoading" @click="runDiscover">扫描</n-button>
+            </div>
+            <div v-if="discoverResults.length > 0" style="margin-top: 10px">
+              <n-checkbox-group v-model:value="discoverSelected">
+                <div class="discover-grid">
+                  <n-checkbox v-for="d in discoverResults" :key="d.Value" :value="d.Value" :disabled="d.AlreadyAdded">
+                    {{ d.Value }} <span class="platform-count">{{ d.Count }}</span>
+                    <span v-if="d.AlreadyAdded" style="color: var(--n-text-color-disabled); font-size: 11px">(已加)</span>
+                  </n-checkbox>
+                </div>
+              </n-checkbox-group>
+              <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center">
+                <n-button type="primary" size="small" :disabled="discoverSelected.length === 0" @click="addSelectedDimension">
+                  添加所选 ({{ discoverSelected.length }})
+                </n-button>
+                <span class="setting-desc">共 {{ discoverResults.length }} 项 · 添加后默认关闭，需在下方启用</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 16px; border-top: 1px solid var(--app-border, rgba(255,255,255,0.04)); padding-top: 16px">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px">
+              <div class="setting-label">平台/虚拟库列表</div>
+              <n-button text size="tiny" :loading="coverGeneratingAll" @click="handleGenAllCovers">一键生成封面</n-button>
+            </div>
             <div v-for="(p, idx) in platformsData.Platforms" :key="p.Id" class="platform-row">
-              <img v-if="p.LogoUrl" :src="p.LogoUrl" class="platform-logo-icon" />
+              <img v-if="p.CoverUrl" :src="p.CoverUrl" class="platform-cover-thumb" />
+              <img v-else-if="p.LogoUrl" :src="p.LogoUrl" class="platform-logo-icon" />
               <n-icon v-else size="28" style="margin-right: 10px; flex-shrink: 0"><component :is="getPlatformIcon(p.PlatformName)" /></n-icon>
-              <div style="flex: 1">
+              <div style="flex: 1; min-width: 0">
                 <span class="platform-name">{{ p.DisplayName || p.PlatformName }}</span>
+                <span class="platform-dim-badge">{{ p.Dimension }}</span>
                 <span class="platform-count">{{ p.ItemCount }} 部</span>
               </div>
-              <n-button text size="tiny" :disabled="idx === 0" @click="movePlatform(idx, -1)" title="上移">↑</n-button>
+              <n-button text size="tiny" :loading="coverGenerating[p.Id]" @click="handleGenCover(p.Id)" title="生成封面">封面</n-button>
+              <n-button text size="tiny" :disabled="idx === 0" @click="movePlatform(idx, -1)" title="上移" style="margin-left: 4px">↑</n-button>
               <n-button text size="tiny" :disabled="idx === platformsData.Platforms.length - 1" @click="movePlatform(idx, 1)" title="下移" style="margin-left: 2px">↓</n-button>
-              <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.PlatformName, v)" size="small" style="margin-left: 8px" />
+              <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.Id, v)" size="small" style="margin-left: 8px" />
               <n-button text type="error" size="tiny" @click="handleDeletePlatform(p.Id)" style="margin-left: 8px">&times;</n-button>
             </div>
           </div>
 
           <div style="margin-top: 16px; display: flex; gap: 8px">
-            <n-input v-model:value="newPlatformName" placeholder="自定义平台名称" size="small" style="flex: 1" @keydown.enter.prevent="handleAddPlatform" />
+            <n-input v-model:value="newPlatformName" placeholder="自定义片商名称(studio 维度)" size="small" style="flex: 1" @keydown.enter.prevent="handleAddPlatform" />
             <n-button secondary size="small" @click="handleAddPlatform">添加</n-button>
           </div>
         </div>
@@ -842,6 +941,9 @@ onUnmounted(() => {
 .rescrape-stats { font-size: 13px; color: var(--app-text-muted); margin-top: 6px; }
 
 .platform-logo-icon { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; margin-right: 10px; flex-shrink: 0; }
+.platform-cover-thumb { width: 48px; height: 27px; border-radius: 4px; object-fit: cover; margin-right: 10px; flex-shrink: 0; }
+.platform-dim-badge { font-size: 10px; color: var(--app-text-muted); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); border-radius: 4px; padding: 0 5px; margin-left: 8px; vertical-align: middle; }
+.discover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; max-height: 320px; overflow-y: auto; padding: 4px 2px; }
 .platform-row { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); }
 .platform-row:last-child { border-bottom: none; }
 .platform-name { font-size: 14px; color: var(--app-text); font-weight: 500; }

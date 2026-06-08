@@ -40,6 +40,8 @@ type ItemQueryOptions struct {
 	GenreIDs         []string
 	Years            []int
 	Studio           *string
+	ActorName        *string // 演员维度虚拟库:含该演员(role='Actor')的影片
+	CatalogPrefix    *string // 番号前缀维度虚拟库:番号字母前缀匹配
 	AnyProviderID    []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
 	LightMode        bool              // 跳过 series_fallback JOIN，用于大批量列表
 }
@@ -208,6 +210,19 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		paramIdx++
 	}
 
+	if options.ActorName != nil {
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $%d AND cm.role = 'Actor')", paramIdx))
+		params = append(params, *options.ActorName)
+		paramIdx++
+	}
+
+	if options.CatalogPrefix != nil {
+		conditions = append(conditions, fmt.Sprintf("substring(upper(i.catalog_number) from '^[A-Z]+') = $%d", paramIdx))
+		params = append(params, *options.CatalogPrefix)
+		paramIdx++
+	}
+
 	// AnyProviderIdEquals 过滤:大小写不敏感匹配 provider key、精确匹配 id 值,
 	// 不依赖 provider_ids 里 key 的大小写(Tmdb/tmdb 均可)与 value 类型(字符串/数字均可)。
 	// 多个条件之间为 OR(任一命中)。
@@ -251,7 +266,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	// Platform virtual libraries show only the global merged primary.
 	// Ordinary user libraries use a per-library representative selection later
 	// so a title does not disappear just because the global primary lives elsewhere.
-	if options.Studio != nil {
+	if options.Studio != nil || options.ActorName != nil || options.CatalogPrefix != nil {
 		conditions = append(conditions, "i.merged_to_id IS NULL")
 	}
 

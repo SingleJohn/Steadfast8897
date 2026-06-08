@@ -3,10 +3,23 @@ package services
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 
 	"fyms/internal/services/scraper"
 )
+
+// catalogNumberRe 匹配常见番号格式:2~6 个字母 + 可选连字符 + 2~6 位数字(如 IPZZ-857 / ABP123)。
+var catalogNumberRe = regexp.MustCompile(`(?i)\b([A-Za-z]{2,6})-?(\d{2,6})\b`)
+
+// ExtractCatalogNumber 从名称/文件名兜底提取番号,规范成大写带连字符(IPZZ-857)。无匹配返回 ""。
+func ExtractCatalogNumber(name string) string {
+	m := catalogNumberRe.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	return strings.ToUpper(m[1]) + "-" + m[2]
+}
 
 const scanConcurrency = 10
 

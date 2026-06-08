@@ -90,6 +90,50 @@ func pathInTrustedRoots(cleaned string, trustedRoots []string) bool {
 
 // ============ Backfill ============
 
+// backfillCatalogNumbers 给 catalog_number 为空的 Movie/Series 用名称/文件名兜底提取番号。
+// NFO <num> 已在入库时写入,此处只填空值,不覆盖。
+func backfillCatalogNumbers(ctx context.Context, pool *pgxpool.Pool) {
+	rows, err := pool.Query(ctx,
+		`SELECT id, name, COALESCE(file_path, '') FROM items
+		  WHERE type IN ('Movie', 'Series') AND (catalog_number IS NULL OR catalog_number = '')`)
+	if err != nil {
+		return
+	}
+	type cnRow struct {
+		id       uuid.UUID
+		name     string
+		filePath string
+	}
+	var pending []cnRow
+	for rows.Next() {
+		var r cnRow
+		if err := rows.Scan(&r.id, &r.name, &r.filePath); err != nil {
+			continue
+		}
+		pending = append(pending, r)
+	}
+	rows.Close()
+
+	updated := 0
+	for _, r := range pending {
+		num := ExtractCatalogNumber(r.name)
+		if num == "" && r.filePath != "" {
+			num = ExtractCatalogNumber(filepath.Base(r.filePath))
+		}
+		if num == "" {
+			continue
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE items SET catalog_number = $1 WHERE id = $2 AND (catalog_number IS NULL OR catalog_number = '')`,
+			num, r.id); err == nil {
+			updated++
+		}
+	}
+	if updated > 0 {
+		slog.Info("[Scan] Backfilled catalog numbers", "count", updated)
+	}
+}
+
 func backfillMediaVersions(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(ctx,
 		"SELECT i.id, i.file_path, i.container FROM items i "+

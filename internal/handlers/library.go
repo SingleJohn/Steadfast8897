@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -118,8 +119,13 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	// Platform libraries
 	u.GET("/Library/Platforms", adminMW, func(c *gin.Context) { getPlatforms(c, state) })
 	u.POST("/Library/Platforms", adminMW, func(c *gin.Context) { addPlatform(c, state) })
-	u.POST("/Library/Platforms/:name/Enable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, true) })
-	u.POST("/Library/Platforms/:name/Disable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, false) })
+	// 多维度虚拟库:发现 distinct 值 / 批量添加 / 封面生成
+	u.GET("/Library/Platforms/Discover", adminMW, func(c *gin.Context) { discoverPlatformDimension(c, state) })
+	u.POST("/Library/Platforms/Batch", adminMW, func(c *gin.Context) { addPlatformsBatch(c, state) })
+	u.POST("/Library/Platforms/CoverArt/GenerateAll", adminMW, func(c *gin.Context) { generateAllPlatformCovers(c, state) })
+	u.POST("/Library/Platforms/:id/Enable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, true) })
+	u.POST("/Library/Platforms/:id/Disable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, false) })
+	u.POST("/Library/Platforms/:id/Image/Generate", adminMW, func(c *gin.Context) { generatePlatformCover(c, state) })
 	u.DELETE("/Library/Platforms/:id", adminMW, func(c *gin.Context) { deletePlatform(c, state) })
 	u.POST("/Library/Platforms/Scan", adminMW, func(c *gin.Context) { scanPlatformStudios(c, state) })
 	u.POST("/Library/Platforms/ScanFilename", adminMW, func(c *gin.Context) { scanPlatformByFilename(c, state) })
@@ -190,10 +196,11 @@ func getUserViews(c *gin.Context) {
 			if p.ItemCount == 0 {
 				continue
 			}
-			vid := models.PlatformVirtualID(p.PlatformName)
-			colType := models.PlatformCollectionType(ctx, state.DB, p.PlatformName)
+			vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
+			colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue)
 			imgTags := gin.H{}
-			if models.HasPlatformLogo(p.PlatformName) {
+			// 有生成封面、或是已知平台(内置 logo)时才挂 Primary
+			if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
 				imgTags["Primary"] = vid
 			}
 			var unplayedCount interface{}
@@ -460,9 +467,9 @@ func getItems(c *gin.Context) {
 
 	// Handle platform virtual library (UUID-based lookup)
 	if opts.ParentID != nil {
-		if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
+		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
 			opts.ParentID = nil
-			opts.Studio = &platformName
+			applyVirtualDimension(opts, p)
 			if len(opts.IncludeItemTypes) == 0 {
 				opts.IncludeItemTypes = []string{"Movie", "Series"}
 			}
@@ -575,13 +582,13 @@ func getLatestItems(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Handle platform virtual library
-	if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, parentID); ok {
+	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
 		studioOpt := &models.ItemQueryOptions{
-			Studio:           &platformName,
 			IncludeItemTypes: []string{"Movie", "Series"},
 			Limit:            &limit,
 			Recursive:        true,
 		}
+		applyVirtualDimension(studioOpt, p)
 		sb := "DateCreated"
 		so := "Descending"
 		studioOpt.SortBy = &sb
@@ -1010,15 +1017,15 @@ func getItemDetail(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Check if this is a platform virtual library
-	if platformName, ok := models.IsPlatformVirtualID(ctx, state.DB, itemID); ok {
-		count, _ := models.GetItemCountByStudio(ctx, state.DB, platformName)
-		colType := models.PlatformCollectionType(ctx, state.DB, platformName)
+	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
+		count, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.MatchValue)
+		colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue)
 		imgTags := gin.H{}
-		if models.HasPlatformLogo(platformName) {
+		if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
 			imgTags["Primary"] = itemID
 		}
 		resp := gin.H{
-			"Name":               models.PlatformDisplayName(platformName),
+			"Name":               models.PlatformDisplayName(p.PlatformName),
 			"ServerId":           state.Config.ServerID,
 			"Id":                 itemID,
 			"Etag":               itemID,
@@ -1026,7 +1033,7 @@ func getItemDetail(c *gin.Context) {
 			"IsFolder":           true,
 			"ChildCount":         count,
 			"RecursiveItemCount": count,
-			"SortName":           strings.ToLower(platformName),
+			"SortName":           strings.ToLower(p.PlatformName),
 			"ImageTags":          imgTags,
 			"BackdropImageTags":  []string{},
 			"PlatformLibrary":    true,
@@ -2838,6 +2845,133 @@ func renderAndSaveLibraryCover(ctx context.Context, state *AppState, lib *models
 	return tag, nil
 }
 
+// renderAndSaveVirtualCover 为多维度虚拟库生成并保存封面,复用 coverart 生成器。
+func renderAndSaveVirtualCover(ctx context.Context, state *AppState, p *models.PlatformLibrary, gen coverart.Generator, options map[string]any) (string, error) {
+	pid, perr := uuid.Parse(p.ID)
+	if perr != nil {
+		return "", perr
+	}
+	release, err := coverart.AcquireBusy(pid)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	cond, ok := models.VirtualDimensionCondition(p.Dimension)
+	if !ok {
+		return "", fmt.Errorf("unknown dimension: %s", p.Dimension)
+	}
+	materials, err := coverart.PickMaterialsForVirtual(ctx, state.DB, cond, p.MatchValue)
+	if err != nil {
+		return "", err
+	}
+
+	itemCount, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.MatchValue)
+	out, err := gen.Render(ctx, coverart.Input{
+		LibraryID:      pid,
+		LibraryName:    models.PlatformDisplayName(p.PlatformName),
+		CollectionType: models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue),
+		ItemCount:      int(itemCount),
+		PosterPaths:    coverart.PosterPathsFromMaterials(materials),
+		Materials:      materials,
+		Options:        options,
+		OutputWidth:    1920,
+		OutputHeight:   1080,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
+	imgDir := filepath.Join("data", "library-images", "virtual")
+	if err := os.MkdirAll(imgDir, 0755); err != nil {
+		return "", err
+	}
+	fpath := filepath.Join(imgDir, vid+".jpg")
+	f, err := os.Create(fpath)
+	if err != nil {
+		return "", err
+	}
+	if err := imaging.Encode(f, out.Image, imaging.JPEG, imaging.JPEGQuality(out.Quality)); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("encode failed: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+
+	tag := uuid.New().String()
+	if err := models.SetPlatformCover(ctx, state.DB, p.ID, fpath, tag); err != nil {
+		return "", err
+	}
+	return tag, nil
+}
+
+// generatePlatformCover POST /Library/Platforms/:id/Image/Generate  body: {Style?, Options?}
+func generatePlatformCover(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	p, err := models.GetPlatformByID(c.Request.Context(), state.DB, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "platform not found"})
+		return
+	}
+	var body struct {
+		Style   string         `json:"Style"`
+		Options map[string]any `json:"Options"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	gen, style, ok := resolveCoverGenerator(body.Style)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style"})
+		return
+	}
+	tag, err := renderAndSaveVirtualCover(c.Request.Context(), state, p, gen, body.Options)
+	if err != nil {
+		if errors.Is(err, coverart.ErrNoPosters) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "该虚拟库下没有可用海报素材,无法生成封面"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"ImageTag": tag, "Style": style})
+}
+
+// generateAllPlatformCovers POST /Library/Platforms/CoverArt/GenerateAll  body: {Style?, Options?}
+// 给所有已启用虚拟库批量生成封面(无素材的跳过)。
+func generateAllPlatformCovers(c *gin.Context, state *AppState) {
+	var body struct {
+		Style   string         `json:"Style"`
+		Options map[string]any `json:"Options"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	gen, style, ok := resolveCoverGenerator(body.Style)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "unknown cover style"})
+		return
+	}
+	ctx := c.Request.Context()
+	platforms, err := models.GetEnabledPlatforms(ctx, state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	generated, skipped := 0, 0
+	for i := range platforms {
+		if _, err := renderAndSaveVirtualCover(ctx, state, &platforms[i], gen, body.Options); err != nil {
+			skipped++
+			if !errors.Is(err, coverart.ErrNoPosters) {
+				slog.Warn("[Platform] cover gen failed", "platform", platforms[i].PlatformName, "error", err)
+			}
+			continue
+		}
+		generated++
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"generated": generated, "skipped": skipped, "style": style})
+}
+
 func resolveCoverGenerator(style string) (coverart.Generator, string, bool) {
 	style = strings.TrimSpace(style)
 	if style == "" {
@@ -3093,8 +3227,18 @@ func getPlatforms(c *gin.Context, state *AppState) {
 			"CollectionType": p.CollectionType,
 			"ItemCount":      p.ItemCount,
 			"SortOrder":      p.SortOrder,
+			"Dimension":      p.Dimension,
+			"MatchValue":     p.MatchValue,
+			"HasCover":       p.CoverImagePath != nil && *p.CoverImagePath != "",
 		}
-		if models.HasPlatformLogo(p.PlatformName) {
+		// 封面优先用生成封面(虚拟 ID 出图),否则已知平台用内置 logo
+		if p.CoverImagePath != nil && *p.CoverImagePath != "" {
+			coverTag := ""
+			if p.CoverImageTag != nil {
+				coverTag = *p.CoverImageTag
+			}
+			entry["CoverUrl"] = "/Items/" + models.PlatformVirtualID(p.Dimension, p.MatchValue) + "/Images/Primary?tag=" + url.QueryEscape(coverTag)
+		} else if models.HasPlatformLogo(p.PlatformName) {
 			entry["LogoUrl"] = "/Library/Platforms/Logo?name=" + url.QueryEscape(p.PlatformName)
 		}
 		items = append(items, entry)
@@ -3105,15 +3249,35 @@ func getPlatforms(c *gin.Context, state *AppState) {
 	})
 }
 
+// applyVirtualDimension 把虚拟库的维度+匹配值翻译成 QueryItems 的对应过滤项。
+func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibrary) {
+	v := p.MatchValue
+	switch p.Dimension {
+	case models.PlatformDimActor:
+		opts.ActorName = &v
+	case models.PlatformDimNumPrefix:
+		opts.CatalogPrefix = &v
+	default:
+		opts.Studio = &v
+	}
+}
+
 func addPlatform(c *gin.Context, state *AppState) {
 	var body struct {
 		PlatformName string `json:"PlatformName"`
+		Dimension    string `json:"Dimension"`  // 可选,默认 studio
+		MatchValue   string `json:"MatchValue"` // 可选,默认 = PlatformName
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.PlatformName) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "PlatformName required"})
 		return
 	}
-	if err := models.AddPlatformLibrary(c.Request.Context(), state.DB, strings.TrimSpace(body.PlatformName)); err != nil {
+	matchValue := strings.TrimSpace(body.MatchValue)
+	if matchValue == "" {
+		matchValue = strings.TrimSpace(body.PlatformName)
+	}
+	if err := models.AddPlatformLibrary(c.Request.Context(), state.DB,
+		body.Dimension, matchValue, strings.TrimSpace(body.PlatformName), false); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -3121,13 +3285,63 @@ func addPlatform(c *gin.Context, state *AppState) {
 	c.Status(http.StatusNoContent)
 }
 
-func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {
-	name := c.Param("name")
-	if name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "name required"})
+// discoverPlatformDimension GET /Library/Platforms/Discover?dimension=&search=&minCount=
+// 扫描本地数据列出某维度的 distinct 值 + 计数,供前端勾选添加。
+func discoverPlatformDimension(c *gin.Context, state *AppState) {
+	dimension := strings.TrimSpace(c.Query("dimension"))
+	if dimension == "" {
+		dimension = models.PlatformDimStudio
+	}
+	search := c.Query("search")
+	var minCount int64 = 1
+	if v := strings.TrimSpace(c.Query("minCount")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			minCount = n
+		}
+	}
+	values, err := models.DiscoverDimensionValues(c.Request.Context(), state.DB, dimension, search, minCount)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if err := models.SetPlatformEnabled(c.Request.Context(), state.DB, name, enabled); err != nil {
+	c.JSON(http.StatusOK, gin.H{"dimension": dimension, "values": values})
+}
+
+// addPlatformsBatch POST /Library/Platforms/Batch  body: {Dimension, Values:[...]}
+// 批量把选中的维度值添加为虚拟库(默认 enabled=false)。
+func addPlatformsBatch(c *gin.Context, state *AppState) {
+	var body struct {
+		Dimension string   `json:"Dimension"`
+		Values    []string `json:"Values"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.Values) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Dimension and Values required"})
+		return
+	}
+	ctx := c.Request.Context()
+	added := 0
+	for _, v := range body.Values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if err := models.AddPlatformLibrary(ctx, state.DB, body.Dimension, v, v, false); err != nil {
+			slog.Warn("[Platform] batch add failed", "dimension", body.Dimension, "value", v, "error", err)
+			continue
+		}
+		added++
+	}
+	invalidateViewsCache(c, state)
+	c.JSON(http.StatusOK, gin.H{"added": added})
+}
+
+func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "id required"})
+		return
+	}
+	if err := models.SetPlatformEnabledByID(c.Request.Context(), state.DB, id, enabled); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}

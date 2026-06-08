@@ -58,7 +58,7 @@ func stripNfoNestedBlocks(xml string) string {
 }
 
 func init() {
-	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "tvdbid", "premiered", "studio", "runtime", "mpaa", "customrating", "trailer"}
+	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "tvdbid", "premiered", "studio", "runtime", "mpaa", "customrating", "trailer", "num"}
 	nfoTagRegexes = make(map[string]nfoTagPair, len(tags))
 	for _, name := range tags {
 		nfoTagRegexes[name] = nfoTagPair{
@@ -103,6 +103,7 @@ type NfoData struct {
 	Runtime        *int32  // 分钟
 	OfficialRating *string // mpaa / customrating
 	Trailer        *string // 预告片直链(http/https)
+	CatalogNumber  *string // 番号(<num>),如 IPZZ-857
 }
 
 type NfoActor struct {
@@ -204,6 +205,13 @@ func ParseNfo(nfoPath string) *NfoData {
 		t := strings.TrimSpace(*s)
 		if strings.HasPrefix(strings.ToLower(t), "http://") || strings.HasPrefix(strings.ToLower(t), "https://") {
 			result.Trailer = &t
+		}
+	}
+
+	// num:番号(用于"按番号前缀"虚拟库分类)。
+	if s := nfoTag(xmlTop, "num"); s != nil {
+		if n := strings.TrimSpace(*s); n != "" {
+			result.CatalogNumber = &n
 		}
 	}
 
@@ -373,6 +381,9 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 	}
 	if nfo.Trailer != nil && strings.TrimSpace(*nfo.Trailer) != "" {
 		addClause("trailer_url", "", strings.TrimSpace(*nfo.Trailer))
+	}
+	if nfo.CatalogNumber != nil && strings.TrimSpace(*nfo.CatalogNumber) != "" {
+		addClause("catalog_number", "", strings.TrimSpace(*nfo.CatalogNumber))
 	}
 	// runtime:仅在 runtime_ticks 为空时用 NFO 填,ffprobe(更精确)之后仍可覆盖。
 	if nfo.Runtime != nil && *nfo.Runtime > 0 {

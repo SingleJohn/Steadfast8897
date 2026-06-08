@@ -2,6 +2,7 @@ package coverart
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -64,6 +65,54 @@ func PickMaterials(ctx context.Context, pool *pgxpool.Pool, libID uuid.UUID) ([]
 		out[i] = raw[i%n]
 	}
 	return out, nil
+}
+
+// PickMaterialsForVirtual 为多维度虚拟库(片商/番号前缀/演员)抽取封面素材。
+// whereCond 是带单个占位符 $1 的条件片段(由 models.VirtualDimensionCondition 提供),
+// value 填入 $1。逻辑与 PickMaterials 同构,只是 WHERE 换成维度条件。
+func PickMaterialsForVirtual(ctx context.Context, pool *pgxpool.Pool, whereCond, value string) ([]Material, error) {
+	sql := `
+		SELECT name, primary_image_path, COALESCE(backdrop_image_path, '')
+		  FROM items
+		 WHERE ` + whereCond + `
+		   AND type IN ('Movie', 'Series')
+		   AND merged_to_id IS NULL
+		   AND primary_image_path IS NOT NULL
+		   AND primary_image_path <> ''
+		 ORDER BY (backdrop_image_path IS NULL OR backdrop_image_path = ''), RANDOM()
+		 LIMIT ` + itoa(PosterCount)
+
+	rows, err := pool.Query(ctx, sql, value)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var raw []Material
+	for rows.Next() {
+		var m Material
+		if err := rows.Scan(&m.Title, &m.PosterPath, &m.BackdropPath); err != nil {
+			return nil, err
+		}
+		m.Title = strings.TrimSpace(m.Title)
+		raw = append(raw, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	n := len(raw)
+	if n == 0 {
+		return nil, ErrNoPosters
+	}
+	out := make([]Material, PosterCount)
+	for i := 0; i < PosterCount; i++ {
+		out[i] = raw[i%n]
+	}
+	return out, nil
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 // PosterPathsFromMaterials 保持旧风格对 PosterPaths 的依赖。

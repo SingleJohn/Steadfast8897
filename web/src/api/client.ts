@@ -760,11 +760,37 @@ export async function getPlatforms() {
 export async function addPlatformLibrary(name: string) {
   return request('/Library/Platforms', { method: 'POST', body: JSON.stringify({ PlatformName: name }) });
 }
-export async function setPlatformEnable(name: string, enabled: boolean) {
-  return request(`/Library/Platforms/${encodeURIComponent(name)}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' });
+export async function setPlatformEnable(id: string, enabled: boolean) {
+  return request(`/Library/Platforms/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' });
 }
 export async function deletePlatformLibrary(id: string) {
   return request(`/Library/Platforms/${id}`, { method: 'DELETE' });
+}
+// 多维度虚拟库:发现 / 批量添加 / 封面生成
+export async function discoverPlatformDimension(dimension: string, search = '', minCount = 1) {
+  const q = new URLSearchParams({ dimension, minCount: String(minCount) });
+  if (search) q.set('search', search);
+  return requestJson<{ dimension: string; values: { Value: string; Count: number; AlreadyAdded: boolean }[] }>(
+    `/Library/Platforms/Discover?${q.toString()}`,
+  );
+}
+export async function addPlatformsBatch(dimension: string, values: string[]) {
+  return requestJson<{ added: number }>('/Library/Platforms/Batch', {
+    method: 'POST',
+    body: JSON.stringify({ Dimension: dimension, Values: values }),
+  });
+}
+export async function generatePlatformCover(id: string, style?: string) {
+  return requestJson<{ ImageTag: string; Style: string }>(`/Library/Platforms/${id}/Image/Generate`, {
+    method: 'POST',
+    body: JSON.stringify(style ? { Style: style } : {}),
+  });
+}
+export async function generateAllPlatformCovers(style?: string) {
+  return requestJson<{ generated: number; skipped: number }>('/Library/Platforms/CoverArt/GenerateAll', {
+    method: 'POST',
+    body: JSON.stringify(style ? { Style: style } : {}),
+  });
 }
 export async function updatePlatformSortOrder(orderedIds: string[]) {
   return request('/Library/Platforms/SortOrder', { method: 'POST', body: JSON.stringify({ OrderedIds: orderedIds }) });
