@@ -9,10 +9,11 @@ import (
 	"fyms/internal/services/scraper"
 )
 
-// catalogNumberRe 匹配常见番号格式:2~6 个字母 + 可选连字符 + 2~6 位数字(如 IPZZ-857 / ABP123)。
-var catalogNumberRe = regexp.MustCompile(`(?i)\b([A-Za-z]{2,6})-?(\d{2,6})\b`)
+// catalogNumberRe 匹配常见番号:可选前导数字(厂牌/频道码) + 字母 + 连字符 + 数字。
+// 例:IPZZ-857 / 300MIUM-1328 / 326IAV-002 / 336KNB-406。
+var catalogNumberRe = regexp.MustCompile(`(?i)(\d{0,4}[A-Za-z]{2,8})-(\d{2,6})`)
 
-// ExtractCatalogNumber 从名称/文件名兜底提取番号,规范成大写带连字符(IPZZ-857)。无匹配返回 ""。
+// ExtractCatalogNumber 从名称/文件名提取番号,规范成大写带连字符(300MIUM-1328)。无匹配返回 ""。
 func ExtractCatalogNumber(name string) string {
 	m := catalogNumberRe.FindStringSubmatch(name)
 	if m == nil {

@@ -33,8 +33,9 @@ const (
 	PlatformDimActor     = "actor"
 )
 
-// catalogPrefixExpr 番号前缀派生表达式(与 048 迁移的函数索引一致)。
-const catalogPrefixExpr = "substring(upper(catalog_number) from '^[A-Z]+')"
+// catalogPrefixExpr 番号前缀(label)派生表达式:去掉结尾的 "-数字",保留前面的整段 label。
+// 例:300MIUM-1328 → 300MIUM,IPZZ-857 → IPZZ,326IAV-002 → 326IAV。与 049 迁移的函数索引一致。
+const catalogPrefixExpr = "regexp_replace(upper(catalog_number), '-[0-9]+$', '')"
 
 type PlatformScanStatus string
 

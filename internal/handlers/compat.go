@@ -1083,7 +1083,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			case models.PlatformDimActor:
 				whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $"+strconv.Itoa(idx)+" AND cm.role = 'Actor')")
 			case models.PlatformDimNumPrefix:
-				whereParts = append(whereParts, "substring(upper(i.catalog_number) from '^[A-Z]+') = $"+strconv.Itoa(idx))
+				whereParts = append(whereParts, "regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = $"+strconv.Itoa(idx))
 			default:
 				whereParts = append(whereParts, "i.studio = $"+strconv.Itoa(idx))
 			}

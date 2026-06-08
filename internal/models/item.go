@@ -218,7 +218,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	}
 
 	if options.CatalogPrefix != nil {
-		conditions = append(conditions, fmt.Sprintf("substring(upper(i.catalog_number) from '^[A-Z]+') = $%d", paramIdx))
+		conditions = append(conditions, fmt.Sprintf("regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = $%d", paramIdx))
 		params = append(params, *options.CatalogPrefix)
 		paramIdx++
 	}
