@@ -31,6 +31,7 @@ type ImageCache struct {
 	httpClient *http.Client
 	sf         singleflight.Group
 	dataDir    string
+	copyLocal  bool // false 时本地/挂载原图直读不复制到 sources
 
 	touchMu sync.Mutex
 	touched map[string]time.Time
@@ -59,13 +60,15 @@ func NewImageCache(cfg *config.AppConfig, httpClient *http.Client) *ImageCache {
 		maxBytes:   int64(max) * 1024 * 1024 * 1024,
 		httpClient: httpClient,
 		dataDir:    absOrSelf(cfg.DataDir),
+		copyLocal:  cfg.CopyLocalImages,
 		touched:    make(map[string]time.Time),
 	}
 }
 
 // Materialize 返回可被本地快速读取的路径 + 源指纹。
 // 本地路径在 dataDir 下(例如 data/metadata TMDB 下载的图)直接返回,不做复制;
-// 否则复制到 sources/ 缓存。URL 源统一下载到 sources/。
+// 其它本地/挂载路径在 copyLocal=false(默认)时也直读,copyLocal=true 时复制到 sources/ 缓存。
+// URL 源统一下载到 sources/。
 // 源指纹包含 mtime+size(本地)或 URL(远程),可嵌入 resize cache key,源变化后自动失效。
 func (c *ImageCache) Materialize(source string, isURL bool) (localPath, srcHash string, err error) {
 	if isURL {
@@ -80,7 +83,8 @@ func (c *ImageCache) materializeLocal(source string) (string, string, error) {
 		return "", "", err
 	}
 	h := fingerprintLocal(source, st.Size(), st.ModTime())
-	if c.isUnderDataDir(source) {
+	// data 目录下的图(TMDB 下载)本就在本地;copyLocal=false 时,其它本地/挂载原图也直读不复制。
+	if c.isUnderDataDir(source) || !c.copyLocal {
 		return source, h, nil
 	}
 	ext := strings.ToLower(filepath.Ext(source))

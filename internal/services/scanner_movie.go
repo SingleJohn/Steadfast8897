@@ -243,6 +243,7 @@ func scanOneMovie(
 						parsed.Name, sortName, parsed.Year, itemID)
 				}
 				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
+				syncItemExtraBackdrops(ctx, pool, itemID, FindExtraFanart(fullPath))
 				ensureMovieMediaVersions(ctx, pool, itemID, videoFiles, dirCache)
 				// race 场景兜底:NFO 比 video 晚到时,首次 Create 事件没读到 nfo 就 INSERT 了,
 				// 等到 nfo 的 Create 再次触发时走到这里,补一次 ApplyNfoData(幂等)。
@@ -276,6 +277,7 @@ func scanOneMovie(
 
 		if err == nil && insertedID != nil {
 			ensureMovieMediaVersions(ctx, pool, *insertedID, videoFiles, dirCache)
+			syncItemExtraBackdrops(ctx, pool, *insertedID, FindExtraFanart(fullPath))
 			if nfoPath := FindNfoCached(dirCache); nfoPath != nil {
 				if nfo := ParseNfo(*nfoPath); nfo != nil {
 					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
@@ -297,9 +299,11 @@ func scanOneMovie(
 						parsed.Name, sortName, parsed.Year, conflictID)
 				}
 				syncItemArtwork(ctx, pool, conflictID, poster, posterTag, backdrop, backdropTag)
+				syncItemExtraBackdrops(ctx, pool, conflictID, FindExtraFanart(fullPath))
 				ensureMovieMediaVersions(ctx, pool, conflictID, videoFiles, dirCache)
 			} else if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, primaryPath); existingID != nil {
 				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)
+				syncItemExtraBackdrops(ctx, pool, *existingID, FindExtraFanart(fullPath))
 				ensureMovieMediaVersions(ctx, pool, *existingID, videoFiles, dirCache)
 			}
 		}

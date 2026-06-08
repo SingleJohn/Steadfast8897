@@ -276,7 +276,17 @@ func serveImage(c *gin.Context, state *AppState) {
 				sourcePath = sanitizeImagePath(*primaryPath)
 			}
 		case "Backdrop", "Banner":
-			if backdropPath != nil {
+			// extrafanart 多图:Backdrop/{index} index>=1 走 item_images;index 空/0 用主 backdrop。
+			if idx := queryInt(imageIndex); idx > 0 && imageType == "Backdrop" {
+				var extraPath *string
+				state.DB.QueryRow(ctx,
+					"SELECT path FROM item_images WHERE item_id = $1::uuid AND image_type = 'Backdrop' AND idx = $2",
+					*uid, idx).Scan(&extraPath)
+				if extraPath != nil && *extraPath != "" {
+					sourcePath = sanitizeImagePath(*extraPath)
+				}
+			}
+			if sourcePath == "" && backdropPath != nil {
 				sourcePath = sanitizeImagePath(*backdropPath)
 			}
 		default:
@@ -361,8 +371,6 @@ func serveImage(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "No image"})
 		return
 	}
-
-	_ = imageIndex // reserved for multi-backdrop; single asset per type in DB today
 
 	imageSemaphore <- struct{}{}
 	defer func() { <-imageSemaphore }()

@@ -30,6 +30,7 @@ var nfoTagRegexes map[string]nfoTagPair
 
 var (
 	nfoGenreRe = regexp.MustCompile(`(?i)<genre>([^<]*)</genre>`)
+	nfoTagRe   = regexp.MustCompile(`(?i)<tag>([^<]*)</tag>`)
 	nfoActorRe = regexp.MustCompile(`(?is)<actor>([\s\S]*?)</actor>`)
 	nfoNameRe  = regexp.MustCompile(`(?i)<name>([^<]*)</name>`)
 	nfoRoleRe  = regexp.MustCompile(`(?i)<role>([^<]*)</role>`)
@@ -57,7 +58,7 @@ func stripNfoNestedBlocks(xml string) string {
 }
 
 func init() {
-	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "tvdbid", "premiered", "studio"}
+	tags := []string{"title", "originaltitle", "plot", "tagline", "year", "rating", "tmdbid", "imdbid", "tvdbid", "premiered", "studio", "runtime", "mpaa", "customrating", "trailer"}
 	nfoTagRegexes = make(map[string]nfoTagPair, len(tags))
 	for _, name := range tags {
 		nfoTagRegexes[name] = nfoTagPair{
@@ -92,12 +93,16 @@ type NfoData struct {
 	TmdbID        *int32
 	ImdbID        *string
 	TvdbID        *int32
-	Genres        []string
-	Actors        []NfoActor
-	Directors     []string
-	Premiered     *string
-	Tagline       *string
-	Studio        *string
+	Genres         []string
+	Tags           []string
+	Actors         []NfoActor
+	Directors      []string
+	Premiered      *string
+	Tagline        *string
+	Studio         *string
+	Runtime        *int32  // 分钟
+	OfficialRating *string // mpaa / customrating
+	Trailer        *string // 预告片直链(http/https)
 }
 
 type NfoActor struct {
@@ -179,11 +184,48 @@ func ParseNfo(nfoPath string) *NfoData {
 	}
 	result.Premiered = nfoTag(xmlTop, "premiered")
 
+	// runtime(分钟):仅在解析端取值,落库时只在 runtime_ticks 为空时填(ffprobe 更精确)。
+	if s := nfoTag(xmlTop, "runtime"); s != nil {
+		if v, err := strconv.ParseInt(strings.TrimSpace(*s), 10, 32); err == nil && v > 0 {
+			i := int32(v)
+			result.Runtime = &i
+		}
+	}
+
+	// official_rating:mpaa 优先,回退 customrating。
+	if s := nfoTag(xmlTop, "mpaa"); s != nil && strings.TrimSpace(*s) != "" {
+		result.OfficialRating = s
+	} else if s := nfoTag(xmlTop, "customrating"); s != nil && strings.TrimSpace(*s) != "" {
+		result.OfficialRating = s
+	}
+
+	// trailer:只保留 http/https 直链,客户端可直接播放。
+	if s := nfoTag(xmlTop, "trailer"); s != nil {
+		t := strings.TrimSpace(*s)
+		if strings.HasPrefix(strings.ToLower(t), "http://") || strings.HasPrefix(strings.ToLower(t), "https://") {
+			result.Trailer = &t
+		}
+	}
+
 	for _, m := range nfoGenreRe.FindAllStringSubmatch(xml, -1) {
 		g := strings.TrimSpace(m[1])
 		if g != "" {
 			result.Genres = append(result.Genres, g)
 		}
+	}
+
+	// tags:与 genres 分离的标签维度(对齐 Emby Tags)。actor 块里没有 <tag>,用整段 xml 即可。
+	seenTag := make(map[string]struct{})
+	for _, m := range nfoTagRe.FindAllStringSubmatch(xml, -1) {
+		t := strings.TrimSpace(m[1])
+		if t == "" {
+			continue
+		}
+		if _, ok := seenTag[t]; ok {
+			continue
+		}
+		seenTag[t] = struct{}{}
+		result.Tags = append(result.Tags, t)
 	}
 
 	for _, m := range nfoActorRe.FindAllStringSubmatch(xml, -1) {
@@ -235,11 +277,14 @@ func ParseNfo(nfoPath string) *NfoData {
 		}
 	}
 
-	// Extract first <studio> tag, normalized to the canonical platform name
-	// so NFO-sourced studios match platform libraries (e.g. "Youku" -> "YOUKU").
+	// Extract first <studio> tag. 命中规范平台名(如 "Youku"->"YOUKU")用规范名,便于进平台虚拟库;
+	// 否则保留原值落库(如 "S级素人"),避免外部刮削器给的片商信息丢失。
 	if s := nfoTag(xmlTop, "studio"); s != nil {
-		if canon := models.CanonicalPlatformName(*s); canon != "" {
+		raw := strings.TrimSpace(*s)
+		if canon := models.CanonicalPlatformName(raw); canon != "" {
 			result.Studio = &canon
+		} else if raw != "" {
+			result.Studio = &raw
 		}
 	}
 
@@ -320,17 +365,35 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 	if nfo.Tagline != nil {
 		addClause("tagline", "", *nfo.Tagline)
 	}
+	if nfo.OriginalTitle != nil && strings.TrimSpace(*nfo.OriginalTitle) != "" {
+		addClause("original_title", "", strings.TrimSpace(*nfo.OriginalTitle))
+	}
+	if nfo.OfficialRating != nil && strings.TrimSpace(*nfo.OfficialRating) != "" {
+		addClause("official_rating", "", strings.TrimSpace(*nfo.OfficialRating))
+	}
+	if nfo.Trailer != nil && strings.TrimSpace(*nfo.Trailer) != "" {
+		addClause("trailer_url", "", strings.TrimSpace(*nfo.Trailer))
+	}
+	// runtime:仅在 runtime_ticks 为空时用 NFO 填,ffprobe(更精确)之后仍可覆盖。
+	if nfo.Runtime != nil && *nfo.Runtime > 0 {
+		ticks := int64(*nfo.Runtime) * 60 * 10_000_000
+		setClauses = append(setClauses, fmt.Sprintf("runtime_ticks = COALESCE(runtime_ticks, $%d)", argIdx))
+		args = append(args, ticks)
+		argIdx++
+	}
 	if nfo.Studio != nil {
 		studio := strings.TrimSpace(*nfo.Studio)
 		if studio != "" {
 			addClause("studio", "", studio)
-			addClause("platform_scan_status", "", string(models.PlatformScanMatched))
-			if source != "" {
-				addClause("platform_scan_source", "", string(source))
-			}
-			addClause("platform_scan_error", "", nil)
-			setClauses = append(setClauses, "platform_scanned_at = NOW()")
 		}
+	}
+	// nfo 托管标记与 studio 解耦:只要本次是 NFO 来源(source != "")就标记为已匹配/NFO 托管,
+	// 即便片商名是非平台名(studio 仍会落库,只是不进平台虚拟库)。
+	if source != "" {
+		addClause("platform_scan_status", "", string(models.PlatformScanMatched))
+		addClause("platform_scan_source", "", string(source))
+		addClause("platform_scan_error", "", nil)
+		setClauses = append(setClauses, "platform_scanned_at = NOW()")
 	}
 
 	if len(setClauses) > 0 {
@@ -382,6 +445,27 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 			 ON CONFLICT DO NOTHING`,
 			itemID, nfo.Genres); err != nil {
 			slog.Warn("[ApplyNfo] link item_genres failed", "item_id", itemID, "error", err)
+			return
+		}
+	}
+
+	if len(nfo.Tags) > 0 {
+		if _, err := tx.Exec(ctx, "DELETE FROM item_tags WHERE item_id = $1::uuid", itemID); err != nil {
+			slog.Warn("[ApplyNfo] delete item_tags failed", "item_id", itemID, "error", err)
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			"INSERT INTO tags (name) SELECT unnest($1::text[]) ON CONFLICT (name) DO NOTHING",
+			nfo.Tags); err != nil {
+			slog.Warn("[ApplyNfo] upsert tags failed", "item_id", itemID, "error", err)
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO item_tags (item_id, tag_id)
+			   SELECT $1::uuid, id FROM tags WHERE name = ANY($2::text[])
+			 ON CONFLICT DO NOTHING`,
+			itemID, nfo.Tags); err != nil {
+			slog.Warn("[ApplyNfo] link item_tags failed", "item_id", itemID, "error", err)
 			return
 		}
 	}

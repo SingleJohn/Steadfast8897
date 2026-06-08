@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -101,6 +103,76 @@ func FindNfoCached(cache DirCache) *string {
 		}
 	}
 	return nil
+}
+
+// FindExtraFanart 返回 <dir>/extrafanart/ 下所有受支持的图片绝对路径,按文件名内嵌数字
+// 自然排序(fanart1 < fanart2 < ... < fanart10)。这些图会作为额外 Backdrop(idx 1..N)入库,
+// 对齐 Emby:extrafanart = 多张 Backdrop,客户端在 BackdropImageTags 数组里取。
+func FindExtraFanart(dir string) []string {
+	extraDir := filepath.Join(dir, "extrafanart")
+	entries, err := os.ReadDir(extraDir)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, "._") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !isSupportedImageExt(filepath.Ext(name)) {
+			continue
+		}
+		paths = append(paths, filepath.Join(extraDir, name))
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		ni, nj := trailingNumber(paths[i]), trailingNumber(paths[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return paths[i] < paths[j]
+	})
+	return paths
+}
+
+// trailingNumber 提取文件茎里末尾的数字(fanart10.jpg -> 10),无数字返回 0。
+func trailingNumber(path string) int {
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	i := len(stem)
+	for i > 0 && stem[i-1] >= '0' && stem[i-1] <= '9' {
+		i--
+	}
+	if i == len(stem) {
+		return 0
+	}
+	n, _ := strconv.Atoi(stem[i:])
+	return n
+}
+
+// syncItemExtraBackdrops 把 item 的额外 Backdrop(extrafanart)全量重写进 item_images。
+// 幂等:每次先删后插,重复扫不会放大。paths 为空时仅清理旧记录。
+func syncItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, paths []string) {
+	if _, err := pool.Exec(ctx,
+		"DELETE FROM item_images WHERE item_id = $1::uuid AND image_type = 'Backdrop'", itemID); err != nil {
+		slog.Warn("[Scan] Failed to clear extra backdrops", "itemId", itemID, "error", err)
+		return
+	}
+	for i, p := range paths {
+		tag := GenerateImageTag(p)
+		if tag == nil {
+			continue
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO item_images (item_id, image_type, idx, path, tag)
+			 VALUES ($1::uuid, 'Backdrop', $2, $3, $4)
+			 ON CONFLICT (item_id, image_type, idx) DO UPDATE SET path = EXCLUDED.path, tag = EXCLUDED.tag`,
+			itemID, i+1, p, *tag); err != nil {
+			slog.Warn("[Scan] Failed to insert extra backdrop", "itemId", itemID, "path", p, "error", err)
+		}
+	}
 }
 
 func GenerateImageTag(filePath string) *string {

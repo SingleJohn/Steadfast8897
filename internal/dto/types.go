@@ -39,6 +39,8 @@ type BaseItemDto struct {
 	Path                       *string                `json:"Path,omitempty"`
 	GenreItems                 []GenreItem            `json:"GenreItems,omitempty"`
 	Genres                     []string               `json:"Genres,omitempty"`
+	Tags                       []string               `json:"Tags,omitempty"`
+	RemoteTrailers             []MediaUrl             `json:"RemoteTrailers,omitempty"`
 	People                     []map[string]interface{} `json:"People,omitempty"`
 	OriginalTitle              *string                `json:"OriginalTitle,omitempty"`
 	Taglines                   []string               `json:"Taglines,omitempty"`
@@ -59,6 +61,12 @@ type BaseItemDto struct {
 type GenreItem struct {
 	Name string `json:"Name"`
 	ID   string `json:"Id"`
+}
+
+// MediaUrl 对应 Emby BaseItemDto.RemoteTrailers 的元素,Url 为预告片直链。
+type MediaUrl struct {
+	Url  string `json:"Url"`
+	Name string `json:"Name,omitempty"`
 }
 
 type StudioItem struct {

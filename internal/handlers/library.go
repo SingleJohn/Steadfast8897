@@ -696,6 +696,32 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		}
 	}
 
+	// Tags(与 Genres 分离)
+	if tags, terr := models.GetItemTags(ctx, pool, item.ID); terr == nil && len(tags) > 0 {
+		base.Tags = tags
+	}
+
+	// 额外 Backdrop(extrafanart)→ 追加到 BackdropImageTags(主图为 Backdrop/0,extra 为 1..N)。
+	// 仅当已有主 backdrop(占据数组 0 位)时追加,保证 tag 下标与 /Images/Backdrop/{index} 对齐。
+	if len(base.BackdropImageTags) > 0 {
+		if extra, eerr := models.GetItemExtraBackdrops(ctx, pool, item.ID); eerr == nil && len(extra) > 0 {
+			base.BackdropImageTags = append(base.BackdropImageTags, extra...)
+		}
+	}
+
+	// 详情侧补 original_title / 预告片(RemoteTrailers),列表场景不带以减负。
+	var origTitle, trailerURL *string
+	if err := pool.QueryRow(ctx,
+		"SELECT original_title, trailer_url FROM items WHERE id = $1::uuid", item.ID,
+	).Scan(&origTitle, &trailerURL); err == nil {
+		if origTitle != nil && *origTitle != "" {
+			base.OriginalTitle = origTitle
+		}
+		if trailerURL != nil && *trailerURL != "" {
+			base.RemoteTrailers = []dto.MediaUrl{{Url: *trailerURL, Name: item.Name}}
+		}
+	}
+
 	cast, err := models.GetItemCast(ctx, pool, item.ID)
 	if err != nil {
 		return base, err

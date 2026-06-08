@@ -963,6 +963,49 @@ func GetItemGenres(ctx context.Context, pool *pgxpool.Pool, itemID string) ([][2
 	return result, rows.Err()
 }
 
+// GetItemTags 返回 item 的标签名(与 genres 分离,对齐 Emby Tags)。
+func GetItemTags(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]string, error) {
+	rows, err := pool.Query(ctx,
+		"SELECT t.name FROM tags t JOIN item_tags it ON t.id = it.tag_id WHERE it.item_id = $1::uuid ORDER BY t.name",
+		itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		result = append(result, name)
+	}
+	return result, rows.Err()
+}
+
+// GetItemExtraBackdrops 返回 item 的额外 Backdrop tag(extrafanart),按 idx 升序。
+// 调用方把它们追加到 items.backdrop_image_path(Backdrop/0)之后,组成 BackdropImageTags 数组。
+func GetItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]string, error) {
+	rows, err := pool.Query(ctx,
+		"SELECT tag FROM item_images WHERE item_id = $1::uuid AND image_type = 'Backdrop' ORDER BY idx",
+		itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		result = append(result, tag)
+	}
+	return result, rows.Err()
+}
+
 func GetItemCast(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]map[string]interface{}, error) {
 	rows, err := pool.Query(ctx,
 		"SELECT * FROM cast_members WHERE item_id = $1::uuid ORDER BY role, order_index", itemID)
