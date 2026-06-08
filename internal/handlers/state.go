@@ -30,6 +30,7 @@ type AppState struct {
 	RefreshWorker  *services.RefreshWorker
 	LogBuffer      *services.LogBuffer
 	HTTPClient     *http.Client
+	Notifier       *services.NotifyDispatcher
 	Updater        *services.Updater
 	GapScanTask    *services.GapScanTask
 	BackfillTask   *services.BackfillTask

@@ -174,6 +174,7 @@ func ScanLibrary(
 		go backfillMediaVersions(ctx, pool)
 		go backfillCatalogNumbers(ctx, pool)
 		go autoScrapeNewItems(ctx, pool, libraryID)
+		ScheduleLibraryNewSweep(ctx, libraryID)
 		go func() {
 			merged, merr := models.MergeMultiVersionItems(ctx, pool)
 			if merr != nil {

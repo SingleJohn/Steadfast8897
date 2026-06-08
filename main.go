@@ -139,6 +139,9 @@ func main() {
 	// Updater needs a direct (non-proxied) client to reach Docker Hub and GitHub.
 	updateHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	updater := services.NewUpdater(cfg, pool, updateHTTPClient, logBuffer)
+	notifyHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	notifier := services.NewNotifyDispatcher(pool, cfg, notifyHTTPClient)
+	services.SetNotifier(notifier)
 
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()
@@ -172,6 +175,7 @@ func main() {
 		RefreshWorker:  refreshWorker,
 		LogBuffer:      logBuffer,
 		HTTPClient:     httpClient,
+		Notifier:       notifier,
 		Updater:        updater,
 		GapScanTask:    gapScanTask,
 		BackfillTask:   backfillTask,
@@ -220,6 +224,8 @@ func main() {
 	go ingestWorker.Run(ctx)
 	go scrapeWorker.Run(ctx)
 	go refreshWorker.Run(ctx)
+	go notifier.Run(ctx)
+	go notifier.RunLibraryNewSweeper(ctx)
 	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)
 	fileWatcher.Start(ctx, pool, cache)
 
@@ -288,6 +294,7 @@ func main() {
 		handlers.RegisterEmbyCompatRoutes(group, state, adminMW)
 		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
 		handlers.RegisterWebhookRoutes(group, state)
+		handlers.RegisterNotifyAdminRoutes(group, state, adminMW)
 		handlers.RegisterTaskCenterRoutes(group, state, adminMW)
 		handlers.RegisterSystemMetricsRoutes(group, state, adminMW)
 		handlers.RegisterAdminQueueRoutes(group, state, adminMW)
@@ -327,11 +334,13 @@ func main() {
 				strings.HasPrefix(p, "/Sessions") ||
 				strings.HasPrefix(p, "/Library") ||
 				strings.HasPrefix(p, "/Auth") ||
+				strings.HasPrefix(p, "/Admin") ||
 				strings.HasPrefix(p, "/Stats") ||
 				strings.HasPrefix(p, "/Plugins") ||
 				strings.HasPrefix(p, "/Shows") ||
 				strings.HasPrefix(p, "/Search") ||
-				strings.HasPrefix(p, "/Tasks")
+				strings.HasPrefix(p, "/Tasks") ||
+				strings.HasPrefix(p, "/Notifications")
 			if isAPI {
 				c.JSON(404, gin.H{"message": "Not found"})
 				return
@@ -366,7 +375,7 @@ func main() {
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Emby-Token, X-Emby-Authorization")
 
 		if c.Request.Method == "OPTIONS" {

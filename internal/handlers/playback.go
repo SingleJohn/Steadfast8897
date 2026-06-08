@@ -27,8 +27,11 @@ type activePlayback struct {
 	seriesName        string
 	clientName        string
 	deviceName        string
+	deviceID          string
+	appVersion        string
 	clientIP          string
 	playMethod        string
+	playSessionID     string
 	startTimeMs       int64
 	lastProgressMs    int64
 	lastPositionTicks int64
@@ -307,13 +310,26 @@ func OnPlaybackStart(c *gin.Context) {
 		seriesName:        seriesName,
 		clientName:        clientName,
 		deviceName:        deviceName,
+		deviceID:          deviceID,
+		appVersion:        strOrPtr(info.Version, ""),
 		clientIP:          clientIP,
 		playMethod:        playMethod,
+		playSessionID:     body.PlaySessionId,
 		startTimeMs:       nowMs,
 		lastProgressMs:    nowMs,
 		lastPositionTicks: body.PositionTicks,
 	}
 	activePlaybacksMu.Unlock()
+
+	services.EmitPlaybackNotify(
+		services.NotifyEventPlaybackStart,
+		resolvedItemID,
+		auth.ID,
+		auth.Name,
+		buildNotifySession(clientIP, clientName, deviceName, deviceID, strOrPtr(info.Version, ""), body.PlaySessionId),
+		&services.NotifyPlaybackInfo{PositionTicks: body.PositionTicks, PlaylistIndex: 0, PlaylistLength: 1},
+		nil,
+	)
 
 	c.Status(http.StatusNoContent)
 }
@@ -421,8 +437,11 @@ func OnPlaybackProgress(c *gin.Context) {
 			seriesName:        seriesName,
 			clientName:        resolveClientName(strOrPtr(info.Client, ""), userAgent),
 			deviceName:        resolveDeviceName(strOrPtr(info.Device, ""), userAgent),
+			deviceID:          deviceID,
+			appVersion:        strOrPtr(info.Version, ""),
 			clientIP:          clientIP,
 			playMethod:        pm,
+			playSessionID:     body.PlaySessionId,
 			startTimeMs:       nowMs,
 			lastProgressMs:    nowMs,
 			lastPositionTicks: body.PositionTicks,
@@ -496,7 +515,7 @@ func OnPlaybackStopped(c *gin.Context) {
 		if th > 100 {
 			th = 100
 		}
-		pct := body.PositionTicks * 100 / *item.RuntimeTicks
+		pct := pos * 100 / *item.RuntimeTicks
 		if pct >= int64(th) {
 			t := true
 			played = &t
@@ -523,6 +542,22 @@ func OnPlaybackStopped(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	updatedUD, _ := models.GetUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID)
+	notifySession := buildNotifySessionFromPlayback(session, deviceID, body.PlaySessionId)
+	services.EmitPlaybackNotify(
+		services.NotifyEventPlaybackStop,
+		itemUUID,
+		auth.ID,
+		auth.Name,
+		notifySession,
+		&services.NotifyPlaybackInfo{
+			PlayedToCompletion: played != nil && *played,
+			PositionTicks:      pos,
+			PlaylistIndex:      0,
+			PlaylistLength:     1,
+		},
+		updatedUD,
+	)
 	c.Status(http.StatusNoContent)
 }
 
@@ -551,6 +586,8 @@ func MarkPlayed(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
+	services.EmitUserDataNotify(services.NotifyEventItemMarkPlayed, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"Played": true})
 }
 
@@ -577,6 +614,8 @@ func MarkUnplayed(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
+	services.EmitUserDataNotify(services.NotifyEventItemMarkUnplayed, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"Played": false})
 }
 
@@ -602,6 +641,8 @@ func MarkFavorite(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
+	services.EmitUserDataNotify(services.NotifyEventItemRate, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"IsFavorite": true})
 }
 
@@ -627,6 +668,8 @@ func UnmarkFavorite(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
+	services.EmitUserDataNotify(services.NotifyEventItemRate, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"IsFavorite": false})
 }
 
@@ -673,6 +716,46 @@ func loadItemForPlayback(ctx context.Context, st *AppState, rawItemID string) (*
 		id = *resolved
 	}
 	return models.GetItemByAnyID(ctx, st.DB, id)
+}
+
+func notifyUserName(ctx context.Context, st *AppState, userID string) string {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return userID
+	}
+	u, err := models.FindUserByID(ctx, st.DB, uid)
+	if err != nil || u == nil || u.Name == "" {
+		return userID
+	}
+	return u.Name
+}
+
+func buildNotifySession(remoteEndPoint, clientName, deviceName, deviceID, appVersion, sessionID string) *services.NotifySession {
+	if sessionID == "" {
+		sessionID = deviceID
+	}
+	return &services.NotifySession{
+		RemoteEndPoint:     remoteEndPoint,
+		Client:             clientName,
+		DeviceName:         deviceName,
+		DeviceID:           deviceID,
+		ApplicationVersion: appVersion,
+		ID:                 sessionID,
+	}
+}
+
+func buildNotifySessionFromPlayback(pb *activePlayback, deviceID, sessionID string) *services.NotifySession {
+	if pb == nil {
+		return buildNotifySession("", "", "", deviceID, "", sessionID)
+	}
+	if sessionID == "" {
+		sessionID = pb.playSessionID
+	}
+	did := pb.deviceID
+	if did == "" {
+		did = deviceID
+	}
+	return buildNotifySession(pb.clientIP, pb.clientName, pb.deviceName, did, pb.appVersion, sessionID)
 }
 
 func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPaused bool) *services.NowPlaying {

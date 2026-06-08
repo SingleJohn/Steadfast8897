@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -429,25 +429,41 @@ func (w *IngestWorker) findShowRoot(libID, filePath string) string {
 func (w *IngestWorker) processDelete(ctx context.Context, e IngestEvent) error {
 	norm := filepath.Clean(e.Path)
 
-	var (
-		tag pgconn.CommandTag
-		err error
-	)
+	var err error
+	var rows pgx.Rows
 	if e.Source == "scan" {
-		tag, err = w.pool.Exec(ctx,
-			"DELETE FROM items WHERE file_path = $1", norm)
+		rows, err = w.pool.Query(ctx,
+			"DELETE FROM items WHERE file_path = $1 RETURNING id::text, name, type, file_path", norm)
 	} else {
 		prefix := norm + string(filepath.Separator) + "%"
-		tag, err = w.pool.Exec(ctx,
-			"DELETE FROM items WHERE file_path = $1 OR file_path LIKE $2",
+		rows, err = w.pool.Query(ctx,
+			"DELETE FROM items WHERE file_path = $1 OR file_path LIKE $2 RETURNING id::text, name, type, file_path",
 			norm, prefix)
 	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
+	defer rows.Close()
+
+	var removed int64
+	var emitted int64
+	for rows.Next() {
+		removed++
+		var item NotifyDeletedItem
+		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Path); err != nil {
+			return err
+		}
+		if item.Type == "Movie" || item.Type == "Episode" || item.Type == "Series" {
+			EmitLibraryDeleted(item)
+			emitted++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if removed > 0 {
 		slog.Info("[Ingest] Delete removed items",
-			"count", tag.RowsAffected(), "path", norm, "source", e.Source)
+			"count", removed, "notified", emitted, "path", norm, "source", e.Source)
 		_ = cleanupEmptyParents(ctx, w.pool)
 	}
 	return nil
