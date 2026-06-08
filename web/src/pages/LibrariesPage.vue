@@ -60,6 +60,12 @@ const fileWatcherEnabled = ref(true)
 const scanning = ref(false)
 const savingConfig = ref(false)
 const activeView = ref<'libraries' | 'scan' | 'platforms'>('libraries')
+const draggingLibraryId = ref<string | null>(null)
+const dragOverLibraryId = ref<string | null>(null)
+const dragStartLibraries = ref<any[]>([])
+const libraryDragChanged = ref(false)
+const libraryDragCommitted = ref(false)
+const savingLibraryOrder = ref(false)
 
 // Platform libraries
 const platformsData = ref<{ GlobalEnabled: boolean; Platforms: any[] }>({ GlobalEnabled: false, Platforms: [] })
@@ -388,16 +394,111 @@ watch(
   { deep: true },
 )
 
-async function moveLibrary(index: number, direction: 'up' | 'down') {
-  const swapIdx = direction === 'up' ? index - 1 : index + 1
-  if (swapIdx < 0 || swapIdx >= libraries.value.length) return
+function reorderLibrary(fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= libraries.value.length || toIndex >= libraries.value.length) {
+    return false
+  }
   const arr = [...libraries.value]
-  ;[arr[index], arr[swapIdx]] = [arr[swapIdx], arr[index]]
+  const [moved] = arr.splice(fromIndex, 1)
+  arr.splice(toIndex, 0, moved)
   libraries.value = arr
+  return true
+}
+
+async function persistLibraryOrder() {
+  const arr = [...libraries.value]
   const orders = arr.map((lib: any, i: number) => ({ Id: lib.ItemId, SortOrder: i }))
+  savingLibraryOrder.value = true
   try {
     await updateLibrarySortOrder(orders)
-  } catch { showToast('排序失败', 'error') }
+  } catch {
+    showToast('排序保存失败，已恢复服务器顺序', 'error')
+    try {
+      libraries.value = await getLibraries()
+    } catch {
+      if (dragStartLibraries.value.length > 0) libraries.value = dragStartLibraries.value
+    }
+  } finally {
+    savingLibraryOrder.value = false
+  }
+}
+
+async function moveLibrary(index: number, direction: 'up' | 'down') {
+  const targetIndex = direction === 'up' ? index - 1 : index + 1
+  if (!reorderLibrary(index, targetIndex)) return
+  await persistLibraryOrder()
+}
+
+function handleLibraryDragStart(index: number, e: DragEvent) {
+  const lib = libraries.value[index]
+  if (!lib || libraries.value.length <= 1 || savingLibraryOrder.value) return
+  draggingLibraryId.value = lib.ItemId
+  dragOverLibraryId.value = lib.ItemId
+  dragStartLibraries.value = [...libraries.value]
+  libraryDragChanged.value = false
+  libraryDragCommitted.value = false
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', lib.ItemId)
+  }
+}
+
+function handleLibraryDragOver(index: number, e: DragEvent) {
+  if (!draggingLibraryId.value) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const target = libraries.value[index]
+  if (!target) return
+  dragOverLibraryId.value = target.ItemId
+  const fromIndex = libraries.value.findIndex((lib: any) => lib.ItemId === draggingLibraryId.value)
+  if (reorderLibrary(fromIndex, index)) {
+    libraryDragChanged.value = true
+  }
+}
+
+async function finishLibraryDrag(commit: boolean) {
+  if (!draggingLibraryId.value) return
+  if (!commit) {
+    if (libraryDragChanged.value && dragStartLibraries.value.length > 0) {
+      libraries.value = dragStartLibraries.value
+    }
+    resetLibraryDrag()
+    return
+  }
+  if (libraryDragChanged.value) {
+    await persistLibraryOrder()
+  }
+  resetLibraryDrag()
+}
+
+function handleLibraryDrop(e: DragEvent) {
+  if (!draggingLibraryId.value) return
+  e.preventDefault()
+  libraryDragCommitted.value = true
+  void finishLibraryDrag(true)
+}
+
+function handleLibraryDragEnd() {
+  if (libraryDragCommitted.value) return
+  void finishLibraryDrag(false)
+}
+
+function resetLibraryDrag() {
+  draggingLibraryId.value = null
+  dragOverLibraryId.value = null
+  dragStartLibraries.value = []
+  libraryDragChanged.value = false
+  libraryDragCommitted.value = false
+}
+
+function onLibraryDragHandleKeydown(index: number, e: KeyboardEvent) {
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    void moveLibrary(index, 'up')
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    void moveLibrary(index, 'down')
+  }
 }
 
 function scanProgForLib(libId: string) {
@@ -536,17 +637,37 @@ onUnmounted(() => {
           <div class="lib-empty">尚未配置媒体库。点击"添加媒体库"开始使用。</div>
         </div>
         <div v-else class="lib-grid">
-          <div v-for="(lib, idx) in libraries" :key="lib.ItemId" class="lib-card-wrapper">
+          <div
+            v-for="(lib, idx) in libraries"
+            :key="lib.ItemId"
+            class="lib-card-wrapper"
+            :class="{
+              'lib-card-wrapper-dragging': draggingLibraryId === lib.ItemId,
+              'lib-card-wrapper-over': dragOverLibraryId === lib.ItemId && draggingLibraryId !== lib.ItemId,
+            }"
+            @dragover="handleLibraryDragOver(idx, $event)"
+            @drop="handleLibraryDrop"
+          >
             <LibraryCard
               :lib="lib"
               :scan-prog="scanProgForLib(lib.ItemId)"
               :show-item-count="showLibraryItemCount"
               @click="openEditModal"
             />
-            <div class="lib-sort-btns">
-              <n-button text size="tiny" :disabled="idx === 0" @click.stop="moveLibrary(idx, 'up')">&#9650;</n-button>
-              <n-button text size="tiny" :disabled="idx === libraries.length - 1" @click.stop="moveLibrary(idx, 'down')">&#9660;</n-button>
-            </div>
+            <button
+              type="button"
+              class="lib-drag-handle"
+              :draggable="libraries.length > 1 && !savingLibraryOrder"
+              :disabled="libraries.length <= 1 || savingLibraryOrder"
+              :aria-label="`拖动排序：${lib.Name}`"
+              title="拖动排序"
+              @click.stop
+              @keydown.stop="onLibraryDragHandleKeydown(idx, $event)"
+              @dragstart.stop="handleLibraryDragStart(idx, $event)"
+              @dragend.stop="handleLibraryDragEnd"
+            >
+              <span aria-hidden="true">⋮⋮</span>
+            </button>
           </div>
         </div>
       </n-tab-pane>
@@ -858,25 +979,70 @@ onUnmounted(() => {
 @media (min-width: 960px)  { .lib-grid { grid-template-columns: repeat(4, 1fr); } }
 @media (min-width: 1400px) { .lib-grid { grid-template-columns: repeat(5, 1fr); } }
 
-.lib-card-wrapper { position: relative; }
-.lib-sort-btns {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  z-index: 5;
-  opacity: 0;
-  transition: opacity 0.2s;
+.lib-card-wrapper {
+  position: relative;
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
-.lib-card-wrapper:hover .lib-sort-btns { opacity: 1; }
-.lib-sort-btns .n-button {
-  background: rgba(0,0,0,0.6);
+.lib-card-wrapper-dragging {
+  opacity: 0.58;
+  transform: scale(0.98);
+}
+.lib-card-wrapper-over::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  z-index: 40;
+  pointer-events: none;
+  border: 1px solid var(--app-primary, #10b981);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-primary, #10b981) 12%, transparent);
+}
+.lib-drag-handle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255,255,255,0.16);
   border-radius: 4px;
-  padding: 2px 6px;
-  color: #fff !important;
-  font-size: 10px;
+  background: rgba(0,0,0,0.58);
+  color: rgba(255,255,255,0.84);
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: -4px;
+  cursor: grab;
+  opacity: 0.72;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.28);
+  transition: opacity 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+.lib-drag-handle:hover,
+.lib-drag-handle:focus-visible {
+  opacity: 1;
+  background: rgba(0,0,0,0.74);
+  border-color: rgba(255,255,255,0.3);
+}
+.lib-drag-handle:focus-visible {
+  outline: 2px solid var(--app-primary, #10b981);
+  outline-offset: 2px;
+}
+.lib-drag-handle:active {
+  cursor: grabbing;
+  transform: scale(0.96);
+}
+.lib-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.36;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lib-card-wrapper,
+  .lib-drag-handle {
+    transition: none;
+  }
 }
 
 .lib-empty-card {
