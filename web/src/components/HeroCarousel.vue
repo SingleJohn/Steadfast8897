@@ -58,6 +58,13 @@ function goDetail(item: any) {
 function backdropId(item: any): string {
   return item.ParentBackdropItemId || item.Id
 }
+
+function titleClass(item: any): string {
+  const len = String(item?.Name || '').trim().length
+  if (len > 64) return 'hero-title-compact'
+  if (len > 38) return 'hero-title-long'
+  return ''
+}
 </script>
 
 <template>
@@ -105,7 +112,7 @@ function backdropId(item: any): string {
                 </template>
               </div>
 
-              <h1 class="hero-title">{{ item.Name }}</h1>
+              <h1 class="hero-title" :class="titleClass(item)" :title="item.Name">{{ item.Name }}</h1>
 
               <p v-if="item.Overview" class="hero-overview">{{ item.Overview }}</p>
 
@@ -264,15 +271,32 @@ function backdropId(item: any): string {
 /* Title:Manrope 巨幅 editorial */
 .hero-title {
   font-family: 'Manrope', 'Inter', system-ui, sans-serif;
-  font-size: clamp(2.25rem, 6.5vw, 5.5rem);
+  font-size: clamp(2.2rem, 5.2vw, 4.6rem);
   font-weight: 900;
-  line-height: 1.02;
-  letter-spacing: -0.035em;
+  line-height: 1.04;
+  letter-spacing: 0;
   text-transform: none;
   margin: 0;
-  max-width: 20ch;
+  max-width: 22ch;
   color: #fff;
   text-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  display: -webkit-box;
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hero-title-long {
+  font-size: clamp(2rem, 4.25vw, 3.8rem);
+  line-height: 1.07;
+  max-width: 24ch;
+}
+
+.hero-title-compact {
+  font-size: clamp(1.75rem, 3.35vw, 3rem);
+  line-height: 1.1;
+  max-width: 30ch;
 }
 
 .hero-overview {
@@ -406,6 +430,13 @@ function backdropId(item: any): string {
   }
   .hero-title {
     font-size: clamp(1.9rem, 8vw, 2.6rem);
+    max-width: 100%;
+    line-clamp: 3;
+    -webkit-line-clamp: 3;
+  }
+  .hero-title-long,
+  .hero-title-compact {
+    font-size: clamp(1.55rem, 6.6vw, 2rem);
     max-width: 100%;
   }
   .hero-overview {
