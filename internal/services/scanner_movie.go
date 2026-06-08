@@ -145,6 +145,9 @@ func collectMovieEntries(dir string, results *[]movieEntry) {
 		}
 		fullPath := filepath.Join(dir, name)
 		if entry.IsDir() {
+			if IsExtrasDirName(name) {
+				continue
+			}
 			if looksLikeSeasonDir(name) {
 				continue
 			}
@@ -244,6 +247,7 @@ func scanOneMovie(
 				}
 				syncItemArtwork(ctx, pool, itemID, poster, posterTag, backdrop, backdropTag)
 				syncItemExtraBackdrops(ctx, pool, itemID, FindExtraFanart(fullPath))
+				setLocalTrailer(ctx, pool, itemID, FindLocalTrailer(fullPath))
 				ensureMovieMediaVersions(ctx, pool, itemID, videoFiles, dirCache)
 				// race 场景兜底:NFO 比 video 晚到时,首次 Create 事件没读到 nfo 就 INSERT 了,
 				// 等到 nfo 的 Create 再次触发时走到这里,补一次 ApplyNfoData(幂等)。
@@ -278,6 +282,7 @@ func scanOneMovie(
 		if err == nil && insertedID != nil {
 			ensureMovieMediaVersions(ctx, pool, *insertedID, videoFiles, dirCache)
 			syncItemExtraBackdrops(ctx, pool, *insertedID, FindExtraFanart(fullPath))
+			setLocalTrailer(ctx, pool, *insertedID, FindLocalTrailer(fullPath))
 			if nfoPath := FindNfoCached(dirCache); nfoPath != nil {
 				if nfo := ParseNfo(*nfoPath); nfo != nil {
 					ApplyNfoDataWithPlatformSource(ctx, pool, insertedID.String(), nfo, models.PlatformScanSourceNFO)
@@ -300,16 +305,22 @@ func scanOneMovie(
 				}
 				syncItemArtwork(ctx, pool, conflictID, poster, posterTag, backdrop, backdropTag)
 				syncItemExtraBackdrops(ctx, pool, conflictID, FindExtraFanart(fullPath))
+				setLocalTrailer(ctx, pool, conflictID, FindLocalTrailer(fullPath))
 				ensureMovieMediaVersions(ctx, pool, conflictID, videoFiles, dirCache)
 			} else if existingID := findExistingMovieItem(ctx, pool, libraryID, parsed.Name, parsed.Year, primaryPath); existingID != nil {
 				syncItemArtwork(ctx, pool, *existingID, poster, posterTag, backdrop, backdropTag)
 				syncItemExtraBackdrops(ctx, pool, *existingID, FindExtraFanart(fullPath))
+				setLocalTrailer(ctx, pool, *existingID, FindLocalTrailer(fullPath))
 				ensureMovieMediaVersions(ctx, pool, *existingID, videoFiles, dirCache)
 			}
 		}
 	} else {
 		ext := strings.ToLower(filepath.Ext(name))
 		if !IsVideoExt(ext) {
+			return
+		}
+		// extras/trailers 目录里的视频不当独立影片(兜底,主拦截在 ingest processCreate)。
+		if IsInExtrasFolder(fullPath) {
 			return
 		}
 		parentDir := filepath.Dir(fullPath)

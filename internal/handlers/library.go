@@ -1124,6 +1124,18 @@ func getItemDetail(c *gin.Context) {
 		return
 	}
 
+	// 本地预告片(trailers/ 目录)→ 追加一条绝对地址 RemoteTrailers,Infuse 可"播放预告片"。
+	var localTrailer *string
+	state.DB.QueryRow(ctx, "SELECT local_trailer_path FROM items WHERE id = $1::uuid", item.ID).Scan(&localTrailer)
+	if localTrailer != nil && *localTrailer != "" {
+		scheme := "http"
+		if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		trailerURL := scheme + "://" + c.Request.Host + "/Videos/" + item.ID + "/trailer"
+		base.RemoteTrailers = append(base.RemoteTrailers, dto.MediaUrl{Url: trailerURL, Name: "预告片"})
+	}
+
 	hideMediaSourceSizeForInfuse(c, base.MediaSources)
 	if len(base.MediaSources) > 0 {
 		if strings.TrimSpace(base.MediaSources[0].Path) != "" {

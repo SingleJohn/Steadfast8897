@@ -35,6 +35,7 @@ func RegisterVideoRoutes(group *gin.RouterGroup, state *AppState, authMW gin.Han
 	// This allows 302-redirected clients to access streams without re-authenticating.
 	group.GET("/Videos/:itemId/stream", func(c *gin.Context) { streamVideo(c, state) })
 	group.GET("/Videos/:itemId/stream.:container", func(c *gin.Context) { streamVideo(c, state) })
+	group.GET("/Videos/:itemId/trailer", func(c *gin.Context) { streamTrailer(c, state) })
 }
 
 type mediaVersionRow struct {
@@ -555,6 +556,12 @@ func streamVideo(c *gin.Context, state *AppState) {
 		}
 	}
 
+	serveMediaFile(c, state, itemID, filePath)
+}
+
+// serveMediaFile 解析并输出一个媒体文件路径:strm/http → 302;本地文件 → 直出(支持 Range);
+// 本地不存在 → 交给 gateway 自播放路由兜底。streamVideo 与 streamTrailer 共用。
+func serveMediaFile(c *gin.Context, state *AppState, itemID, filePath string) {
 	if strings.HasSuffix(strings.ToLower(filePath), ".strm") {
 		if rp := resolveStrmPath(filePath); rp != nil {
 			if rp.isRemote {
@@ -640,6 +647,25 @@ func streamVideo(c *gin.Context, state *AppState) {
 	c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
 	c.Status(http.StatusPartialContent)
 	io.CopyN(c.Writer, f, chunkLen)
+}
+
+// streamTrailer 输出电影的本地预告片(items.local_trailer_path),复用 serveMediaFile。
+func streamTrailer(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+	itemID := c.Param("itemId")
+	uid, err := models.ResolveToUUID(ctx, state.DB, itemID)
+	if err != nil || uid == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid item id"})
+		return
+	}
+	var trailerPath *string
+	if err := state.DB.QueryRow(ctx,
+		"SELECT local_trailer_path FROM items WHERE id = $1::uuid", *uid).Scan(&trailerPath); err != nil ||
+		trailerPath == nil || *trailerPath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"message": "No local trailer"})
+		return
+	}
+	serveMediaFile(c, state, itemID, *trailerPath)
 }
 
 // collectMergedPlaybackSources finds media_versions from items that have been

@@ -303,6 +303,13 @@ func (w *IngestWorker) processCreate(ctx context.Context, e IngestEvent) error {
 		}
 	}
 
+	// extras/trailers 等附属目录里的视频不是独立影片,直接跳过(预告片由所属电影的
+	// local_trailer_path 关联,不单独入库)。覆盖 movie/tv 两条路径。
+	if !e.IsDir && IsInExtrasFolder(e.Path) {
+		slog.Debug("[Ingest] Create skipped: file inside extras folder", "path", e.Path)
+		return nil
+	}
+
 	libID, colType, ok := w.libs.Match(e.Path)
 	if !ok {
 		slog.Debug("[Ingest] Create skipped: path outside any library", "path", e.Path)

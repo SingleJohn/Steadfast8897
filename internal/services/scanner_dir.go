@@ -138,6 +138,54 @@ func FindExtraFanart(dir string) []string {
 	return paths
 }
 
+// FindLocalTrailer 返回电影目录下的本地预告片绝对路径,无则返回 ""。
+// 约定(对齐 Emby):优先 <dir>/trailers/ 下第一个视频;其次同目录 <basename>-trailer.<ext>。
+func FindLocalTrailer(dir string) string {
+	// 1) trailers/ 子目录
+	trailerDir := filepath.Join(dir, "trailers")
+	if entries, err := os.ReadDir(trailerDir); err == nil {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if IsVideoExt(filepath.Ext(e.Name())) {
+				names = append(names, e.Name())
+			}
+		}
+		if len(names) > 0 {
+			sort.Strings(names)
+			return filepath.Join(trailerDir, names[0])
+		}
+	}
+	// 2) 同目录 <stem>-trailer.<ext>
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+			if strings.HasSuffix(stem, "-trailer") && IsVideoExt(filepath.Ext(name)) {
+				return filepath.Join(dir, name)
+			}
+		}
+	}
+	return ""
+}
+
+// setLocalTrailer 把本地预告片路径写入 items.local_trailer_path(空路径则置空,幂等)。
+func setLocalTrailer(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, trailerPath string) {
+	var val interface{}
+	if trailerPath != "" {
+		val = trailerPath
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE items SET local_trailer_path = $1 WHERE id = $2::uuid", val, itemID); err != nil {
+		slog.Warn("[Scan] Failed to set local trailer", "itemId", itemID, "error", err)
+	}
+}
+
 // trailingNumber 提取文件茎里末尾的数字(fanart10.jpg -> 10),无数字返回 0。
 func trailingNumber(path string) int {
 	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))

@@ -3,11 +3,30 @@ package services
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"fyms/internal/services/scraper"
 )
+
+// extrasDirNames 是 Emby/Jellyfin 约定的"附属内容"目录名:里面的视频是预告片/花絮等,
+// 不是独立影片,扫库时不应单独入库。
+var extrasDirNames = map[string]bool{
+	"trailers": true, "extras": true, "featurettes": true, "behind the scenes": true,
+	"deleted scenes": true, "interviews": true, "scenes": true, "samples": true,
+	"shorts": true, "theme-music": true, "backdrops": true,
+}
+
+// IsExtrasDirName 判断目录名是否为 extras 类目录。
+func IsExtrasDirName(name string) bool {
+	return extrasDirNames[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// IsInExtrasFolder 判断文件路径的直接父目录是否为 extras 类目录(如 .../trailers/trailer.mp4)。
+func IsInExtrasFolder(filePath string) bool {
+	return IsExtrasDirName(filepath.Base(filepath.Dir(filePath)))
+}
 
 // catalogNumberRe 匹配常见番号:可选前导数字(厂牌/频道码) + 字母 + 连字符 + 数字。
 // 例:IPZZ-857 / 300MIUM-1328 / 326IAV-002 / 336KNB-406。
