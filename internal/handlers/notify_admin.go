@@ -273,7 +273,7 @@ func sampleNotifyItem() gin.H {
 		"Name":         "Sample Movie",
 		"Type":         "Movie",
 		"Path":         "/media/Sample Movie.mkv",
-		"RunTimeTicks": 88800000000,
+		"RunTimeTicks": int64(88800000000),
 		"ProviderIds":  gin.H{"Tmdb": "27205", "Imdb": "tt1375666"},
 		"UserData":     gin.H{"PlaybackPositionTicks": 0, "PlayCount": 1, "IsFavorite": true, "Played": true},
 	}
