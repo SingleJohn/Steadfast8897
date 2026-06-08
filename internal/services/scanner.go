@@ -15,8 +15,23 @@ import (
 
 // ============ Scan Libraries ============
 
+type ScanLibraryOptions struct {
+	AfterComplete func(context.Context)
+}
+
 // ScanAllLibraries 对所有 library 并发触发 ScanLibrary。
 func ScanAllLibraries(ctx context.Context, pool *pgxpool.Pool, cache *CacheService, tracker *ScanProgressTracker, ingest *IngestWorker) {
+	ScanAllLibrariesWithOptions(ctx, pool, cache, tracker, ingest, nil)
+}
+
+func ScanAllLibrariesWithOptions(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	cache *CacheService,
+	tracker *ScanProgressTracker,
+	ingest *IngestWorker,
+	buildOptions func(models.Library) ScanLibraryOptions,
+) {
 	libs, err := models.GetAllLibraries(ctx, pool)
 	if err != nil {
 		slog.Error("Failed to get libraries", "error", err)
@@ -28,7 +43,11 @@ func ScanAllLibraries(ctx context.Context, pool *pgxpool.Pool, cache *CacheServi
 		wg.Add(1)
 		go func(lib models.Library) {
 			defer wg.Done()
-			ScanLibrary(ctx, pool, cache, tracker, ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
+			opts := ScanLibraryOptions{}
+			if buildOptions != nil {
+				opts = buildOptions(lib)
+			}
+			ScanLibraryWithOptions(ctx, pool, cache, tracker, ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name, opts)
 		}(lib)
 	}
 	wg.Wait()
@@ -53,6 +72,20 @@ func ScanLibrary(
 	libraryID, collectionType string,
 	paths []string,
 	libraryName string,
+) {
+	ScanLibraryWithOptions(ctx, pool, cache, tracker, ingest, libraryID, collectionType, paths, libraryName, ScanLibraryOptions{})
+}
+
+func ScanLibraryWithOptions(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	cache *CacheService,
+	tracker *ScanProgressTracker,
+	ingest *IngestWorker,
+	libraryID, collectionType string,
+	paths []string,
+	libraryName string,
+	opts ScanLibraryOptions,
 ) {
 	if tracker.IsScanning(libraryID) {
 		slog.Warn("Library is already scanning", "library", libraryName)
@@ -215,5 +248,8 @@ func ScanLibrary(
 		// probe_on_ingest 开关打开时,扫库结束自动跑一遍 ffprobe 补齐
 		// 新入库的 media_version 的 mediainfo / runtime_ticks。
 		go MaybeTriggerAutoProbe(ctx, pool)
+		if opts.AfterComplete != nil {
+			opts.AfterComplete(ctx)
+		}
 	}()
 }

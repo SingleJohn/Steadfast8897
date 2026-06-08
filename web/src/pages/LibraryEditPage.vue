@@ -2,12 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  NButton, NInput, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NProgress,
+  NButton, NInput, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NProgress, NPopconfirm,
 } from 'naive-ui'
 import { ArrowBackOutline, FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
-  addLibraryPath, removeLibraryPath, refreshSingleLibrary,
+  addLibraryPath, removeLibraryPath, refreshSingleLibrary, forceLibraryRescanOptions,
   uploadLibraryImage, deleteLibraryImage, browseDirectories,
 } from '../api/client'
 import { useToast } from '../composables/useToast'
@@ -125,6 +125,18 @@ async function handleScan() {
     showToast('媒体库扫描已开始', 'success')
   } catch {
     showToast('启动扫描失败', 'error')
+  }
+  setTimeout(() => { scanning.value = false }, 3000)
+}
+
+async function handleForceRescan() {
+  if (!libraryId.value) return
+  scanning.value = true
+  try {
+    await refreshSingleLibrary(libraryId.value, forceLibraryRescanOptions)
+    showToast('强制重扫已开始，扫描完成后会刷新本地元数据和图片', 'success')
+  } catch {
+    showToast('启动强制重扫失败', 'error')
   }
   setTimeout(() => { scanning.value = false }, 3000)
 }
@@ -300,7 +312,19 @@ async function onDeleteCover() {
         扫描
       </h3>
       <p class="section-desc">扫描此媒体库中所有文件夹的媒体文件，新增的媒体将自动添加到库中。</p>
-      <n-button type="primary" size="small" :loading="scanning" @click="handleScan">立即扫描此媒体库</n-button>
+      <n-space size="small">
+        <n-button type="primary" size="small" :loading="scanning" @click="handleScan">立即扫描此媒体库</n-button>
+        <n-popconfirm
+          positive-text="强制重扫"
+          negative-text="取消"
+          @positive-click="handleForceRescan"
+        >
+          <template #trigger>
+            <n-button secondary type="warning" size="small" :disabled="scanning">强制重扫</n-button>
+          </template>
+          扫描完成后会重新读取本地 NFO 和图片，任务量会比普通扫描更大。
+        </n-popconfirm>
+      </n-space>
     </div>
 
     <!-- Danger -->

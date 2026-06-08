@@ -332,8 +332,33 @@ export async function addLibrary(name: string, collectionType: string, paths: st
   });
 }
 
-export async function refreshLibrary() {
-  return request('/Library/Refresh', { method: 'POST' });
+export type LibraryRefreshOptions = {
+  scan?: boolean
+  scope?: 'metadata' | 'images' | 'subtree'
+  metadata?: boolean
+  images?: boolean
+  replace_all_metadata?: boolean
+  replace_all_images?: boolean
+  validate_only?: boolean
+  allow_remote?: boolean
+  refresh_subtree?: boolean
+}
+
+function refreshBody(options?: LibraryRefreshOptions) {
+  return options ? JSON.stringify(options) : undefined
+}
+
+export const forceLibraryRescanOptions: LibraryRefreshOptions = {
+  scan: true,
+  metadata: true,
+  images: true,
+  replace_all_metadata: true,
+  replace_all_images: true,
+  allow_remote: false,
+}
+
+export async function refreshLibrary(options?: LibraryRefreshOptions) {
+  return request('/Library/Refresh', { method: 'POST', body: refreshBody(options) });
 }
 
 export async function getLibraryDetail(id: string) {
@@ -364,8 +389,8 @@ export async function removeLibraryPath(id: string, path: string) {
   });
 }
 
-export async function refreshSingleLibrary(id: string) {
-  return request(`/Library/VirtualFolders/${id}/Refresh`, { method: 'POST' });
+export async function refreshSingleLibrary(id: string, options?: LibraryRefreshOptions) {
+  return request(`/Library/VirtualFolders/${id}/Refresh`, { method: 'POST', body: refreshBody(options) });
 }
 
 export async function uploadLibraryImage(id: string, file: File) {

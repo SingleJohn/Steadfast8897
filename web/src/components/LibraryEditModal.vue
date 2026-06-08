@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import {
-  NButton, NCheckbox, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar,
+  NButton, NCheckbox, NInput, NInputNumber, NSelect, NModal, NSpace, NIcon, NSpin, NTag, NScrollbar, NPopconfirm,
 } from 'naive-ui'
 import { FolderOutline, CloudUploadOutline, TrashOutline, RefreshOutline, LinkOutline, LayersOutline, ArrowUpOutline, ArrowDownOutline, CloseOutline, SparklesOutline, ReorderFourOutline } from '@vicons/ionicons5'
 import {
   getLibraryDetail, updateLibraryInfo, deleteLibraryById,
-  addLibraryPath, removeLibraryPath, refreshSingleLibrary,
+  addLibraryPath, removeLibraryPath, refreshSingleLibrary, forceLibraryRescanOptions,
   uploadLibraryImage, setLibraryImageUrl, deleteLibraryImage, browseDirectories,
   getScrapeDefaults, getLibraryScrapeConfig, updateLibraryScrapeConfig,
   listCoverStyles, generateLibraryCover,
@@ -192,6 +192,18 @@ async function handleScan() {
     showToast('媒体库扫描已开始', 'success')
   } catch {
     showToast('启动扫描失败', 'error')
+  }
+  setTimeout(() => { scanning.value = false }, 3000)
+}
+
+async function handleForceRescan() {
+  if (!props.libraryId) return
+  scanning.value = true
+  try {
+    await refreshSingleLibrary(props.libraryId, forceLibraryRescanOptions)
+    showToast('强制重扫已开始，扫描完成后会刷新本地元数据和图片', 'success')
+  } catch {
+    showToast('启动强制重扫失败', 'error')
   }
   setTimeout(() => { scanning.value = false }, 3000)
 }
@@ -779,7 +791,19 @@ async function handleSaveScrapeCfg() {
           扫描
         </h4>
         <p class="em-section-desc">扫描此媒体库中所有文件夹的媒体文件。</p>
-        <n-button type="primary" size="small" :loading="scanning" @click="handleScan">立即扫描</n-button>
+        <n-space size="small">
+          <n-button type="primary" size="small" :loading="scanning" @click="handleScan">立即扫描</n-button>
+          <n-popconfirm
+            positive-text="强制重扫"
+            negative-text="取消"
+            @positive-click="handleForceRescan"
+          >
+            <template #trigger>
+              <n-button secondary type="warning" size="small" :disabled="scanning">强制重扫</n-button>
+            </template>
+            扫描完成后会重新读取本地 NFO 和图片，任务量会比普通扫描更大。
+          </n-popconfirm>
+        </n-space>
       </div>
 
       <!-- Scrape config -->

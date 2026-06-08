@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
-  NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress,
+  NButton, NCheckbox, NCheckboxGroup, NInput, NInputNumber, NSelect, NSwitch, NModal, NSpace, NIcon, NSpin, NScrollbar, NTabs, NTabPane, NProgress, NPopconfirm,
 } from 'naive-ui'
 import { FolderOutline, MoveOutline } from '@vicons/ionicons5'
 import PageShell from '@/components/PageShell.vue'
@@ -11,7 +11,7 @@ import LibraryEditModal from '@/components/LibraryEditModal.vue'
 import { AppIcons } from '@/icons/appIcons'
 import { getPlatformIcon } from '@/icons/PlatformIcons'
 import {
-  getLibraries, addLibrary, refreshLibrary,
+  getLibraries, addLibrary, refreshLibrary, forceLibraryRescanOptions,
   getSystemConfig, updateSystemConfig, browseDirectories,
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, updatePlatformSortOrder, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
   discoverPlatformDimension, addPlatformsBatch, generatePlatformCover, generateAllPlatformCovers,
@@ -521,6 +521,17 @@ async function handleScan() {
   setTimeout(() => { scanning.value = false }, 3000)
 }
 
+async function handleForceScan() {
+  scanning.value = true
+  try {
+    await refreshLibrary(forceLibraryRescanOptions)
+    showToast('强制重扫已开始，扫描完成后会刷新本地元数据和图片。', 'success')
+  } catch {
+    showToast('启动强制重扫失败', 'error')
+  }
+  setTimeout(() => { scanning.value = false }, 3000)
+}
+
 async function saveLibrarySettings() {
   savingConfig.value = true
   try {
@@ -632,6 +643,22 @@ onUnmounted(() => {
           <n-button type="primary" @click="handleScan" :disabled="scanning || scanProgress.some((s: any) => s.Status === 'scanning')" :loading="scanning">
             {{ scanProgress.some((s: any) => s.Status === 'scanning') ? '扫描中...' : '扫描所有媒体库' }}
           </n-button>
+          <n-popconfirm
+            positive-text="强制重扫"
+            negative-text="取消"
+            @positive-click="handleForceScan"
+          >
+            <template #trigger>
+              <n-button
+                secondary
+                type="warning"
+                :disabled="libraries.length === 0 || scanning || scanProgress.some((s: any) => s.Status === 'scanning')"
+              >
+                强制重扫
+              </n-button>
+            </template>
+            扫描完成后会重新读取本地 NFO 和图片，所有媒体库都会入刷新队列。
+          </n-popconfirm>
         </n-space>
 
         <div v-if="libraries.length === 0" class="lib-empty-card">

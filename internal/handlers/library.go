@@ -1533,7 +1533,12 @@ func refreshAll(c *gin.Context) {
 	}
 
 	resp := gin.H{"status": "accepted", "scan_started": scanStarted}
-	if len(scopes) > 0 {
+	queueRefreshAfterScan := scanStarted && len(scopes) > 0
+	if queueRefreshAfterScan {
+		resp["refresh_queued_after_scan"] = true
+		resp["refresh_scopes"] = refreshScopeNames(scopes)
+	}
+	if len(scopes) > 0 && !queueRefreshAfterScan {
 		scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(c.Request.Context(), state, nil, scopes, opts)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -1548,6 +1553,15 @@ func refreshAll(c *gin.Context) {
 	if scanStarted {
 		go func() {
 			ctx := context.Background()
+			if queueRefreshAfterScan {
+				services.ScanAllLibrariesWithOptions(ctx, state.DB, state.Cache, state.ScanProgress, state.Ingest, func(lib models.Library) services.ScanLibraryOptions {
+					libID := lib.ID
+					return services.ScanLibraryOptions{
+						AfterComplete: enqueueLibraryRefreshScopesAfterScan(state, &libID, scopes, opts),
+					}
+				})
+				return
+			}
 			services.ScanAllLibraries(ctx, state.DB, state.Cache, state.ScanProgress, state.Ingest)
 		}()
 	}
@@ -2025,6 +2039,29 @@ func enqueueLibraryRefreshScopes(ctx context.Context, state *AppState, libraryID
 		queuedTasks += n
 	}
 	return scopeItems, queuedTasks, nil
+}
+
+func enqueueLibraryRefreshScopesAfterScan(state *AppState, libraryID *uuid.UUID, scopes []services.RefreshScope, opts services.RefreshOptions) func(context.Context) {
+	return func(ctx context.Context) {
+		libraryLabel := "all"
+		if libraryID != nil {
+			libraryLabel = libraryID.String()
+		}
+		scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(ctx, state, libraryID, scopes, opts)
+		if err != nil {
+			slog.Warn("[LibraryRefresh] enqueue after scan failed", "library", libraryLabel, "error", err)
+			return
+		}
+		slog.Info("[LibraryRefresh] queued after scan", "library", libraryLabel, "scopes", refreshScopeNames(scopes), "items", scopeItems, "tasks", queuedTasks)
+	}
+}
+
+func refreshScopeNames(scopes []services.RefreshScope) []string {
+	names := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		names = append(names, string(scope))
+	}
+	return names
 }
 
 func resolveItemRefreshScopes(req itemRefreshRequest) ([]services.RefreshScope, error) {
@@ -2554,7 +2591,12 @@ func refreshSingleLibrary(c *gin.Context) {
 	}
 
 	resp := gin.H{"status": "accepted", "scan_started": scanStarted, "library_id": lib.ID.String()}
-	if len(scopes) > 0 {
+	queueRefreshAfterScan := scanStarted && len(scopes) > 0
+	if queueRefreshAfterScan {
+		resp["refresh_queued_after_scan"] = true
+		resp["refresh_scopes"] = refreshScopeNames(scopes)
+	}
+	if len(scopes) > 0 && !queueRefreshAfterScan {
 		scopeItems, queuedTasks, err := enqueueLibraryRefreshScopes(ctx, state, &lib.ID, scopes, opts)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -2569,6 +2611,12 @@ func refreshSingleLibrary(c *gin.Context) {
 	if scanStarted {
 		go func() {
 			bg := context.Background()
+			if queueRefreshAfterScan {
+				services.ScanLibraryWithOptions(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name, services.ScanLibraryOptions{
+					AfterComplete: enqueueLibraryRefreshScopesAfterScan(state, &lib.ID, scopes, opts),
+				})
+				return
+			}
 			services.ScanLibrary(bg, state.DB, state.Cache, state.ScanProgress, state.Ingest, lib.ID.String(), lib.CollectionType, lib.Paths, lib.Name)
 		}()
 	}
