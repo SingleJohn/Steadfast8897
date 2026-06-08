@@ -5,11 +5,14 @@ import { NProgress } from 'naive-ui'
 const props = defineProps<{
   lib: any
   scanProg?: any
+  showItemCount?: boolean
 }>()
 
 const emit = defineEmits<{ click: [libId: string] }>()
 
 const imgFailed = ref(false)
+const foldersOpen = ref(false)
+const countFormatter = new Intl.NumberFormat('zh-CN')
 
 const coverUrl = computed(() => {
   const tag = props.lib.ImageTag
@@ -51,7 +54,15 @@ const emptyGradient = computed(() => {
   return 'linear-gradient(135deg, #1a1a2e 0%, #1e293b 40%, #334155 100%)'
 })
 
-const folderCount = computed(() => props.lib.Locations?.length || 0)
+const locations = computed<string[]>(() => {
+  const raw = props.lib.Locations
+  if (!Array.isArray(raw)) return []
+  return raw.filter((path) => typeof path === 'string' && path.trim())
+})
+
+const folderCount = computed(() => locations.value.length)
+const itemCount = computed(() => props.lib.ItemCount ?? props.lib.RecursiveItemCount ?? props.lib.ChildCount ?? 0)
+const formattedItemCount = computed(() => countFormatter.format(Number(itemCount.value) || 0))
 const isScanning = computed(() => props.scanProg?.Status === 'scanning')
 const scanPct = computed(() => props.scanProg?.Percentage || 0)
 </script>
@@ -93,6 +104,10 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
         <h3 class="lc-name">{{ lib.Name }}</h3>
       </div>
 
+      <div v-if="showItemCount !== false" class="lc-count-badge" :title="`${formattedItemCount} 个媒体项目`">
+        {{ formattedItemCount }} 项
+      </div>
+
       <!-- hover 遮罩 -->
       <div class="lc-hover-overlay">
         <span class="lc-edit-btn">
@@ -113,7 +128,32 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
     <!-- 底部信息栏（带背景） -->
     <div class="lc-info">
       <span class="lc-meta">
-        {{ typeLabel }} · {{ folderCount }} 个文件夹
+        {{ typeLabel }} ·
+        <span
+          class="lc-folder-wrap"
+          :class="{ 'lc-folder-wrap-open': foldersOpen }"
+          @click.stop
+          @keydown.stop
+          @mouseleave="foldersOpen = false"
+        >
+          <button
+            type="button"
+            class="lc-folder-trigger"
+            :aria-expanded="foldersOpen"
+            :aria-label="`查看 ${lib.Name} 的 ${folderCount} 个文件夹`"
+            @click="foldersOpen = !foldersOpen"
+          >
+            {{ folderCount }} 个文件夹
+          </button>
+          <span class="lc-folder-popover" role="tooltip">
+            <span v-if="locations.length === 0" class="lc-folder-empty">未配置文件夹</span>
+            <template v-else>
+              <span v-for="path in locations" :key="path" class="lc-folder-path" translate="no">
+                {{ path }}
+              </span>
+            </template>
+          </span>
+        </span>
         <template v-if="isScanning"> · 扫描中 {{ scanPct }}%</template>
         <template v-else-if="scanProg?.Status === 'completed'"> · ✓ 扫描完成</template>
       </span>
@@ -123,19 +163,26 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
 
 <style scoped>
 .lc {
+  position: relative;
+  z-index: 0;
   display: block;
   text-decoration: none;
   color: unset;
   border-radius: 10px;
-  overflow: hidden;
+  overflow: visible;
   background: var(--app-surface-1, #0f172a);
   border: 1px solid var(--app-border, rgba(255,255,255,0.06));
   transition: transform 0.22s ease, box-shadow 0.22s ease;
   cursor: pointer;
 }
 .lc:hover {
+  z-index: 20;
   transform: translateY(-4px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.lc:focus-within {
+  z-index: 20;
 }
 
 /* 封面区 16:9 */
@@ -144,6 +191,7 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
   width: 100%;
   padding-bottom: 56.25%;
   overflow: hidden;
+  border-radius: 10px 10px 0 0;
   background: #0f172a;
 }
 
@@ -204,6 +252,28 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
   line-height: 1.4;
 }
 
+.lc-count-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  max-width: calc(100% - 20px);
+  padding: 4px 8px;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+  background: rgba(0,0,0,0.58);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .lc-name {
   margin: 0;
   font-size: 1.2em;
@@ -259,6 +329,10 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
 /* 底部信息栏 */
 .lc-info {
   padding: 10px 14px;
+  position: relative;
+  z-index: 4;
+  border-radius: 0 0 10px 10px;
+  background: var(--app-surface-1, #0f172a);
 }
 
 .lc-meta {
@@ -268,5 +342,92 @@ const scanPct = computed(() => props.scanProg?.Percentage || 0)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lc-folder-wrap {
+  position: relative;
+  display: inline-flex;
+  max-width: min(100%, 180px);
+  vertical-align: bottom;
+}
+
+.lc-folder-trigger {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.16s ease, text-decoration-color 0.16s ease;
+}
+
+.lc-folder-trigger:hover,
+.lc-folder-trigger:focus-visible {
+  color: var(--app-text);
+  text-decoration-color: currentColor;
+}
+
+.lc-folder-trigger:focus-visible {
+  outline: 2px solid var(--app-primary, #10b981);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.lc-folder-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  display: none;
+  width: min(320px, calc(100vw - 48px));
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border, rgba(255,255,255,0.12));
+  border-radius: 6px;
+  background: var(--app-surface-2, #111827);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.38);
+  color: var(--app-text);
+  white-space: normal;
+}
+
+.lc-folder-wrap:hover .lc-folder-popover,
+.lc-folder-wrap:focus-within .lc-folder-popover,
+.lc-folder-wrap-open .lc-folder-popover {
+  display: grid;
+  gap: 6px;
+}
+
+.lc-folder-path,
+.lc-folder-empty {
+  display: block;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.lc-folder-empty {
+  color: var(--app-text-muted);
+  font-family: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lc,
+  .lc-img,
+  .lc-hover-overlay,
+  .lc-folder-trigger {
+    transition: none;
+  }
 }
 </style>

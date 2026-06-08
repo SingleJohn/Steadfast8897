@@ -540,6 +540,7 @@ onUnmounted(() => {
             <LibraryCard
               :lib="lib"
               :scan-prog="scanProgForLib(lib.ItemId)"
+              :show-item-count="showLibraryItemCount"
               @click="openEditModal"
             />
             <div class="lib-sort-btns">
