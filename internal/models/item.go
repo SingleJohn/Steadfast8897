@@ -757,16 +757,18 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 		return nil, err
 	}
 
-	itemType := "Movie"
+	itemTypes := []string{"Movie"}
 	if libType == "tvshows" {
-		itemType = "Series"
+		itemTypes = []string{"Series"}
+	} else if libType == "mixed" {
+		itemTypes = []string{"Movie", "Series"}
 	}
 
 	rows, err := pool.Query(ctx,
 		`WITH filtered AS (
 			SELECT *, CASE WHEN type = 'Movie' THEN COALESCE(merged_to_id::text, id::text) ELSE id::text END AS merge_group_key
 			FROM items
-			WHERE library_id = $1::uuid AND type = $2
+			WHERE library_id = $1::uuid AND type = ANY($2::text[])
 		), ranked AS (
 			SELECT filtered.*,
 				ROW_NUMBER() OVER (
@@ -785,7 +787,7 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 		WHERE merge_row_num = 1
 		ORDER BY created_at DESC
 		LIMIT $3::bigint`,
-		libraryID, itemType, limit)
+		libraryID, itemTypes, limit)
 	if err != nil {
 		return nil, err
 	}

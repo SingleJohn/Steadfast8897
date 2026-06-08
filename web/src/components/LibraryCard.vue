@@ -34,6 +34,7 @@ const typeLabel = computed(() => {
   const ct = props.lib.CollectionType
   if (ct === 'movies') return '电影'
   if (ct === 'tvshows') return '电视剧'
+  if (ct === 'mixed') return '混合'
   if (ct === 'music') return '音乐'
   return '媒体'
 })
@@ -42,6 +43,7 @@ const emptyGradient = computed(() => {
   const ct = props.lib.CollectionType
   if (ct === 'movies') return 'linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%)'
   if (ct === 'tvshows') return 'linear-gradient(135deg, #1a1a2e 0%, #1b2838 40%, #1a3a4a 100%)'
+  if (ct === 'mixed') return 'linear-gradient(135deg, #1a1a2e 0%, #24324a 42%, #14505a 100%)'
   if (ct === 'music') return 'linear-gradient(135deg, #1a1a2e 0%, #2d1b3d 40%, #4a1942 100%)'
   return 'linear-gradient(135deg, #1a1a2e 0%, #1e293b 40%, #334155 100%)'
 })

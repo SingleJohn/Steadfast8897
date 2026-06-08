@@ -129,6 +129,7 @@ const libraryGradient = computed(() => {
   const gradients: Record<string, string> = {
     'movies': 'linear-gradient(135deg, #0a0a1e 0%, #16213e 40%, #1a3a5c 100%)',
     'tvshows': 'linear-gradient(135deg, #0a0a1e 0%, #1b2838 40%, #1a4a4a 100%)',
+    'mixed': 'linear-gradient(135deg, #0a0a1e 0%, #24324a 42%, #14505a 100%)',
     'music': 'linear-gradient(135deg, #1a0a1e 0%, #2d1b3d 40%, #4a1942 100%)',
   }
   return gradients[ct] || 'linear-gradient(135deg, #0f172a 0%, #1e293b 40%, #334155 100%)'
@@ -138,6 +139,7 @@ const librarySvgIcon = computed(() => {
   const ct = props.item.CollectionType
   if (ct === 'movies') return 'movie'
   if (ct === 'tvshows') return 'tv'
+  if (ct === 'mixed') return 'folder'
   if (ct === 'music') return 'music'
   return 'folder'
 })

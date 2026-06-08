@@ -323,6 +323,8 @@ func showcaseSubtitle(collectionType, name string) string {
 		return "MOVIES"
 	case "tvshows":
 		return "TV SHOWS"
+	case "mixed":
+		return "MOVIES & TV"
 	case "music":
 		return "MUSIC"
 	case "boxsets":
@@ -359,6 +361,8 @@ func defaultShowcaseIcon(collectionType, name string) string {
 		return "movie"
 	case "tvshows":
 		return "tv"
+	case "mixed":
+		return "media"
 	case "music":
 		return "music"
 	default:

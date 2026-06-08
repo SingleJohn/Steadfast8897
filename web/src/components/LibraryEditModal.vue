@@ -67,8 +67,15 @@ const showcaseShowCount = ref(true)
 const typeOptions = [
   { label: '电影', value: 'movies' },
   { label: '电视剧', value: 'tvshows' },
+  { label: '混合', value: 'mixed' },
 ]
-const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧' }
+const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧', mixed: '混合' }
+const typeEmoji: Record<string, string> = { movies: '🎬', tvshows: '📺', mixed: '🗂️' }
+const typeTagTheme: Record<string, 'default' | 'error' | 'primary' | 'info' | 'success' | 'warning'> = {
+  movies: 'info',
+  tvshows: 'success',
+  mixed: 'warning',
+}
 const showcaseIconOptions = [
   { label: '自动', value: 'auto' },
   { label: '电影', value: 'movie' },
@@ -669,7 +676,7 @@ async function handleSaveScrapeCfg() {
           <div class="em-cover-ratio">
             <img v-if="coverUrl()" :src="coverUrl()" alt="cover" class="em-cover-img" />
             <div v-else class="em-cover-placeholder">
-              <span class="em-cover-emoji">{{ library.CollectionType === 'movies' ? '🎬' : '📺' }}</span>
+              <span class="em-cover-emoji">{{ typeEmoji[library.CollectionType] || '🗂️' }}</span>
             </div>
           </div>
           <div class="em-cover-actions">
@@ -724,7 +731,7 @@ async function handleSaveScrapeCfg() {
 
         <div class="em-banner-info">
           <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px">
-            <n-tag :type="library.CollectionType === 'movies' ? 'info' : 'success'" size="small" round :bordered="false">
+            <n-tag :type="typeTagTheme[library.CollectionType] || 'default'" size="small" round :bordered="false">
               {{ typeLabels[library.CollectionType] || library.CollectionType }}
             </n-tag>
             <span class="em-item-count">{{ library.ItemCount || 0 }} 个项目</span>

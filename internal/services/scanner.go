@@ -88,23 +88,62 @@ func ScanLibrary(
 
 		// 2. 遍历 FS 产事件
 		seenPaths := make(map[string]struct{})
+		markMovieSeen := func(e movieEntry) {
+			full := filepath.Clean(e.fullPath)
+			seenPaths[full] = struct{}{}
+			// 目录级 entry 的 DB file_path 是内部 primary 视频文件,
+			// 必须把视频路径也算作本次扫到,避免 prune 误删刚入库的电影。
+			for _, v := range e.videoPaths {
+				seenPaths[filepath.Clean(v)] = struct{}{}
+			}
+		}
+		submitMovie := func(e movieEntry) {
+			markMovieSeen(e)
+			ingest.Submit(IngestEvent{
+				Kind: EventCreate, Path: filepath.Clean(e.fullPath), IsDir: e.isDir,
+				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+			})
+		}
+		markShowSeen := func(e showEntry) {
+			seenPaths[filepath.Clean(e.fullPath)] = struct{}{}
+			for _, v := range e.videoPaths {
+				seenPaths[filepath.Clean(v)] = struct{}{}
+			}
+		}
+		submitShow := func(e showEntry) {
+			markShowSeen(e)
+			ingest.Submit(IngestEvent{
+				Kind: EventCreate, Path: filepath.Clean(e.fullPath), IsDir: true,
+				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+			})
+		}
+
 		var total int64
 		switch collectionType {
-		case "tvshows":
-			var showDirs [][2]string
+		case libraryTypeTVShows:
+			var shows []showEntry
 			for _, p := range trustedRoots {
-				collectShowDirs(p, &showDirs)
+				collectShowEntries(p, &shows)
 			}
-			total = int64(len(showDirs))
+			total = int64(len(shows))
 			tracker.UpdateTotal(libraryID, total)
 			slog.Info("[Scan] Collected entries", "library", libraryName, "shows", total)
-			for _, sd := range showDirs {
-				showPath := filepath.Clean(sd[1])
-				seenPaths[showPath] = struct{}{}
-				ingest.Submit(IngestEvent{
-					Kind: EventCreate, Path: showPath, IsDir: true,
-					Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
-				})
+			for _, show := range shows {
+				submitShow(show)
+			}
+		case libraryTypeMixed:
+			var mixed mixedScanEntries
+			for _, p := range trustedRoots {
+				collectMixedEntries(p, &mixed)
+			}
+			total = int64(len(mixed.movies) + len(mixed.shows))
+			tracker.UpdateTotal(libraryID, total)
+			slog.Info("[Scan] Collected entries", "library", libraryName, "movies", len(mixed.movies), "shows", len(mixed.shows), "total", total)
+			for _, show := range mixed.shows {
+				submitShow(show)
+			}
+			for _, movie := range mixed.movies {
+				submitMovie(movie)
 			}
 		default:
 			var entries []movieEntry
@@ -115,17 +154,7 @@ func ScanLibrary(
 			tracker.UpdateTotal(libraryID, total)
 			slog.Info("[Scan] Collected entries", "library", libraryName, "movies", total)
 			for _, e := range entries {
-				full := filepath.Clean(e.fullPath)
-				seenPaths[full] = struct{}{}
-				// 目录级 entry 的 DB file_path 是内部 primary 视频文件,
-				// 必须把视频路径也算作本次扫到,避免 prune 误删刚入库的电影。
-				for _, v := range e.videoPaths {
-					seenPaths[filepath.Clean(v)] = struct{}{}
-				}
-				ingest.Submit(IngestEvent{
-					Kind: EventCreate, Path: full, IsDir: e.isDir,
-					Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
-				})
+				submitMovie(e)
 			}
 		}
 

@@ -25,6 +25,7 @@ const scanThreadsOptions = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20].map((n) => ({ l
 const libTypeOptions = [
   { label: '电影', value: 'movies' },
   { label: '电视剧', value: 'tvshows' },
+  { label: '混合', value: 'mixed' },
 ]
 
 const libraries = ref<any[]>([])

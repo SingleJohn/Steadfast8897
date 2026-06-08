@@ -149,8 +149,8 @@ async function loadLibraryNav() {
   try {
     const res = await getViews()
     const items = (res.Items || []) as any[]
-    hasMovies.value = items.some((i) => i.CollectionType === 'movies' && !i.PlatformLibrary)
-    hasTvshows.value = items.some((i) => i.CollectionType === 'tvshows' && !i.PlatformLibrary)
+    hasMovies.value = items.some((i) => (i.CollectionType === 'movies' || i.CollectionType === 'mixed') && !i.PlatformLibrary)
+    hasTvshows.value = items.some((i) => (i.CollectionType === 'tvshows' || i.CollectionType === 'mixed') && !i.PlatformLibrary)
   } catch {
     // 未登录或网络异常时静默,nav 只显示"首页"
   }

@@ -316,10 +316,12 @@ func (w *IngestWorker) processCreate(ctx context.Context, e IngestEvent) error {
 		return nil
 	}
 	switch colType {
-	case "movies":
+	case libraryTypeMovies:
 		return w.processMovieCreate(ctx, libID, e)
-	case "tvshows":
+	case libraryTypeTVShows:
 		return w.processTvCreate(ctx, libID, e)
+	case libraryTypeMixed:
+		return w.processMixedCreate(ctx, libID, e)
 	}
 	return nil
 }
@@ -387,6 +389,42 @@ func (w *IngestWorker) processTvCreate(ctx context.Context, libID string, e Inge
 	return nil
 }
 
+func (w *IngestWorker) processMixedCreate(ctx context.Context, libID string, e IngestEvent) error {
+	path := filepath.Clean(e.Path)
+	if e.IsDir {
+		if IsExtrasDirName(filepath.Base(path)) {
+			return nil
+		}
+		if showPath := w.findMixedShowRoot(libID, path); showPath != "" {
+			scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
+			return nil
+		}
+		if movie, ok := mixedMovieEntryForDir(filepath.Base(path), path); ok {
+			scanOneMovie(ctx, w.pool, libID, movie.name, movie.fullPath, true, map[string]bool{})
+		}
+		return nil
+	}
+
+	if !IsVideoExt(strings.ToLower(filepath.Ext(path))) {
+		return nil
+	}
+	if root := findBdmvMovieRoot(path); root != "" {
+		scanOneMovie(ctx, w.pool, libID, filepath.Base(root), root, true, map[string]bool{})
+		return nil
+	}
+	if showPath := w.findMixedShowRoot(libID, path); showPath != "" {
+		scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
+		return nil
+	}
+	parent := filepath.Dir(path)
+	if movie, ok := mixedMovieEntryForDir(filepath.Base(parent), parent); ok {
+		scanOneMovie(ctx, w.pool, libID, movie.name, movie.fullPath, true, map[string]bool{})
+		return nil
+	}
+	scanOneMovie(ctx, w.pool, libID, filepath.Base(path), path, false, map[string]bool{})
+	return nil
+}
+
 // findShowRoot 从文件路径向上找第一个 isShowDir()==true 的目录;
 // 若 filePath 本身就是目录(IsDir=true)且是 show 根,也返回它。
 func (w *IngestWorker) findShowRoot(libID, filePath string) string {
@@ -404,6 +442,32 @@ func (w *IngestWorker) findShowRoot(libID, filePath string) string {
 		cur := cleaned
 		for cur != root && cur != filepath.Dir(cur) {
 			if isShowDir(cur) {
+				return cur
+			}
+			cur = filepath.Dir(cur)
+		}
+	}
+	return ""
+}
+
+func (w *IngestWorker) findMixedShowRoot(libID, filePath string) string {
+	roots := w.libs.libraryRoots(libID)
+	cleaned := filepath.Clean(filePath)
+
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, cleaned)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		cur := cleaned
+		if info, err := os.Stat(cur); err == nil && !info.IsDir() {
+			cur = filepath.Dir(cur)
+		}
+		for cur != root && cur != filepath.Dir(cur) {
+			if mixedLooksLikeShowDir(cur) {
 				return cur
 			}
 			cur = filepath.Dir(cur)

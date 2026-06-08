@@ -188,7 +188,7 @@ watch(aggregateMode, async (mode) => {
     if (aggregateMode.value !== mode) return // 切得比 getViews 还快,丢弃过期结果
     const ct = mode === 'movies' ? 'movies' : 'tvshows'
     aggregateParentIds.value = (res.Items || [])
-      .filter((v: any) => v.CollectionType === ct && !v.PlatformLibrary)
+      .filter((v: any) => (v.CollectionType === ct || v.CollectionType === 'mixed') && !v.PlatformLibrary)
       .map((v: any) => v.Id)
   } catch {
     if (aggregateMode.value === mode) aggregateParentIds.value = []

@@ -38,8 +38,15 @@ const coverKey = ref(0)
 const typeOptions = [
   { label: '电影', value: 'movies' },
   { label: '电视剧', value: 'tvshows' },
+  { label: '混合', value: 'mixed' },
 ]
-const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧' }
+const typeLabels: Record<string, string> = { movies: '电影', tvshows: '电视剧', mixed: '混合' }
+const typeEmoji: Record<string, string> = { movies: '🎬', tvshows: '📺', mixed: '🗂️' }
+const typeTagTheme: Record<string, 'default' | 'error' | 'primary' | 'info' | 'success' | 'warning'> = {
+  movies: 'info',
+  tvshows: 'success',
+  mixed: 'warning',
+}
 
 async function loadLibrary() {
   if (!libraryId.value) return
@@ -210,7 +217,7 @@ async function onDeleteCover() {
           <img :src="coverUrl" alt="cover" />
         </div>
         <div v-else class="lib-cover lib-cover-empty">
-          <span>{{ library.CollectionType === 'movies' ? '🎬' : '📺' }}</span>
+          <span>{{ typeEmoji[library.CollectionType] || '🗂️' }}</span>
         </div>
         <div class="cover-actions">
           <label class="cover-btn">
@@ -226,7 +233,7 @@ async function onDeleteCover() {
       </div>
       <div class="lib-banner-info">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px">
-          <n-tag :type="library.CollectionType === 'movies' ? 'info' : 'success'" size="small" round :bordered="false">
+          <n-tag :type="typeTagTheme[library.CollectionType] || 'default'" size="small" round :bordered="false">
             {{ typeLabels[library.CollectionType] || library.CollectionType }}
           </n-tag>
           <span class="item-count">{{ library.ItemCount || 0 }} 个项目</span>

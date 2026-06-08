@@ -381,7 +381,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
               <div v-for="lib in editLibraries" :key="lib.ItemId" class="folder-item">
                 <n-checkbox v-model:checked="editFolderChecks[lib.ItemId]">
                   {{ lib.Name }}
-                  <span class="folder-type">{{ lib.CollectionType === 'movies' ? '电影' : lib.CollectionType === 'tvshows' ? '电视剧' : lib.CollectionType }}</span>
+                  <span class="folder-type">{{ lib.CollectionType === 'movies' ? '电影' : lib.CollectionType === 'tvshows' ? '电视剧' : lib.CollectionType === 'mixed' ? '混合' : lib.CollectionType }}</span>
                 </n-checkbox>
               </div>
             </div>

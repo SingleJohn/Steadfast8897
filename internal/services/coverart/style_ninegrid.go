@@ -354,6 +354,8 @@ func subtitleForCollection(ct string) string {
 		return "M O V I E"
 	case "tvshows":
 		return "T V"
+	case "mixed":
+		return "M I X E D"
 	case "music":
 		return "M U S I C"
 	case "boxsets":

@@ -30,45 +30,59 @@ func pruneMissingPaths(
 	trustedRoots []string,
 	seenPaths map[string]struct{},
 ) int {
-	itemType := "Movie"
-	isDirEvent := false
-	if collectionType == "tvshows" {
-		itemType = "Series"
-		isDirEvent = true
+	type pruneTarget struct {
+		itemType   string
+		isDirEvent bool
+	}
+	targets := []pruneTarget{{itemType: "Movie"}}
+	switch collectionType {
+	case libraryTypeTVShows:
+		targets = []pruneTarget{
+			{itemType: "Series", isDirEvent: true},
+			{itemType: "Episode"},
+		}
+	case libraryTypeMixed:
+		targets = []pruneTarget{
+			{itemType: "Movie"},
+			{itemType: "Series", isDirEvent: true},
+			{itemType: "Episode"},
+		}
 	}
 
-	rows, err := pool.Query(ctx,
-		`SELECT id::text, file_path FROM items
-		  WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL`,
-		libraryID, itemType)
-	if err != nil {
-		slog.Warn("[Prune] query failed", "library", libraryID, "error", err)
-		return 0
-	}
 	type row struct{ id, fp string }
-	var candidates []row
-	for rows.Next() {
-		var r row
-		if rows.Scan(&r.id, &r.fp) == nil {
-			candidates = append(candidates, r)
-		}
-	}
-	rows.Close()
-
 	var count int
-	for _, c := range candidates {
-		cleaned := filepath.Clean(c.fp)
-		if !pathInTrustedRoots(cleaned, trustedRoots) {
+	for _, target := range targets {
+		rows, err := pool.Query(ctx,
+			`SELECT id::text, file_path FROM items
+			  WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL`,
+			libraryID, target.itemType)
+		if err != nil {
+			slog.Warn("[Prune] query failed", "library", libraryID, "type", target.itemType, "error", err)
 			continue
 		}
-		if _, ok := seenPaths[cleaned]; ok {
-			continue
+		var candidates []row
+		for rows.Next() {
+			var r row
+			if rows.Scan(&r.id, &r.fp) == nil {
+				candidates = append(candidates, r)
+			}
 		}
-		ingest.Submit(IngestEvent{
-			Kind: EventDelete, Path: cleaned, IsDir: isDirEvent,
-			Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
-		})
-		count++
+		rows.Close()
+
+		for _, c := range candidates {
+			cleaned := filepath.Clean(c.fp)
+			if !pathInTrustedRoots(cleaned, trustedRoots) {
+				continue
+			}
+			if _, ok := seenPaths[cleaned]; ok {
+				continue
+			}
+			ingest.Submit(IngestEvent{
+				Kind: EventDelete, Path: cleaned, IsDir: target.isDirEvent,
+				Source: "scan", Tag: libraryID, DetectedAt: time.Now(),
+			})
+			count++
+		}
 	}
 	return count
 }

@@ -112,28 +112,6 @@ func isShowDir(path string) bool {
 	return false
 }
 
-func collectShowDirs(dir string, results *[][2]string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "@") {
-			continue
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		fullPath := filepath.Join(dir, name)
-		if isShowDir(fullPath) {
-			*results = append(*results, [2]string{name, fullPath})
-		} else {
-			collectShowDirs(fullPath, results)
-		}
-	}
-}
-
 func scanOneShow(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -472,7 +450,23 @@ func ensureCanonicalEpisodeItem(
 		}
 	}
 	if len(candidates) > 0 {
-		canonicalID := candidates[0].ID
+		canonical := candidates[0]
+		canonicalID := canonical.ID
+		if canonical.FilePath == nil || *canonical.FilePath == "" || !scanPathExists(*canonical.FilePath) {
+			mi := ReadMediainfoJSONCached(primary.path, seasonCache)
+			var runtimeTicks *int64
+			if mi != nil {
+				runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+			}
+			pool.Exec(ctx,
+				`UPDATE items
+				    SET file_path = $1,
+				        container = $2,
+				        runtime_ticks = COALESCE($3::bigint, runtime_ticks),
+				        updated_at = NOW()
+				  WHERE id = $4::uuid`,
+				primary.path, primary.ext, runtimeTicks, canonicalID)
+		}
 		for _, dup := range candidates[1:] {
 			mergeDuplicateEpisodeIntoCanonical(ctx, pool, canonicalID, dup.ID)
 		}
@@ -535,6 +529,14 @@ func ensureCanonicalEpisodeItem(
 		}
 	}
 	return uuid.Nil, false
+}
+
+func scanPathExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func mergeDuplicateEpisodeIntoCanonical(ctx context.Context, pool *pgxpool.Pool, canonicalID uuid.UUID, duplicateID uuid.UUID) {
