@@ -104,6 +104,68 @@ func playbackJSONInt64(m map[string]interface{}, key string) *int64 {
 	return nil
 }
 
+func mediaSourceIDFromQuery(c *gin.Context) string {
+	query := c.Request.URL.Query()
+	for _, key := range []string{"MediaSourceId", "mediaSourceId", "MediaSourceID", "mediasourceid"} {
+		if values, ok := query[key]; ok && len(values) > 0 {
+			if value := strings.TrimSpace(values[0]); value != "" {
+				return value
+			}
+		}
+	}
+	for key, values := range query {
+		if strings.EqualFold(key, "MediaSourceId") && len(values) > 0 {
+			if value := strings.TrimSpace(values[0]); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func mediaSourceIDFromPlaybackRequest(c *gin.Context) string {
+	if msid := mediaSourceIDFromQuery(c); msid != "" {
+		return msid
+	}
+	if c.Request.Body == nil {
+		return ""
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(io.LimitReader(c.Request.Body, 1<<20)).Decode(&body); err != nil {
+		return ""
+	}
+	for key, value := range body {
+		if !strings.EqualFold(key, "MediaSourceId") {
+			continue
+		}
+		if s, ok := value.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func preferMediaSource(sources []dto.MediaSourceInfo, mediaSourceID string) []dto.MediaSourceInfo {
+	mediaSourceID = strings.TrimSpace(mediaSourceID)
+	if mediaSourceID == "" || len(sources) < 2 {
+		return sources
+	}
+	for i := range sources {
+		if sources[i].ID != mediaSourceID {
+			continue
+		}
+		if i == 0 {
+			return sources
+		}
+		selected := sources[i]
+		copy(sources[1:i+1], sources[0:i])
+		sources[0] = selected
+		return sources
+	}
+	return sources
+}
+
 func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) ([]mediaVersionRow, error) {
 	if item == nil || item.ItemType != "Movie" || item.FilePath == nil || *item.FilePath == "" {
 		hasFilePath := false
@@ -218,6 +280,7 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 func getPlaybackInfo(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 	itemID := c.Param("itemId")
+	selectedMediaSourceID := mediaSourceIDFromPlaybackRequest(c)
 	uid, err := models.ResolveToUUID(ctx, state.DB, itemID)
 	if err != nil || uid == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid item id"})
@@ -389,6 +452,8 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		sources = append(sources, mergedSources...)
 	}
 
+	sources = preferMediaSource(sources, selectedMediaSourceID)
+
 	playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	if sources == nil {
 		sources = []dto.MediaSourceInfo{}
@@ -516,7 +581,7 @@ func streamVideo(c *gin.Context, state *AppState) {
 		}
 	}
 
-	msid := c.Query("MediaSourceId")
+	msid := mediaSourceIDFromQuery(c)
 	var filePath string
 	if msid != "" {
 		// Match Rust: query by id only, without item_id constraint
