@@ -158,10 +158,9 @@ function buildArt(autoplay = true) {
 
   destroyArt()
 
-  art = new Artplayer({
+  const artOptions: ConstructorParameters<typeof Artplayer>[0] = {
     container: playerRootRef.value,
     url: props.src,
-    type: isHlsSource(props.src, props.container) ? 'm3u8' : undefined,
     customType: {
       m3u8: (video, url) => {
         void bindHls(video, url).catch(() => {
@@ -188,7 +187,13 @@ function buildArt(autoplay = true) {
       preload: 'auto',
       crossOrigin: 'anonymous',
     },
-  })
+  }
+
+  if (isHlsSource(props.src, props.container)) {
+    artOptions.type = 'm3u8'
+  }
+
+  art = new Artplayer(artOptions)
 
   art.on('ready', () => {
     seekToStartPosition()
