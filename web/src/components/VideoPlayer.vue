@@ -79,6 +79,10 @@ const selectedSubtitle = ref(
   props.subtitleTracks.find((t) => t.isDefault)?.index ?? -1
 );
 const dragging = ref(false);
+const buffering = ref(true);
+// 缓冲进度(0-100):当前播放点往后已缓冲秒数 / 起播目标。progress 事件驱动,真实可见。
+const bufferProgress = ref(0);
+const BUFFER_TARGET_SECONDS = 6;
 const initialSeekApplied = ref(false);
 const initialPlayAttempted = ref(false);
 const waitingInitialSeek = ref(false);
@@ -168,6 +172,8 @@ watch(
     initialSeekApplied.value = false;
     initialPlayAttempted.value = false;
     waitingInitialSeek.value = false;
+    buffering.value = true;
+    bufferProgress.value = 0;
 
     const positionTicks = startPositionTicks ?? 0;
     reportPlaybackStart(itemId, positionTicks);
@@ -206,6 +212,40 @@ function onPlay() {
 }
 function onPause() {
   playing.value = false;
+  // 用户主动暂停 → 不是缓冲,收起加载动画(显示播放按钮)。
+  buffering.value = false;
+}
+// 缓冲/卡顿:网络在加载但还播不了时显示加载动画,降低等待感。
+function updateBufferProgress() {
+  const video = videoRef.value;
+  if (!video) return;
+  const t = video.currentTime;
+  let ahead = 0;
+  for (let i = 0; i < video.buffered.length; i++) {
+    if (t >= video.buffered.start(i) - 0.5 && t <= video.buffered.end(i) + 0.5) {
+      ahead = video.buffered.end(i) - t;
+      break;
+    }
+  }
+  const pct = Math.round((ahead / BUFFER_TARGET_SECONDS) * 100);
+  bufferProgress.value = Math.max(0, Math.min(99, pct));
+}
+function onWaiting() {
+  buffering.value = true;
+  updateBufferProgress();
+}
+function onPlaying() {
+  playing.value = true;
+  buffering.value = false;
+}
+function onStalled() {
+  buffering.value = true;
+}
+function onLoadStart() {
+  buffering.value = true;
+}
+function onProgress() {
+  if (buffering.value) updateBufferProgress();
 }
 function onTimeUpdate() {
   const video = videoRef.value;
@@ -228,9 +268,11 @@ function onLoadedMetadata() {
   syncInitialPlayback();
 }
 function onCanPlay() {
+  buffering.value = false;
   syncInitialPlayback();
 }
 function onSeeked() {
+  buffering.value = false;
   if (!waitingInitialSeek.value) return;
   waitingInitialSeek.value = false;
   initialSeekApplied.value = true;
@@ -244,6 +286,7 @@ function onVolumeChange() {
 }
 function onEndedHandler() {
   playing.value = false;
+  buffering.value = false;
   emit('ended');
 }
 
@@ -257,6 +300,11 @@ onMounted(() => {
   video.addEventListener('durationchange', onDurationChange);
   video.addEventListener('volumechange', onVolumeChange);
   video.addEventListener('ended', onEndedHandler);
+  video.addEventListener('waiting', onWaiting);
+  video.addEventListener('playing', onPlaying);
+  video.addEventListener('stalled', onStalled);
+  video.addEventListener('loadstart', onLoadStart);
+  video.addEventListener('progress', onProgress);
 });
 
 onUnmounted(() => {
@@ -268,6 +316,11 @@ onUnmounted(() => {
     video.removeEventListener('durationchange', onDurationChange);
     video.removeEventListener('volumechange', onVolumeChange);
     video.removeEventListener('ended', onEndedHandler);
+    video.removeEventListener('waiting', onWaiting);
+    video.removeEventListener('playing', onPlaying);
+    video.removeEventListener('stalled', onStalled);
+    video.removeEventListener('loadstart', onLoadStart);
+    video.removeEventListener('progress', onProgress);
   }
 });
 
@@ -437,6 +490,12 @@ function handleVolumeInput(e: Event) {
   }
 }
 
+// 缓冲环几何:r=32 → 周长 ≈ 201.06。dashoffset 越小弧越长。
+const BUFFER_RING_CIRC = 2 * Math.PI * 32;
+const bufferRingOffset = computed(
+  () => BUFFER_RING_CIRC * (1 - bufferProgress.value / 100)
+);
+
 const progress = computed(() =>
   duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0
 );
@@ -480,6 +539,42 @@ function toggleMute() {
       @seeked="onSeeked"
       @click="togglePlay"
     />
+
+    <!-- 缓冲/加载动画:网络已在加载但还播不了时显示。
+         扫光环持续旋转表示"加载中",进度弧反映真实已缓冲量,中心显示百分比。 -->
+    <transition name="osd-fade">
+      <div v-if="buffering" class="osd-buffering" aria-hidden="true">
+        <div class="osd-buffering-panel">
+          <div class="osd-ring-wrap">
+            <svg class="osd-ring" viewBox="0 0 80 80">
+              <defs>
+                <linearGradient id="osdRingGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3ec6ff" />
+                  <stop offset="100%" stop-color="#00a4dc" />
+                </linearGradient>
+              </defs>
+              <!-- 底环 -->
+              <circle class="osd-ring-track" cx="40" cy="40" r="32" />
+              <!-- 真实缓冲进度弧 -->
+              <circle
+                class="osd-ring-progress"
+                cx="40"
+                cy="40"
+                r="32"
+                :stroke-dasharray="BUFFER_RING_CIRC"
+                :stroke-dashoffset="bufferRingOffset"
+              />
+              <!-- 持续旋转的扫光,表示仍在加载 -->
+              <circle class="osd-ring-sweep" cx="40" cy="40" r="32" />
+            </svg>
+            <div class="osd-ring-label">
+              <span v-if="bufferProgress > 0" class="osd-ring-pct">{{ bufferProgress }}%</span>
+              <span v-else class="osd-ring-dots"><i /><i /><i /></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
 
     <div
       :style="{
@@ -799,6 +894,118 @@ function toggleMute() {
 </template>
 
 <style scoped>
+.osd-buffering {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+.osd-buffering-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 104px;
+  height: 104px;
+  border-radius: 22px;
+  background: rgba(18, 20, 24, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.osd-ring-wrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+}
+.osd-ring {
+  width: 100%;
+  height: 100%;
+  /* 进度弧从 12 点方向起算 */
+  transform: rotate(-90deg);
+}
+.osd-ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 6;
+}
+.osd-ring-progress {
+  fill: none;
+  stroke: url(#osdRingGrad);
+  stroke-width: 6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.35s ease;
+  filter: drop-shadow(0 0 4px rgba(0, 164, 220, 0.55));
+}
+/* 短弧扫光,持续旋转表示"仍在加载",与进度弧叠加 */
+.osd-ring-sweep {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-dasharray: 18 183;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: osd-spin 1s linear infinite;
+}
+.osd-ring-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.osd-ring-pct {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.osd-ring-dots {
+  display: flex;
+  gap: 4px;
+}
+.osd-ring-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  animation: osd-dot 1.2s ease-in-out infinite;
+}
+.osd-ring-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.osd-ring-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes osd-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@keyframes osd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.osd-fade-enter-active,
+.osd-fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.osd-fade-enter-from,
+.osd-fade-leave-to {
+  opacity: 0;
+}
 .osd-progress-bar {
   height: 6px;
   transition: height 0.15s ease;
