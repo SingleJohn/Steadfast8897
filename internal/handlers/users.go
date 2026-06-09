@@ -153,13 +153,13 @@ func buildUserResponse(ctx context.Context, st *AppState, u *models.User, includ
 	policyResp["IsHidden"] = u.IsHidden
 
 	resp := map[string]interface{}{
-		"Name":                       u.Name,
-		"ServerId":                   st.Config.ServerID,
-		"Id":                         u.ID.String(),
-		"HasPassword":                true,
-		"HasConfiguredPassword":      true,
-		"HasConfiguredEasyPassword":  false,
-		"Policy":                     policyResp,
+		"Name":                      u.Name,
+		"ServerId":                  st.Config.ServerID,
+		"Id":                        u.ID.String(),
+		"HasPassword":               true,
+		"HasConfiguredPassword":     true,
+		"HasConfiguredEasyPassword": false,
+		"Policy":                    policyResp,
 	}
 	// Match Rust: only include date fields when non-nil
 	if u.LastLoginDate != nil {
@@ -171,18 +171,18 @@ func buildUserResponse(ctx context.Context, st *AppState, u *models.User, includ
 
 	if includeConfig {
 		resp["Configuration"] = map[string]interface{}{
-			"PlayDefaultAudioTrack":        true,
-			"SubtitleLanguagePreference":   "",
-			"DisplayMissingEpisodes":       false,
-			"SubtitleMode":                 "Default",
-			"EnableLocalPassword":          false,
-			"OrderedViews":                 []interface{}{},
-			"LatestItemsExcludes":          []interface{}{},
-			"MyMediaExcludes":              []interface{}{},
-			"HidePlayedInLatest":           true,
-			"RememberAudioSelections":      true,
-			"RememberSubtitleSelections":   true,
-			"EnableNextEpisodeAutoPlay":    true,
+			"PlayDefaultAudioTrack":      true,
+			"SubtitleLanguagePreference": "",
+			"DisplayMissingEpisodes":     false,
+			"SubtitleMode":               "Default",
+			"EnableLocalPassword":        false,
+			"OrderedViews":               []interface{}{},
+			"LatestItemsExcludes":        []interface{}{},
+			"MyMediaExcludes":            []interface{}{},
+			"HidePlayedInLatest":         true,
+			"RememberAudioSelections":    true,
+			"RememberSubtitleSelections": true,
+			"EnableNextEpisodeAutoPlay":  true,
 		}
 	}
 
@@ -332,25 +332,27 @@ type updateUserBody struct {
 }
 
 type updateUserPolicyVal struct {
-	IsHidden                       *bool  `json:"IsHidden,omitempty"`
-	IsDisabled                     *bool  `json:"IsDisabled,omitempty"`
-	IsAdministrator                *bool  `json:"IsAdministrator,omitempty"`
-	EnableAllFolders               *bool  `json:"EnableAllFolders,omitempty"`
-	EnableRemoteAccess             *bool  `json:"EnableRemoteAccess,omitempty"`
-	EnableMediaPlayback            *bool  `json:"EnableMediaPlayback,omitempty"`
-	EnableAudioPlaybackTranscoding *bool  `json:"EnableAudioPlaybackTranscoding,omitempty"`
-	EnableVideoPlaybackTranscoding *bool  `json:"EnableVideoPlaybackTranscoding,omitempty"`
-	EnablePlaybackRemuxing         *bool  `json:"EnablePlaybackRemuxing,omitempty"`
-	EnableContentDeletion          *bool  `json:"EnableContentDeletion,omitempty"`
-	EnableContentDownloading       *bool  `json:"EnableContentDownloading,omitempty"`
-	EnableSubtitleManagement       *bool  `json:"EnableSubtitleManagement,omitempty"`
-	EnableLiveTvAccess             *bool  `json:"EnableLiveTvAccess,omitempty"`
-	EnableLiveTvManagement         *bool  `json:"EnableLiveTvManagement,omitempty"`
-	EnableUserPreferenceAccess     *bool  `json:"EnableUserPreferenceAccess,omitempty"`
-	EnableRemoteControlOfOtherUsers *bool `json:"EnableRemoteControlOfOtherUsers,omitempty"`
-	EnableSharedDeviceControl      *bool  `json:"EnableSharedDeviceControl,omitempty"`
-	RemoteClientBitrateLimit       *int32 `json:"RemoteClientBitrateLimit,omitempty"`
-	SimultaneousStreamLimit        *int32 `json:"SimultaneousStreamLimit,omitempty"`
+	IsHidden                        *bool    `json:"IsHidden,omitempty"`
+	IsDisabled                      *bool    `json:"IsDisabled,omitempty"`
+	IsAdministrator                 *bool    `json:"IsAdministrator,omitempty"`
+	EnableAllFolders                *bool    `json:"EnableAllFolders,omitempty"`
+	EnableRemoteAccess              *bool    `json:"EnableRemoteAccess,omitempty"`
+	EnableMediaPlayback             *bool    `json:"EnableMediaPlayback,omitempty"`
+	EnableAudioPlaybackTranscoding  *bool    `json:"EnableAudioPlaybackTranscoding,omitempty"`
+	EnableVideoPlaybackTranscoding  *bool    `json:"EnableVideoPlaybackTranscoding,omitempty"`
+	EnablePlaybackRemuxing          *bool    `json:"EnablePlaybackRemuxing,omitempty"`
+	EnableContentDeletion           *bool    `json:"EnableContentDeletion,omitempty"`
+	EnableContentDownloading        *bool    `json:"EnableContentDownloading,omitempty"`
+	EnableSubtitleManagement        *bool    `json:"EnableSubtitleManagement,omitempty"`
+	EnableLiveTvAccess              *bool    `json:"EnableLiveTvAccess,omitempty"`
+	EnableLiveTvManagement          *bool    `json:"EnableLiveTvManagement,omitempty"`
+	EnableUserPreferenceAccess      *bool    `json:"EnableUserPreferenceAccess,omitempty"`
+	EnableRemoteControlOfOtherUsers *bool    `json:"EnableRemoteControlOfOtherUsers,omitempty"`
+	EnableSharedDeviceControl       *bool    `json:"EnableSharedDeviceControl,omitempty"`
+	RemoteClientBitrateLimit        *int32   `json:"RemoteClientBitrateLimit,omitempty"`
+	SimultaneousStreamLimit         *int32   `json:"SimultaneousStreamLimit,omitempty"`
+	BlockedMediaFolders             []string `json:"BlockedMediaFolders,omitempty"`
+	EnabledFolders                  []string `json:"EnabledFolders,omitempty"`
 }
 
 func UpdateUser(c *gin.Context) {
@@ -386,11 +388,18 @@ func UpdateUser(c *gin.Context) {
 		}
 		pu := policyValToUpdate(body.Policy)
 		if hasPolicyField(&pu) {
-			_ = models.UpsertUserPolicy(ctx, st.DB, uid, &pu)
+			if err := models.UpsertUserPolicy(ctx, st.DB, uid, &pu); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+				return
+			}
+			st.Cache.DelPattern(ctx, "views:*")
 		}
 	}
 
-	_, _ = models.UpdateUser(ctx, st.DB, uid, newName, newHidden)
+	if _, err := models.UpdateUser(ctx, st.DB, uid, newName, newHidden); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
 
 	updated, err := models.FindUserByID(ctx, st.DB, uid)
 	if err != nil || updated == nil {
@@ -424,6 +433,8 @@ func policyValToUpdate(p *updateUserPolicyVal) models.PolicyUpdate {
 	pu.EnableSharedDeviceControl = p.EnableSharedDeviceControl
 	pu.RemoteClientBitrateLimit = p.RemoteClientBitrateLimit
 	pu.SimultaneousStreamLimit = p.SimultaneousStreamLimit
+	pu.BlockedMediaFolders = p.BlockedMediaFolders
+	pu.EnabledFolders = p.EnabledFolders
 	return pu
 }
 
@@ -433,7 +444,8 @@ func hasPolicyField(p *models.PolicyUpdate) bool {
 		p.EnablePlaybackRemuxing != nil || p.EnableContentDeletion != nil || p.EnableContentDownloading != nil ||
 		p.EnableSubtitleManagement != nil || p.EnableLiveTvAccess != nil || p.EnableLiveTvManagement != nil ||
 		p.EnableUserPreferenceAccess != nil || p.EnableRemoteControl != nil || p.EnableSharedDeviceControl != nil ||
-		p.RemoteClientBitrateLimit != nil || p.SimultaneousStreamLimit != nil
+		p.RemoteClientBitrateLimit != nil || p.SimultaneousStreamLimit != nil ||
+		p.BlockedMediaFolders != nil || p.EnabledFolders != nil
 }
 
 func DeleteUser(c *gin.Context) {
@@ -658,6 +670,7 @@ func UpdatePolicy(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	st.Cache.DelPattern(c.Request.Context(), "views:*")
 	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
@@ -754,10 +767,10 @@ func StartupConfiguration(c *gin.Context) {
 	ctx := c.Request.Context()
 	count, _ := models.GetUserCount(ctx, st.DB)
 	c.JSON(http.StatusOK, gin.H{
-		"IsComplete":                 count > 0,
-		"UICulture":                  "zh-CN",
-		"MetadataCountryCode":        "CN",
-		"PreferredMetadataLanguage":  "zh",
+		"IsComplete":                count > 0,
+		"UICulture":                 "zh-CN",
+		"MetadataCountryCode":       "CN",
+		"PreferredMetadataLanguage": "zh",
 	})
 }
 

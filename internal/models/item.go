@@ -12,32 +12,33 @@ type ProviderIDMatch struct {
 }
 
 type ItemQueryOptions struct {
-	ParentID         *string
-	ParentIDs        []string // 多库聚合;非空时覆盖 ParentID 单值
-	IncludeItemTypes []string
-	SortBy           *string
-	SortOrder        *string
-	Limit            *int64
-	StartIndex       *int64
-	Recursive        bool
-	LibraryID        *string
-	SearchTerm       *string
-	NameStartsWith   *string
-	Filters          []string
-	UserID           *string
-	GenreIDs         []string
-	GenreNames       []string
-	TagIDs           []int
-	TagNames         []string
-	PersonIDs        []string
-	PersonNames      []string
-	PersonTypes      []string
-	Years            []int
-	Studio           []string          // 片商维度虚拟库:命中任一值(= ANY)
-	ActorName        []string          // 演员维度虚拟库:含任一演员(role='Actor')的影片
-	CatalogPrefix    []string          // 番号前缀维度虚拟库:命中任一番号字母前缀
-	AnyProviderID    []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
-	LightMode        bool              // 跳过 series_fallback JOIN，用于大批量列表
+	ParentID          *string
+	ParentIDs         []string // 多库聚合;非空时覆盖 ParentID 单值
+	IncludeItemTypes  []string
+	SortBy            *string
+	SortOrder         *string
+	Limit             *int64
+	StartIndex        *int64
+	Recursive         bool
+	LibraryID         *string
+	SearchTerm        *string
+	NameStartsWith    *string
+	Filters           []string
+	UserID            *string
+	GenreIDs          []string
+	GenreNames        []string
+	TagIDs            []int
+	TagNames          []string
+	PersonIDs         []string
+	PersonNames       []string
+	PersonTypes       []string
+	Years             []int
+	Studio            []string          // 片商维度虚拟库:命中任一值(= ANY)
+	ActorName         []string          // 演员维度虚拟库:含任一演员(role='Actor')的影片
+	CatalogPrefix     []string          // 番号前缀维度虚拟库:命中任一番号字母前缀
+	AnyProviderID     []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
+	AllowedLibraryIDs []string          // 用户可访问的物理库;nil 表示不限制,空切片表示无可访问库
+	LightMode         bool              // 跳过 series_fallback JOIN，用于大批量列表
 }
 
 type QueryResult struct {

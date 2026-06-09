@@ -125,7 +125,7 @@ func (t *ScanProgressTracker) CompleteScan(libraryID string, cache *CacheService
 
 	go func() {
 		ctx := context.Background()
-		cache.Del(ctx, "views:all")
+		cache.DelPattern(ctx, "views:*")
 		cache.DelPattern(ctx, "latest:"+libraryID+":*")
 	}()
 

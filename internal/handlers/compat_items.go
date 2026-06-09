@@ -19,9 +19,35 @@ import (
 func getItemCounts(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 	var movie, series, episodes int64
-	_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Movie'").Scan(&movie)
-	_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Series'").Scan(&series)
-	_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Episode'").Scan(&episodes)
+	where := "type = $1"
+	var allowed []string
+	if auth := middleware.GetAuthUser(c); auth != nil && !auth.IsAdmin && !strings.HasPrefix(auth.ID, "api-key-") {
+		scope, err := loadUserLibraryScope(ctx, state, auth.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		if !scope.AllowAll {
+			allowed = scope.IDs
+			if len(allowed) == 0 {
+				where += " AND FALSE"
+			} else {
+				where += " AND library_id::text = ANY($2)"
+			}
+		}
+	}
+	countType := func(itemType string) int64 {
+		var n int64
+		if allowed != nil && len(allowed) > 0 {
+			_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE "+where, itemType, allowed).Scan(&n)
+		} else {
+			_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE "+where, itemType).Scan(&n)
+		}
+		return n
+	}
+	movie = countType("Movie")
+	series = countType("Series")
+	episodes = countType("Episode")
 	c.JSON(http.StatusOK, gin.H{
 		"MovieCount":      movie,
 		"SeriesCount":     series,
@@ -174,6 +200,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	if auth != nil && !strings.HasPrefix(auth.ID, "api-key-") {
 		authUserID = auth.ID
 	}
+	var scope *userLibraryScope
+	if authUserID != "" {
+		var err error
+		scope, err = loadUserLibraryScope(ctx, state, authUserID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+	}
 
 	// Build query with LEFT JOIN user_item_data to avoid N+1
 	userCols := "NULL::bigint AS playback_position_ticks, 0::int AS play_count, FALSE AS is_favorite, FALSE AS played, NULL::timestamp AS last_played_date"
@@ -229,6 +264,10 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	}
 	if parentID != "" {
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+			if scope != nil && !scope.AllowAll {
+				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
+				return
+			}
 			switch p.Dimension {
 			case models.PlatformDimActor:
 				whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $"+strconv.Itoa(idx)+" AND cm.role = 'Actor')")
@@ -256,6 +295,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 				args = append(args, *pid)
 				idx++
 			}
+		}
+	}
+	if scope != nil && !scope.AllowAll {
+		if len(scope.IDs) == 0 {
+			whereParts = append(whereParts, "FALSE")
+		} else {
+			whereParts = append(whereParts, "i.library_id::text = ANY($"+strconv.Itoa(idx)+")")
+			args = append(args, scope.IDs)
+			idx++
 		}
 	}
 	if includeTypes != "" {

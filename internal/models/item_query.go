@@ -58,6 +58,15 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		params = append(params, *options.LibraryID)
 		paramIdx++
 	}
+	if options.AllowedLibraryIDs != nil {
+		if len(options.AllowedLibraryIDs) == 0 {
+			conditions = append(conditions, "FALSE")
+		} else {
+			conditions = append(conditions, fmt.Sprintf("i.library_id::text = ANY($%d)", paramIdx))
+			params = append(params, options.AllowedLibraryIDs)
+			paramIdx++
+		}
+	}
 
 	if len(options.IncludeItemTypes) > 0 {
 		placeholders := make([]string, len(options.IncludeItemTypes))

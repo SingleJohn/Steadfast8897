@@ -338,6 +338,13 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
+	if ok, err := userCanAccessItem(ctx, state, authUser.ID, *uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	} else if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
 
 	var policy *models.UserPolicy
 	if !strings.HasPrefix(authUser.ID, "api-key-") {
@@ -451,23 +458,23 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		defaultAudioIndex, defaultSubtitleIndex := defaultStreamIndexes(versionStreams)
 
 		src := dto.MediaSourceInfo{
-			ID:                    msid,
-			Path:                  actualPath,
-			Protocol:              protocol,
-			Type:                  "Default",
-			Container:             actualContainer,
-			Name:                  mv.Name,
-			IsRemote:              isRemote,
-			RunTimeTicks:          mv.RuntimeTicks,
-			SupportsDirectPlay:    true,
-			SupportsDirectStream:  true,
-			SupportsTranscoding:   false,
-			MediaStreams:          versionStreams,
-			ReadAtNativeFramerate: false,
-			Size:                  mv.Size,
-			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", *uid, actualContainer, msid),
-			ETag:                  msid,
-			Formats:               []string{},
+			ID:                         msid,
+			Path:                       actualPath,
+			Protocol:                   protocol,
+			Type:                       "Default",
+			Container:                  actualContainer,
+			Name:                       mv.Name,
+			IsRemote:                   isRemote,
+			RunTimeTicks:               mv.RuntimeTicks,
+			SupportsDirectPlay:         true,
+			SupportsDirectStream:       true,
+			SupportsTranscoding:        false,
+			MediaStreams:               versionStreams,
+			ReadAtNativeFramerate:      false,
+			Size:                       mv.Size,
+			DirectStreamURL:            fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", *uid, actualContainer, msid),
+			ETag:                       msid,
+			Formats:                    []string{},
 			DefaultAudioStreamIndex:    defaultAudioIndex,
 			DefaultSubtitleStreamIndex: defaultSubtitleIndex,
 			FymsResolution:             mv.Resolution,
@@ -609,6 +616,13 @@ func streamVideo(c *gin.Context, state *AppState) {
 	// Check api_key query param, then X-Emby-Token header.
 	userID := resolveStreamUser(ctx, state, c)
 	if userID != "" {
+		if ok, err := userCanAccessItem(ctx, state, userID, *uid); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		} else if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
+		}
 		if userUUID, err := uuid.Parse(userID); err == nil {
 			policy, _ := models.GetUserPolicy(ctx, state.DB, userUUID)
 			if policy != nil && !policy.EnableMediaPlayback {
@@ -852,23 +866,23 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 
 			srcName := sib.LibName + " - " + mv.Name
 			src := dto.MediaSourceInfo{
-				ID:                    msid,
-				Path:                  actualPath,
-				Protocol:              protocol,
-				Type:                  "Default",
-				Container:             actualContainer,
-				Name:                  srcName,
-				IsRemote:              isRemote,
-				RunTimeTicks:          mv.RuntimeTicks,
-				SupportsDirectPlay:    true,
-				SupportsDirectStream:  true,
-				SupportsTranscoding:   false,
-				MediaStreams:          versionStreams,
-				ReadAtNativeFramerate: false,
-				Size:                  mv.Size,
-				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", primaryID, actualContainer, msid),
-				ETag:                  msid,
-				Formats:               []string{},
+				ID:                         msid,
+				Path:                       actualPath,
+				Protocol:                   protocol,
+				Type:                       "Default",
+				Container:                  actualContainer,
+				Name:                       srcName,
+				IsRemote:                   isRemote,
+				RunTimeTicks:               mv.RuntimeTicks,
+				SupportsDirectPlay:         true,
+				SupportsDirectStream:       true,
+				SupportsTranscoding:        false,
+				MediaStreams:               versionStreams,
+				ReadAtNativeFramerate:      false,
+				Size:                       mv.Size,
+				DirectStreamURL:            fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", primaryID, actualContainer, msid),
+				ETag:                       msid,
+				Formats:                    []string{},
 				DefaultAudioStreamIndex:    defaultAudioIndex,
 				DefaultSubtitleStreamIndex: defaultSubtitleIndex,
 				FymsResolution:             mv.Resolution,

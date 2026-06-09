@@ -24,7 +24,13 @@ func getUserViews(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	cacheKey := "views:all"
+	scope, err := loadUserLibraryScope(ctx, state, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	cacheKey := "views:" + userID
 	var cached map[string]interface{}
 	if state.Cache.GetJSON(ctx, cacheKey, &cached) {
 		c.JSON(http.StatusOK, cached)
@@ -48,7 +54,7 @@ func getUserViews(c *gin.Context) {
 
 	// Platform virtual libraries
 	var platformEntries []gin.H
-	if models.IsPlatformLibrariesEnabled(ctx, state.DB) {
+	if scope.AllowAll && models.IsPlatformLibrariesEnabled(ctx, state.DB) {
 		platforms, _ := models.GetEnabledPlatforms(ctx, state.DB)
 		for _, p := range platforms {
 			if p.ItemCount == 0 {
@@ -99,6 +105,9 @@ func getUserViews(c *gin.Context) {
 	libEntries := make([]gin.H, 0, len(libs))
 	for _, lib := range libs {
 		idStr := lib.ID.String()
+		if !scope.allowsLibrary(idStr) {
+			continue
+		}
 
 		var childCount int64
 		childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
@@ -385,6 +394,12 @@ func getItems(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	scope, err := loadUserLibraryScope(ctx, state, pathUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	applyLibraryScope(opts, scope)
 
 	// 大批量分页列表：跳过 series_fallback JOIN 提升性能
 	if opts.Recursive && opts.ParentID == nil && opts.UserID == nil && len(opts.GenreIDs) == 0 {
@@ -394,6 +409,10 @@ func getItems(c *gin.Context) {
 	// Handle platform virtual library (UUID-based lookup)
 	if opts.ParentID != nil {
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
+			if !scope.AllowAll {
+				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
+				return
+			}
 			opts.ParentID = nil
 			applyVirtualDimension(opts, p)
 			if len(opts.IncludeItemTypes) == 0 {
@@ -460,6 +479,13 @@ func getResumeItems(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	scope, err := loadUserLibraryScope(ctx, state, pathUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	applyLibraryScope(opts, scope)
+
 	res, err := models.QueryItems(ctx, state.DB, opts)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -506,6 +532,20 @@ func getLatestItems(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	scope, err := loadUserLibraryScope(ctx, state, pathUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if _, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+		if !scope.AllowAll {
+			c.JSON(http.StatusOK, []interface{}{})
+			return
+		}
+	} else if !scope.allowsLibrary(parentID) {
+		c.JSON(http.StatusOK, []interface{}{})
+		return
+	}
 
 	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
 	if needMediaSources {
@@ -527,7 +567,7 @@ func getLatestItems(c *gin.Context) {
 		}
 	}
 
-	items, err := queryLatestItemsForParent(ctx, state, parentID, limit)
+	items, err := queryLatestItemsForParent(ctx, state, parentID, limit, scope)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -536,14 +576,18 @@ func getLatestItems(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
-func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64) ([]dto.BaseItemDto, error) {
+func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope) ([]dto.BaseItemDto, error) {
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+		if scope != nil && !scope.AllowAll {
+			return []dto.BaseItemDto{}, nil
+		}
 		opts := &models.ItemQueryOptions{
 			IncludeItemTypes: []string{"Movie", "Series"},
 			Limit:            &limit,
 			Recursive:        true,
 		}
 		applyVirtualDimension(opts, p)
+		applyLibraryScope(opts, scope)
 		sb := "DateCreated"
 		so := "Descending"
 		opts.SortBy = &sb
@@ -560,6 +604,9 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 		return items, nil
 	}
 
+	if scope != nil && !scope.allowsLibrary(parentID) {
+		return []dto.BaseItemDto{}, nil
+	}
 	rows, err := models.GetLatestItems(ctx, state.DB, parentID, limit)
 	if err != nil {
 		return nil, err
@@ -598,6 +645,11 @@ func getLatestBatch(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	scope, err := loadUserLibraryScope(ctx, state, pathUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
 	result := make(map[string][]dto.BaseItemDto)
 
 	for _, rawID := range strings.Split(libIDsRaw, ",") {
@@ -605,7 +657,7 @@ func getLatestBatch(c *gin.Context) {
 		if libID == "" {
 			continue
 		}
-		items, err := queryLatestItemsForParent(ctx, state, libID, limit)
+		items, err := queryLatestItemsForParent(ctx, state, libID, limit, scope)
 		if err != nil {
 			continue
 		}

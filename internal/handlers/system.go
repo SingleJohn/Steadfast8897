@@ -309,7 +309,7 @@ func postConfiguration(c *gin.Context) {
 		}
 	}
 	if needViewsInvalidate {
-		state.Cache.Del(ctx, "views:all")
+		state.Cache.DelPattern(ctx, "views:*")
 	}
 	if needScrapeInvalidate {
 		services.InvalidateScrapeAggregator()

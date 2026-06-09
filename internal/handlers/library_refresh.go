@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fyms/internal/middleware"
 	"fyms/internal/models"
 	"fyms/internal/services"
 	"fyms/internal/services/taskcenter"
@@ -113,6 +114,15 @@ func refreshSingle(c *gin.Context) {
 func getVirtualFolders(c *gin.Context) {
 	state := GetState(c)
 	ctx := c.Request.Context()
+	var scope *userLibraryScope
+	if authUser := middleware.GetAuthUser(c); authUser != nil && !authUser.IsAdmin {
+		var err error
+		scope, err = loadUserLibraryScope(ctx, state, authUser.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+	}
 	libs, err := models.GetAllLibraries(ctx, state.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -121,6 +131,9 @@ func getVirtualFolders(c *gin.Context) {
 	out := make([]gin.H, 0, len(libs))
 	for _, lib := range libs {
 		idStr := lib.ID.String()
+		if scope != nil && !scope.allowsLibrary(idStr) {
+			continue
+		}
 		locations := lib.Paths
 		if locations == nil {
 			locations = []string{}

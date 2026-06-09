@@ -194,7 +194,7 @@ func (w *IngestWorker) consume(ctx context.Context, id int, stopCh chan struct{}
 				slog.Warn("[Ingest] processEvent failed",
 					"worker", id, "kind", e.Kind.String(), "path", e.Path, "error", err)
 			}
-			w.cache.Del(ctx, "views:all")
+			w.cache.DelPattern(ctx, "views:*")
 			w.cache.DelPattern(ctx, "latest:*")
 			if e.Tag != "" {
 				if cnt, ok := w.inflight.Load(e.Tag); ok {

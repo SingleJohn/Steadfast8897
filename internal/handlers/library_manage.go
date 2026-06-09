@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"fyms/internal/middleware"
 	"fyms/internal/models"
 )
 
@@ -306,6 +307,17 @@ func getVirtualFolderDetail(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	if authUser := middleware.GetAuthUser(c); authUser != nil && !authUser.IsAdmin {
+		scope, err := loadUserLibraryScope(ctx, state, authUser.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		if !scope.allowsLibrary(id.String()) {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
+		}
+	}
 	lib, err := models.GetLibraryByID(ctx, state.DB, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -386,7 +398,7 @@ func updateLibraryInfo(c *gin.Context) {
 }
 
 func invalidateViewsCache(c *gin.Context, state *AppState) {
-	state.Cache.Del(c.Request.Context(), "views:all")
+	state.Cache.DelPattern(c.Request.Context(), "views:*")
 }
 
 // ============ Library Sort Order ============

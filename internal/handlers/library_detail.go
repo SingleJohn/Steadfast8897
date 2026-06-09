@@ -405,9 +405,18 @@ func getItemDetail(c *gin.Context) {
 
 	itemID := c.Param("itemId")
 	ctx := c.Request.Context()
+	scope, err := loadUserLibraryScope(ctx, state, pathUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
 
 	// Check if this is a platform virtual library
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
+		if !scope.AllowAll {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
+		}
 		count, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.Values())
 		colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
 		imgTags := gin.H{}
@@ -446,6 +455,10 @@ func getItemDetail(c *gin.Context) {
 	if uid, err := uuid.Parse(itemID); err == nil {
 		lib, lerr := models.GetLibraryByID(ctx, state.DB, uid)
 		if lerr == nil && lib != nil {
+			if !scope.allowsLibrary(uid.String()) {
+				c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+				return
+			}
 			var childCount int64
 			childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, uid.String())
 			var recursiveCount int64
@@ -496,6 +509,15 @@ func getItemDetail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 		return
 	}
+	if _, err := uuid.Parse(item.ID); err == nil {
+		if ok, err := userCanAccessItem(ctx, state, pathUser, item.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		} else if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
+		}
+	}
 
 	// If this is a merged secondary, transparently serve the primary's data
 	// so the client gets the primary's metadata + aggregated MediaSources.
@@ -505,6 +527,15 @@ func getItemDetail(c *gin.Context) {
 		primary, perr := models.GetItemByAnyID(ctx, state.DB, *mergedToID)
 		if perr == nil && primary != nil {
 			item = primary
+		}
+	}
+	if _, err := uuid.Parse(item.ID); err == nil {
+		if ok, err := userCanAccessItem(ctx, state, pathUser, item.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		} else if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
 		}
 	}
 

@@ -97,7 +97,7 @@ func ScanLibraryWithOptions(
 	}
 
 	slog.Info("[Scan] Starting scan", "library", libraryName, "type", collectionType)
-	cache.Del(ctx, "views:all")
+	cache.DelPattern(ctx, "views:*")
 	tracker.StartScan(libraryID, libraryName, 0)
 
 	go func() {
