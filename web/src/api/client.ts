@@ -261,29 +261,84 @@ export async function getPlaybackInfo(itemId: string) {
   return request<any>(`/Items/${itemId}/PlaybackInfo?UserId=${getUserId()}`);
 }
 
-export function getStreamUrl(itemId: string, mediaSourceId: string): string {
+export function getAuthorizationHeader(token?: string | null): string {
+  const authToken = token ?? getToken()
+  const parts = [
+    'MediaBrowser',
+    `Client="FYMS Web"`,
+    `Device="Browser"`,
+    `DeviceId="${getBrowserId()}"`,
+    `Version="1.0.0"`,
+  ]
+  if (authToken) {
+    parts.push(`Token="${authToken}"`)
+  }
+  return parts.join(' ')
+}
+
+export function getStreamUrl(itemId: string, mediaSourceId: string, directStreamUrl?: string): string {
+  if (directStreamUrl) {
+    const token = getToken()
+    const [path, query = ''] = directStreamUrl.split('?', 2)
+    const params = new URLSearchParams(query)
+    if (token && !params.has('api_key') && !params.has('ApiKey')) {
+      params.set('api_key', token)
+    }
+    const qs = params.toString()
+    return qs ? `${path}?${qs}` : path
+  }
   const token = getToken();
   return `/Videos/${itemId}/stream?static=true&MediaSourceId=${mediaSourceId}&api_key=${token}`;
 }
 
-export async function reportPlaybackStart(itemId: string, positionTicks = 0) {
+type PlaybackReportPayload = {
+  itemId: string
+  positionTicks?: number
+  isPaused?: boolean
+  mediaSourceId?: string
+  playSessionId?: string
+}
+
+function buildPlaybackPayload(payload: PlaybackReportPayload) {
+  return {
+    ItemId: payload.itemId,
+    PositionTicks: payload.positionTicks ?? 0,
+    ...(payload.isPaused !== undefined ? { IsPaused: payload.isPaused } : {}),
+    ...(payload.mediaSourceId ? { MediaSourceId: payload.mediaSourceId } : {}),
+    ...(payload.playSessionId ? { PlaySessionId: payload.playSessionId } : {}),
+  }
+}
+
+export async function reportPlaybackStart(payload: PlaybackReportPayload) {
   return request('/Sessions/Playing', {
     method: 'POST',
-    body: JSON.stringify({ ItemId: itemId, PositionTicks: positionTicks }),
+    headers: {
+      Authorization: getAuthorizationHeader(),
+      'X-Play-Method': 'DirectPlay',
+    },
+    body: JSON.stringify(buildPlaybackPayload(payload)),
   });
 }
 
-export async function reportPlaybackProgress(itemId: string, positionTicks: number, isPaused = false) {
+export async function reportPlaybackProgress(payload: PlaybackReportPayload) {
   return request('/Sessions/Playing/Progress', {
     method: 'POST',
-    body: JSON.stringify({ ItemId: itemId, PositionTicks: positionTicks, IsPaused: isPaused }),
+    headers: {
+      Authorization: getAuthorizationHeader(),
+      'X-Play-Method': 'DirectPlay',
+    },
+    body: JSON.stringify(buildPlaybackPayload(payload)),
   });
 }
 
-export async function reportPlaybackStopped(itemId: string, positionTicks: number) {
+export async function reportPlaybackStopped(payload: PlaybackReportPayload) {
   return request('/Sessions/Playing/Stopped', {
     method: 'POST',
-    body: JSON.stringify({ ItemId: itemId, PositionTicks: positionTicks }),
+    headers: {
+      Authorization: getAuthorizationHeader(),
+      'X-Play-Method': 'DirectPlay',
+    },
+    body: JSON.stringify(buildPlaybackPayload(payload)),
   });
 }
 

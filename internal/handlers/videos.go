@@ -166,6 +166,35 @@ func preferMediaSource(sources []dto.MediaSourceInfo, mediaSourceID string) []dt
 	return sources
 }
 
+func defaultStreamIndexes(streams []dto.MediaStreamInfo) (*int32, *int32) {
+	var defaultAudioIndex *int32
+	var defaultSubtitleIndex *int32
+	for i := range streams {
+		stream := streams[i]
+		switch stream.Type {
+		case "Audio":
+			if defaultAudioIndex == nil {
+				index := stream.Index
+				defaultAudioIndex = &index
+			}
+			if stream.IsDefault {
+				index := stream.Index
+				defaultAudioIndex = &index
+			}
+		case "Subtitle":
+			if defaultSubtitleIndex == nil {
+				index := stream.Index
+				defaultSubtitleIndex = &index
+			}
+			if stream.IsDefault {
+				index := stream.Index
+				defaultSubtitleIndex = &index
+			}
+		}
+	}
+	return defaultAudioIndex, defaultSubtitleIndex
+}
+
 func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) ([]mediaVersionRow, error) {
 	if item == nil || item.ItemType != "Movie" || item.FilePath == nil || *item.FilePath == "" {
 		hasFilePath := false
@@ -419,6 +448,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		if len(versionStreams) == 0 && idx == 0 {
 			versionStreams = mediaStreams
 		}
+		defaultAudioIndex, defaultSubtitleIndex := defaultStreamIndexes(versionStreams)
 
 		src := dto.MediaSourceInfo{
 			ID:                    msid,
@@ -438,6 +468,14 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", *uid, actualContainer, msid),
 			ETag:                  msid,
 			Formats:               []string{},
+			DefaultAudioStreamIndex:    defaultAudioIndex,
+			DefaultSubtitleStreamIndex: defaultSubtitleIndex,
+			FymsResolution:             mv.Resolution,
+			FymsHdrFormat:              mv.HDRFormat,
+			FymsVideoCodec:             mv.VideoCodec,
+			FymsAudioCodec:             mv.AudioCodec,
+			FymsSource:                 mv.Source,
+			FymsQualityLabel:           mv.QualityLabel,
 		}
 		if mv.Bitrate != nil {
 			b := int64(*mv.Bitrate)
@@ -810,6 +848,7 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 					}
 				}
 			}
+			defaultAudioIndex, defaultSubtitleIndex := defaultStreamIndexes(versionStreams)
 
 			srcName := sib.LibName + " - " + mv.Name
 			src := dto.MediaSourceInfo{
@@ -830,6 +869,14 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", primaryID, actualContainer, msid),
 				ETag:                  msid,
 				Formats:               []string{},
+				DefaultAudioStreamIndex:    defaultAudioIndex,
+				DefaultSubtitleStreamIndex: defaultSubtitleIndex,
+				FymsResolution:             mv.Resolution,
+				FymsHdrFormat:              mv.HDRFormat,
+				FymsVideoCodec:             mv.VideoCodec,
+				FymsAudioCodec:             mv.AudioCodec,
+				FymsSource:                 mv.Source,
+				FymsQualityLabel:           mv.QualityLabel,
 			}
 			if mv.Bitrate != nil {
 				b := int64(*mv.Bitrate)
@@ -847,6 +894,8 @@ func mimeForPath(p string) string {
 	switch ext {
 	case ".mp4":
 		return "video/mp4"
+	case ".m3u8", ".m3u":
+		return "application/vnd.apple.mpegurl"
 	case ".mkv", ".mka", ".mks":
 		return "video/x-matroska"
 	case ".webm":
