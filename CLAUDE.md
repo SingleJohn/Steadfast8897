@@ -16,6 +16,12 @@ FYMS is an Emby-compatible media server written in Go + Vue 3. It serves Infuse,
 
 **所有回复使用中文。**
 
+**防止大文件。** 新增或修改代码时必须优先保持文件职责单一,避免把多个领域逻辑继续堆到同一个文件里:
+- 单个文件接近 800 行或职责开始混杂时,应拆到同 package 下按领域命名的文件
+- 路由注册、请求解析、业务编排、SQL 查询、DTO/数据映射、外部服务客户端、后台任务状态应尽量分文件维护
+- 重构大文件时优先采用同 package 搬迁式拆分,保持函数签名、路由、导出 API 不变,避免引入循环依赖
+- 新增功能时不要因为“改动方便”继续扩大 `library.go`、`compat.go`、`tmdb.go`、`item.go` 等入口文件
+
 ## Commands
 
 ### Backend
