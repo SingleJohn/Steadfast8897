@@ -69,7 +69,13 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	}
 
 	if options.SearchTerm != nil {
-		conditions = append(conditions, fmt.Sprintf("i.name ILIKE $%d", paramIdx))
+		// 除条目名外,也匹配该条目下各 media_version 的文件名(name)。
+		// 混合库里被错误坍缩成"多集/多版本"的条目,名字往往是无意义的目录名(如 "96-9"),
+		// 但每个真实影片的文件名(如 "叶子姐姐9065")保留在 media_versions 里 —— 搜文件名也能命中。
+		// 同一个 %term% 参数两处复用,不额外占位。
+		conditions = append(conditions, fmt.Sprintf(
+			"(i.name ILIKE $%d OR EXISTS (SELECT 1 FROM media_versions mv WHERE mv.item_id = i.id AND mv.name ILIKE $%d))",
+			paramIdx, paramIdx))
 		params = append(params, "%"+*options.SearchTerm+"%")
 		paramIdx++
 	}
