@@ -342,6 +342,20 @@ func SetPlatformCover(ctx context.Context, pool *pgxpool.Pool, id, path, tag str
 	return err
 }
 
+// ClearPlatformCover 清除虚拟库生成的封面(回退内置 logo / 默认渐变),
+// 返回被清除的封面文件路径(若有)供调用方删除磁盘文件。
+func ClearPlatformCover(ctx context.Context, pool *pgxpool.Pool, id string) (string, error) {
+	var oldPath *string
+	_ = pool.QueryRow(ctx,
+		`SELECT cover_image_path FROM platform_libraries WHERE id = $1::uuid`, id).Scan(&oldPath)
+	_, err := pool.Exec(ctx,
+		`UPDATE platform_libraries SET cover_image_path = NULL, cover_image_tag = NULL WHERE id = $1::uuid`, id)
+	if oldPath != nil {
+		return *oldPath, err
+	}
+	return "", err
+}
+
 // RenamePlatform 设置虚拟库的自定义显示名;name 为空串则清除,回退默认本地化名。
 func RenamePlatform(ctx context.Context, pool *pgxpool.Pool, id, name string) error {
 	name = strings.TrimSpace(name)

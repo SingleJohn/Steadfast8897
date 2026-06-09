@@ -844,6 +844,10 @@ export async function generateAllPlatformCovers(style?: string, options?: Record
     body: JSON.stringify({ ...(style ? { Style: style } : {}), ...(options ? { Options: options } : {}) }),
   });
 }
+// 清除生成的封面,回退内置 logo / 默认渐变。
+export async function deletePlatformCover(id: string) {
+  return request(`/Library/Platforms/${id}/Image`, { method: 'DELETE' });
+}
 // 虚拟库自定义显示名(空串清除,回退默认本地化名)。
 export async function renamePlatform(id: string, name: string) {
   return request(`/Library/Platforms/${id}/Rename`, { method: 'POST', body: JSON.stringify({ Name: name }) });

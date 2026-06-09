@@ -129,6 +129,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Platforms/:id/Enable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, true) })
 	u.POST("/Library/Platforms/:id/Disable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, false) })
 	u.POST("/Library/Platforms/:id/Image/Generate", adminMW, func(c *gin.Context) { generatePlatformCover(c, state) })
+	u.DELETE("/Library/Platforms/:id/Image", adminMW, func(c *gin.Context) { deletePlatformCover(c, state) })
 	u.POST("/Library/Platforms/:id/Rename", adminMW, func(c *gin.Context) { renamePlatform(c, state) })
 	// 多值聚合:把若干匹配值合并进/移出某虚拟库
 	u.POST("/Library/Platforms/:id/Values", adminMW, func(c *gin.Context) { addPlatformValues(c, state) })
@@ -3467,6 +3468,22 @@ func renamePlatform(c *gin.Context, state *AppState) {
 	if err := models.RenamePlatform(c.Request.Context(), state.DB, id, body.Name); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+// deletePlatformCover 清除虚拟库生成的封面,回退内置 logo / 默认渐变。
+// DELETE /Library/Platforms/:id/Image
+func deletePlatformCover(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	oldPath, err := models.ClearPlatformCover(c.Request.Context(), state.DB, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if oldPath != "" {
+		_ = os.Remove(oldPath)
 	}
 	invalidateViewsCache(c, state)
 	c.Status(http.StatusNoContent)

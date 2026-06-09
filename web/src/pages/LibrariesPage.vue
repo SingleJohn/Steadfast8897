@@ -16,7 +16,7 @@ import {
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, updatePlatformSortOrder, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
   discoverPlatformDimension, addPlatformsBatch, generatePlatformCover, generateAllPlatformCovers, renamePlatform,
   listCoverStyles, generateAllLibraryCovers, type CoverStyle,
-  getViews, setLibraryDisplayOrder, addPlatformValues, removePlatformValue,
+  getViews, setLibraryDisplayOrder, addPlatformValues, removePlatformValue, deletePlatformCover,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
 
@@ -281,6 +281,17 @@ async function confirmPlatformCover() {
   }
 }
 
+// 恢复默认封面:清除生成的封面,内置平台(如 Netflix)回退到默认 logo。
+async function handleRestoreCover(id: string) {
+  try {
+    await deletePlatformCover(id)
+    await loadPlatforms()
+    showToast('已恢复默认封面', 'success')
+  } catch {
+    showToast('恢复失败', 'error')
+  }
+}
+
 // ===== 整体排序(实际库 + 虚拟库统一) =====
 const orderList = ref<{ kind: 'library' | 'platform'; id: string; name: string; type: string }[]>([])
 const savingOrder = ref(false)
@@ -301,24 +312,108 @@ async function loadOrderList() {
   }
 }
 
-function moveOrder(idx: number, dir: number) {
-  const j = idx + dir
-  if (j < 0 || j >= orderList.value.length) return
-  const arr = [...orderList.value]
-  ;[arr[idx], arr[j]] = [arr[j], arr[idx]]
-  orderList.value = arr
+function orderKey(e: { kind: string; id: string }) {
+  return e.kind + ':' + e.id
 }
 
-async function saveOrder() {
+// 拖动排序(与媒体库一致):dragover 实时换位,drop 落地自动保存。
+const draggingOrderKey = ref<string | null>(null)
+const dragOverOrderKey = ref<string | null>(null)
+const orderDragStart = ref<typeof orderList.value>([])
+const orderDragChanged = ref(false)
+const orderDragCommitted = ref(false)
+
+function reorderOrderList(fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= orderList.value.length || toIndex >= orderList.value.length) {
+    return false
+  }
+  const arr = [...orderList.value]
+  const [moved] = arr.splice(fromIndex, 1)
+  arr.splice(toIndex, 0, moved)
+  orderList.value = arr
+  return true
+}
+
+async function persistOrder() {
   savingOrder.value = true
   try {
     await setLibraryDisplayOrder(orderList.value.map((e) => ({ Kind: e.kind, Id: e.id })))
-    showToast('排序已保存', 'success')
-    await loadOrderList()
   } catch {
-    showToast('排序保存失败', 'error')
+    showToast('排序保存失败，已恢复服务器顺序', 'error')
+    await loadOrderList()
   } finally {
     savingOrder.value = false
+  }
+}
+
+function handleOrderDragStart(index: number, e: DragEvent) {
+  const item = orderList.value[index]
+  if (!item || orderList.value.length <= 1 || savingOrder.value) return
+  draggingOrderKey.value = orderKey(item)
+  dragOverOrderKey.value = orderKey(item)
+  orderDragStart.value = [...orderList.value]
+  orderDragChanged.value = false
+  orderDragCommitted.value = false
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', orderKey(item))
+  }
+}
+
+function handleOrderDragOver(index: number, e: DragEvent) {
+  if (!draggingOrderKey.value) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const target = orderList.value[index]
+  if (!target) return
+  dragOverOrderKey.value = orderKey(target)
+  const fromIndex = orderList.value.findIndex((x) => orderKey(x) === draggingOrderKey.value)
+  if (reorderOrderList(fromIndex, index)) orderDragChanged.value = true
+}
+
+async function finishOrderDrag(commit: boolean) {
+  if (!draggingOrderKey.value) return
+  if (!commit) {
+    if (orderDragChanged.value && orderDragStart.value.length > 0) orderList.value = orderDragStart.value
+    resetOrderDrag()
+    return
+  }
+  if (orderDragChanged.value) await persistOrder()
+  resetOrderDrag()
+}
+
+function handleOrderDrop(e: DragEvent) {
+  if (!draggingOrderKey.value) return
+  e.preventDefault()
+  orderDragCommitted.value = true
+  void finishOrderDrag(true)
+}
+
+function handleOrderDragEnd() {
+  if (orderDragCommitted.value) return
+  void finishOrderDrag(false)
+}
+
+function resetOrderDrag() {
+  draggingOrderKey.value = null
+  dragOverOrderKey.value = null
+  orderDragStart.value = []
+  orderDragChanged.value = false
+  orderDragCommitted.value = false
+}
+
+async function moveOrderKeyboard(index: number, dir: number) {
+  if (savingOrder.value) return
+  if (reorderOrderList(index, index + dir)) await persistOrder()
+}
+
+function onOrderDragHandleKeydown(index: number, e: KeyboardEvent) {
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    void moveOrderKeyboard(index, -1)
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    void moveOrderKeyboard(index, 1)
   }
 }
 
@@ -976,6 +1071,7 @@ onUnmounted(() => {
               <n-button text size="tiny" @click="openAlias(p)" title="聚合多个匹配值" style="margin-left: 4px">聚合</n-button>
               <n-button text size="tiny" @click="openRename(p)" title="重命名" style="margin-left: 4px">重命名</n-button>
               <n-button text size="tiny" @click="openPlatformCover(p.Id)" title="生成封面" style="margin-left: 4px">封面</n-button>
+              <n-button v-if="p.HasCover" text size="tiny" @click="handleRestoreCover(p.Id)" title="恢复默认封面" style="margin-left: 4px">恢复默认</n-button>
               <n-button text size="tiny" :disabled="idx === 0" @click="movePlatform(idx, -1)" title="上移" style="margin-left: 4px">↑</n-button>
               <n-button text size="tiny" :disabled="idx === platformsData.Platforms.length - 1" @click="movePlatform(idx, 1)" title="下移" style="margin-left: 2px">↓</n-button>
               <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.Id, v)" size="small" style="margin-left: 8px" />
@@ -1000,15 +1096,35 @@ onUnmounted(() => {
           </div>
           <div v-if="orderList.length === 0" class="setting-desc" style="padding: 12px 0">暂无可排序的媒体库</div>
           <div v-else>
-            <div v-for="(e, idx) in orderList" :key="e.kind + ':' + e.id" class="order-row">
+            <div
+              v-for="(e, idx) in orderList"
+              :key="e.kind + ':' + e.id"
+              class="order-row"
+              :class="{
+                'order-row-dragging': draggingOrderKey === (e.kind + ':' + e.id),
+                'order-row-over': dragOverOrderKey === (e.kind + ':' + e.id) && draggingOrderKey !== (e.kind + ':' + e.id),
+              }"
+              @dragover="handleOrderDragOver(idx, $event)"
+              @drop="handleOrderDrop"
+            >
+              <button
+                type="button"
+                class="order-drag-handle"
+                :draggable="orderList.length > 1 && !savingOrder"
+                :disabled="orderList.length <= 1 || savingOrder"
+                :aria-label="`拖动排序：${e.name}`"
+                title="拖动排序"
+                @click.stop
+                @keydown.stop="onOrderDragHandleKeydown(idx, $event)"
+                @dragstart.stop="handleOrderDragStart(idx, $event)"
+                @dragend.stop="handleOrderDragEnd"
+              >
+                <n-icon size="16" aria-hidden="true"><MoveOutline /></n-icon>
+              </button>
               <span class="order-kind-badge" :class="e.kind === 'platform' ? 'is-platform' : 'is-library'">{{ e.type }}</span>
               <span class="order-name">{{ e.name }}</span>
-              <n-button text size="tiny" :disabled="idx === 0" @click="moveOrder(idx, -1)" title="上移">↑</n-button>
-              <n-button text size="tiny" :disabled="idx === orderList.length - 1" @click="moveOrder(idx, 1)" title="下移" style="margin-left: 4px">↓</n-button>
             </div>
-            <div class="settings-actions">
-              <n-button type="primary" :loading="savingOrder" @click="saveOrder">保存顺序</n-button>
-            </div>
+            <div class="setting-desc" style="margin-top: 10px">拖动左侧手柄即可调整顺序，松手后自动保存。</div>
           </div>
         </div>
       </n-tab-pane>
@@ -1420,8 +1536,23 @@ onUnmounted(() => {
 .platform-cover-thumb { width: 48px; height: 27px; border-radius: 4px; object-fit: cover; margin-right: 10px; flex-shrink: 0; }
 .platform-dim-badge { font-size: 10px; color: var(--app-text-muted); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); border-radius: 4px; padding: 0 5px; margin-left: 8px; vertical-align: middle; }
 .discover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; max-height: 320px; overflow-y: auto; padding: 4px 2px; }
-.order-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); }
+.order-row { display: flex; align-items: center; gap: 8px; padding: 10px 8px; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); border-radius: 8px; transition: background-color 0.16s ease, opacity 0.16s ease; }
 .order-row:last-child { border-bottom: none; }
+.order-row-dragging { opacity: 0.55; }
+.order-row-over { background: color-mix(in srgb, var(--app-primary, #10b981) 12%, transparent); box-shadow: inset 0 0 0 1px var(--app-primary, #10b981); }
+.order-drag-handle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; flex-shrink: 0;
+  border: 1px solid var(--app-border, rgba(255,255,255,0.16));
+  border-radius: 6px; background: var(--app-modal-panel-bg-soft, rgba(255,255,255,0.04));
+  color: var(--app-text-muted); cursor: grab; line-height: 1;
+  transition: opacity 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+.order-drag-handle:hover, .order-drag-handle:focus-visible { color: var(--app-text); border-color: rgba(var(--app-primary-rgb), 0.4); }
+.order-drag-handle:focus-visible { outline: 2px solid var(--app-primary, #10b981); outline-offset: 2px; }
+.order-drag-handle:active { cursor: grabbing; }
+.order-drag-handle:disabled { cursor: default; opacity: 0.4; }
+@media (prefers-reduced-motion: reduce) { .order-row, .order-drag-handle { transition: none; } }
 .order-name { flex: 1; min-width: 0; font-size: 14px; color: var(--app-text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .order-kind-badge { font-size: 10px; border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
 .order-kind-badge.is-library { color: var(--app-primary); border: 1px solid rgba(var(--app-primary-rgb), 0.4); }
