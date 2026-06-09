@@ -286,11 +286,14 @@ func main() {
 	registerRoutes := func(group *gin.RouterGroup) {
 		handlers.RegisterSystemRoutes(group, state, adminMW)
 		handlers.RegisterUserRoutes(group, state, authMW, adminMW, optAuthMW)
-		handlers.RegisterLibraryRoutes(group, state, authMW, adminMW, optAuthMW)
+		// 浏览类元数据路由(媒体详情 / 列表 / 剧集 / 搜索等):非管理员隐藏物理存储路径。
+		// 播放 / 视频 / 图片路由不挂此中间件,保留 PlaybackInfo 的 MediaSource.Path 直链能力。
+		browse := group.Group("", middleware.HideMediaPaths())
+		handlers.RegisterLibraryRoutes(browse, state, authMW, adminMW, optAuthMW)
 		handlers.RegisterPlaybackRoutes(group, state, authMW)
 		handlers.RegisterVideoRoutes(group, state, authMW)
 		handlers.RegisterImageRoutes(group, state)
-		handlers.RegisterCompatRoutes(group, state, authMW, adminMW, optAuthMW)
+		handlers.RegisterCompatRoutes(browse, state, authMW, adminMW, optAuthMW)
 		handlers.RegisterEmbyCompatRoutes(group, state, adminMW)
 		handlers.RegisterStatsRoutes(group, state, authMW, adminMW)
 		handlers.RegisterWebhookRoutes(group, state)
