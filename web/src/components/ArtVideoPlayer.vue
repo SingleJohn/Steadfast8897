@@ -2,7 +2,6 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import Artplayer from 'artplayer'
 import type Hls from 'hls.js'
-import 'artplayer/dist/style.css'
 import {
   reportPlaybackProgress,
   reportPlaybackStart,
@@ -166,7 +165,9 @@ function buildArt(autoplay = true) {
     customType: {
       m3u8: (video, url) => {
         void bindHls(video, url).catch(() => {
-          art?.notice.show = '当前浏览器不支持播放该 HLS 资源'
+          if (art) {
+            art.notice.show = '当前浏览器不支持播放该 HLS 资源'
+          }
         })
       },
     },
