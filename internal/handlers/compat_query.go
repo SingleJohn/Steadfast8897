@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -36,6 +38,7 @@ func customSqlReport(c *gin.Context, state *AppState) {
 
 type customQueryBody struct {
 	CustomQueryString string `json:"CustomQueryString"`
+	ReplaceUserId     bool   `json:"ReplaceUserId"`
 }
 
 func submitCustomQuery(c *gin.Context, state *AppState) {
@@ -97,15 +100,13 @@ func submitCustomQuery(c *gin.Context, state *AppState) {
 		"UserId": `"UserId"`, "DateCreated": `"DateCreated"`, "ItemId": `"ItemId"`,
 		"ItemType": `"ItemType"`, "ItemName": `"ItemName"`, "PlayDuration": `"PlayDuration"`,
 		"PauseDuration": `"PauseDuration"`, "ClientName": `"ClientName"`, "DeviceName": `"DeviceName"`,
-		"RemoteAddress": `"ClientIp"`, "ClientIp": `"ClientIp"`, "PlaybackMethod": `"PlaybackMethod"`,
+		"RemoteAddress": `"RemoteAddress"`, "ClientIp": `"ClientIp"`, "PlaybackMethod": `"PlaybackMethod"`,
 		"SeriesName": `"SeriesName"`,
 	}
 	for embyCol, pgCol := range embyColumns {
 		re := regexp.MustCompile(`\b` + embyCol + `\b`)
 		sql = re.ReplaceAllString(sql, pgCol)
 	}
-	sql = strings.ReplaceAll(sql, `"PauseDuration"`, "0")
-
 	rows, err := state.DB.Query(c.Request.Context(), sql)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
@@ -135,7 +136,45 @@ func submitCustomQuery(c *gin.Context, state *AppState) {
 	if results == nil {
 		results = [][]interface{}{}
 	}
-	c.JSON(http.StatusOK, gin.H{"colums": columns, "results": results})
+	if body.ReplaceUserId {
+		replaceUserIDsInResults(c.Request.Context(), state, columns, results)
+	}
+	c.JSON(http.StatusOK, gin.H{"colums": columns, "columns": columns, "results": results})
+}
+
+func replaceUserIDsInResults(ctx context.Context, state *AppState, columns []string, results [][]interface{}) {
+	userIDCols := make([]int, 0, 1)
+	for i, col := range columns {
+		if strings.EqualFold(col, "UserId") {
+			userIDCols = append(userIDCols, i)
+		}
+	}
+	if len(userIDCols) == 0 {
+		return
+	}
+
+	names := map[string]string{}
+	for _, row := range results {
+		for _, idx := range userIDCols {
+			if idx < 0 || idx >= len(row) {
+				continue
+			}
+			if row[idx] == nil {
+				continue
+			}
+			userID := strings.TrimSpace(fmt.Sprint(row[idx]))
+			if userID == "" {
+				continue
+			}
+			name, ok := names[userID]
+			if !ok {
+				name = userID
+				_ = state.DB.QueryRow(ctx, "SELECT name FROM users WHERE id = $1::uuid", userID).Scan(&name)
+				names[userID] = name
+			}
+			row[idx] = name
+		}
+	}
 }
 
 var (

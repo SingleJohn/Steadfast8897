@@ -6,29 +6,31 @@ import (
 )
 
 type ActiveSession struct {
-	UserID       string       `json:"UserId"`
-	UserName     string       `json:"UserName"`
-	DeviceID     string       `json:"DeviceId"`
-	DeviceName   string       `json:"DeviceName"`
-	AppName      string       `json:"AppName"`
-	AppVersion   string       `json:"AppVersion"`
-	ClientIP     string       `json:"ClientIp"`
-	LastActivity time.Time    `json:"LastActivity"`
-	NowPlaying   *NowPlaying  `json:"NowPlaying,omitempty"`
+	UserID        string      `json:"UserId"`
+	UserName      string      `json:"UserName"`
+	DeviceID      string      `json:"DeviceId"`
+	DeviceName    string      `json:"DeviceName"`
+	AppName       string      `json:"AppName"`
+	AppVersion    string      `json:"AppVersion"`
+	ClientIP      string      `json:"ClientIp"`
+	PlaySessionID string      `json:"PlaySessionId,omitempty"`
+	LastActivity  time.Time   `json:"LastActivity"`
+	NowPlaying    *NowPlaying `json:"NowPlaying,omitempty"`
 }
 
 type NowPlaying struct {
-	ItemID              string  `json:"ItemId"`
-	ItemName            string  `json:"ItemName"`
-	ItemType            string  `json:"ItemType"`
-	SeriesName          *string `json:"SeriesName,omitempty"`
-	RuntimeTicks        *int64  `json:"RuntimeTicks,omitempty"`
-	PositionTicks       int64   `json:"PositionTicks"`
-	IsPaused            bool    `json:"IsPaused"`
-	SeasonIndex         *int32  `json:"SeasonIndex,omitempty"`
-	EpisodeIndex        *int32  `json:"EpisodeIndex,omitempty"`
-	PrimaryImageItemID  *string `json:"PrimaryImageItemId,omitempty"`
-	PlayMethod          string  `json:"PlayMethod,omitempty"`
+	ItemID             string  `json:"ItemId"`
+	ItemName           string  `json:"ItemName"`
+	ItemType           string  `json:"ItemType"`
+	SeriesName         *string `json:"SeriesName,omitempty"`
+	RuntimeTicks       *int64  `json:"RuntimeTicks,omitempty"`
+	PositionTicks      int64   `json:"PositionTicks"`
+	IsPaused           bool    `json:"IsPaused"`
+	SeasonIndex        *int32  `json:"SeasonIndex,omitempty"`
+	EpisodeIndex       *int32  `json:"EpisodeIndex,omitempty"`
+	PrimaryImageItemID *string `json:"PrimaryImageItemId,omitempty"`
+	PlaySessionID      string  `json:"PlaySessionId,omitempty"`
+	PlayMethod         string  `json:"PlayMethod,omitempty"`
 }
 
 type SessionManager struct {
@@ -108,6 +110,9 @@ func (sm *SessionManager) SetNowPlaying(userID, deviceID string, np *NowPlaying)
 
 	if s, ok := sm.sessions[key]; ok {
 		s.NowPlaying = np
+		if np != nil && np.PlaySessionID != "" {
+			s.PlaySessionID = np.PlaySessionID
+		}
 		s.LastActivity = time.Now()
 	}
 }
@@ -119,7 +124,49 @@ func (sm *SessionManager) ClearNowPlaying(userID, deviceID string) {
 
 	if s, ok := sm.sessions[key]; ok {
 		s.NowPlaying = nil
+		s.PlaySessionID = ""
 	}
+}
+
+func (sm *SessionManager) ClearNowPlayingBySessionID(sessionID string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for _, s := range sm.sessions {
+		if sessionMatchesID(s, sessionID) {
+			s.NowPlaying = nil
+			s.PlaySessionID = ""
+			s.LastActivity = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+func (sm *SessionManager) HasSession(sessionID string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for _, s := range sm.sessions {
+		if s.LastActivity.After(cutoff) && sessionMatchesID(s, sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionMatchesID(s *ActiveSession, sessionID string) bool {
+	if s == nil || sessionID == "" {
+		return false
+	}
+	if s.UserID+"_"+s.DeviceID == sessionID {
+		return true
+	}
+	if s.PlaySessionID == sessionID {
+		return true
+	}
+	return s.NowPlaying != nil && s.NowPlaying.PlaySessionID == sessionID
 }
 
 func (sm *SessionManager) GetActiveSessions() []ActiveSession {

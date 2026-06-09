@@ -45,7 +45,7 @@ func RegisterCompatRoutes(group *gin.RouterGroup, state *AppState, authMW, admin
 	group.GET("/Search/Hints", authMW, func(c *gin.Context) { searchHints(c, state) })
 
 	group.POST("/Sessions/:sessionId/Playing/Stop", adminMW, func(c *gin.Context) { sessionStop(c, state) })
-	group.POST("/Sessions/:sessionId/Message", authMW, sessionMessage)
+	group.POST("/Sessions/:sessionId/Message", authMW, func(c *gin.Context) { sessionMessage(c, state) })
 	group.POST("/Sessions/Capabilities/Full", emptyOK)
 
 	group.POST("/user_usage_stats/submit_custom_query", adminMW, func(c *gin.Context) { submitCustomQuery(c, state) })

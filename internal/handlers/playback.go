@@ -280,7 +280,7 @@ func OnPlaybackStart(c *gin.Context) {
 		clientIP,
 	)
 
-	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused)
+	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused, body.PlaySessionId)
 	st.SessionManager.SetNowPlaying(auth.ID, deviceID, np)
 
 	// 首次播放异步回填 MediaStreams(strm 远程媒体入库时未探测,详情为空)。
@@ -406,7 +406,7 @@ func OnPlaybackProgress(c *gin.Context) {
 	}
 	activePlaybacksMu.Unlock()
 
-	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused)
+	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused, body.PlaySessionId)
 	progressPM := c.GetHeader("X-Play-Method")
 	if progressPM == "" {
 		// Inherit from existing activePlayback if available
@@ -763,12 +763,13 @@ func buildNotifySessionFromPlayback(pb *activePlayback, deviceID, sessionID stri
 	return buildNotifySession(pb.clientIP, pb.clientName, pb.deviceName, did, pb.appVersion, sessionID)
 }
 
-func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPaused bool) *services.NowPlaying {
+func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPaused bool, playSessionID string) *services.NowPlaying {
 	if item == nil {
 		return &services.NowPlaying{
 			ItemID:        itemID,
 			PositionTicks: positionTicks,
 			IsPaused:      isPaused,
+			PlaySessionID: playSessionID,
 		}
 	}
 	np := &services.NowPlaying{
@@ -778,6 +779,7 @@ func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPa
 		PositionTicks: positionTicks,
 		IsPaused:      isPaused,
 		RuntimeTicks:  item.RuntimeTicks,
+		PlaySessionID: playSessionID,
 	}
 	if item.SeriesName != nil {
 		np.SeriesName = item.SeriesName

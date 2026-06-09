@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -22,20 +21,34 @@ func getSessions(c *gin.Context, state *AppState) {
 }
 
 func formatEmbySessionInfo(ctx context.Context, s services.ActiveSession, state *AppState) gin.H {
+	sessionID := s.UserID + "_" + s.DeviceID
+	playSessionID := s.PlaySessionID
+	if playSessionID == "" && s.NowPlaying != nil {
+		playSessionID = s.NowPlaying.PlaySessionID
+	}
+
 	h := gin.H{
-		"Id":                 s.UserID + "_" + s.DeviceID,
-		"UserId":             s.UserID,
-		"UserName":           s.UserName,
-		"Client":             s.AppName,
-		"DeviceId":           s.DeviceID,
-		"DeviceName":         s.DeviceName,
-		"ApplicationVersion": s.AppVersion,
-		"ServerId":           state.Config.ServerID,
-		"RemoteEndPoint":     s.ClientIP,
-		"LastActivityDate":   s.LastActivity.UTC().Format("2006-01-02T15:04:05.0000000Z"),
+		"Id":                    sessionID,
+		"UserId":                s.UserID,
+		"UserName":              s.UserName,
+		"Client":                s.AppName,
+		"DeviceId":              s.DeviceID,
+		"DeviceName":            s.DeviceName,
+		"ApplicationVersion":    s.AppVersion,
+		"ServerId":              state.Config.ServerID,
+		"RemoteEndPoint":        s.ClientIP,
+		"LastActivityDate":      s.LastActivity.UTC().Format("2006-01-02T15:04:05.0000000Z"),
+		"SupportsRemoteControl": true,
+	}
+	if playSessionID != "" {
+		h["PlaySessionId"] = playSessionID
 	}
 	if s.NowPlaying != nil {
 		np := s.NowPlaying
+		playMethod := np.PlayMethod
+		if playMethod == "" {
+			playMethod = "DirectPlay"
+		}
 		item := gin.H{
 			"Id":           np.ItemID,
 			"Name":         np.ItemName,
@@ -99,13 +112,15 @@ func formatEmbySessionInfo(ctx context.Context, s services.ActiveSession, state 
 			"IsPaused":      np.IsPaused,
 			"PositionTicks": np.PositionTicks,
 			"CanSeek":       true,
-			"PlayMethod":    "DirectPlay",
+			"PlayMethod":    playMethod,
+			"PlaySessionId": playSessionID,
 		}
 	} else {
 		h["PlayState"] = gin.H{
 			"IsPaused":      false,
 			"PositionTicks": int64(0),
 			"CanSeek":       true,
+			"PlaySessionId": playSessionID,
 		}
 	}
 	return h
@@ -113,14 +128,18 @@ func formatEmbySessionInfo(ctx context.Context, s services.ActiveSession, state 
 
 func sessionStop(c *gin.Context, state *AppState) {
 	sessionID := c.Param("sessionId")
-	if idx := strings.Index(sessionID, "_"); idx > 0 {
-		userID := sessionID[:idx]
-		deviceID := sessionID[idx+1:]
-		state.SessionManager.ClearNowPlaying(userID, deviceID)
+	if !state.SessionManager.ClearNowPlayingBySessionID(sessionID) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Session not found"})
+		return
 	}
 	c.Status(http.StatusNoContent)
 }
 
-func sessionMessage(c *gin.Context) {
+func sessionMessage(c *gin.Context, state *AppState) {
+	sessionID := c.Param("sessionId")
+	if !state.SessionManager.HasSession(sessionID) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Session not found"})
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
