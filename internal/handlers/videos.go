@@ -461,6 +461,11 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 
 	hideMediaSourceSizeForInfuse(c, sources)
 
+	// 播放必经接口:异步探测当前 media_version 并回填 MediaStreams(strm/远程媒体
+	// 入库未探测时详情为空)。比依赖客户端上报 Sessions/Playing 更可靠。
+	// fire-and-forget,内部自带去重与 mediainfo 已有判断,失败不影响播放。
+	go services.ProbeOnPlay(state.DB, *uid, selectedMediaSourceID)
+
 	c.JSON(http.StatusOK, gin.H{
 		"MediaSources":  sources,
 		"PlaySessionId": playSessionID,
