@@ -253,7 +253,7 @@ onMounted(() => {
 
 /*
  * Hero 全幅出血:抵消 media-page-inner 24px 水平 padding,让背景顶到 viewport 左右两侧。
- * 内容文字区域的 1480 限宽在 HeroCarousel 内部 .hero-content 处理。
+ * 内容文字区域的 1480 限宽在 HeroCarousel 内部 .hero-carousel-content 处理。
  */
 .home-hero-wrap {
   margin: 0 -24px 36px;

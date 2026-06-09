@@ -86,8 +86,8 @@ function titleClass(item: any): string {
           />
           <div class="hero-shade" />
 
-          <div class="hero-inner">
-            <div class="hero-content">
+          <div class="hero-carousel-inner">
+            <div class="hero-carousel-content">
               <div class="hero-meta-row">
                 <span
                   v-for="(g, i) in topGenres(item)"
@@ -216,7 +216,7 @@ function titleClass(item: any): string {
     );
 }
 
-.hero-inner {
+.hero-carousel-inner {
   position: absolute;
   inset: 0;
   z-index: 3;
@@ -225,7 +225,7 @@ function titleClass(item: any): string {
   padding: 0 48px 72px;
 }
 
-.hero-content {
+.hero-carousel-content {
   width: 100%;
   max-width: 1480px;
   margin: 0 auto;
@@ -407,7 +407,7 @@ function titleClass(item: any): string {
   .hero-swiper :deep(.swiper-slide) {
     height: clamp(440px, 66vh, 620px);
   }
-  .hero-inner {
+  .hero-carousel-inner {
     padding: 0 28px 64px;
   }
   .hero-pagination {
@@ -422,10 +422,10 @@ function titleClass(item: any): string {
   .hero-swiper :deep(.swiper-slide) {
     height: clamp(400px, 62vh, 520px);
   }
-  .hero-inner {
+  .hero-carousel-inner {
     padding: 0 20px 40px;
   }
-  .hero-content {
+  .hero-carousel-content {
     gap: 14px;
   }
   .hero-title {
