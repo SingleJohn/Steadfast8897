@@ -1,0 +1,548 @@
+package handlers
+
+import (
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"fyms/internal/dto"
+	"fyms/internal/models"
+)
+
+func getUserViews(c *gin.Context) {
+	state := GetState(c)
+	userID := resolveUserID(c)
+	if !matchUserOrAdmin(c, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	cacheKey := "views:all"
+	var cached map[string]interface{}
+	if state.Cache.GetJSON(ctx, cacheKey, &cached) {
+		c.JSON(http.StatusOK, cached)
+		return
+	}
+
+	libs, err := models.GetAllLibraries(ctx, state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	sid := state.Config.ServerID
+
+	// Read display settings
+	var platformPosition, showItemCountStr *string
+	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_position'").Scan(&platformPosition)
+	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'library_show_item_count'").Scan(&showItemCountStr)
+	platformBefore := platformPosition != nil && *platformPosition == "before"
+	showItemCount := showItemCountStr == nil || *showItemCountStr != "false"
+
+	// Platform virtual libraries
+	var platformEntries []gin.H
+	if models.IsPlatformLibrariesEnabled(ctx, state.DB) {
+		platforms, _ := models.GetEnabledPlatforms(ctx, state.DB)
+		for _, p := range platforms {
+			if p.ItemCount == 0 {
+				continue
+			}
+			vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
+			colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
+			imgTags := gin.H{}
+			// 有生成封面、或是已知平台(内置 logo)时才挂 Primary
+			if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
+				imgTags["Primary"] = vid
+			}
+			var unplayedCount interface{}
+			if showItemCount {
+				unplayedCount = p.ItemCount
+			} else {
+				unplayedCount = 0
+			}
+			entry := gin.H{
+				"Name":               p.EffectiveDisplayName(),
+				"ServerId":           sid,
+				"Id":                 vid,
+				"Etag":               vid,
+				"Type":               "CollectionFolder",
+				"IsFolder":           true,
+				"ChildCount":         p.ItemCount,
+				"RecursiveItemCount": p.ItemCount,
+				"SortName":           fmt.Sprintf("%04d", p.SortOrder),
+				"ImageTags":          imgTags,
+				"BackdropImageTags":  []string{},
+				"PlatformLibrary":    true,
+				"UserData": gin.H{
+					"PlaybackPositionTicks": 0,
+					"PlayCount":             0,
+					"IsFavorite":            false,
+					"Played":                false,
+					"UnplayedItemCount":     unplayedCount,
+				},
+			}
+			// 混合库(colType 为空)省略 CollectionType, 客户端才会同时显示电影和剧集
+			if colType != "" {
+				entry["CollectionType"] = colType
+			}
+			platformEntries = append(platformEntries, entry)
+		}
+	}
+
+	libEntries := make([]gin.H, 0, len(libs))
+	for _, lib := range libs {
+		idStr := lib.ID.String()
+
+		var childCount int64
+		childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
+		var recursiveCount int64
+		state.DB.QueryRow(ctx,
+			"SELECT COUNT(*) FROM items WHERE library_id = $1", lib.ID).Scan(&recursiveCount)
+
+		imageTags := gin.H{}
+		if lib.PrimaryImageTag != nil {
+			imageTags["Primary"] = *lib.PrimaryImageTag
+		}
+
+		var unplayedCount interface{}
+		if showItemCount {
+			unplayedCount = childCount
+		} else {
+			unplayedCount = 0
+		}
+
+		entry := gin.H{
+			"Name":               lib.Name,
+			"ServerId":           sid,
+			"Id":                 idStr,
+			"Etag":               idStr,
+			"Type":               "CollectionFolder",
+			"CollectionType":     lib.CollectionType,
+			"IsFolder":           true,
+			"ChildCount":         childCount,
+			"RecursiveItemCount": recursiveCount,
+			"SortName":           strings.ToLower(lib.Name),
+			"DateCreated":        lib.CreatedAt.UTC().Format(time.RFC3339),
+			"ImageTags":          imageTags,
+			"BackdropImageTags":  []string{},
+			"UserData": gin.H{
+				"PlaybackPositionTicks": 0,
+				"PlayCount":             0,
+				"IsFavorite":            false,
+				"Played":                false,
+				"UnplayedItemCount":     unplayedCount,
+			},
+		}
+		if len(lib.Paths) > 0 {
+			entry["Path"] = lib.Paths[0]
+		}
+		libEntries = append(libEntries, entry)
+	}
+
+	// 统一展示顺序:有 library_display_order 记录时,实际库与虚拟库按其交错排序;
+	// 否则回退 platform_libraries_position(before/after)。
+	order, _ := models.GetDisplayOrder(ctx, state.DB)
+	out := make([]gin.H, 0, len(libEntries)+len(platformEntries))
+	if len(order) > 0 {
+		out = append(out, platformEntries...)
+		out = append(out, libEntries...)
+		sort.SliceStable(out, func(i, j int) bool {
+			oi, iok := order[fmt.Sprint(out[i]["Id"])]
+			oj, jok := order[fmt.Sprint(out[j]["Id"])]
+			if iok && jok {
+				return oi < oj
+			}
+			// 已排序条目排在未排序(新加)条目前面;两者皆未排序时保持稳定原序。
+			return iok && !jok
+		})
+	} else if platformBefore {
+		out = append(out, platformEntries...)
+		out = append(out, libEntries...)
+	} else {
+		out = append(out, libEntries...)
+		out = append(out, platformEntries...)
+	}
+
+	resp := gin.H{
+		"Items":            out,
+		"TotalRecordCount": len(out),
+	}
+	state.Cache.SetJSON(ctx, cacheKey, resp, 60*time.Second)
+	c.JSON(http.StatusOK, resp)
+}
+
+// queryAny returns the first non-empty query parameter value among the given keys.
+func queryAny(c *gin.Context, keys ...string) string {
+	for _, k := range keys {
+		if v := c.Query(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// itemTypeCanonical 把客户端传入的各种大小写形式映射到 FYMS 数据库 items.type
+// 的标准值。Lenna 等客户端会传 "movie" 全小写,SQL 精确匹配 i.type='Movie'
+// 时查不到任何记录导致媒体库为空。
+var itemTypeCanonical = map[string]string{
+	"movie":            "Movie",
+	"series":           "Series",
+	"episode":          "Episode",
+	"season":           "Season",
+	"boxset":           "BoxSet",
+	"playlist":         "Playlist",
+	"musicvideo":       "MusicVideo",
+	"video":            "Video",
+	"audio":            "Audio",
+	"folder":           "Folder",
+	"collectionfolder": "CollectionFolder",
+	"userview":         "UserView",
+	"musicalbum":       "MusicAlbum",
+	"musicartist":      "MusicArtist",
+}
+
+func normalizeItemType(s string) string {
+	if v, ok := itemTypeCanonical[strings.ToLower(strings.TrimSpace(s))]; ok {
+		return v
+	}
+	return s
+}
+
+func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOptions, error) {
+	opts := &models.ItemQueryOptions{}
+
+	if pid := strings.TrimSpace(queryAny(c, "ParentId", "parentId", "parentid")); pid != "" {
+		opts.ParentID = &pid
+	}
+	if s := strings.TrimSpace(queryAny(c, "ParentIds", "parentIds", "parentids")); s != "" {
+		for _, id := range strings.Split(s, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				opts.ParentIDs = append(opts.ParentIDs, id)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "IncludeItemTypes", "includeItemTypes", "includeitemtypes")); s != "" {
+		for _, t := range strings.Split(s, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				opts.IncludeItemTypes = append(opts.IncludeItemTypes, normalizeItemType(t))
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "SortBy", "sortBy", "sortby")); s != "" {
+		opts.SortBy = &s
+	}
+	if s := strings.TrimSpace(queryAny(c, "SortOrder", "sortOrder", "sortorder")); s != "" {
+		opts.SortOrder = &s
+	}
+	if s := strings.TrimSpace(queryAny(c, "Limit", "limit")); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		opts.Limit = &n
+	}
+	if s := strings.TrimSpace(queryAny(c, "StartIndex", "startIndex", "startindex")); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		opts.StartIndex = &n
+	}
+	recStr := queryAny(c, "Recursive", "recursive")
+	recursive := strings.EqualFold(recStr, "true") || recStr == "1"
+	opts.Recursive = recursive
+
+	if s := strings.TrimSpace(queryAny(c, "SearchTerm", "searchTerm", "searchterm")); s != "" {
+		opts.SearchTerm = &s
+	}
+	if s := strings.TrimSpace(queryAny(c, "NameStartsWith", "nameStartsWith", "namestartswith")); s != "" {
+		opts.NameStartsWith = &s
+	}
+	if s := strings.TrimSpace(queryAny(c, "Filters", "filters")); s != "" {
+		for _, f := range strings.Split(s, ",") {
+			f = strings.TrimSpace(f)
+			if f != "" {
+				opts.Filters = append(opts.Filters, f)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "GenreIds", "genreIds", "genreids")); s != "" {
+		for _, g := range strings.Split(s, ",") {
+			g = strings.TrimSpace(g)
+			if g != "" {
+				opts.GenreIDs = append(opts.GenreIDs, g)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "Years", "years")); s != "" {
+		for _, y := range strings.Split(s, ",") {
+			y = strings.TrimSpace(y)
+			if y == "" {
+				continue
+			}
+			n, err := strconv.Atoi(y)
+			if err != nil {
+				return nil, err
+			}
+			opts.Years = append(opts.Years, n)
+		}
+	}
+
+	// AnyProviderIdEquals=tmdb.755898 —— 聚合类客户端用外部站点 ID 跨源匹配同一影片。
+	// 支持 ; 或 , 分隔多个,每个按第一个 "." 拆成 provider 与 id;provider 名小写化。
+	if s := strings.TrimSpace(queryAny(c, "AnyProviderIdEquals", "anyProviderIdEquals", "anyprovideridequals")); s != "" {
+		for _, raw := range strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' }) {
+			raw = strings.TrimSpace(raw)
+			dot := strings.Index(raw, ".")
+			if dot <= 0 || dot >= len(raw)-1 {
+				continue // 缺少 provider 或 id,跳过
+			}
+			provider := strings.ToLower(strings.TrimSpace(raw[:dot]))
+			id := strings.TrimSpace(raw[dot+1:])
+			if provider != "" && id != "" {
+				opts.AnyProviderID = append(opts.AnyProviderID, models.ProviderIDMatch{Provider: provider, ID: id})
+			}
+		}
+	}
+
+	opts.UserID = &userID
+	return opts, nil
+}
+
+func getItems(c *gin.Context) {
+	state := GetState(c)
+	pathUser := resolveUserID(c)
+	if !matchUserOrAdmin(c, pathUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	opts, err := parseItemQueryOptions(c, pathUser)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	// 大批量分页列表：跳过 series_fallback JOIN 提升性能
+	if opts.Recursive && opts.ParentID == nil && opts.UserID == nil && len(opts.GenreIDs) == 0 {
+		opts.LightMode = true
+	}
+
+	// Handle platform virtual library (UUID-based lookup)
+	if opts.ParentID != nil {
+		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
+			opts.ParentID = nil
+			applyVirtualDimension(opts, p)
+			if len(opts.IncludeItemTypes) == 0 {
+				opts.IncludeItemTypes = []string{"Movie", "Series"}
+			}
+			opts.Recursive = true
+		}
+	}
+	res, err := models.QueryItems(ctx, state.DB, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	sid := state.Config.ServerID
+	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
+	items := make([]dto.BaseItemDto, 0, len(res.Items))
+	for i := range res.Items {
+		var ud *dto.UserDataRow
+		if i < len(res.UserData) {
+			ud = &res.UserData[i]
+		}
+		item := dto.FormatItemDtoList(&res.Items[i], sid, ud)
+		if needMediaSources {
+			applyListMediaSourceDisplay(c, ctx, state, &res.Items[i], &item)
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"Items":            items,
+		"TotalRecordCount": res.TotalCount,
+	})
+}
+
+func getResumeItems(c *gin.Context) {
+	state := GetState(c)
+	pathUser := resolveUserID(c)
+	if !matchUserOrAdmin(c, pathUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+
+	opts, err := parseItemQueryOptions(c, pathUser)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	opts.Filters = append([]string{"IsResumable"}, opts.Filters...)
+	if len(opts.IncludeItemTypes) == 0 {
+		opts.IncludeItemTypes = []string{"Movie", "Episode"}
+	}
+	if opts.SortBy == nil {
+		sb := "DatePlayed"
+		opts.SortBy = &sb
+	}
+	if opts.SortOrder == nil {
+		so := "Descending"
+		opts.SortOrder = &so
+	}
+	if opts.Limit == nil {
+		lim := int64(12)
+		opts.Limit = &lim
+	}
+
+	ctx := c.Request.Context()
+	res, err := models.QueryItems(ctx, state.DB, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	sid := state.Config.ServerID
+	items := make([]dto.BaseItemDto, 0, len(res.Items))
+	for i := range res.Items {
+		var ud *dto.UserDataRow
+		if i < len(res.UserData) {
+			ud = &res.UserData[i]
+		}
+		items = append(items, dto.FormatItemDto(&res.Items[i], sid, ud))
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"Items":            items,
+		"TotalRecordCount": res.TotalCount,
+	})
+}
+
+func getLatestItems(c *gin.Context) {
+	state := GetState(c)
+	pathUser := resolveUserID(c)
+	if !matchUserOrAdmin(c, pathUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+
+	parentID := strings.TrimSpace(c.Query("ParentId"))
+	if parentID == "" {
+		c.JSON(http.StatusOK, []interface{}{})
+		return
+	}
+	limit := int64(20)
+	if s := strings.TrimSpace(c.Query("Limit")); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		limit = n
+	}
+
+	ctx := c.Request.Context()
+
+	// Handle platform virtual library
+	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+		studioOpt := &models.ItemQueryOptions{
+			IncludeItemTypes: []string{"Movie", "Series"},
+			Limit:            &limit,
+			Recursive:        true,
+		}
+		applyVirtualDimension(studioOpt, p)
+		sb := "DateCreated"
+		so := "Descending"
+		studioOpt.SortBy = &sb
+		studioOpt.SortOrder = &so
+		res, err := models.QueryItems(ctx, state.DB, studioOpt)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		sid := state.Config.ServerID
+		items := make([]dto.BaseItemDto, 0, len(res.Items))
+		for i := range res.Items {
+			items = append(items, dto.FormatItemDto(&res.Items[i], sid, nil))
+		}
+		c.JSON(http.StatusOK, items)
+		return
+	}
+
+	rows, err := models.GetLatestItems(ctx, state.DB, parentID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	sid := state.Config.ServerID
+	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
+	items := make([]dto.BaseItemDto, 0, len(rows))
+	for i := range rows {
+		item := dto.FormatItemDto(&rows[i], sid, nil)
+		if needMediaSources {
+			applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, items)
+}
+
+func getLatestBatch(c *gin.Context) {
+	state := GetState(c)
+	pathUser := resolveUserID(c)
+	if !matchUserOrAdmin(c, pathUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+		return
+	}
+
+	libIDsRaw := strings.TrimSpace(c.Query("LibraryIds"))
+	if libIDsRaw == "" {
+		libIDsRaw = strings.TrimSpace(c.Query("libraryIds"))
+	}
+	if libIDsRaw == "" {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+
+	limit := int64(16)
+	if s := strings.TrimSpace(c.Query("Limit")); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	ctx := c.Request.Context()
+	sid := state.Config.ServerID
+	result := make(map[string][]dto.BaseItemDto)
+
+	for _, rawID := range strings.Split(libIDsRaw, ",") {
+		libID := strings.TrimSpace(rawID)
+		if libID == "" {
+			continue
+		}
+		rows, err := models.GetLatestItems(ctx, state.DB, libID, limit)
+		if err != nil {
+			continue
+		}
+		items := make([]dto.BaseItemDto, 0, len(rows))
+		for i := range rows {
+			items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
+		}
+		result[libID] = items
+	}
+
+	c.JSON(http.StatusOK, result)
+}
