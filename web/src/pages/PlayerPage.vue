@@ -40,6 +40,8 @@ const resolvedItemId = computed(() => {
   return typeof p === 'string' ? p : Array.isArray(p) ? p[0] ?? '' : ''
 })
 
+const shouldResume = computed(() => route.query.from !== 'start')
+
 async function load() {
   const id = resolvedItemId.value
   if (!id) { loading.value = false; return }
@@ -49,7 +51,7 @@ async function load() {
   try {
     const [item, playbackInfo] = await Promise.all([getItem(id), getPlaybackInfo(id)])
     title.value = formatTitle(item as Record<string, unknown>)
-    startPosition.value = item.UserData?.PlaybackPositionTicks || 0
+    startPosition.value = shouldResume.value ? item.UserData?.PlaybackPositionTicks || 0 : 0
     const streams = item.MediaStreams || []
     audioTracks.value = streams
       .filter((s: any) => s.Type === 'Audio')
@@ -67,7 +69,11 @@ async function load() {
   }
 }
 
-watch(() => resolvedItemId.value, () => { load() }, { immediate: true })
+watch(
+  () => [resolvedItemId.value, route.query.from] as const,
+  () => { load() },
+  { immediate: true }
+)
 
 function goBack() { router.back() }
 function onEnded() { router.back() }

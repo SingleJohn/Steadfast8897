@@ -6,6 +6,7 @@ import {
   Heart,
   HeartOutline,
   PlayOutline,
+  PlaySkipBackOutline,
   RefreshOutline,
   SearchOutline,
 } from '@vicons/ionicons5'
@@ -28,6 +29,7 @@ defineProps<{
 
 const emit = defineEmits<{
   play: []
+  playFromStart: []
   trailer: []
   favorite: []
   played: []
@@ -79,16 +81,38 @@ const emit = defineEmits<{
           </div>
 
           <div class="action-row">
-            <button
-              v-if="canPlay"
-              type="button"
-              class="btn-play"
-              :aria-label="item.UserData?.PlaybackPositionTicks > 0 ? '继续播放' : '播放'"
-              @click="emit('play')"
-            >
-              <n-icon :size="18"><PlayOutline /></n-icon>
-              <span>{{ item.UserData?.PlaybackPositionTicks > 0 ? '继续播放' : '播放' }}</span>
-            </button>
+            <template v-if="canPlay">
+              <button
+                v-if="item.UserData?.PlaybackPositionTicks > 0"
+                type="button"
+                class="btn-play"
+                aria-label="继续播放"
+                @click="emit('play')"
+              >
+                <n-icon :size="18"><PlayOutline /></n-icon>
+                <span>继续播放</span>
+              </button>
+              <button
+                v-if="item.UserData?.PlaybackPositionTicks > 0"
+                type="button"
+                class="btn-play btn-play-secondary"
+                aria-label="从头播放"
+                @click="emit('playFromStart')"
+              >
+                <n-icon :size="18"><PlaySkipBackOutline /></n-icon>
+                <span>从头播放</span>
+              </button>
+              <button
+                v-else
+                type="button"
+                class="btn-play"
+                aria-label="播放"
+                @click="emit('play')"
+              >
+                <n-icon :size="18"><PlayOutline /></n-icon>
+                <span>播放</span>
+              </button>
+            </template>
             <button
               v-if="trailersCount > 0"
               type="button"
@@ -138,4 +162,3 @@ const emit = defineEmits<{
     </div>
   </div>
 </template>
-

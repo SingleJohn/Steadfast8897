@@ -79,6 +79,9 @@ const selectedSubtitle = ref(
   props.subtitleTracks.find((t) => t.isDefault)?.index ?? -1
 );
 const dragging = ref(false);
+const initialSeekApplied = ref(false);
+const initialPlayAttempted = ref(false);
+const waitingInitialSeek = ref(false);
 
 function showControls() {
   controlsVisible.value = true;
@@ -115,9 +118,57 @@ function handleMouseLeave() {
   }
 }
 
+function applyInitialSeek() {
+  const video = videoRef.value;
+  if (!video) return false;
+
+  const positionTicks = props.startPositionTicks ?? 0;
+  if (positionTicks <= 0) {
+    initialSeekApplied.value = true;
+    return true;
+  }
+
+  if (video.readyState < 1) return false;
+
+  const targetTime = positionTicks / TICKS_PER_SECOND;
+  if (Math.abs(video.currentTime - targetTime) > 0.25) {
+    video.currentTime = targetTime;
+    waitingInitialSeek.value = true;
+    return false;
+  }
+
+  initialSeekApplied.value = true;
+  waitingInitialSeek.value = false;
+  return true;
+}
+
+async function startInitialPlayback() {
+  const video = videoRef.value;
+  if (!video || initialPlayAttempted.value) return;
+  if (video.readyState < 2) return;
+
+  initialPlayAttempted.value = true;
+  try {
+    await video.play();
+  } catch {
+    // 浏览器策略拦截时静默失败,保留手动播放入口即可。
+  }
+}
+
+function syncInitialPlayback() {
+  if (!initialSeekApplied.value) {
+    if (!applyInitialSeek()) return;
+  }
+  void startInitialPlayback();
+}
+
 watch(
   () => [props.itemId, props.startPositionTicks] as const,
   ([itemId, startPositionTicks], _prev, onCleanup) => {
+    initialSeekApplied.value = false;
+    initialPlayAttempted.value = false;
+    waitingInitialSeek.value = false;
+
     const positionTicks = startPositionTicks ?? 0;
     reportPlaybackStart(itemId, positionTicks);
 
@@ -126,7 +177,7 @@ watch(
       const video = videoRef.value;
       if (video) {
         const ticks = Math.floor(video.currentTime * TICKS_PER_SECOND);
-        reportPlaybackProgress(itemId, ticks, !video.paused);
+        reportPlaybackProgress(itemId, ticks, video.paused);
       }
     }, 10000);
 
@@ -145,14 +196,13 @@ watch(
 watch(
   () => props.startPositionTicks,
   (startPositionTicks) => {
-    if (videoRef.value && startPositionTicks) {
-      videoRef.value.currentTime = startPositionTicks / TICKS_PER_SECOND;
-    }
+    if (!initialSeekApplied.value && startPositionTicks) syncInitialPlayback();
   }
 );
 
 function onPlay() {
   playing.value = true;
+  showControls();
 }
 function onPause() {
   playing.value = false;
@@ -169,6 +219,22 @@ function onDurationChange() {
   const video = videoRef.value;
   if (!video) return;
   duration.value = video.duration || 0;
+}
+function onLoadedMetadata() {
+  const video = videoRef.value;
+  if (!video) return;
+  duration.value = video.duration || 0;
+  applyInitialSeek();
+  syncInitialPlayback();
+}
+function onCanPlay() {
+  syncInitialPlayback();
+}
+function onSeeked() {
+  if (!waitingInitialSeek.value) return;
+  waitingInitialSeek.value = false;
+  initialSeekApplied.value = true;
+  syncInitialPlayback();
 }
 function onVolumeChange() {
   const video = videoRef.value;
@@ -401,12 +467,17 @@ function toggleMute() {
     <video
       ref="videoRef"
       :src="src"
+      preload="auto"
+      playsinline
       :style="{
         width: '100%',
         height: '100%',
         objectFit: 'contain',
         display: 'block',
       }"
+      @loadedmetadata="onLoadedMetadata"
+      @canplay="onCanPlay"
+      @seeked="onSeeked"
       @click="togglePlay"
     />
 

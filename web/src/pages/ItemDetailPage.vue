@@ -261,7 +261,11 @@ async function handleApplyTmdb(tmdbId: number) {
 }
 
 function goPlay(id: string) {
-  router.push('/play/' + id)
+  router.push({ name: 'player', params: { itemId: id }, query: { from: 'resume' } })
+}
+
+function goPlayFromStart(id: string) {
+  router.push({ name: 'player', params: { itemId: id }, query: { from: 'start' } })
 }
 
 function goDetail(id: string) {
@@ -315,6 +319,7 @@ function handleGenreClick(genreId: string) {
       :scraping="scraping"
       :is-admin="auth.isAdmin"
       @play="goPlay(item.Id)"
+      @play-from-start="goPlayFromStart(item.Id)"
       @trailer="openTrailer(0)"
       @favorite="handleFavorite"
       @played="handlePlayed"
