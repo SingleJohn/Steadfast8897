@@ -88,6 +88,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.GET("/Users/Items/LatestBatch", authMW, getLatestBatch)
 
 	u.GET("/Genres", getGenres)
+	u.GET("/Tags", authMW, getTags)
 
 	// Library sort order
 	u.POST("/Library/VirtualFolders/SortOrder", adminMW, func(c *gin.Context) { updateLibrarySortOrder(c, state) })

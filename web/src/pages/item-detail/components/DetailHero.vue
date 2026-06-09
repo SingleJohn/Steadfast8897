@@ -35,7 +35,7 @@ const emit = defineEmits<{
   played: []
   scrape: []
   customScrape: []
-  genreClick: [genreId: string]
+  genreClick: [genreId: string, genreName: string]
 }>()
 </script>
 
@@ -150,9 +150,8 @@ const emit = defineEmits<{
               :key="g.Id"
               type="button"
               class="genre-chip"
-              :disabled="!item.ParentId"
               :aria-label="`按类型筛选:${g.Name}`"
-              @click="emit('genreClick', g.Id)"
+              @click="emit('genreClick', g.Id, g.Name)"
             >
               {{ g.Name }}
             </button>

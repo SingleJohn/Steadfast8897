@@ -46,6 +46,7 @@ const router = createRouter({
       children: [
         { path: '', name: 'home', component: () => import('./pages/HomePage.vue'), meta: { title: '首页' } },
         { path: 'search', name: 'search', component: () => import('./pages/SearchPage.vue'), meta: { title: '搜索' } },
+        { path: 'browse/:kind/:value(.*)', name: 'browse', component: () => import('./pages/BrowsePage.vue'), meta: { title: '浏览' } },
         { path: 'movies', name: 'movies', component: () => import('./pages/LibraryPage.vue'), meta: { title: '电影' } },
         { path: 'tvshows', name: 'tvshows', component: () => import('./pages/LibraryPage.vue'), meta: { title: '剧集' } },
         { path: 'library/:libraryId', name: 'library', component: () => import('./pages/LibraryPage.vue'), meta: { title: '媒体库' } },

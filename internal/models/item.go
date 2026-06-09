@@ -26,6 +26,12 @@ type ItemQueryOptions struct {
 	Filters          []string
 	UserID           *string
 	GenreIDs         []string
+	GenreNames       []string
+	TagIDs           []int
+	TagNames         []string
+	PersonIDs        []string
+	PersonNames      []string
+	PersonTypes      []string
 	Years            []int
 	Studio           []string          // 片商维度虚拟库:命中任一值(= ANY)
 	ActorName        []string          // 演员维度虚拟库:含任一演员(role='Actor')的影片

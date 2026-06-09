@@ -89,6 +89,19 @@ func getGenres(c *gin.Context) {
 	})
 }
 
+func getTags(c *gin.Context) {
+	state := GetState(c)
+	rows, err := models.GetAllTagsWithCounts(c.Request.Context(), state.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"Items":            rows,
+		"TotalRecordCount": len(rows),
+	})
+}
+
 func browseDirGet(c *gin.Context) {
 	p := strings.TrimSpace(c.Query("path"))
 	if p == "" {

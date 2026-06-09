@@ -5,6 +5,10 @@ defineProps<{
   item: any
   crew: CrewGroup[]
 }>()
+
+const emit = defineEmits<{
+  tagClick: [tag: string]
+}>()
 </script>
 
 <template>
@@ -25,6 +29,22 @@ defineProps<{
     </div>
 
     <div class="content-facts">
+      <div v-if="item.Tags?.length" class="facts-block">
+        <h3 class="section-heading">标签</h3>
+        <div class="metadata-chip-row">
+          <button
+            v-for="tag in item.Tags"
+            :key="tag"
+            type="button"
+            class="metadata-chip"
+            :aria-label="`按标签筛选:${tag}`"
+            @click="emit('tagClick', tag)"
+          >
+            {{ tag }}
+          </button>
+        </div>
+      </div>
+
       <div v-if="item.ProviderIds?.Tmdb || item.ProviderIds?.Imdb" class="facts-block">
         <h3 class="section-heading">外部链接</h3>
         <div class="ext-links">
@@ -35,4 +55,3 @@ defineProps<{
     </div>
   </div>
 </template>
-

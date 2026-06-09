@@ -655,6 +655,10 @@ export async function getGenres() {
   return request<any>('/Genres');
 }
 
+export async function getTags() {
+  return request<any>('/Tags');
+}
+
 // System config
 export async function getSystemConfig() {
   return request<any>('/System/Configuration');

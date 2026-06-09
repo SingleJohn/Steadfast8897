@@ -49,6 +49,41 @@ func GetItemTags(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]stri
 	return result, rows.Err()
 }
 
+func GetAllTagsWithCounts(ctx context.Context, pool *pgxpool.Pool) ([]struct {
+	ID    int
+	Name  string
+	Count int64
+}, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT t.id, t.name, COUNT(it.item_id) as item_count
+		 FROM tags t LEFT JOIN item_tags it ON t.id = it.tag_id
+		 GROUP BY t.id, t.name ORDER BY t.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []struct {
+		ID    int
+		Name  string
+		Count int64
+	}
+	for rows.Next() {
+		var id int
+		var name string
+		var count int64
+		if err := rows.Scan(&id, &name, &count); err != nil {
+			return nil, err
+		}
+		result = append(result, struct {
+			ID    int
+			Name  string
+			Count int64
+		}{id, name, count})
+	}
+	return result, rows.Err()
+}
+
 // GetItemExtraBackdrops 返回 item 的额外 Backdrop tag(extrafanart),按 idx 升序。
 // 调用方把它们追加到 items.backdrop_image_path(Backdrop/0)之后,组成 BackdropImageTags 数组。
 func GetItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]string, error) {

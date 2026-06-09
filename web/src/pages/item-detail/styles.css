@@ -321,6 +321,8 @@
 .btn-play:focus-visible,
 .btn-action:focus-visible,
 .genre-chip:focus-visible,
+.metadata-chip:focus-visible,
+.cast-card:focus-visible,
 .season-tab:focus-visible,
 .ep-card:focus-visible,
 .ep-play-btn:focus-visible,
@@ -490,6 +492,32 @@
 
 .facts-block { margin-bottom: 24px; }
 
+.metadata-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.metadata-chip {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.84);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 7px 12px;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.metadata-chip:hover {
+  background: rgba(var(--app-primary-rgb), 0.16);
+  border-color: rgba(var(--app-primary-rgb), 0.32);
+  color: #fff;
+}
+
 .ext-links { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .ext-link {
@@ -611,11 +639,17 @@
 .cast-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
 
 .cast-card {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   flex-shrink: 0;
   width: 140px;
   scroll-snap-align: start;
   text-align: center;
-  cursor: default;
+  cursor: pointer;
 }
 
 .cast-img {

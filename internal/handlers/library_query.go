@@ -282,6 +282,59 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 			}
 		}
 	}
+	if s := strings.TrimSpace(queryAny(c, "Genres", "genres")); s != "" {
+		for _, g := range strings.Split(s, ",") {
+			g = strings.TrimSpace(g)
+			if g != "" {
+				opts.GenreNames = append(opts.GenreNames, g)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "TagIds", "tagIds", "tagids")); s != "" {
+		for _, raw := range strings.Split(s, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				return nil, err
+			}
+			opts.TagIDs = append(opts.TagIDs, n)
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "Tags", "tags")); s != "" {
+		for _, tag := range strings.Split(s, ",") {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				opts.TagNames = append(opts.TagNames, tag)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "PersonIds", "personIds", "personids")); s != "" {
+		for _, id := range strings.Split(s, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				opts.PersonIDs = append(opts.PersonIDs, id)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "Person", "Persons", "person", "persons")); s != "" {
+		for _, name := range strings.Split(s, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				opts.PersonNames = append(opts.PersonNames, name)
+			}
+		}
+	}
+	if s := strings.TrimSpace(queryAny(c, "PersonTypes", "personTypes", "persontypes")); s != "" {
+		for _, typ := range strings.Split(s, ",") {
+			typ = strings.TrimSpace(typ)
+			if typ != "" {
+				opts.PersonTypes = append(opts.PersonTypes, typ)
+			}
+		}
+	}
 	if s := strings.TrimSpace(queryAny(c, "Years", "years")); s != "" {
 		for _, y := range strings.Split(s, ",") {
 			y = strings.TrimSpace(y)

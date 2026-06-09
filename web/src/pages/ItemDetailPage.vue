@@ -272,10 +272,24 @@ function goDetail(id: string) {
   router.push('/item/' + id)
 }
 
-function handleGenreClick(genreId: string) {
-  const libraryId = item.value?.ParentId
-  if (!libraryId) return
-  router.push({ name: 'library', params: { libraryId }, query: { genre: genreId } })
+function handleGenreClick(genreId: string, genreName: string) {
+  router.push({ name: 'browse', params: { kind: 'genre', value: genreId }, query: { name: genreName } })
+}
+
+function handlePersonClick(person: any) {
+  const id = String(person?.Id || '').trim()
+  const name = String(person?.Name || '').trim()
+  const value = id || name
+  if (!value) return
+  router.push(name
+    ? { name: 'browse', params: { kind: 'person', value }, query: { name } }
+    : { name: 'browse', params: { kind: 'person', value } })
+}
+
+function handleTagClick(tag: string) {
+  const name = tag.trim()
+  if (!name) return
+  router.push({ name: 'browse', params: { kind: 'tag', value: name }, query: { name } })
 }
 </script>
 
@@ -329,14 +343,14 @@ function handleGenreClick(genreId: string) {
     />
 
     <div class="detail-body">
-      <DetailOverview :item="item" :crew="crew" />
+      <DetailOverview :item="item" :crew="crew" @tag-click="handleTagClick" />
       <BackdropGallery
         :item-name="item.Name"
         :images="backdropImages"
         :active-index="activeBackdropIndex"
         @preview="openBackdropPreview"
       />
-      <CastCarousel :actors="actors" />
+      <CastCarousel :actors="actors" @person-click="handlePersonClick" />
       <EpisodeSection
         v-model:selected-season="selectedSeason"
         :item="item"

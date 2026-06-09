@@ -33,6 +33,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	var conditions []string
 	var params []interface{}
 	paramIdx := 1
+	useRepresentative := shouldUseLibraryRepresentative(options)
 
 	if len(options.ParentIDs) > 0 {
 		col := "i.parent_id"
@@ -96,6 +97,63 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 			paramIdx++
 		}
 		conditions = append(conditions, fmt.Sprintf("ig_filter.genre_id IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if len(options.GenreNames) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			`EXISTS (
+				SELECT 1 FROM item_genres ign_filter
+				JOIN genres gn_filter ON gn_filter.id = ign_filter.genre_id
+				WHERE ign_filter.item_id = i.id AND gn_filter.name = ANY($%d)
+			)`, paramIdx))
+		params = append(params, options.GenreNames)
+		paramIdx++
+	}
+
+	if len(options.TagIDs) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM item_tags it_filter WHERE it_filter.item_id = i.id AND it_filter.tag_id = ANY($%d::int[]))", paramIdx))
+		params = append(params, options.TagIDs)
+		paramIdx++
+	}
+	if len(options.TagNames) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			`EXISTS (
+				SELECT 1 FROM item_tags itn_filter
+				JOIN tags tn_filter ON tn_filter.id = itn_filter.tag_id
+				WHERE itn_filter.item_id = i.id AND tn_filter.name = ANY($%d)
+			)`, paramIdx))
+		params = append(params, options.TagNames)
+		paramIdx++
+	}
+
+	personTypeClause := ""
+	hasPersonFilter := len(options.PersonIDs) > 0 || len(options.PersonNames) > 0
+	if hasPersonFilter && len(options.PersonTypes) > 0 {
+		personTypeClause = fmt.Sprintf(" AND cm.role = ANY($%d)", paramIdx)
+		params = append(params, options.PersonTypes)
+		paramIdx++
+	}
+	if len(options.PersonIDs) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			`EXISTS (
+				SELECT 1 FROM cast_members cm
+				WHERE cm.item_id = i.id
+				  AND (cm.person_id = ANY($%d::uuid[]) OR cm.id = ANY($%d::uuid[]))
+				  %s
+			)`, paramIdx, paramIdx, personTypeClause))
+		params = append(params, options.PersonIDs)
+		paramIdx++
+	}
+	if len(options.PersonNames) > 0 {
+		conditions = append(conditions, fmt.Sprintf(
+			`EXISTS (
+				SELECT 1 FROM cast_members cm
+				WHERE cm.item_id = i.id
+				  AND cm.name = ANY($%d)
+				  %s
+			)`, paramIdx, personTypeClause))
+		params = append(params, options.PersonNames)
+		paramIdx++
 	}
 
 	if len(options.Years) > 0 {
@@ -170,7 +228,10 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	// Platform virtual libraries show only the global merged primary.
 	// Ordinary user libraries use a per-library representative selection later
 	// so a title does not disappear just because the global primary lives elsewhere.
-	if len(options.Studio) > 0 || len(options.ActorName) > 0 || len(options.CatalogPrefix) > 0 {
+	if len(options.Studio) > 0 || len(options.ActorName) > 0 || len(options.CatalogPrefix) > 0 ||
+		(!useRepresentative && (len(options.GenreIDs) > 0 || len(options.GenreNames) > 0 ||
+			len(options.TagIDs) > 0 || len(options.TagNames) > 0 ||
+			len(options.PersonIDs) > 0 || len(options.PersonNames) > 0)) {
 		conditions = append(conditions, "i.merged_to_id IS NULL")
 	}
 
@@ -178,8 +239,6 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
-
-	useRepresentative := shouldUseLibraryRepresentative(options)
 
 	orderBy := buildOrderBy(options)
 	isRandom := strings.Contains(orderBy, "RANDOM()")
