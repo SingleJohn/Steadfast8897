@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -453,50 +454,69 @@ func getLatestItems(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Handle platform virtual library
+	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
+	if needMediaSources {
+		if _, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); !ok {
+			rows, err := models.GetLatestItems(ctx, state.DB, parentID, limit)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+				return
+			}
+			sid := state.Config.ServerID
+			items := make([]dto.BaseItemDto, 0, len(rows))
+			for i := range rows {
+				item := dto.FormatItemDto(&rows[i], sid, nil)
+				applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
+				items = append(items, item)
+			}
+			c.JSON(http.StatusOK, items)
+			return
+		}
+	}
+
+	items, err := queryLatestItemsForParent(ctx, state, parentID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, items)
+}
+
+func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64) ([]dto.BaseItemDto, error) {
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
-		studioOpt := &models.ItemQueryOptions{
+		opts := &models.ItemQueryOptions{
 			IncludeItemTypes: []string{"Movie", "Series"},
 			Limit:            &limit,
 			Recursive:        true,
 		}
-		applyVirtualDimension(studioOpt, p)
+		applyVirtualDimension(opts, p)
 		sb := "DateCreated"
 		so := "Descending"
-		studioOpt.SortBy = &sb
-		studioOpt.SortOrder = &so
-		res, err := models.QueryItems(ctx, state.DB, studioOpt)
+		opts.SortBy = &sb
+		opts.SortOrder = &so
+		res, err := models.QueryItems(ctx, state.DB, opts)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
+			return nil, err
 		}
 		sid := state.Config.ServerID
 		items := make([]dto.BaseItemDto, 0, len(res.Items))
 		for i := range res.Items {
 			items = append(items, dto.FormatItemDto(&res.Items[i], sid, nil))
 		}
-		c.JSON(http.StatusOK, items)
-		return
+		return items, nil
 	}
 
 	rows, err := models.GetLatestItems(ctx, state.DB, parentID, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+		return nil, err
 	}
-
 	sid := state.Config.ServerID
-	needMediaSources := strings.Contains(c.Query("Fields"), "MediaSources") || strings.Contains(c.Query("Fields"), "Path")
 	items := make([]dto.BaseItemDto, 0, len(rows))
 	for i := range rows {
-		item := dto.FormatItemDto(&rows[i], sid, nil)
-		if needMediaSources {
-			applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
-		}
-		items = append(items, item)
+		items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
 	}
-
-	c.JSON(http.StatusOK, items)
+	return items, nil
 }
 
 func getLatestBatch(c *gin.Context) {
@@ -525,7 +545,6 @@ func getLatestBatch(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	sid := state.Config.ServerID
 	result := make(map[string][]dto.BaseItemDto)
 
 	for _, rawID := range strings.Split(libIDsRaw, ",") {
@@ -533,13 +552,9 @@ func getLatestBatch(c *gin.Context) {
 		if libID == "" {
 			continue
 		}
-		rows, err := models.GetLatestItems(ctx, state.DB, libID, limit)
+		items, err := queryLatestItemsForParent(ctx, state, libID, limit)
 		if err != nil {
 			continue
-		}
-		items := make([]dto.BaseItemDto, 0, len(rows))
-		for i := range rows {
-			items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
 		}
 		result[libID] = items
 	}

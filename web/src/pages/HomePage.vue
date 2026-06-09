@@ -62,10 +62,9 @@ async function loadHome() {
 
     const libraries = views.Items || []
     libraryViews.value = libraries
-    const realLibraries = libraries.filter((lib: any) => !lib.PlatformLibrary)
-    const libraryIds = realLibraries.map((lib: any) => lib.Id)
+    const libraryIds = libraries.map((lib: any) => lib.Id)
     const batchResult = libraryIds.length > 0 ? await getLatestBatch(libraryIds, 20) : {}
-    latestByLibrary.value = realLibraries
+    latestByLibrary.value = libraries
       .map((lib: any) => ({ id: lib.Id, name: lib.Name, items: batchResult[lib.Id] || [] }))
       .filter((section: LibrarySection) => section.items.length > 0)
   } catch (err) {

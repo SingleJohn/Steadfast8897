@@ -26,7 +26,7 @@ function formatDuration(ticks?: number): string {
 }
 
 const hasImage = computed(() => {
-  if (isPlatformLib.value) return false
+  if (isPlatformLib.value) return !!props.item.ImageTags?.Primary
   if (props.shape === 'thumb') {
     return props.item.BackdropImageTags?.length > 0 || props.item.ParentBackdropItemId || props.item.ImageTags?.Primary || props.item.SeriesPrimaryImageItemId
   }
@@ -35,6 +35,7 @@ const hasImage = computed(() => {
 
 const imgSrc = computed(() => {
   const it = props.item
+  if (isPlatformLib.value) return getImageUrl(it.Id, 'Primary', props.shape === 'thumb' ? 500 : 300)
   if (props.shape === 'thumb') {
     // 横版卡片(例:继续观看)优先用横图:Episode backdrop > 父级 backdrop > Episode thumb。
     // 三者皆空时落到下面竖版分支 —— 竖版海报在 16:9 卡里会裁切,但比空占位好。
