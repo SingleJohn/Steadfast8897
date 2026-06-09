@@ -72,49 +72,47 @@ func GetItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID strin
 }
 
 func GetItemCast(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]map[string]interface{}, error) {
+	// People 的 Id 用全局 persons.id(跨影片稳定,点演员能聚合其作品);
+	// person_id 缺失时回退到 cast_members.id(旧数据/未回填)。
+	// 头像优先全局 persons.image_path(含手动上传/锁定,权威),其次 per-item cast_members.image_url。
+	// image_tag 跟随 persons.updated_at 变化,头像重传后客户端缓存随之失效。
 	rows, err := pool.Query(ctx,
-		"SELECT * FROM cast_members WHERE item_id = $1::uuid ORDER BY role, order_index", itemID)
+		`SELECT cm.id::text,
+		        COALESCE(cm.person_id::text, cm.id::text) AS person_id,
+		        cm.name, cm.character, cm.role, cm.order_index,
+		        COALESCE(NULLIF(p.image_path, ''), NULLIF(cm.image_url, '')) AS image,
+		        COALESCE(EXTRACT(EPOCH FROM p.updated_at)::bigint::text, cm.id::text) AS image_tag
+		   FROM cast_members cm
+		   LEFT JOIN persons p ON p.id = cm.person_id
+		  WHERE cm.item_id = $1::uuid
+		  ORDER BY cm.role, cm.order_index`, itemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	fieldDescs := rows.FieldDescriptions()
-	colNames := make([]string, len(fieldDescs))
-	for i, fd := range fieldDescs {
-		colNames[i] = string(fd.Name)
-	}
-
 	var result []map[string]interface{}
 	for rows.Next() {
-		vals, err := rows.Values()
-		if err != nil {
+		var castID, personID, name, character, role, imageTag string
+		var orderIndex *int32
+		var image *string
+		if err := rows.Scan(&castID, &personID, &name, &character, &role, &orderIndex, &image, &imageTag); err != nil {
 			return nil, err
 		}
-		m := make(map[string]interface{})
-		for i, name := range colNames {
-			m[name] = vals[i]
-		}
-
-		name := getString(m, "name")
-		character := getString(m, "character")
-		role := getString(m, "role")
-		idStr := getUUIDStr(m, "id")
-		imageURL := getString(m, "image_url")
 
 		val := map[string]interface{}{
 			"Name": name,
 			"Role": character,
 			"Type": role,
-			"Id":   idStr,
+			"Id":   personID,
 		}
-		if imageURL != "" {
-			val["PrimaryImageTag"] = idStr
+		if image != nil && *image != "" {
+			val["PrimaryImageTag"] = imageTag
 			val["HasPrimaryImage"] = true
-			val["ImageUrl"] = imageURL
+			val["ImageUrl"] = *image
 		}
-		if oi := getInt32Ptr(m, "order_index"); oi != nil {
-			val["OrderIndex"] = *oi
+		if orderIndex != nil {
+			val["OrderIndex"] = *orderIndex
 		}
 		result = append(result, val)
 	}

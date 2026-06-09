@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,6 +37,9 @@ var (
 	nfoRoleRe  = regexp.MustCompile(`(?i)<role>([^<]*)</role>`)
 	nfoTypeRe  = regexp.MustCompile(`(?i)<type>([^<]*)</type>`)
 	nfoTmdbRe  = regexp.MustCompile(`(?i)<tmdbid>([^<]*)</tmdbid>`)
+	// 演员头像:Kodi/Jellyfin/MDCx 等把头像写成 <actor>...<thumb>url</thumb></actor>。
+	// 支持 http(s) 直链与相对/绝对本地路径。
+	nfoThumbRe = regexp.MustCompile(`(?is)<thumb[^>]*>([^<]*)</thumb>`)
 
 	// Kodi/Jellyfin/tinyMediaManager 的现代标准:<uniqueid type="xxx">123</uniqueid>
 	// default="true" / default="false" 等属性可选。
@@ -104,6 +108,7 @@ type NfoData struct {
 	OfficialRating *string // mpaa / customrating
 	Trailer        *string // 预告片直链(http/https)
 	CatalogNumber  *string // 番号(<num>),如 IPZZ-857
+	SourceDir      string  // NFO 所在目录,用于就近查找 .actors/ 演员头像
 }
 
 type NfoActor struct {
@@ -111,6 +116,22 @@ type NfoActor struct {
 	Role     string
 	TmdbID   *int32
 	ImageURL *string
+}
+
+// resolveNfoThumb 规范化 NFO 演员 <thumb> 值:http(s) 直链原样返回;
+// 其余按本地路径处理,相对路径相对 NFO 所在目录解析为绝对路径。空值返回空串。
+func resolveNfoThumb(nfoPath, thumb string) string {
+	if thumb == "" {
+		return ""
+	}
+	low := strings.ToLower(thumb)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return thumb
+	}
+	if filepath.IsAbs(thumb) {
+		return thumb
+	}
+	return filepath.Join(filepath.Dir(nfoPath), thumb)
 }
 
 func ParseNfo(nfoPath string) *NfoData {
@@ -128,7 +149,7 @@ func ParseNfo(nfoPath string) *NfoData {
 	// 第一个演员的人物 ID,当成电影 ID 写入 items.tmdb_id。
 	xmlTop := stripNfoNestedBlocks(xml)
 
-	result := &NfoData{}
+	result := &NfoData{SourceDir: filepath.Dir(nfoPath)}
 
 	result.Title = nfoTag(xmlTop, "title")
 	result.OriginalTitle = nfoTag(xmlTop, "originaltitle")
@@ -260,10 +281,18 @@ func ParseNfo(nfoPath string) *NfoData {
 			}
 		}
 
+		// 头像 <thumb>:http(s) 原样;相对路径相对 NFO 所在目录解析成绝对路径。
+		var imageURL *string
+		if th := nfoThumbRe.FindStringSubmatch(block); th != nil {
+			if resolved := resolveNfoThumb(nfoPath, strings.TrimSpace(th[1])); resolved != "" {
+				imageURL = &resolved
+			}
+		}
+
 		if atype == "Director" {
 			result.Directors = append(result.Directors, name)
 		} else {
-			result.Actors = append(result.Actors, NfoActor{Name: name, Role: role, TmdbID: tmdbID})
+			result.Actors = append(result.Actors, NfoActor{Name: name, Role: role, TmdbID: tmdbID, ImageURL: imageURL})
 		}
 	}
 
@@ -517,6 +546,9 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 		if actorLimit > 20 {
 			actorLimit = 20
 		}
+		// 演员头像开关:NfoThumb 控制是否采用 NFO <thumb>;LocalActors 控制是否
+		// 就近扫 .actors/ 头像。两者关闭时仍保留已有 cast 头像(如先前 TMDB 补的)。
+		aicfg := LoadActorImageConfig(ctx, pool)
 		castRows := make([]castRow, 0, len(nfo.Directors)+actorLimit)
 		for _, dir := range nfo.Directors {
 			castRows = append(castRows, castRow{name: dir, role: "Director"})
@@ -524,9 +556,18 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 		for i := 0; i < actorLimit; i++ {
 			a := nfo.Actors[i]
 			imageURL := a.ImageURL
+			if !aicfg.NfoThumb {
+				imageURL = nil
+			}
 			if imageURL == nil || *imageURL == "" {
 				if existing := existingImages[a.Name+"|Actor"]; existing != "" {
 					imageURL = &existing
+				}
+			}
+			// .actors/ 本地头像兜底(NFO 没带 thumb 时常见)。
+			if (imageURL == nil || *imageURL == "") && aicfg.LocalActors {
+				if local := findLocalActorImage(nfo.SourceDir, a.Name); local != "" {
+					imageURL = &local
 				}
 			}
 			castRows = append(castRows, castRow{
@@ -547,6 +588,17 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 				slog.Warn("[ApplyNfo] copy cast_members failed", "item_id", itemID, "error", err)
 				return
 			}
+		}
+
+		// 关联全局 persons(按名归一),并把本次 cast 携带的头像(如 NFO <thumb>)
+		// 提升为 persons.image_path,让全库同名条目共享。person 已锁定的不覆盖。
+		if err := models.EnsurePersonsForItem(ctx, tx, itemID); err != nil {
+			slog.Warn("[ApplyNfo] link persons failed", "item_id", itemID, "error", err)
+			return
+		}
+		if err := models.PropagateCastImagesToPersons(ctx, tx, itemID); err != nil {
+			slog.Warn("[ApplyNfo] propagate person images failed", "item_id", itemID, "error", err)
+			return
 		}
 	}
 

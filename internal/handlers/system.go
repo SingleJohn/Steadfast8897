@@ -260,6 +260,7 @@ func postConfiguration(c *gin.Context) {
 	needViewsInvalidate := false
 	needScrapeInvalidate := false
 	needLimiterApply := false
+	needActorImgInvalidate := false
 	for key, raw := range updates {
 		valStr := configValueString(raw)
 		switch key {
@@ -303,6 +304,9 @@ func postConfiguration(c *gin.Context) {
 			strings.HasPrefix(key, "bangumi_") {
 			needScrapeInvalidate = true
 		}
+		if strings.HasPrefix(key, "actor_img_") {
+			needActorImgInvalidate = true
+		}
 	}
 	if needViewsInvalidate {
 		state.Cache.Del(ctx, "views:all")
@@ -312,6 +316,9 @@ func postConfiguration(c *gin.Context) {
 	}
 	if needLimiterApply {
 		services.ApplyTmdbLimiterConfig(ctx, state.DB)
+	}
+	if needActorImgInvalidate {
+		services.InvalidateActorImageConfig()
 	}
 	c.Status(http.StatusNoContent)
 }

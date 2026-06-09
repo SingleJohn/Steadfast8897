@@ -30,6 +30,10 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Items/:itemId/Images/:imageType", adminMW, uploadImage)
 	u.DELETE("/Items/:itemId/Images/:imageType", adminMW, deleteImage)
 
+	// 演员头像:批量按名/TMDB 补全 + 覆盖统计。
+	u.POST("/Library/ActorImages/BackfillAll", adminMW, backfillAllActorImages)
+	u.GET("/Library/ActorImages/Summary", adminMW, actorImageSummary)
+
 	u.POST("/Library/Refresh", adminMW, refreshAll)
 	u.POST("/Items/:itemId/Refresh", adminMW, refreshItem)
 

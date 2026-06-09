@@ -173,6 +173,12 @@ func uploadImage(c *gin.Context) {
 	imageType := strings.TrimSpace(c.Param("imageType"))
 	ctx := c.Request.Context()
 
+	// itemId 命中全局 persons → 演员头像上传(写 persons,全库同名生效)。
+	if _, perr := uuid.Parse(itemID); perr == nil && models.PersonExists(ctx, state.DB, itemID) {
+		handlePersonImageUpload(c, state, itemID)
+		return
+	}
+
 	resolved, err := models.ResolveToUUID(ctx, state.DB, itemID)
 	if err != nil || resolved == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
@@ -257,6 +263,12 @@ func deleteImage(c *gin.Context) {
 	itemID := c.Param("itemId")
 	imageType := strings.TrimSpace(c.Param("imageType"))
 	ctx := c.Request.Context()
+
+	// itemId 命中全局 persons → 清除演员头像。
+	if _, perr := uuid.Parse(itemID); perr == nil && models.PersonExists(ctx, state.DB, itemID) {
+		handlePersonImageDelete(c, state, itemID)
+		return
+	}
 
 	resolved, err := models.ResolveToUUID(ctx, state.DB, itemID)
 	if err != nil || resolved == nil {

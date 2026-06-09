@@ -235,18 +235,21 @@ func serveImage(c *gin.Context, state *AppState) {
 		var libImgPath *string
 		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&libImgPath)
 		if lerr != nil || libImgPath == nil || *libImgPath == "" {
-			// Rust compatibility: when itemId is a cast_members.id, serve the actor headshot.
-			// Many Emby clients request GET /Items/{personId}/Images/Primary where personId
-			// is cast_members.id (not in items table).
-			var imgURL *string
-			state.DB.QueryRow(ctx,
-				"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
-				*uid).Scan(&imgURL)
-			if imgURL == nil || *imgURL == "" {
-				c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
-				return
+			// 演员头像:itemId 可能是全局 persons.id(新)或 cast_members.id(旧/兜底)。
+			// Emby 客户端请求 GET /Items/{personId}/Images/Primary,personId 不在 items 表。
+			if img, ok := models.GetPersonImagePath(ctx, state.DB, *uid); ok {
+				castImageURL = img
+			} else {
+				var imgURL *string
+				state.DB.QueryRow(ctx,
+					"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
+					*uid).Scan(&imgURL)
+				if imgURL == nil || *imgURL == "" {
+					c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+					return
+				}
+				castImageURL = *imgURL
 			}
-			castImageURL = *imgURL
 		} else {
 			primaryPath = libImgPath
 			itemType = "CollectionFolder"

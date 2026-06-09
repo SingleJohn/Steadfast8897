@@ -612,6 +612,31 @@ export async function updateSystemConfig(config: Record<string, string>) {
   });
 }
 
+// 演员头像
+export interface ActorImageSummary {
+  total: number;
+  with_image: number;
+  missing: number;
+  locked: number;
+}
+
+export interface ActorImageBackfillResult {
+  name_source_on: boolean;
+  persons_scanned: number;
+  persons_filled: number;
+  tmdb_items_queued: number;
+}
+
+export async function getActorImageSummary() {
+  return request<ActorImageSummary>('/Library/ActorImages/Summary');
+}
+
+export async function backfillAllActorImages() {
+  return request<ActorImageBackfillResult>('/Library/ActorImages/BackfillAll', {
+    method: 'POST',
+  });
+}
+
 export async function restartServer() {
   return request('/System/Restart', { method: 'POST' });
 }

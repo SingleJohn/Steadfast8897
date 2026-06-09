@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/models"
 )
 
 // processBackfillActorImagesTask 给 Series / Movie 补演员头像 URL。
@@ -107,7 +109,7 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 	}
 
 	rows, err := pool.Query(ctx,
-		`SELECT id::text, name, tmdb_id
+		`SELECT id::text, name, tmdb_id, person_id::text
 		   FROM cast_members
 		  WHERE item_id = $1::uuid
 		    AND (image_url IS NULL OR image_url = '')`,
@@ -116,20 +118,25 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 		return err
 	}
 	type castRow struct {
-		id     string
-		name   string
-		tmdbID *int32
+		id       string
+		name     string
+		tmdbID   *int32
+		personID *string
 	}
 	var targets []castRow
 	for rows.Next() {
 		var r castRow
-		if err := rows.Scan(&r.id, &r.name, &r.tmdbID); err == nil {
+		if err := rows.Scan(&r.id, &r.name, &r.tmdbID, &r.personID); err == nil {
 			targets = append(targets, r)
 		}
 	}
 	rows.Close()
 
-	var updated, unmatched int
+	// 按名头像源(本地头像库/外部源)用于 TMDB 未命中的演员(尤其番号/JAV)。
+	aicfg := LoadActorImageConfig(ctx, pool)
+	nameSourceOn := aicfg.LocalLib || aicfg.ExtSource
+
+	var updated, byNameFill, unmatched int
 	for _, r := range targets {
 		var url string
 		if r.tmdbID != nil {
@@ -142,23 +149,38 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 				url = e.imageURL
 			}
 		}
-		if url == "" {
-			unmatched++
+		if url != "" {
+			if _, err := pool.Exec(ctx,
+				`UPDATE cast_members SET image_url = $1
+				  WHERE id = $2::uuid AND (image_url IS NULL OR image_url = '')`,
+				url, r.id); err != nil {
+				slog.Warn("[Backfill-ActorImg] update cast_member failed",
+					"cast_id", r.id, "error", err)
+				continue
+			}
+			updated++
 			continue
 		}
-		if _, err := pool.Exec(ctx,
-			`UPDATE cast_members SET image_url = $1
-			  WHERE id = $2::uuid AND (image_url IS NULL OR image_url = '')`,
-			url, r.id); err != nil {
-			slog.Warn("[Backfill-ActorImg] update cast_member failed",
-				"cast_id", r.id, "error", err)
-			continue
+		// TMDB 没命中 → 试按名源,直接补到全局 persons(全库同名生效)。
+		if nameSourceOn && r.personID != nil {
+			if avatar := resolveActorAvatarByName(aicfg, r.name); avatar != "" {
+				if ok, err := models.FillPersonImageIfUnlocked(ctx, pool, *r.personID, avatar); err == nil && ok {
+					byNameFill++
+					continue
+				}
+			}
 		}
-		updated++
+		unmatched++
 	}
+
+	// 把本次 cast 的 TMDB 头像提升到全局 persons(未锁定且为空者),让同名条目共享。
+	if err := models.PropagateCastImagesToPersons(ctx, pool, itemID); err != nil {
+		slog.Warn("[Backfill-ActorImg] propagate to persons failed", "item_id", itemID, "error", err)
+	}
+
 	slog.Info("[Backfill-ActorImg] done",
 		"item_id", itemID, "type", itemType, "tmdb_id", *tmdbID,
-		"targets", len(targets), "updated", updated, "unmatched", unmatched,
-		"tmdb_cast_with_profile", len(byID))
+		"targets", len(targets), "updated", updated, "by_name_fill", byNameFill,
+		"unmatched", unmatched, "tmdb_cast_with_profile", len(byID))
 	return nil
 }

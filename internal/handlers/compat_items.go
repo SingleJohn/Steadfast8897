@@ -52,39 +52,39 @@ func getPersons(c *gin.Context, state *AppState) {
 		}
 	}
 
-	opts := &models.ItemQueryOptions{
-		IncludeItemTypes: []string{"Person"},
-		Limit:            &limit,
-		StartIndex:       &start,
-	}
-	if term := c.Query("SearchTerm"); term != "" {
-		opts.SearchTerm = &term
-	}
-
-	res, err := models.QueryItems(c.Request.Context(), state.DB, opts)
+	search := strings.TrimSpace(c.Query("SearchTerm"))
+	persons, total, err := models.ListPersons(c.Request.Context(), state.DB, search, limit, start)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
-	auth := middleware.GetAuthUser(c)
-	var userID *string
-	if auth != nil && !strings.HasPrefix(auth.ID, "api-key-") {
-		userID = &auth.ID
-	}
-
-	items := make([]dto.BaseItemDto, 0, len(res.Items))
-	for i := range res.Items {
-		var ud *dto.UserDataRow
-		if userID != nil {
-			u, err := models.GetUserItemData(c.Request.Context(), state.DB, *userID, res.Items[i].ID)
-			if err == nil && u != nil {
-				ud = u
-			}
+	items := make([]gin.H, 0, len(persons))
+	for i := range persons {
+		p := persons[i]
+		hasImage := (p.ImagePath != nil && *p.ImagePath != "")
+		item := gin.H{
+			"Name":      p.Name,
+			"Id":        p.ID,
+			"Type":      "Person",
+			"ServerId":  state.Config.ServerID,
+			"ImageTags": gin.H{},
+			"IsFolder":  false,
 		}
-		items = append(items, dto.FormatItemDto(&res.Items[i], state.Config.ServerID, ud))
+		if hasImage {
+			tag := p.ImageTag
+			if tag == "" {
+				tag = p.ID
+			}
+			item["ImageTags"] = gin.H{"Primary": tag}
+			item["PrimaryImageTag"] = tag
+		}
+		if p.Overview != nil && *p.Overview != "" {
+			item["Overview"] = *p.Overview
+		}
+		items = append(items, item)
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": res.TotalCount})
+	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": total})
 }
 
 func deviceInfo(c *gin.Context, state *AppState) {

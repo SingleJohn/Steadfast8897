@@ -12,7 +12,8 @@ import {
   getBackfillConfig, updateBackfillConfig,
   resetBackfillQuality, resetBackfillEpisodeImage,
   getScrapeDefaults,
-  type BackfillStage, type FieldPriorityMap,
+  getActorImageSummary, backfillAllActorImages,
+  type BackfillStage, type FieldPriorityMap, type ActorImageSummary,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
 import {
@@ -24,6 +25,7 @@ import {
   scrapeFieldLabels,
   scrapeProviderMeta,
 } from '@/utils/scrapeConfigUi'
+import ActorImageCard from './metadata/components/ActorImageCard.vue'
 import BackfillCard from './metadata/components/BackfillCard.vue'
 import BasicSettingsCard from './metadata/components/BasicSettingsCard.vue'
 import FieldPriorityCard from './metadata/components/FieldPriorityCard.vue'
@@ -57,6 +59,60 @@ const autoApplyEnabled = ref(true)
 const adultContentFilterEnabled = ref(true)
 const savingConfig = ref(false)
 const scraping = ref(false)
+
+// ===== 演员头像 =====
+const actorNfoThumb = ref(true)
+const actorLocalActors = ref(true)
+const actorLocalLib = ref(false)
+const actorLocalLibPath = ref('')
+const actorExtSource = ref(false)
+const actorExtUrl = ref('')
+const actorImageSummary = ref<ActorImageSummary | null>(null)
+const savingActorConfig = ref(false)
+const backfillingActor = ref(false)
+
+async function refreshActorImageSummary() {
+  try {
+    actorImageSummary.value = await getActorImageSummary()
+  } catch {
+    actorImageSummary.value = null
+  }
+}
+
+async function handleSaveActorImageConfig() {
+  savingActorConfig.value = true
+  try {
+    await updateSystemConfig({
+      actor_img_nfo_thumb: String(actorNfoThumb.value),
+      actor_img_local_actors: String(actorLocalActors.value),
+      actor_img_local_lib: String(actorLocalLib.value),
+      actor_img_local_lib_path: actorLocalLibPath.value,
+      actor_img_ext_source: String(actorExtSource.value),
+      actor_img_ext_url: actorExtUrl.value,
+    })
+    showToast('演员头像设置已保存', 'success')
+  } catch {
+    showToast('保存失败', 'error')
+  } finally {
+    savingActorConfig.value = false
+  }
+}
+
+async function handleBackfillActorImages() {
+  backfillingActor.value = true
+  try {
+    const res = await backfillAllActorImages()
+    const parts: string[] = []
+    if (res.name_source_on) parts.push(`按名补 ${res.persons_filled}/${res.persons_scanned}`)
+    if (res.tmdb_items_queued > 0) parts.push(`TMDB 入队 ${res.tmdb_items_queued} 项`)
+    showToast(parts.length ? `已补演员头像:${parts.join(',')}` : '没有可补的演员头像', 'success')
+    await refreshActorImageSummary()
+  } catch (err: any) {
+    showToast(err?.message || '批量补头像失败', 'error')
+  } finally {
+    backfillingActor.value = false
+  }
+}
 
 // 任务进度改由 SSE 流驱动
 const { snapshots } = useTaskStream()
@@ -452,6 +508,7 @@ async function stopProbeJob() {
 
 onMounted(() => {
   refreshScrapeSummary()
+  refreshActorImageSummary()
   getScrapeDefaults().then((defs) => {
     fieldNames.value = defs.field_names
     defaultPolicy.value = { ...defs.default_policy }
@@ -488,6 +545,14 @@ onMounted(() => {
     confidenceThreshold.value = Number.isFinite(threshold) && threshold > 0 && threshold <= 1 ? threshold : 0.72
     autoApplyEnabled.value = cfg.scrape_auto_apply !== 'false'
     adultContentFilterEnabled.value = cfg.scrape_adult_content_filter_enabled !== 'false'
+
+    // 演员头像开关(默认:NFO/.actors 开,头像库/外部源关)
+    actorNfoThumb.value = cfg.actor_img_nfo_thumb !== 'false'
+    actorLocalActors.value = cfg.actor_img_local_actors !== 'false'
+    actorLocalLib.value = cfg.actor_img_local_lib === 'true'
+    actorLocalLibPath.value = cfg.actor_img_local_lib_path || ''
+    actorExtSource.value = cfg.actor_img_ext_source === 'true'
+    actorExtUrl.value = cfg.actor_img_ext_url || ''
     bangumiUA.value = cfg.bangumi_ua || ''
     doubanCookie.value = cfg.douban_cookie || ''
     tvdbApiKey.value = cfg.tvdb_api_key || ''
@@ -551,6 +616,20 @@ onMounted(() => {
           :scraping="scraping"
           @save="handleSaveConfig"
           @scrape="handleScrapeAll"
+        />
+
+        <ActorImageCard
+          v-model:nfo-thumb="actorNfoThumb"
+          v-model:local-actors="actorLocalActors"
+          v-model:local-lib="actorLocalLib"
+          v-model:local-lib-path="actorLocalLibPath"
+          v-model:ext-source="actorExtSource"
+          v-model:ext-url="actorExtUrl"
+          :summary="actorImageSummary"
+          :saving-config="savingActorConfig"
+          :backfilling="backfillingActor"
+          @save="handleSaveActorImageConfig"
+          @backfill="handleBackfillActorImages"
         />
 
         <ProviderSourcesCard
