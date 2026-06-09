@@ -799,6 +799,12 @@ export async function updateLibrarySortOrder(orders: { Id: string; SortOrder: nu
   return request('/Library/VirtualFolders/SortOrder', { method: 'POST', body: JSON.stringify(orders) });
 }
 
+// 统一展示顺序(实际库 + 虚拟库交错)。entries 按目标顺序排列。
+export type DisplayOrderEntry = { Kind: 'library' | 'platform'; Id: string };
+export async function setLibraryDisplayOrder(entries: DisplayOrderEntry[]) {
+  return request('/Library/DisplayOrder', { method: 'POST', body: JSON.stringify(entries) });
+}
+
 // Platform Libraries
 export async function getPlatforms() {
   return requestJson<any>('/Library/Platforms');
@@ -826,17 +832,28 @@ export async function addPlatformsBatch(dimension: string, values: string[]) {
     body: JSON.stringify({ Dimension: dimension, Values: values }),
   });
 }
-export async function generatePlatformCover(id: string, style?: string) {
+export async function generatePlatformCover(id: string, style?: string, options?: Record<string, any>) {
   return requestJson<{ ImageTag: string; Style: string }>(`/Library/Platforms/${id}/Image/Generate`, {
     method: 'POST',
-    body: JSON.stringify(style ? { Style: style } : {}),
+    body: JSON.stringify({ ...(style ? { Style: style } : {}), ...(options ? { Options: options } : {}) }),
   });
 }
-export async function generateAllPlatformCovers(style?: string) {
+export async function generateAllPlatformCovers(style?: string, options?: Record<string, any>) {
   return requestJson<{ generated: number; skipped: number }>('/Library/Platforms/CoverArt/GenerateAll', {
     method: 'POST',
-    body: JSON.stringify(style ? { Style: style } : {}),
+    body: JSON.stringify({ ...(style ? { Style: style } : {}), ...(options ? { Options: options } : {}) }),
   });
+}
+// 虚拟库自定义显示名(空串清除,回退默认本地化名)。
+export async function renamePlatform(id: string, name: string) {
+  return request(`/Library/Platforms/${id}/Rename`, { method: 'POST', body: JSON.stringify({ Name: name }) });
+}
+// 多值聚合:把若干匹配值合并进某虚拟库 / 移出一个匹配值。
+export async function addPlatformValues(id: string, values: string[]) {
+  return request(`/Library/Platforms/${id}/Values`, { method: 'POST', body: JSON.stringify({ Values: values }) });
+}
+export async function removePlatformValue(id: string, value: string) {
+  return request(`/Library/Platforms/${id}/Values?value=${encodeURIComponent(value)}`, { method: 'DELETE' });
 }
 export async function updatePlatformSortOrder(orderedIds: string[]) {
   return request('/Library/Platforms/SortOrder', { method: 'POST', body: JSON.stringify({ OrderedIds: orderedIds }) });

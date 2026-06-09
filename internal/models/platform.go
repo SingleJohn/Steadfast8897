@@ -20,10 +20,29 @@ type PlatformLibrary struct {
 	CreatedAt      time.Time
 	ItemCount      int64
 	SortOrder      int
-	Dimension      string // 'studio' | 'num_prefix' | 'actor'
-	MatchValue     string // 实际匹配值(studio 维度 = platform_name)
+	Dimension      string   // 'studio' | 'num_prefix' | 'actor'
+	MatchValue     string   // 主匹配值(唯一键 + VirtualID 用),studio 维度 = platform_name
+	MatchValues    []string // 实际聚合的全部匹配值(含主值);空则退化为 [MatchValue]
 	CoverImagePath *string
 	CoverImageTag  *string
+	DisplayName    *string // 用户自定义显示名,非空时优先于 PlatformDisplayName
+}
+
+// Values 返回虚拟库实际聚合的匹配值集合;为空时退化为主匹配值。
+func (p *PlatformLibrary) Values() []string {
+	if len(p.MatchValues) > 0 {
+		return p.MatchValues
+	}
+	return []string{p.MatchValue}
+}
+
+// EffectiveDisplayName 返回虚拟库最终展示名:
+// 用户自定义 display_name 优先,否则回退内置本地化映射(PlatformDisplayName)。
+func (p *PlatformLibrary) EffectiveDisplayName() string {
+	if p.DisplayName != nil && strings.TrimSpace(*p.DisplayName) != "" {
+		return strings.TrimSpace(*p.DisplayName)
+	}
+	return PlatformDisplayName(p.PlatformName)
 }
 
 // 虚拟库支持的维度常量。
@@ -81,7 +100,7 @@ func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLib
 // listPlatformsLite 只取虚拟库行,不算 ItemCount(供高频路径如出图解析用)。
 func listPlatformsLite(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([]PlatformLibrary, error) {
 	sql := `SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-	               dimension, COALESCE(match_value, platform_name), cover_image_path, cover_image_tag
+	               dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
 	          FROM platform_libraries`
 	if onlyEnabled {
 		sql += ` WHERE enabled = true`
@@ -98,7 +117,7 @@ func listPlatformsLite(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool
 	for rows.Next() {
 		var p PlatformLibrary
 		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.CoverImagePath, &p.CoverImageTag); err != nil {
+			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -113,41 +132,42 @@ func listPlatforms(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([
 		return nil, err
 	}
 	for i := range result {
-		result[i].ItemCount, _ = CountItemsForVirtual(ctx, pool, result[i].Dimension, result[i].MatchValue)
+		result[i].ItemCount, _ = CountItemsForVirtual(ctx, pool, result[i].Dimension, result[i].Values())
 	}
 	return result, nil
 }
 
-// virtualDimensionCondition 返回某维度匹配某值的 SQL 片段(占位符 $1 = value)与是否合法。
+// virtualDimensionCondition 返回某维度的匹配 SQL 片段(占位符 $1 = text[] 多值)与是否合法。
+// 用 = ANY($1) 聚合多个值, 解决簡繁/译名拆库。
 // 所有路径统一带 type IN ('Movie','Series') AND merged_to_id IS NULL 由调用方拼。
 func virtualDimensionCondition(dimension string) (string, bool) {
 	switch dimension {
 	case PlatformDimStudio:
-		return "studio = $1", true
+		return "studio = ANY($1)", true
 	case PlatformDimNumPrefix:
-		return catalogPrefixExpr + " = $1", true
+		return catalogPrefixExpr + " = ANY($1)", true
 	case PlatformDimActor:
-		return "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = items.id AND cm.name = $1 AND cm.role = 'Actor')", true
+		return "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = items.id AND cm.name = ANY($1) AND cm.role = 'Actor')", true
 	default:
 		return "", false
 	}
 }
 
-// VirtualDimensionCondition 暴露维度匹配条件(占位符 $1=value)给其他包(如 coverart 取素材)。
+// VirtualDimensionCondition 暴露维度匹配条件(占位符 $1=text[] 多值)给其他包(如 coverart 取素材)。
 func VirtualDimensionCondition(dimension string) (string, bool) {
 	return virtualDimensionCondition(dimension)
 }
 
-// CountItemsForVirtual 按维度+值统计顶层影片数。
-func CountItemsForVirtual(ctx context.Context, pool *pgxpool.Pool, dimension, value string) (int64, error) {
+// CountItemsForVirtual 按维度 + 多个匹配值统计顶层影片数。
+func CountItemsForVirtual(ctx context.Context, pool *pgxpool.Pool, dimension string, values []string) (int64, error) {
 	cond, ok := virtualDimensionCondition(dimension)
-	if !ok {
+	if !ok || len(values) == 0 {
 		return 0, nil
 	}
 	var count int64
 	err := pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM items WHERE `+cond+` AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
-		value).Scan(&count)
+		values).Scan(&count)
 	return count, err
 }
 
@@ -235,8 +255,10 @@ func DiscoverDimensionValues(ctx context.Context, pool *pgxpool.Pool, dimension,
 }
 
 func getAddedMatchValues(ctx context.Context, pool *pgxpool.Pool, dimension string) (map[string]struct{}, error) {
+	// 多值聚合后,某 discover 值只要是任一虚拟库的别名(在 match_values 里)就算"已加"。
 	rows, err := pool.Query(ctx,
-		`SELECT COALESCE(match_value, platform_name) FROM platform_libraries WHERE dimension = $1`, dimension)
+		`SELECT unnest(COALESCE(match_values, ARRAY[COALESCE(match_value, platform_name)]))
+		   FROM platform_libraries WHERE dimension = $1`, dimension)
 	if err != nil {
 		return nil, err
 	}
@@ -290,8 +312,8 @@ func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matc
 		displayName = matchValue
 	}
 	_, err := pool.Exec(ctx,
-		`INSERT INTO platform_libraries (platform_name, dimension, match_value, enabled)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO platform_libraries (platform_name, dimension, match_value, match_values, enabled)
+		 VALUES ($1, $2, $3, ARRAY[$3], $4)
 		 ON CONFLICT (dimension, match_value) DO NOTHING`,
 		displayName, dimension, matchValue, enabled)
 	return err
@@ -302,10 +324,10 @@ func GetPlatformByID(ctx context.Context, pool *pgxpool.Pool, id string) (*Platf
 	var p PlatformLibrary
 	err := pool.QueryRow(ctx,
 		`SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-		        dimension, COALESCE(match_value, platform_name), cover_image_path, cover_image_tag
+		        dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
 		   FROM platform_libraries WHERE id = $1::uuid`, id).
 		Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.CoverImagePath, &p.CoverImageTag)
+			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +339,55 @@ func SetPlatformCover(ctx context.Context, pool *pgxpool.Pool, id, path, tag str
 	_, err := pool.Exec(ctx,
 		`UPDATE platform_libraries SET cover_image_path = $1, cover_image_tag = $2 WHERE id = $3::uuid`,
 		path, tag, id)
+	return err
+}
+
+// RenamePlatform 设置虚拟库的自定义显示名;name 为空串则清除,回退默认本地化名。
+func RenamePlatform(ctx context.Context, pool *pgxpool.Pool, id, name string) error {
+	name = strings.TrimSpace(name)
+	var val interface{}
+	if name != "" {
+		val = name
+	}
+	_, err := pool.Exec(ctx,
+		`UPDATE platform_libraries SET display_name = $1 WHERE id = $2::uuid`, val, id)
+	return err
+}
+
+// AddPlatformValues 把若干匹配值合并进某虚拟库(去重),实现"多个簡繁/译名聚合到一个库"。
+func AddPlatformValues(ctx context.Context, pool *pgxpool.Pool, id string, values []string) error {
+	clean := make([]string, 0, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			clean = append(clean, v)
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	_, err := pool.Exec(ctx,
+		`UPDATE platform_libraries
+		    SET match_values = ARRAY(
+		      SELECT DISTINCT v
+		        FROM unnest(COALESCE(match_values, ARRAY[match_value]) || $2::text[]) AS v
+		       WHERE v IS NOT NULL AND v <> ''
+		    )
+		  WHERE id = $1::uuid`,
+		id, clean)
+	return err
+}
+
+// RemovePlatformValue 从某虚拟库移除一个匹配值(不会移除主匹配值 match_value)。
+func RemovePlatformValue(ctx context.Context, pool *pgxpool.Pool, id, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	_, err := pool.Exec(ctx,
+		`UPDATE platform_libraries
+		    SET match_values = array_remove(COALESCE(match_values, ARRAY[match_value]), $2)
+		  WHERE id = $1::uuid AND match_value <> $2`,
+		id, value)
 	return err
 }
 
@@ -362,14 +433,14 @@ func ResolvePlatformVirtualID(ctx context.Context, pool *pgxpool.Pool, id string
 // PlatformCollectionType returns the appropriate collection type based on item distribution.
 // 同时包含电影和剧集时返回空串(Emby 混合内容库语义),调用方据此省略 CollectionType,
 // 否则客户端会把整库当成电影库, 只显示电影而隐藏剧集。
-func PlatformCollectionType(ctx context.Context, pool *pgxpool.Pool, dimension, value string) string {
+func PlatformCollectionType(ctx context.Context, pool *pgxpool.Pool, dimension string, values []string) string {
 	cond, ok := virtualDimensionCondition(dimension)
-	if !ok {
+	if !ok || len(values) == 0 {
 		return ""
 	}
 	var movieCount, seriesCount int64
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Movie' AND merged_to_id IS NULL`, value).Scan(&movieCount)
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Series' AND merged_to_id IS NULL`, value).Scan(&seriesCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Movie' AND merged_to_id IS NULL`, values).Scan(&movieCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Series' AND merged_to_id IS NULL`, values).Scan(&seriesCount)
 	switch {
 	case seriesCount > 0 && movieCount == 0:
 		return "tvshows"

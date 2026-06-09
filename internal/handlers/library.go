@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +116,8 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 
 	// Library sort order
 	u.POST("/Library/VirtualFolders/SortOrder", adminMW, func(c *gin.Context) { updateLibrarySortOrder(c, state) })
+	// 统一展示顺序(实际库 + 虚拟库交错)
+	u.POST("/Library/DisplayOrder", adminMW, func(c *gin.Context) { updateDisplayOrder(c, state) })
 
 	// Platform libraries
 	u.GET("/Library/Platforms", adminMW, func(c *gin.Context) { getPlatforms(c, state) })
@@ -126,6 +129,10 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Platforms/:id/Enable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, true) })
 	u.POST("/Library/Platforms/:id/Disable", adminMW, func(c *gin.Context) { setPlatformEnabled(c, state, false) })
 	u.POST("/Library/Platforms/:id/Image/Generate", adminMW, func(c *gin.Context) { generatePlatformCover(c, state) })
+	u.POST("/Library/Platforms/:id/Rename", adminMW, func(c *gin.Context) { renamePlatform(c, state) })
+	// 多值聚合:把若干匹配值合并进/移出某虚拟库
+	u.POST("/Library/Platforms/:id/Values", adminMW, func(c *gin.Context) { addPlatformValues(c, state) })
+	u.DELETE("/Library/Platforms/:id/Values", adminMW, func(c *gin.Context) { removePlatformValue(c, state) })
 	u.DELETE("/Library/Platforms/:id", adminMW, func(c *gin.Context) { deletePlatform(c, state) })
 	u.POST("/Library/Platforms/Scan", adminMW, func(c *gin.Context) { scanPlatformStudios(c, state) })
 	u.POST("/Library/Platforms/ScanFilename", adminMW, func(c *gin.Context) { scanPlatformByFilename(c, state) })
@@ -197,7 +204,7 @@ func getUserViews(c *gin.Context) {
 				continue
 			}
 			vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
-			colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue)
+			colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
 			imgTags := gin.H{}
 			// 有生成封面、或是已知平台(内置 logo)时才挂 Primary
 			if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
@@ -210,7 +217,7 @@ func getUserViews(c *gin.Context) {
 				unplayedCount = 0
 			}
 			entry := gin.H{
-				"Name":               models.PlatformDisplayName(p.PlatformName),
+				"Name":               p.EffectiveDisplayName(),
 				"ServerId":           sid,
 				"Id":                 vid,
 				"Etag":               vid,
@@ -238,12 +245,7 @@ func getUserViews(c *gin.Context) {
 		}
 	}
 
-	out := make([]gin.H, 0, len(libs)+len(platformEntries))
-
-	if platformBefore {
-		out = append(out, platformEntries...)
-	}
-
+	libEntries := make([]gin.H, 0, len(libs))
 	for _, lib := range libs {
 		idStr := lib.ID.String()
 
@@ -290,10 +292,30 @@ func getUserViews(c *gin.Context) {
 		if len(lib.Paths) > 0 {
 			entry["Path"] = lib.Paths[0]
 		}
-		out = append(out, entry)
+		libEntries = append(libEntries, entry)
 	}
 
-	if !platformBefore {
+	// 统一展示顺序:有 library_display_order 记录时,实际库与虚拟库按其交错排序;
+	// 否则回退 platform_libraries_position(before/after)。
+	order, _ := models.GetDisplayOrder(ctx, state.DB)
+	out := make([]gin.H, 0, len(libEntries)+len(platformEntries))
+	if len(order) > 0 {
+		out = append(out, platformEntries...)
+		out = append(out, libEntries...)
+		sort.SliceStable(out, func(i, j int) bool {
+			oi, iok := order[fmt.Sprint(out[i]["Id"])]
+			oj, jok := order[fmt.Sprint(out[j]["Id"])]
+			if iok && jok {
+				return oi < oj
+			}
+			// 已排序条目排在未排序(新加)条目前面;两者皆未排序时保持稳定原序。
+			return iok && !jok
+		})
+	} else if platformBefore {
+		out = append(out, platformEntries...)
+		out = append(out, libEntries...)
+	} else {
+		out = append(out, libEntries...)
 		out = append(out, platformEntries...)
 	}
 
@@ -1018,14 +1040,14 @@ func getItemDetail(c *gin.Context) {
 
 	// Check if this is a platform virtual library
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
-		count, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.MatchValue)
-		colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue)
+		count, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.Values())
+		colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
 		imgTags := gin.H{}
 		if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
 			imgTags["Primary"] = itemID
 		}
 		resp := gin.H{
-			"Name":               models.PlatformDisplayName(p.PlatformName),
+			"Name":               p.EffectiveDisplayName(),
 			"ServerId":           state.Config.ServerID,
 			"Id":                 itemID,
 			"Etag":               itemID,
@@ -2921,16 +2943,16 @@ func renderAndSaveVirtualCover(ctx context.Context, state *AppState, p *models.P
 	if !ok {
 		return "", fmt.Errorf("unknown dimension: %s", p.Dimension)
 	}
-	materials, err := coverart.PickMaterialsForVirtual(ctx, state.DB, cond, p.MatchValue)
+	materials, err := coverart.PickMaterialsForVirtual(ctx, state.DB, cond, p.Values())
 	if err != nil {
 		return "", err
 	}
 
-	itemCount, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.MatchValue)
+	itemCount, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.Values())
 	out, err := gen.Render(ctx, coverart.Input{
 		LibraryID:      pid,
-		LibraryName:    models.PlatformDisplayName(p.PlatformName),
-		CollectionType: models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.MatchValue),
+		LibraryName:    p.EffectiveDisplayName(),
+		CollectionType: models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values()),
 		ItemCount:      int(itemCount),
 		PosterPaths:    coverart.PosterPathsFromMaterials(materials),
 		Materials:      materials,
@@ -3264,6 +3286,22 @@ func updateLibrarySortOrder(c *gin.Context, state *AppState) {
 	c.Status(http.StatusNoContent)
 }
 
+// updateDisplayOrder 整体重写实际库 + 虚拟库的统一展示顺序。
+// POST /Library/DisplayOrder  body: [{Kind:"library"|"platform", Id}]
+func updateDisplayOrder(c *gin.Context, state *AppState) {
+	var body []models.DisplayOrderEntry
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
+		return
+	}
+	if err := models.SetDisplayOrder(c.Request.Context(), state.DB, body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
 // ============ Platform Libraries ============
 
 func getPlatforms(c *gin.Context, state *AppState) {
@@ -3282,13 +3320,15 @@ func getPlatforms(c *gin.Context, state *AppState) {
 		entry := gin.H{
 			"Id":             p.ID,
 			"PlatformName":   p.PlatformName,
-			"DisplayName":    models.PlatformDisplayName(p.PlatformName),
+			"DisplayName":    p.EffectiveDisplayName(),
+			"CustomName":     p.DisplayName,
 			"Enabled":        p.Enabled,
 			"CollectionType": p.CollectionType,
 			"ItemCount":      p.ItemCount,
 			"SortOrder":      p.SortOrder,
 			"Dimension":      p.Dimension,
 			"MatchValue":     p.MatchValue,
+			"MatchValues":    p.Values(),
 			"HasCover":       p.CoverImagePath != nil && *p.CoverImagePath != "",
 		}
 		// 封面优先用生成封面(虚拟 ID 出图),否则已知平台用内置 logo
@@ -3311,14 +3351,14 @@ func getPlatforms(c *gin.Context, state *AppState) {
 
 // applyVirtualDimension 把虚拟库的维度+匹配值翻译成 QueryItems 的对应过滤项。
 func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibrary) {
-	v := p.MatchValue
+	vals := p.Values()
 	switch p.Dimension {
 	case models.PlatformDimActor:
-		opts.ActorName = &v
+		opts.ActorName = vals
 	case models.PlatformDimNumPrefix:
-		opts.CatalogPrefix = &v
+		opts.CatalogPrefix = vals
 	default:
-		opts.Studio = &v
+		opts.Studio = vals
 	}
 }
 
@@ -3402,6 +3442,65 @@ func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {
 		return
 	}
 	if err := models.SetPlatformEnabledByID(c.Request.Context(), state.DB, id, enabled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+// renamePlatform 设置虚拟库自定义显示名。POST /Library/Platforms/:id/Rename  body: {Name}
+// Name 为空串则清除自定义名,回退默认本地化名。
+func renamePlatform(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "id required"})
+		return
+	}
+	var body struct {
+		Name string `json:"Name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	if err := models.RenamePlatform(c.Request.Context(), state.DB, id, body.Name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+// addPlatformValues 把若干匹配值合并进某虚拟库(多维聚合,解决簡繁/译名拆库)。
+// POST /Library/Platforms/:id/Values  body: {Values:[...]}
+func addPlatformValues(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	var body struct {
+		Values []string `json:"Values"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.Values) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Values required"})
+		return
+	}
+	if err := models.AddPlatformValues(c.Request.Context(), state.DB, id, body.Values); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
+}
+
+// removePlatformValue 从某虚拟库移除一个匹配值(主匹配值不可移除)。
+// DELETE /Library/Platforms/:id/Values?value=
+func removePlatformValue(c *gin.Context, state *AppState) {
+	id := c.Param("id")
+	value := strings.TrimSpace(c.Query("value"))
+	if value == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "value required"})
+		return
+	}
+	if err := models.RemovePlatformValue(c.Request.Context(), state.DB, id, value); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}

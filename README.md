@@ -232,6 +232,17 @@ services:
 | Emby 客户端 | `http://IP:8961` |
 | Emby Gateway | upstream `http://IP:8961` |
 
+## 功能更新记录
+
+### 平台 / 虚拟库增强（library.go / platform.go / item.go / coverart / LibrariesPage.vue）
+
+围绕平台（虚拟）库做了四项增强，相关迁移 `052`~`054`：
+
+- **封面风格可选**：单个虚拟库「封面」与「一键生成封面」改为弹窗选择风格（复用普通库的 ninegrid/showcase 等风格与 showcase 选项），不再只能用默认风格。`POST /Library/Platforms/:id/Image/Generate` 与 `.../CoverArt/GenerateAll` 透传 `{Style, Options}`；后续在 `coverart` 注册新风格，前后端下拉自动出现
+- **自定义库名称**（迁移 `052`）：新增 `platform_libraries.display_name`，可自由命名虚拟库，优先级 `display_name` > 内置本地化名 > `platform_name`；logo/渐变仍按原名匹配，改名不影响图标。入口 `POST /Library/Platforms/:id/Rename` + 列表「重命名」
+- **实际库与虚拟库统一排序**（迁移 `053`）：新增 `library_display_order` 表与「整体排序」页签，把物理媒体库和虚拟库放在一个列表里混排；`getUserViews` 有记录时按统一顺序输出，无记录回退旧的「平台库排列位置」(before/after)。入口 `POST /Library/DisplayOrder`
+- **多维聚合一个库**（迁移 `054`）：新增 `platform_libraries.match_values TEXT[]`，一个虚拟库可绑定多个匹配值（`= ANY`），用于把簡繁/译名等同一片商或演员的不同写法合并进同一个库；`match_value` 仍作主值保证唯一键与虚拟库 ID 稳定。列表「聚合」弹窗可查同维度值勾选合并 / 移除别名，入口 `POST·DELETE /Library/Platforms/:id/Values`
+
 ## Bug 修复记录
 
 ### 图片服务 500 错误修复（images.go）

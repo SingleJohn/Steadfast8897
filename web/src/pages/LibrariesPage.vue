@@ -14,8 +14,9 @@ import {
   getLibraries, addLibrary, refreshLibrary, forceLibraryRescanOptions,
   getSystemConfig, updateSystemConfig, browseDirectories,
   getPlatforms, addPlatformLibrary, setPlatformEnable, deletePlatformLibrary, updatePlatformSortOrder, scanPlatformStudios, scanPlatformByFilename, rescrapeMissingStudio, getTaskSummary, updateLibrarySortOrder,
-  discoverPlatformDimension, addPlatformsBatch, generatePlatformCover, generateAllPlatformCovers,
+  discoverPlatformDimension, addPlatformsBatch, generatePlatformCover, generateAllPlatformCovers, renamePlatform,
   listCoverStyles, generateAllLibraryCovers, type CoverStyle,
+  getViews, setLibraryDisplayOrder, addPlatformValues, removePlatformValue,
 } from '@/api/client'
 import { useTaskStream } from '@/composables/useTaskStream'
 
@@ -60,7 +61,7 @@ const scanThreads = ref('3')
 const fileWatcherEnabled = ref(true)
 const scanning = ref(false)
 const savingConfig = ref(false)
-const activeView = ref<'libraries' | 'scan' | 'platforms'>('libraries')
+const activeView = ref<'libraries' | 'scan' | 'platforms' | 'order'>('libraries')
 const draggingLibraryId = ref<string | null>(null)
 const dragOverLibraryId = ref<string | null>(null)
 const dragStartLibraries = ref<any[]>([])
@@ -230,31 +231,191 @@ async function addSelectedDimension() {
   } catch { showToast('添加失败', 'error') }
 }
 
-// ===== 封面生成 =====
-const coverGenerating = ref<Record<string, boolean>>({})
-const coverGeneratingAll = ref(false)
+// ===== 平台库封面生成(可选风格) =====
+const showPlatformCover = ref(false)
+const platformCoverTargetId = ref<string | null>(null) // null = 批量生成全部
+const platformCoverStyle = ref('')
+const platformShowcaseIcon = ref('auto')
+const platformShowcaseShowPosterTitles = ref(true)
+const platformShowcaseShowCount = ref(true)
+const generatingPlatformCover = ref(false)
+const platformCoverIsShowcase = computed(() => platformCoverStyle.value === 'showcase')
 
-async function handleGenCover(id: string) {
-  coverGenerating.value = { ...coverGenerating.value, [id]: true }
-  try {
-    await generatePlatformCover(id)
-    await loadPlatforms()
-    showToast('封面已生成', 'success')
-  } catch (e: any) {
-    showToast(e?.message || '生成失败(可能没有海报素材)', 'error')
-  } finally {
-    coverGenerating.value = { ...coverGenerating.value, [id]: false }
+async function openPlatformCover(id: string | null) {
+  platformCoverTargetId.value = id
+  showPlatformCover.value = true
+  await ensureCoverStylesLoaded()
+  if (!platformCoverStyle.value && coverStyles.value.length > 0) {
+    platformCoverStyle.value = coverStyles.value.find((s) => s.name === 'showcase')?.name || coverStyles.value[0].name
   }
 }
 
-async function handleGenAllCovers() {
-  coverGeneratingAll.value = true
+function platformCoverOptions() {
+  if (platformCoverStyle.value !== 'showcase') return undefined
+  const o: Record<string, any> = {
+    ShowPosterTitles: platformShowcaseShowPosterTitles.value,
+    ShowCount: platformShowcaseShowCount.value,
+  }
+  if (platformShowcaseIcon.value !== 'auto') o.Icon = platformShowcaseIcon.value
+  return o
+}
+
+async function confirmPlatformCover() {
+  if (!platformCoverStyle.value) return
+  generatingPlatformCover.value = true
   try {
-    const res = await generateAllPlatformCovers()
-    showToast(`封面生成完成:成功 ${res.generated},跳过 ${res.skipped}`, 'success')
+    const opts = platformCoverOptions()
+    if (platformCoverTargetId.value) {
+      await generatePlatformCover(platformCoverTargetId.value, platformCoverStyle.value, opts)
+      showToast('封面已生成', 'success')
+    } else {
+      const res = await generateAllPlatformCovers(platformCoverStyle.value, opts)
+      showToast(`封面生成完成：成功 ${res.generated}，跳过 ${res.skipped}`, 'success')
+    }
+    showPlatformCover.value = false
     await loadPlatforms()
-  } catch { showToast('批量生成失败', 'error') }
-  finally { coverGeneratingAll.value = false }
+  } catch (e: any) {
+    showToast(e?.message || '生成失败(可能没有海报素材)', 'error')
+  } finally {
+    generatingPlatformCover.value = false
+  }
+}
+
+// ===== 整体排序(实际库 + 虚拟库统一) =====
+const orderList = ref<{ kind: 'library' | 'platform'; id: string; name: string; type: string }[]>([])
+const savingOrder = ref(false)
+
+// 直接用 getViews 的结果作为来源:它已按统一展示顺序返回(后端按 library_display_order 排序),
+// 只含会出现在播放器里的条目(全部实际库 + 已启用虚拟库)。
+async function loadOrderList() {
+  try {
+    const res = await getViews()
+    orderList.value = (res.Items || []).map((it: any) => ({
+      kind: it.PlatformLibrary ? 'platform' : 'library',
+      id: it.Id,
+      name: it.Name,
+      type: it.PlatformLibrary ? '虚拟库' : '媒体库',
+    }))
+  } catch {
+    showToast('加载顺序失败', 'error')
+  }
+}
+
+function moveOrder(idx: number, dir: number) {
+  const j = idx + dir
+  if (j < 0 || j >= orderList.value.length) return
+  const arr = [...orderList.value]
+  ;[arr[idx], arr[j]] = [arr[j], arr[idx]]
+  orderList.value = arr
+}
+
+async function saveOrder() {
+  savingOrder.value = true
+  try {
+    await setLibraryDisplayOrder(orderList.value.map((e) => ({ Kind: e.kind, Id: e.id })))
+    showToast('排序已保存', 'success')
+    await loadOrderList()
+  } catch {
+    showToast('排序保存失败', 'error')
+  } finally {
+    savingOrder.value = false
+  }
+}
+
+watch(activeView, (v) => {
+  if (v === 'order') void loadOrderList()
+})
+
+// ===== 虚拟库重命名 =====
+const showRename = ref(false)
+const renameTargetId = ref<string | null>(null)
+const renameValue = ref('')
+
+function openRename(p: any) {
+  renameTargetId.value = p.Id
+  renameValue.value = p.CustomName || ''
+  showRename.value = true
+}
+
+async function confirmRename() {
+  if (!renameTargetId.value) return
+  try {
+    await renamePlatform(renameTargetId.value, renameValue.value.trim())
+    showRename.value = false
+    await loadPlatforms()
+    showToast('名称已更新', 'success')
+  } catch {
+    showToast('重命名失败', 'error')
+  }
+}
+
+// ===== 多值聚合(把簡繁/译名等多个值合并到一个虚拟库) =====
+const showAlias = ref(false)
+const aliasTarget = ref<any>(null)
+const aliasValues = ref<string[]>([])
+const aliasSearch = ref('')
+const aliasResults = ref<{ Value: string; Count: number; AlreadyAdded: boolean }[]>([])
+const aliasSelected = ref<string[]>([])
+const aliasLoading = ref(false)
+
+function syncAliasTarget() {
+  const updated = (platformsData.value?.Platforms || []).find((x: any) => x.Id === aliasTarget.value?.Id)
+  if (updated) {
+    aliasTarget.value = updated
+    aliasValues.value = [...(updated.MatchValues || [updated.MatchValue])]
+  }
+}
+
+function openAlias(p: any) {
+  aliasTarget.value = p
+  aliasValues.value = [...(p.MatchValues || [p.MatchValue])]
+  aliasSearch.value = ''
+  aliasResults.value = []
+  aliasSelected.value = []
+  showAlias.value = true
+}
+
+async function runAliasDiscover() {
+  if (!aliasTarget.value) return
+  aliasLoading.value = true
+  aliasSelected.value = []
+  try {
+    const res = await discoverPlatformDimension(aliasTarget.value.Dimension, aliasSearch.value.trim(), 1)
+    aliasResults.value = (res.values || []).filter((v) => !aliasValues.value.includes(v.Value))
+  } catch {
+    showToast('扫描失败', 'error')
+  } finally {
+    aliasLoading.value = false
+  }
+}
+
+async function addAliasSelected() {
+  if (!aliasTarget.value || aliasSelected.value.length === 0) return
+  try {
+    await addPlatformValues(aliasTarget.value.Id, aliasSelected.value)
+    showToast(`已合并 ${aliasSelected.value.length} 个值`, 'success')
+    await loadPlatforms()
+    syncAliasTarget()
+    aliasSelected.value = []
+    await runAliasDiscover()
+  } catch {
+    showToast('合并失败', 'error')
+  }
+}
+
+async function removeAlias(value: string) {
+  if (!aliasTarget.value) return
+  if (value === aliasTarget.value.MatchValue) {
+    showToast('主匹配值不可移除', 'info')
+    return
+  }
+  try {
+    await removePlatformValue(aliasTarget.value.Id, value)
+    await loadPlatforms()
+    syncAliasTarget()
+  } catch {
+    showToast('移除失败', 'error')
+  }
 }
 
 async function handleDeletePlatform(id: string) {
@@ -634,7 +795,7 @@ onUnmounted(() => {
       type="segment"
       size="large"
       class="libraries-tabs"
-      @update:value="(value) => activeView = value as 'libraries' | 'scan' | 'platforms'"
+      @update:value="(value) => activeView = value as 'libraries' | 'scan' | 'platforms' | 'order'"
     >
       <n-tab-pane name="libraries" tab="媒体库">
         <n-space justify="center" class="libraries-actions">
@@ -800,7 +961,7 @@ onUnmounted(() => {
           <div style="margin-top: 16px; border-top: 1px solid var(--app-border, rgba(255,255,255,0.04)); padding-top: 16px">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px">
               <div class="setting-label">平台/虚拟库列表</div>
-              <n-button text size="tiny" :loading="coverGeneratingAll" @click="handleGenAllCovers">一键生成封面</n-button>
+              <n-button text size="tiny" @click="openPlatformCover(null)">一键生成封面</n-button>
             </div>
             <div v-for="(p, idx) in platformsData.Platforms" :key="p.Id" class="platform-row">
               <img v-if="p.CoverUrl" :src="p.CoverUrl" class="platform-cover-thumb" />
@@ -809,9 +970,12 @@ onUnmounted(() => {
               <div style="flex: 1; min-width: 0">
                 <span class="platform-name">{{ p.DisplayName || p.PlatformName }}</span>
                 <span class="platform-dim-badge">{{ p.Dimension }}</span>
+                <span v-if="(p.MatchValues?.length || 1) > 1" class="platform-dim-badge" title="已聚合的匹配值数量">聚合 {{ p.MatchValues.length }}</span>
                 <span class="platform-count">{{ p.ItemCount }} 部</span>
               </div>
-              <n-button text size="tiny" :loading="coverGenerating[p.Id]" @click="handleGenCover(p.Id)" title="生成封面">封面</n-button>
+              <n-button text size="tiny" @click="openAlias(p)" title="聚合多个匹配值" style="margin-left: 4px">聚合</n-button>
+              <n-button text size="tiny" @click="openRename(p)" title="重命名" style="margin-left: 4px">重命名</n-button>
+              <n-button text size="tiny" @click="openPlatformCover(p.Id)" title="生成封面" style="margin-left: 4px">封面</n-button>
               <n-button text size="tiny" :disabled="idx === 0" @click="movePlatform(idx, -1)" title="上移" style="margin-left: 4px">↑</n-button>
               <n-button text size="tiny" :disabled="idx === platformsData.Platforms.length - 1" @click="movePlatform(idx, 1)" title="下移" style="margin-left: 2px">↓</n-button>
               <n-switch :value="p.Enabled" @update:value="(v: boolean) => togglePlatform(p.Id, v)" size="small" style="margin-left: 8px" />
@@ -822,6 +986,29 @@ onUnmounted(() => {
           <div style="margin-top: 16px; display: flex; gap: 8px">
             <n-input v-model:value="newPlatformName" placeholder="自定义片商名称(studio 维度)" size="small" style="flex: 1" @keydown.enter.prevent="handleAddPlatform" />
             <n-button secondary size="small" @click="handleAddPlatform">添加</n-button>
+          </div>
+        </div>
+      </n-tab-pane>
+
+      <n-tab-pane name="order" tab="整体排序">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div>
+              <h3 class="settings-card-title">整体排序</h3>
+              <div class="settings-card-desc">调整实际媒体库与虚拟库在播放器中的统一显示顺序。保存后立即生效；未参与排序的新库会自动排在末尾。</div>
+            </div>
+          </div>
+          <div v-if="orderList.length === 0" class="setting-desc" style="padding: 12px 0">暂无可排序的媒体库</div>
+          <div v-else>
+            <div v-for="(e, idx) in orderList" :key="e.kind + ':' + e.id" class="order-row">
+              <span class="order-kind-badge" :class="e.kind === 'platform' ? 'is-platform' : 'is-library'">{{ e.type }}</span>
+              <span class="order-name">{{ e.name }}</span>
+              <n-button text size="tiny" :disabled="idx === 0" @click="moveOrder(idx, -1)" title="上移">↑</n-button>
+              <n-button text size="tiny" :disabled="idx === orderList.length - 1" @click="moveOrder(idx, 1)" title="下移" style="margin-left: 4px">↓</n-button>
+            </div>
+            <div class="settings-actions">
+              <n-button type="primary" :loading="savingOrder" @click="saveOrder">保存顺序</n-button>
+            </div>
           </div>
         </div>
       </n-tab-pane>
@@ -912,6 +1099,100 @@ onUnmounted(() => {
           <n-button type="primary" :loading="generatingAllCovers" :disabled="!canGenerateAllCovers" @click="handleGenerateAllCovers">
             生成全部
           </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- Platform Cover Modal -->
+    <n-modal v-model:show="showPlatformCover" preset="card" :title="platformCoverTargetId ? '生成虚拟库封面' : '一键生成虚拟库封面'" :style="[forceSolidModalStyle, { width: '480px', maxWidth: '92vw' }]" class="solid-modal-card force-solid-modal">
+      <div class="form-group">
+        <label class="form-label">封面风格</label>
+        <n-select
+          v-model:value="platformCoverStyle"
+          :options="coverStyleOptions"
+          :loading="!coverStylesLoaded"
+          :menu-props="solidModalMenuProps"
+          placeholder="选择风格"
+        />
+      </div>
+      <div v-if="platformCoverIsShowcase" class="batch-cover-options">
+        <div class="form-group">
+          <label class="form-label">预制图标</label>
+          <n-select
+            v-model:value="platformShowcaseIcon"
+            :options="showcaseIconOptions"
+            :menu-props="solidModalMenuProps"
+          />
+        </div>
+        <div class="batch-cover-checks">
+          <n-checkbox v-model:checked="platformShowcaseShowPosterTitles">显示海报标题</n-checkbox>
+          <n-checkbox v-model:checked="platformShowcaseShowCount">显示媒体数量</n-checkbox>
+        </div>
+      </div>
+      <div v-if="!platformCoverTargetId" class="setting-desc">将为所有已启用的虚拟库生成封面，无海报素材的会自动跳过。</div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showPlatformCover = false">取消</n-button>
+          <n-button type="primary" :loading="generatingPlatformCover" :disabled="!platformCoverStyle || generatingPlatformCover" @click="confirmPlatformCover">
+            {{ platformCoverTargetId ? '生成' : '生成全部' }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- Platform Rename Modal -->
+    <n-modal v-model:show="showRename" preset="card" title="自定义虚拟库名称" :style="[forceSolidModalStyle, { width: '440px', maxWidth: '92vw' }]" class="solid-modal-card force-solid-modal">
+      <div class="form-group">
+        <label class="form-label">显示名称</label>
+        <n-input v-model:value="renameValue" placeholder="留空则恢复默认名称" @keydown.enter.prevent="confirmRename" />
+        <div class="setting-desc" style="margin-top: 6px">仅改变在播放器中显示的名称，不影响分组匹配与图标。</div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showRename = false">取消</n-button>
+          <n-button type="primary" @click="confirmRename">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- Platform Alias / Aggregation Modal -->
+    <n-modal v-model:show="showAlias" preset="card" :title="`聚合匹配值 · ${aliasTarget?.DisplayName || aliasTarget?.PlatformName || ''}`" :style="[forceSolidModalStyle, { width: '560px', maxWidth: '92vw' }]" class="solid-modal-card force-solid-modal">
+      <div class="form-group">
+        <label class="form-label">已绑定的值（{{ aliasTarget?.Dimension }} 维度）</label>
+        <div class="alias-chips">
+          <span v-for="v in aliasValues" :key="v" class="alias-chip" :class="{ 'is-primary': v === aliasTarget?.MatchValue }">
+            {{ v }}
+            <span v-if="v === aliasTarget?.MatchValue" class="alias-primary-tag">主</span>
+            <button v-else class="alias-chip-remove" title="移除" @click="removeAlias(v)">&times;</button>
+          </span>
+        </div>
+        <div class="setting-desc" style="margin-top: 6px">将簡繁/译名等同一实体的不同写法合并到此库；主值不可移除。</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">查找并合并更多值</label>
+        <div style="display: flex; gap: 8px; align-items: center">
+          <n-input v-model:value="aliasSearch" placeholder="搜索同维度的值（可选）" size="small" style="flex: 1" @keydown.enter.prevent="runAliasDiscover" />
+          <n-button secondary size="small" :loading="aliasLoading" @click="runAliasDiscover">扫描</n-button>
+        </div>
+        <div v-if="aliasResults.length > 0" style="margin-top: 10px">
+          <n-checkbox-group v-model:value="aliasSelected">
+            <div class="discover-grid">
+              <n-checkbox v-for="d in aliasResults" :key="d.Value" :value="d.Value">
+                {{ d.Value }} <span class="platform-count">{{ d.Count }}</span>
+                <span v-if="d.AlreadyAdded" style="color: var(--n-text-color-disabled); font-size: 11px">(其他库已用)</span>
+              </n-checkbox>
+            </div>
+          </n-checkbox-group>
+          <div style="margin-top: 8px">
+            <n-button type="primary" size="small" :disabled="aliasSelected.length === 0" @click="addAliasSelected">
+              合并所选 ({{ aliasSelected.length }})
+            </n-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showAlias = false">关闭</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -1139,6 +1420,20 @@ onUnmounted(() => {
 .platform-cover-thumb { width: 48px; height: 27px; border-radius: 4px; object-fit: cover; margin-right: 10px; flex-shrink: 0; }
 .platform-dim-badge { font-size: 10px; color: var(--app-text-muted); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); border-radius: 4px; padding: 0 5px; margin-left: 8px; vertical-align: middle; }
 .discover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; max-height: 320px; overflow-y: auto; padding: 4px 2px; }
+.order-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); }
+.order-row:last-child { border-bottom: none; }
+.order-name { flex: 1; min-width: 0; font-size: 14px; color: var(--app-text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-kind-badge { font-size: 10px; border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
+.order-kind-badge.is-library { color: var(--app-primary); border: 1px solid rgba(var(--app-primary-rgb), 0.4); }
+.order-kind-badge.is-platform { color: var(--app-text-muted); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); }
+
+.alias-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.alias-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 13px; color: var(--app-text); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); background: var(--app-modal-panel-bg-soft, rgba(255,255,255,0.04)); }
+.alias-chip.is-primary { border-color: rgba(var(--app-primary-rgb), 0.5); }
+.alias-primary-tag { font-size: 10px; color: var(--app-primary); }
+.alias-chip-remove { border: 0; background: transparent; color: var(--app-text-muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0; }
+.alias-chip-remove:hover { color: #d03050; }
+
 .platform-row { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); }
 .platform-row:last-child { border-bottom: none; }
 .platform-name { font-size: 14px; color: var(--app-text); font-weight: 500; }

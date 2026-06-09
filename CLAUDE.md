@@ -109,9 +109,16 @@ Movies with the same `tmdb_id` + `studio` (platform) are merged: one becomes the
 - `POST /Library/MergeVersions` resets all merges and recalculates from scratch (idempotent).
 - Detail/playback requests for a secondary auto-redirect to the primary.
 
-### Platform Virtual Libraries
+### Platform Virtual Libraries (平台 / 虚拟库)
 
-Libraries with `type = platform` group items by `studio` field. They reuse the same merge logic but are separate from user physical libraries.
+虚拟库存于 `platform_libraries` 表，按某个维度的值聚合 `items`，与用户的物理媒体库相互独立。`POST /Library/Platforms/*` 路由族管理它们。
+
+- **多维度** (`dimension`)：`studio`(片商) / `num_prefix`(番号字母前缀，依赖 049 函数索引) / `actor`(演员，走 `cast_members`)。维度→SQL 由 `models.virtualDimensionCondition` 统一产出，占位符 `$1` 为 `text[]`。
+- **多值聚合** (`match_values TEXT[]`，迁移 054)：一个虚拟库可绑定多个匹配值（`= ANY($1)`），用来把簡繁/译名等同一实体的不同写法合并进一个库。`match_value` 保留为「主值」——唯一键 `(dimension, match_value)` 与 `PlatformVirtualID(dimension, match_value)` 都基于它，保持客户端缓存/封面稳定。`PlatformLibrary.Values()` 兜底退化为 `[match_value]`。`POST/DELETE /Library/Platforms/:id/Values` 增删别名。
+- **自定义显示名** (`display_name`，迁移 052)：优先级 `display_name`(用户自定义) > `PlatformDisplayName(platform_name)`(内置本地化) > `platform_name`，统一经 `PlatformLibrary.EffectiveDisplayName()`。logo/渐变仍按 `platform_name` 匹配，改名不影响图标。`POST /Library/Platforms/:id/Rename`。
+- **封面生成**：复用 `internal/services/coverart` 的多风格 registry（`/Library/CoverArt/Styles` 列出 ninegrid/showcase…），`POST /Library/Platforms/:id/Image/Generate` 与 `.../CoverArt/GenerateAll` 接收 `{Style, Options}`。新增风格只需 `coverart.Register`，前后端下拉自动出现。
+- **统一展示顺序** (`library_display_order` 表，迁移 053)：实际库 + 虚拟库混排。`getUserViews` 有此表记录时按 `sort_order` 合并排序，无记录回退旧的 `platform_libraries_position`(before/after)。`POST /Library/DisplayOrder` 整体重写。
+- 仍复用 Multi-Version 合并结果（按 `studio` 分组的 primary），与物理库共用聚合能力。
 
 ### Image Serving (`handlers/images.go`)
 

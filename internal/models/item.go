@@ -39,9 +39,9 @@ type ItemQueryOptions struct {
 	UserID           *string
 	GenreIDs         []string
 	Years            []int
-	Studio           *string
-	ActorName        *string // 演员维度虚拟库:含该演员(role='Actor')的影片
-	CatalogPrefix    *string // 番号前缀维度虚拟库:番号字母前缀匹配
+	Studio           []string // 片商维度虚拟库:命中任一值(= ANY)
+	ActorName        []string // 演员维度虚拟库:含任一演员(role='Actor')的影片
+	CatalogPrefix    []string // 番号前缀维度虚拟库:命中任一番号字母前缀
 	AnyProviderID    []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
 	LightMode        bool              // 跳过 series_fallback JOIN，用于大批量列表
 }
@@ -204,22 +204,22 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 		conditions = append(conditions, fmt.Sprintf("i.production_year IN (%s)", strings.Join(placeholders, ",")))
 	}
 
-	if options.Studio != nil {
-		conditions = append(conditions, fmt.Sprintf("i.studio = $%d", paramIdx))
-		params = append(params, *options.Studio)
+	if len(options.Studio) > 0 {
+		conditions = append(conditions, fmt.Sprintf("i.studio = ANY($%d)", paramIdx))
+		params = append(params, options.Studio)
 		paramIdx++
 	}
 
-	if options.ActorName != nil {
+	if len(options.ActorName) > 0 {
 		conditions = append(conditions, fmt.Sprintf(
-			"EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $%d AND cm.role = 'Actor')", paramIdx))
-		params = append(params, *options.ActorName)
+			"EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = ANY($%d) AND cm.role = 'Actor')", paramIdx))
+		params = append(params, options.ActorName)
 		paramIdx++
 	}
 
-	if options.CatalogPrefix != nil {
-		conditions = append(conditions, fmt.Sprintf("regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = $%d", paramIdx))
-		params = append(params, *options.CatalogPrefix)
+	if len(options.CatalogPrefix) > 0 {
+		conditions = append(conditions, fmt.Sprintf("regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = ANY($%d)", paramIdx))
+		params = append(params, options.CatalogPrefix)
 		paramIdx++
 	}
 
@@ -266,7 +266,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	// Platform virtual libraries show only the global merged primary.
 	// Ordinary user libraries use a per-library representative selection later
 	// so a title does not disappear just because the global primary lives elsewhere.
-	if options.Studio != nil || options.ActorName != nil || options.CatalogPrefix != nil {
+	if len(options.Studio) > 0 || len(options.ActorName) > 0 || len(options.CatalogPrefix) > 0 {
 		conditions = append(conditions, "i.merged_to_id IS NULL")
 	}
 
@@ -340,7 +340,7 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	var totalCount int64
 	if options.StartIndex != nil && *options.StartIndex > 0 && genreJoin == "" && !useRepresentative {
 		// 快速估算：对简单 type 筛选使用 pg_class 统计信息
-		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && len(options.ParentIDs) == 0 && options.LibraryID == nil && options.SearchTerm == nil && options.Studio == nil {
+		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && len(options.ParentIDs) == 0 && options.LibraryID == nil && options.SearchTerm == nil && len(options.Studio) == 0 {
 			_ = pool.QueryRow(ctx,
 				"SELECT COALESCE(n_live_tup, 0) FROM pg_stat_user_tables WHERE relname = 'items'").Scan(&totalCount)
 			// 如果估算值明显小于 StartIndex，用精确值
