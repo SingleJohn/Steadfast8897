@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,16 +224,32 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 		realPath = *resolved
 	}
 
-	realPath = applyPathMappings(realPath, mappings)
+	remote := strings.HasPrefix(realPath, "http://") || strings.HasPrefix(realPath, "https://")
 
-	if _, err := os.Stat(realPath); err != nil {
-		return fmt.Errorf("file not found: %s", realPath)
+	// 本地文件:应用路径映射并校验存在;远程直链:直接交给 ffprobe(支持 http)。
+	var fileSize *int64
+	if !remote {
+		realPath = applyPathMappings(realPath, mappings)
+		fi, err := os.Stat(realPath)
+		if err != nil {
+			return fmt.Errorf("file not found: %s", realPath)
+		}
+		s := fi.Size()
+		fileSize = &s
 	}
 
 	doneCh := make(chan *ProbeResult, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		result, err := ProbeFile(realPath)
+		var (
+			result *ProbeResult
+			err    error
+		)
+		if remote {
+			result, err = ProbeRemote(realPath)
+		} else {
+			result, err = ProbeFile(realPath)
+		}
 		if err != nil {
 			errCh <- err
 		} else {
@@ -245,7 +262,7 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 	case result = <-doneCh:
 	case err := <-errCh:
 		return err
-	case <-time.After(30 * time.Second):
+	case <-time.After(40 * time.Second):
 		return fmt.Errorf("probe timeout")
 	}
 
@@ -260,12 +277,7 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 		})
 	}
 
-	fi, _ := os.Stat(realPath)
-	var fileSize *int64
-	if fi != nil {
-		s := fi.Size()
-		fileSize = &s
-	}
+	// 远程无法 os.Stat,size 留空;有大小且有时长才算码率。
 	var bitrate *int64
 	if fileSize != nil && result.DurationTicks > 0 {
 		durSec := float64(result.DurationTicks) / 10_000_000.0
@@ -279,8 +291,14 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 	}
 	dbInfoJSON, _ := json.Marshal(dbInfo)
 
+	// 用 COALESCE 保护 size/bitrate:远程探测传 nil 时不覆盖已有列值。
 	_, err := pool.Exec(ctx,
-		"UPDATE media_versions SET mediainfo = $1, runtime_ticks = $2, bitrate = $3, size = $4 WHERE id = $5::uuid",
+		`UPDATE media_versions
+		 SET mediainfo = $1,
+		     runtime_ticks = CASE WHEN $2 > 0 THEN $2 ELSE runtime_ticks END,
+		     bitrate = COALESCE($3, bitrate),
+		     size = COALESCE($4, size)
+		 WHERE id = $5::uuid`,
 		string(dbInfoJSON), result.DurationTicks, bitrate, fileSize, mvID)
 	if err != nil {
 		return err

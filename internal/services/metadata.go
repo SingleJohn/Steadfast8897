@@ -63,14 +63,34 @@ type ffprobeDisposition struct {
 	Forced  *int `json:"forced"`
 }
 
+// ProbeFile 探测本地文件路径。
 func ProbeFile(filePath string) (*ProbeResult, error) {
-	cmd := exec.Command("ffprobe",
+	return runFFProbe(filePath, false)
+}
+
+// ProbeRemote 探测远程 URL(strm 解析出的直链)。ffprobe 原生支持 http(s),
+// 额外加读超时与 User-Agent,避免远程卡死并兼容 115/Alist 等需要 UA 的源。
+func ProbeRemote(url string) (*ProbeResult, error) {
+	return runFFProbe(url, true)
+}
+
+func runFFProbe(target string, remote bool) (*ProbeResult, error) {
+	args := []string{
 		"-v", "quiet",
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
-		filePath,
-	)
+	}
+	if remote {
+		// 输入协议选项需置于目标 URL 之前。-rw_timeout 单位为微秒。
+		args = append(args,
+			"-user_agent", "FYMS/1.0",
+			"-rw_timeout", "30000000",
+		)
+	}
+	args = append(args, target)
+
+	cmd := exec.Command("ffprobe", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe exec error: %w", err)

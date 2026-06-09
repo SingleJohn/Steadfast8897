@@ -283,6 +283,11 @@ func OnPlaybackStart(c *gin.Context) {
 	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused)
 	st.SessionManager.SetNowPlaying(auth.ID, deviceID, np)
 
+	// 首次播放异步回填 MediaStreams(strm 远程媒体入库时未探测,详情为空)。
+	// fire-and-forget:内部自带独立 context 与去重,失败不影响播放。对齐 Emby
+	// 「播放一次后详情就有音视频轨道信息」的行为。
+	go services.ProbeOnPlay(st.DB, resolvedItemID, body.MediaSourceId)
+
 	itemName := "Unknown"
 	itemType := "Unknown"
 	seriesName := ""
