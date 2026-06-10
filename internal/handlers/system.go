@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/config"
+	"fyms/internal/dto"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
 	"fyms/internal/services"
@@ -295,6 +296,10 @@ func postConfiguration(c *gin.Context) {
 			if state.ImageCache != nil {
 				state.ImageCache.SetCopyLocal(valStr == "true")
 			}
+		case "strm_item_path_mode":
+			// strm 条目 item.Path 返回 .strm 文件路径('strm')还是解析后真实路径('resolved')。
+			// 实时生效,影响详情/列表/通知;MediaSources(播放)不受影响。
+			dto.SetStrmItemPathMode(valStr)
 		}
 		if strings.HasPrefix(key, "scrape_") ||
 			strings.HasPrefix(key, "tmdb_") ||

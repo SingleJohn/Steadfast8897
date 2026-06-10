@@ -5,9 +5,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
+
+// strmItemPathResolvedFlag 控制 strm 条目「item 级 Path」字段的取值:
+//   - false(默认)= 返回 .strm 文件本身的路径(对齐 Emby:item.Path 永远是 .strm,
+//     解析后的真实地址只出现在 MediaSources.Path)
+//   - true        = 返回解析 .strm 后的内层真实路径(FYMS 旧行为)
+//
+// 无论该开关取值如何,strm 的 item.Container 都解析为真实内层容器(如 mp4),与 Emby 一致。
+// 由 main.go 启动时按 system_config 'strm_item_path_mode' 设置,postConfiguration 保存时实时刷新。
+var strmItemPathResolvedFlag atomic.Bool
+
+// SetStrmItemPathMode 设置 strm item.Path 模式。mode=="resolved" 时返回解析后真实路径,
+// 其它值(含默认空值 / "strm")返回 .strm 文件路径。
+func SetStrmItemPathMode(mode string) {
+	strmItemPathResolvedFlag.Store(strings.EqualFold(strings.TrimSpace(mode), "resolved"))
+}
+
+func strmItemPathResolved() bool {
+	return strmItemPathResolvedFlag.Load()
+}
 
 // studioNamespace 用于由 studio name 生成稳定 UUID。Emby/Jellyfin 客户端
 // （包括 VidHub）要求 Studios[].Id 必填且为 UUID 形式。
@@ -120,20 +140,28 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	dto.SeasonID = item.SeasonID
 	dto.ProviderIDs = normalizeProviderIDs(item.ProviderIDs)
 
+	// displayPath = item 级 Path 字段；resolvedStrm = 解析 .strm 得到的内层真实路径
+	// (仅非列表模式下读盘获得，用于推导真实 Container)。
 	var displayPath *string
+	var resolvedStrm *string
 	if item.ResolvedPath != nil {
 		displayPath = item.ResolvedPath
 	} else if item.FilePath != nil {
-		if skipStrmResolve {
-			// 列表模式：直接用 file_path，跳过磁盘 IO
+		isStrm := strings.HasSuffix(strings.ToLower(*item.FilePath), ".strm")
+		switch {
+		case skipStrmResolve:
+			// 列表模式：跳过磁盘 IO，item.Path 直接用 file_path(.strm 时即对齐 Emby)。
 			displayPath = item.FilePath
-		} else if strings.HasSuffix(*item.FilePath, ".strm") {
-			if resolved := resolveStrmForDisplay(*item.FilePath); resolved != nil {
-				displayPath = resolved
+		case isStrm:
+			// 读一次 .strm 取内层真实路径，供 Container 推导；
+			// item.Path 用 .strm 还是解析后路径由 strmItemPathResolved() 决定。
+			resolvedStrm = resolveStrmForDisplay(*item.FilePath)
+			if strmItemPathResolved() && resolvedStrm != nil {
+				displayPath = resolvedStrm
 			} else {
 				displayPath = item.FilePath
 			}
-		} else {
+		default:
 			displayPath = item.FilePath
 		}
 	}
@@ -142,14 +170,22 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if item.Container != nil {
 		if *item.Container != "strm" {
 			dto.Container = item.Container
-		} else if displayPath != nil {
-			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(*displayPath), "."))
-			if ext == "" {
-				ext = "mkv"
-			}
-			dto.Container = &ext
 		} else {
-			dto.Container = item.Container
+			// items.container 对 strm 入库时存的是字面 "strm"，这里推真实内层容器(对齐 Emby 的 mp4)。
+			// 优先用解析后的内层路径扩展名；列表模式没解析时退回 displayPath，避免对外暴露 "strm" 容器。
+			src := resolvedStrm
+			if src == nil {
+				src = displayPath
+			}
+			if src != nil {
+				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(*src), "."))
+				if ext == "" || ext == "strm" {
+					ext = "mkv"
+				}
+				dto.Container = &ext
+			} else {
+				dto.Container = item.Container
+			}
 		}
 	}
 

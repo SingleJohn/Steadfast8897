@@ -20,6 +20,7 @@ import (
 
 	"fyms/internal/config"
 	"fyms/internal/database"
+	"fyms/internal/dto"
 	"fyms/internal/gateway"
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
@@ -157,6 +158,16 @@ func main() {
 		var copyLocalVal *string
 		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'image_cache_copy_local'").Scan(&copyLocalVal)
 		imageCache.SetCopyLocal(copyLocalVal != nil && *copyLocalVal == "true")
+	}
+
+	// 启动时加载 strm item.Path 模式(默认 'strm'=返回 .strm 文件路径,对齐 Emby)。
+	// postConfiguration 保存后会调 dto.SetStrmItemPathMode 实时生效。
+	{
+		var strmPathMode *string
+		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'strm_item_path_mode'").Scan(&strmPathMode)
+		if strmPathMode != nil {
+			dto.SetStrmItemPathMode(*strmPathMode)
+		}
 	}
 
 	state := &handlers.AppState{
