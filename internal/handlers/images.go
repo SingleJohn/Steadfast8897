@@ -206,7 +206,7 @@ func lerpU8(a, b uint8, t float64) uint8 {
 func serveImage(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 	itemID := c.Param("itemId")
-	imageType := c.Param("imageType")
+	imageType := normalizeImageType(c.Param("imageType"))
 	imageIndex := c.Param("imageIndex")
 
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
@@ -528,6 +528,22 @@ func copyFile(src, dst string) error {
 func queryInt(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func normalizeImageType(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "primary", "poster", "thumb":
+		if strings.EqualFold(strings.TrimSpace(s), "thumb") {
+			return "Thumb"
+		}
+		return "Primary"
+	case "backdrop", "backdrops", "fanart":
+		return "Backdrop"
+	case "banner":
+		return "Banner"
+	default:
+		return strings.TrimSpace(s)
+	}
 }
 
 func queryIntDefault(s string, def int) int {

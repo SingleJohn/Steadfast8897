@@ -269,6 +269,10 @@ func (w *IngestWorker) InflightCount(tag string) int64 {
 func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 	switch e.Kind {
 	case EventCreate, EventModify:
+		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.Path))) {
+			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
+			return nil
+		}
 		// Modify 事件只对视频文件有意义(mediainfo 可能变了)。
 		// nfo/jpg/mediainfo.json 等 sidecar 的 modify 不改变 item 树,
 		// 但会触发一次完整 scanOneShow(2~7s)+ autoScrapeNewItems,
@@ -278,8 +282,19 @@ func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 		}
 		return w.processCreate(ctx, e)
 	case EventDelete:
+		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.Path))) {
+			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
+			return nil
+		}
 		return w.processDelete(ctx, e)
 	case EventRename:
+		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.OldPath))) {
+			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.OldPath)
+		}
+		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.Path))) {
+			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
+			return nil
+		}
 		return w.processRename(ctx, e)
 	}
 	return nil
@@ -578,6 +593,12 @@ func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 			w.pool.Exec(ctx, "UPDATE items SET file_path = $1, updated_at = NOW() WHERE id = $2", nfp, u.id)
 			w.pool.Exec(ctx, "UPDATE media_versions SET file_path = $1 WHERE file_path = $2", nfp, u.fp)
 		}
+		w.pool.Exec(ctx,
+			`UPDATE external_subtitles
+			    SET file_path = $1 || substring(file_path from $3),
+			        updated_at = NOW()
+			  WHERE file_path = $2 OR file_path LIKE $4`,
+			newPath, oldPath, len(oldPath)+1, oldPath+string(filepath.Separator)+"%")
 		if len(updates) > 0 {
 			slog.Info("[Ingest] Rename updated items", "count", len(updates), "from", oldPath, "to", newPath)
 		}
@@ -592,6 +613,7 @@ func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 	}
 	if tag.RowsAffected() > 0 {
 		w.pool.Exec(ctx, "UPDATE media_versions SET file_path = $1 WHERE file_path = $2", newPath, oldPath)
+		RefreshExternalSubtitlesForVideoPath(ctx, w.pool, newPath)
 		slog.Info("[Ingest] Rename", "from", oldPath, "to", newPath)
 		return nil
 	}

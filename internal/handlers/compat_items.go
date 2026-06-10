@@ -164,6 +164,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	parentID := compatQueryAny(c, "ParentId", "parentId", "parentid")
 	recStr := compatQueryAny(c, "Recursive", "recursive")
 	recursive := strings.EqualFold(recStr, "true") || recStr == "1"
+	var hasSubtitles *bool
+	if s := strings.TrimSpace(compatQueryAny(c, "HasSubtitles", "hasSubtitles", "hassubtitles")); s != "" {
+		v, err := parseCompatBool(s)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		hasSubtitles = &v
+	}
 	limitStr := compatQueryAny(c, "Limit", "limit")
 	limitVal := int64(50)
 	if limitStr != "" {
@@ -344,6 +353,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		whereParts = append(whereParts, "i.name ILIKE $"+strconv.Itoa(idx))
 		args = append(args, "%"+searchTerm+"%")
 		idx++
+	}
+	if hasSubtitles != nil {
+		subtitleExists := `(EXISTS (SELECT 1 FROM media_streams ms WHERE ms.item_id = i.id AND LOWER(ms.type) = 'subtitle')
+			OR EXISTS (SELECT 1 FROM external_subtitles es WHERE es.item_id = i.id))`
+		if *hasSubtitles {
+			whereParts = append(whereParts, subtitleExists)
+		} else {
+			whereParts = append(whereParts, "NOT ("+subtitleExists+")")
+		}
 	}
 
 	// AnyProviderIdEquals=tmdb.755898 —— 聚合类客户端按外部站点 ID 跨源匹配。

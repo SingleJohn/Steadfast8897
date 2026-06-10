@@ -185,6 +185,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			versionStreams = streamDtos
 		}
 		displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
+		versionStreams = appendExternalSubtitleStreams(ctx, pool, item.ID, idStr, versionStreams)
 		ms := dto.MediaSourceInfo{
 			ID:                    idStr,
 			Path:                  displayPath,
@@ -237,6 +238,9 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		sources = []dto.MediaSourceInfo{ms}
 	}
 	base.MediaSources = sources
+	if len(base.MediaSources) > 0 {
+		base.MediaStreams = base.MediaSources[0].MediaStreams
+	}
 
 	if item.ItemType == "Movie" || item.ItemType == "Episode" {
 		mergedSources := collectMergedMediaSources(ctx, pool, item.ID, streamDtos)
@@ -317,6 +321,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 					}
 				}
 			}
+			versionStreams = appendExternalSubtitleStreams(ctx, pool, itemID, idStr, versionStreams)
 			srcName := sib.LibName + " - " + name
 			displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
 			ms := dto.MediaSourceInfo{

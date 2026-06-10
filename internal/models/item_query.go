@@ -210,6 +210,16 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 			"i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
 	}
 
+	if options.HasSubtitles != nil {
+		subtitleExists := `(EXISTS (SELECT 1 FROM media_streams ms WHERE ms.item_id = i.id AND LOWER(ms.type) = 'subtitle')
+			OR EXISTS (SELECT 1 FROM external_subtitles es WHERE es.item_id = i.id))`
+		if *options.HasSubtitles {
+			conditions = append(conditions, subtitleExists)
+		} else {
+			conditions = append(conditions, "NOT ("+subtitleExists+")")
+		}
+	}
+
 	userJoin := ""
 	if options.UserID != nil {
 		userJoin = fmt.Sprintf(

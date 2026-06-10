@@ -197,6 +197,17 @@ func queryAny(c *gin.Context, keys ...string) string {
 	return ""
 }
 
+func parseCompatBool(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "y":
+		return true, nil
+	case "false", "0", "no", "n":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value %q", value)
+	}
+}
+
 // itemTypeCanonical 把客户端传入的各种大小写形式映射到 FYMS 数据库 items.type
 // 的标准值。Lenna 等客户端会传 "movie" 全小写,SQL 精确匹配 i.type='Movie'
 // 时查不到任何记录导致媒体库为空。
@@ -268,6 +279,14 @@ func parseItemQueryOptions(c *gin.Context, userID string) (*models.ItemQueryOpti
 	recStr := queryAny(c, "Recursive", "recursive")
 	recursive := strings.EqualFold(recStr, "true") || recStr == "1"
 	opts.Recursive = recursive
+
+	if s := strings.TrimSpace(queryAny(c, "HasSubtitles", "hasSubtitles", "hassubtitles")); s != "" {
+		v, err := parseCompatBool(s)
+		if err != nil {
+			return nil, err
+		}
+		opts.HasSubtitles = &v
+	}
 
 	if s := strings.TrimSpace(queryAny(c, "SearchTerm", "searchTerm", "searchterm")); s != "" {
 		opts.SearchTerm = &s

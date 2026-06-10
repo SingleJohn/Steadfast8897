@@ -254,6 +254,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	r.RemoveExtraSlash = true
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 	r.Use(requestLogger())

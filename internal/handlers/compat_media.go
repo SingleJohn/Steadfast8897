@@ -103,6 +103,7 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 		if len(versionStreams) == 0 && idx == 0 {
 			versionStreams = baseStreams
 		}
+		versionStreams = appendExternalSubtitleStreams(ctx, state.DB, itemID, msid, versionStreams)
 
 		src := dto.MediaSourceInfo{
 			ID:                   msid,
@@ -217,6 +218,7 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 					}
 				}
 			}
+			versionStreams = appendExternalSubtitleStreams(ctx, state.DB, itemID, msid, versionStreams)
 
 			srcName := sib.LibName + " - " + mv.Name
 			src := dto.MediaSourceInfo{

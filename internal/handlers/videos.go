@@ -36,6 +36,8 @@ func RegisterVideoRoutes(group *gin.RouterGroup, state *AppState, authMW gin.Han
 	group.GET("/Videos/:itemId/stream", func(c *gin.Context) { streamVideo(c, state) })
 	group.GET("/Videos/:itemId/stream.:container", func(c *gin.Context) { streamVideo(c, state) })
 	group.GET("/Videos/:itemId/trailer", func(c *gin.Context) { streamTrailer(c, state) })
+	group.GET("/Videos/:itemId/:mediaSourceId/Subtitles/:index/Stream.:format", func(c *gin.Context) { streamSubtitle(c, state) })
+	group.GET("/Videos/:itemId/:mediaSourceId/Subtitles/:index/:startPositionTicks/Stream.:format", func(c *gin.Context) { streamSubtitle(c, state) })
 }
 
 type mediaVersionRow struct {
@@ -276,7 +278,8 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 
 		q, qLabel := services.ComputeMediaVersionQuality(filepath.Base(filePath), mi)
 
-		if _, err := state.DB.Exec(ctx,
+		var mvID uuid.UUID
+		if err := state.DB.QueryRow(ctx,
 			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
 			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 			 ON CONFLICT (item_id, file_path) DO UPDATE SET
@@ -292,13 +295,17 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 			 	video_codec = COALESCE(EXCLUDED.video_codec, media_versions.video_codec),
 			 	audio_codec = COALESCE(EXCLUDED.audio_codec, media_versions.audio_codec),
 			 	source = COALESCE(EXCLUDED.source, media_versions.source),
-			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)`,
+			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)
+			 RETURNING id`,
 			itemID, versionName, filePath, container, i == 0, mediaInfoValue, runtimeTicks, bitrate, size,
 			services.NullableStr(q.Resolution), services.NullableStr(q.HDRFormat), services.NullableStr(q.VideoCodec),
 			services.NullableStr(q.AudioCodec), services.NullableStr(q.Source), services.NullableStr(qLabel),
-		); err != nil {
+		).Scan(&mvID); err != nil {
 			slog.Warn("playback backfill insert failed", "itemId", itemID, "filePath", filePath, "error", err)
 			return nil, err
+		}
+		if parsedItemID, perr := uuid.Parse(itemID); perr == nil {
+			services.SyncExternalSubtitles(ctx, state.DB, parsedItemID, mvID, filePath, dirCache)
 		}
 	}
 	slog.Info("playback backfill inserted versions", "itemId", itemID, "count", len(videoFiles))
@@ -455,6 +462,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		if len(versionStreams) == 0 && idx == 0 {
 			versionStreams = mediaStreams
 		}
+		versionStreams = appendExternalSubtitleStreams(ctx, state.DB, *uid, msid, versionStreams)
 		defaultAudioIndex, defaultSubtitleIndex := defaultStreamIndexes(versionStreams)
 
 		src := dto.MediaSourceInfo{
@@ -790,6 +798,96 @@ func streamTrailer(c *gin.Context, state *AppState) {
 	serveMediaFile(c, state, itemID, *trailerPath)
 }
 
+func streamSubtitle(c *gin.Context, state *AppState) {
+	ctx := c.Request.Context()
+	itemID := c.Param("itemId")
+	uid, err := models.ResolveToUUID(ctx, state.DB, itemID)
+	if err != nil || uid == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid item id"})
+		return
+	}
+
+	userID := resolveStreamUser(ctx, state, c)
+	if userID != "" {
+		if ok, err := userCanAccessItem(ctx, state, userID, *uid); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		} else if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
+			return
+		}
+	}
+
+	mediaSourceID := strings.TrimSpace(c.Param("mediaSourceId"))
+	streamIndex, err := strconv.ParseInt(c.Param("index"), 10, 32)
+	if err != nil || mediaSourceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid subtitle request"})
+		return
+	}
+
+	embeddedStreams, err := loadEmbeddedStreamsForMediaVersion(ctx, state, mediaSourceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	sub, err := externalSubtitleByIndex(ctx, state.DB, mediaSourceID, int32(streamIndex), embeddedStreams)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if sub == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Subtitle not found"})
+		return
+	}
+	serveSubtitleFile(c, sub.FilePath)
+}
+
+func loadEmbeddedStreamsForMediaVersion(ctx context.Context, state *AppState, mediaSourceID string) ([]dto.MediaStreamInfo, error) {
+	var itemID string
+	var mediaInfo []byte
+	err := state.DB.QueryRow(ctx,
+		`SELECT item_id::text, mediainfo
+		   FROM media_versions
+		  WHERE id = $1::uuid`,
+		mediaSourceID).Scan(&itemID, &mediaInfo)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return []dto.MediaStreamInfo{}, nil
+		}
+		return nil, err
+	}
+
+	streamRows, err := models.GetMediaStreams(ctx, state.DB, itemID)
+	if err != nil {
+		return nil, err
+	}
+	streams := make([]dto.MediaStreamInfo, 0, len(streamRows))
+	for i := range streamRows {
+		streams = append(streams, dto.FormatMediaStreamDto(&streamRows[i]))
+	}
+	if len(mediaInfo) > 0 {
+		var mi map[string]json.RawMessage
+		if json.Unmarshal(mediaInfo, &mi) == nil {
+			if msRaw, ok := mi["MediaStreams"]; ok {
+				var miStreams []dto.MediaStreamInfo
+				if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
+					streams = miStreams
+				}
+			}
+		}
+	}
+	return streams, nil
+}
+
+func serveSubtitleFile(c *gin.Context, filePath string) {
+	if _, err := os.Stat(filePath); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Subtitle file not found"})
+		return
+	}
+	c.Header("Content-Type", subtitleMimeForPath(filePath))
+	c.File(filePath)
+}
+
 // collectMergedPlaybackSources finds media_versions from items that have been
 // merged into the given primary item and returns them as additional MediaSources.
 func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
@@ -862,6 +960,7 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 					}
 				}
 			}
+			versionStreams = appendExternalSubtitleStreams(ctx, state.DB, primaryID, msid, versionStreams)
 			defaultAudioIndex, defaultSubtitleIndex := defaultStreamIndexes(versionStreams)
 
 			srcName := sib.LibName + " - " + mv.Name
@@ -926,5 +1025,18 @@ func mimeForPath(p string) string {
 		return "application/octet-stream"
 	default:
 		return "application/octet-stream"
+	}
+}
+
+func subtitleMimeForPath(p string) string {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".srt":
+		return "application/x-subrip; charset=utf-8"
+	case ".vtt":
+		return "text/vtt; charset=utf-8"
+	case ".ass", ".ssa":
+		return "text/plain; charset=utf-8"
+	default:
+		return "text/plain; charset=utf-8"
 	}
 }

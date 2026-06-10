@@ -6,56 +6,56 @@ import (
 )
 
 type BaseItemDto struct {
-	ID                         string                 `json:"Id"`
-	Name                       string                 `json:"Name"`
-	ServerID                   string                 `json:"ServerId"`
-	Type                       string                 `json:"Type"`
-	MediaType                  *string                `json:"MediaType,omitempty"`
-	IsFolder                   *bool                  `json:"IsFolder,omitempty"`
-	Overview                   *string                `json:"Overview,omitempty"`
-	ProductionYear             *int32                 `json:"ProductionYear,omitempty"`
-	PremiereDate               *string                `json:"PremiereDate,omitempty"`
-	CommunityRating            *float64               `json:"CommunityRating,omitempty"`
-	OfficialRating             *string                `json:"OfficialRating,omitempty"`
-	RunTimeTicks               *int64                 `json:"RunTimeTicks,omitempty"`
-	IndexNumber                *int32                 `json:"IndexNumber,omitempty"`
-	ParentIndexNumber          *int32                 `json:"ParentIndexNumber,omitempty"`
-	ParentID                   *string                `json:"ParentId,omitempty"`
-	SortName                   *string                `json:"SortName,omitempty"`
-	CollectionType             *string                `json:"CollectionType,omitempty"`
-	ImageTags                  map[string]string      `json:"ImageTags,omitempty"`
-	BackdropImageTags          []string               `json:"BackdropImageTags,omitempty"`
-	ChildCount                 *int64                 `json:"ChildCount,omitempty"`
-	RecursiveItemCount         *int64                 `json:"RecursiveItemCount,omitempty"`
-	SeriesID                   *string                `json:"SeriesId,omitempty"`
-	SeriesName                 *string                `json:"SeriesName,omitempty"`
-	SeasonID                   *string                `json:"SeasonId,omitempty"`
-	Container                  *string                `json:"Container,omitempty"`
-	ProviderIDs                *json.RawMessage       `json:"ProviderIds,omitempty"`
-	MediaSourceCount           *int32                 `json:"MediaSourceCount,omitempty"`
-	MediaSources               []MediaSourceInfo      `json:"MediaSources,omitempty"`
-	MediaStreams               []MediaStreamInfo      `json:"MediaStreams,omitempty"`
-	UserData                   *UserItemDataDto       `json:"UserData,omitempty"`
-	Path                       *string                `json:"Path,omitempty"`
-	GenreItems                 []GenreItem            `json:"GenreItems,omitempty"`
-	Genres                     []string               `json:"Genres,omitempty"`
-	Tags                       []string               `json:"Tags,omitempty"`
-	RemoteTrailers             []MediaUrl             `json:"RemoteTrailers,omitempty"`
-	People                     []map[string]interface{} `json:"People,omitempty"`
-	OriginalTitle              *string                `json:"OriginalTitle,omitempty"`
-	Taglines                   []string               `json:"Taglines,omitempty"`
-	DateCreated                *string                `json:"DateCreated,omitempty"`
-	Studios                    []StudioItem           `json:"Studios,omitempty"`
-	ProductionLocations        []string               `json:"ProductionLocations,omitempty"`
-	Etag                       *string                `json:"Etag,omitempty"`
-	SeriesPrimaryImageItemID   *string                `json:"SeriesPrimaryImageItemId,omitempty"`
-	SeriesPrimaryImageTag      *string                `json:"SeriesPrimaryImageTag,omitempty"`
-	ParentBackdropItemID       *string                `json:"ParentBackdropItemId,omitempty"`
-	ParentBackdropImageTags    []string               `json:"ParentBackdropImageTags,omitempty"`
-	ParentThumbItemID          *string                `json:"ParentThumbItemId,omitempty"`
-	ParentThumbImageTag        *string                `json:"ParentThumbImageTag,omitempty"`
-	ParentPrimaryImageItemID   *string                `json:"ParentPrimaryImageItemId,omitempty"`
-	ParentPrimaryImageTag      *string                `json:"ParentPrimaryImageTag,omitempty"`
+	ID                       string                   `json:"Id"`
+	Name                     string                   `json:"Name"`
+	ServerID                 string                   `json:"ServerId"`
+	Type                     string                   `json:"Type"`
+	MediaType                *string                  `json:"MediaType,omitempty"`
+	IsFolder                 *bool                    `json:"IsFolder,omitempty"`
+	Overview                 *string                  `json:"Overview,omitempty"`
+	ProductionYear           *int32                   `json:"ProductionYear,omitempty"`
+	PremiereDate             *string                  `json:"PremiereDate,omitempty"`
+	CommunityRating          *float64                 `json:"CommunityRating,omitempty"`
+	OfficialRating           *string                  `json:"OfficialRating,omitempty"`
+	RunTimeTicks             *int64                   `json:"RunTimeTicks,omitempty"`
+	IndexNumber              *int32                   `json:"IndexNumber,omitempty"`
+	ParentIndexNumber        *int32                   `json:"ParentIndexNumber,omitempty"`
+	ParentID                 *string                  `json:"ParentId,omitempty"`
+	SortName                 *string                  `json:"SortName,omitempty"`
+	CollectionType           *string                  `json:"CollectionType,omitempty"`
+	ImageTags                map[string]string        `json:"ImageTags,omitempty"`
+	BackdropImageTags        []string                 `json:"BackdropImageTags,omitempty"`
+	ChildCount               *int64                   `json:"ChildCount,omitempty"`
+	RecursiveItemCount       *int64                   `json:"RecursiveItemCount,omitempty"`
+	SeriesID                 *string                  `json:"SeriesId,omitempty"`
+	SeriesName               *string                  `json:"SeriesName,omitempty"`
+	SeasonID                 *string                  `json:"SeasonId,omitempty"`
+	Container                *string                  `json:"Container,omitempty"`
+	ProviderIDs              *json.RawMessage         `json:"ProviderIds,omitempty"`
+	MediaSourceCount         *int32                   `json:"MediaSourceCount,omitempty"`
+	MediaSources             []MediaSourceInfo        `json:"MediaSources,omitempty"`
+	MediaStreams             []MediaStreamInfo        `json:"MediaStreams,omitempty"`
+	UserData                 *UserItemDataDto         `json:"UserData,omitempty"`
+	Path                     *string                  `json:"Path,omitempty"`
+	GenreItems               []GenreItem              `json:"GenreItems,omitempty"`
+	Genres                   []string                 `json:"Genres,omitempty"`
+	Tags                     []string                 `json:"Tags,omitempty"`
+	RemoteTrailers           []MediaUrl               `json:"RemoteTrailers,omitempty"`
+	People                   []map[string]interface{} `json:"People,omitempty"`
+	OriginalTitle            *string                  `json:"OriginalTitle,omitempty"`
+	Taglines                 []string                 `json:"Taglines,omitempty"`
+	DateCreated              *string                  `json:"DateCreated,omitempty"`
+	Studios                  []StudioItem             `json:"Studios,omitempty"`
+	ProductionLocations      []string                 `json:"ProductionLocations,omitempty"`
+	Etag                     *string                  `json:"Etag,omitempty"`
+	SeriesPrimaryImageItemID *string                  `json:"SeriesPrimaryImageItemId,omitempty"`
+	SeriesPrimaryImageTag    *string                  `json:"SeriesPrimaryImageTag,omitempty"`
+	ParentBackdropItemID     *string                  `json:"ParentBackdropItemId,omitempty"`
+	ParentBackdropImageTags  []string                 `json:"ParentBackdropImageTags,omitempty"`
+	ParentThumbItemID        *string                  `json:"ParentThumbItemId,omitempty"`
+	ParentThumbImageTag      *string                  `json:"ParentThumbImageTag,omitempty"`
+	ParentPrimaryImageItemID *string                  `json:"ParentPrimaryImageItemId,omitempty"`
+	ParentPrimaryImageTag    *string                  `json:"ParentPrimaryImageTag,omitempty"`
 }
 
 type GenreItem struct {
@@ -91,7 +91,7 @@ type MediaSourceInfo struct {
 	RequiresOpening            bool              `json:"RequiresOpening"`
 	RequiresClosing            bool              `json:"RequiresClosing"`
 	RequiresLooping            bool              `json:"RequiresLooping"`
-	MediaStreams                []MediaStreamInfo `json:"MediaStreams"`
+	MediaStreams               []MediaStreamInfo `json:"MediaStreams"`
 	Bitrate                    *int64            `json:"Bitrate,omitempty"`
 	ReadAtNativeFramerate      bool              `json:"ReadAtNativeFramerate"`
 	DirectStreamURL            string            `json:"DirectStreamUrl,omitempty"`
@@ -109,25 +109,25 @@ type MediaSourceInfo struct {
 }
 
 type MediaStreamInfo struct {
-	Codec        string  `json:"Codec"`
-	Type         string  `json:"Type"`
-	Index        int32   `json:"Index"`
-	Language     *string `json:"Language,omitempty"`
-	Title        *string `json:"Title,omitempty"`
-	IsDefault    bool    `json:"IsDefault"`
-	IsForced     bool    `json:"IsForced"`
-	// IsExternal 标识流是否来自外部文件(独立字幕等)。Yamby (Kotlin Serialization)
-	// 对该字段强制必填,缺失会抛 SerializationException。当前 FYMS 不解析外挂
-	// 字幕,所有流都来自容器内嵌,该字段默认 false 即可。
-	IsExternal   bool    `json:"IsExternal"`
-	Width        *int32  `json:"Width,omitempty"`
-	Height       *int32  `json:"Height,omitempty"`
-	BitRate      *int64  `json:"BitRate,omitempty"`
-	Channels     *int32  `json:"Channels,omitempty"`
-	SampleRate   *int32  `json:"SampleRate,omitempty"`
-	BitDepth     *int32  `json:"BitDepth,omitempty"`
-	PixelFormat  *string `json:"PixelFormat,omitempty"`
-	DisplayTitle *string `json:"DisplayTitle,omitempty"`
+	Codec          string  `json:"Codec"`
+	Type           string  `json:"Type"`
+	Index          int32   `json:"Index"`
+	Language       *string `json:"Language,omitempty"`
+	Title          *string `json:"Title,omitempty"`
+	IsDefault      bool    `json:"IsDefault"`
+	IsForced       bool    `json:"IsForced"`
+	IsExternal     bool    `json:"IsExternal"`
+	Path           *string `json:"Path,omitempty"`
+	DeliveryMethod *string `json:"DeliveryMethod,omitempty"`
+	DeliveryUrl    *string `json:"DeliveryUrl,omitempty"`
+	Width          *int32  `json:"Width,omitempty"`
+	Height         *int32  `json:"Height,omitempty"`
+	BitRate        *int64  `json:"BitRate,omitempty"`
+	Channels       *int32  `json:"Channels,omitempty"`
+	SampleRate     *int32  `json:"SampleRate,omitempty"`
+	BitDepth       *int32  `json:"BitDepth,omitempty"`
+	PixelFormat    *string `json:"PixelFormat,omitempty"`
+	DisplayTitle   *string `json:"DisplayTitle,omitempty"`
 }
 
 type UserItemDataDto struct {
@@ -197,4 +197,16 @@ type StreamRow struct {
 	BitDepth     *int32
 	PixelFormat  *string
 	DisplayTitle *string
+}
+
+type ExternalSubtitleRow struct {
+	ID             string
+	ItemID         string
+	MediaVersionID string
+	FilePath       string
+	Codec          string
+	Language       *string
+	Title          *string
+	IsDefault      bool
+	IsForced       bool
 }

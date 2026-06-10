@@ -37,6 +37,7 @@ type ItemQueryOptions struct {
 	ActorName         []string          // 演员维度虚拟库:含任一演员(role='Actor')的影片
 	CatalogPrefix     []string          // 番号前缀维度虚拟库:命中任一番号字母前缀
 	AnyProviderID     []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
+	HasSubtitles      *bool             // Emby/Jellyfin 查询参数 HasSubtitles
 	AllowedLibraryIDs []string          // 用户可访问的物理库;nil 表示不限制,空切片表示无可访问库
 	LightMode         bool              // 跳过 series_fallback JOIN，用于大批量列表
 }
