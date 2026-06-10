@@ -21,6 +21,10 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 
 	u.GET("/Items/:itemId/Similar", optAuthMW, getSimilarItems)
 
+	// 标准 Emby 单条目(无 user 维度):EM 等管理端依赖。
+	// getItemDetail 内部 resolveUserID 在缺 :userId 时回退到当前 token 用户。
+	u.GET("/Items/:itemId", authMW, getItemDetail)
+
 	u.POST("/Library/VirtualFolders", adminMW, addLibrary)
 	u.DELETE("/Library/VirtualFolders", adminMW, deleteLibrary)
 	u.POST("/Library/VirtualFolders/Name", adminMW, renameLibrary)
