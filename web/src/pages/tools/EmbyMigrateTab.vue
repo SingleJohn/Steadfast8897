@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { reactive, ref, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
-import { NCard, NButton, NCheckbox, NInputNumber, NIcon, NTag, NAlert } from 'naive-ui'
+import { NCard, NButton, NCheckbox, NInputNumber, NIcon, NTag, NAlert, NSelect } from 'naive-ui'
 import { CloudUploadOutline, CheckmarkCircleOutline, AlertCircleOutline, SwapHorizontalOutline } from '@vicons/ionicons5'
 import { embyMigrate } from '@/api/client'
 import PageShell from '@/components/PageShell.vue'
 import { AppIcons } from '@/icons/appIcons'
+import {
+  policyGroups, streamLimitOptions, permissionTemplates, templatePatch, defaultFullPolicy,
+  type PolicyState,
+} from '@/pages/user-management/policyFields'
 
 const { showToast } = useToast()
 
@@ -13,15 +17,17 @@ const embyFile = ref<File | null>(null)
 const embyMigrating = ref(false)
 const embyResult = ref<any>(null)
 const isDragOver = ref(false)
-const enableRemoteAccess = ref(true)
-const enableMediaPlayback = ref(true)
-const enableAudioTranscoding = ref(true)
-const enableVideoTranscoding = ref(true)
-const enableContentDownloading = ref(true)
-const enableAllFolders = ref(true)
-const simultaneousStreamLimit = ref(0)
-const remoteClientBitrateLimit = ref(0)
 const embyFileInputRef = ref<HTMLInputElement | null>(null)
+
+// 统一策略：字段、标签、默认值与「用户管理」完全一致，键名即后端 PolicyUpdate 的 JSON tag。
+const policy = reactive<PolicyState>(defaultFullPolicy())
+const template = ref<string | null>(null)
+
+function applyTemplate(key: string | null) {
+  if (!key) return
+  const patch = templatePatch(key) || {}
+  Object.assign(policy, defaultFullPolicy(), patch)
+}
 
 const fileSizeStr = computed(() => {
   if (!embyFile.value) return ''
@@ -89,17 +95,8 @@ async function handleEmbyMigrate() {
       return
     }
 
-    const policy = {
-      enable_remote_access: enableRemoteAccess.value,
-      enable_media_playback: enableMediaPlayback.value,
-      enable_audio_transcoding: enableAudioTranscoding.value,
-      enable_video_transcoding: enableVideoTranscoding.value,
-      enable_content_downloading: enableContentDownloading.value,
-      enable_all_folders: enableAllFolders.value,
-      simultaneous_stream_limit: simultaneousStreamLimit.value,
-      remote_client_bitrate_limit: remoteClientBitrateLimit.value,
-    }
-    const res = await embyMigrate(users, policy)
+    // 直接下发完整策略对象，键名与后端 models.PolicyUpdate 的 JSON tag 一致，整体覆盖。
+    const res = await embyMigrate(users, { ...policy })
     embyResult.value = res
     showToast(`迁移完成：导入 ${res.imported} 个用户，跳过 ${res.skipped} 个`, 'success')
   } catch (e: any) {
@@ -189,29 +186,50 @@ function resetFile() {
 
         <p class="card-desc">以下设置将应用于所有迁移的用户，迁移后可在用户管理中单独修改。</p>
 
+        <div class="template-row">
+          <span class="template-label">权限模板</span>
+          <n-select
+            v-model:value="template"
+            :options="permissionTemplates"
+            placeholder="选择模板快速填充"
+            size="small"
+            clearable
+            style="width: 200px"
+            @update:value="applyTemplate"
+          />
+        </div>
+
         <div class="policy-grid">
-          <n-checkbox v-model:checked="enableRemoteAccess">允许远程访问</n-checkbox>
-          <n-checkbox v-model:checked="enableMediaPlayback">允许媒体播放</n-checkbox>
-          <n-checkbox v-model:checked="enableAudioTranscoding">允许音频转码</n-checkbox>
-          <n-checkbox v-model:checked="enableVideoTranscoding">允许视频转码</n-checkbox>
-          <n-checkbox v-model:checked="enableContentDownloading">允许内容下载</n-checkbox>
-          <n-checkbox v-model:checked="enableAllFolders">访问所有媒体库</n-checkbox>
+          <n-checkbox v-model:checked="policy.EnableAllFolders">访问所有媒体库</n-checkbox>
+        </div>
+
+        <div v-for="group in policyGroups" :key="group.title" class="policy-section">
+          <div class="policy-section__title">{{ group.title }}</div>
+          <div class="policy-grid">
+            <n-checkbox
+              v-for="row in group.toggles"
+              :key="row.key"
+              :checked="!!(policy as any)[row.key]"
+              @update:checked="(v: boolean) => (policy as any)[row.key] = v"
+            >
+              {{ row.label }}
+            </n-checkbox>
+          </div>
         </div>
 
         <div class="number-grid">
           <div class="number-field">
             <label class="number-field__label">同时播放流数限制</label>
-            <n-input-number
-              v-model:value="simultaneousStreamLimit"
-              :min="0"
-              placeholder="0 = 不限"
+            <n-select
+              v-model:value="policy.SimultaneousStreamLimit"
+              :options="streamLimitOptions"
               size="small"
             />
           </div>
           <div class="number-field">
             <label class="number-field__label">远程码率限制（bps）</label>
             <n-input-number
-              v-model:value="remoteClientBitrateLimit"
+              v-model:value="policy.RemoteClientBitrateLimit"
               :min="0"
               placeholder="0 = 不限"
               size="small"
@@ -410,6 +428,31 @@ function resetFile() {
 }
 
 /* Policy */
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.template-label {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.policy-section {
+  margin-top: 18px;
+}
+
+.policy-section__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--app-border);
+}
+
 .policy-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

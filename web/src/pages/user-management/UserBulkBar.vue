@@ -12,6 +12,7 @@ const emit = defineEmits<{
   (e: 'show'): void
   (e: 'hide'): void
   (e: 'library'): void
+  (e: 'policy'): void
   (e: 'delete'): void
 }>()
 </script>
@@ -27,6 +28,7 @@ const emit = defineEmits<{
       <n-button size="small" secondary :loading="loading" @click="emit('show')">显示</n-button>
       <n-button size="small" secondary :loading="loading" @click="emit('hide')">隐藏</n-button>
       <n-button size="small" secondary :loading="loading" @click="emit('library')">媒体库</n-button>
+      <n-button size="small" type="primary" secondary :loading="loading" @click="emit('policy')">修改策略</n-button>
       <n-button size="small" type="error" ghost :loading="loading" @click="emit('delete')">删除</n-button>
     </n-space>
   </div>

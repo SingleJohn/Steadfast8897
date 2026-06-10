@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   NButton, NModal, NInput, NSpace, NTag, NSpin, NIcon, NEmpty,
-  NSwitch, NSelect, NCheckbox, NScrollbar,
+  NSwitch, NSelect, NCheckbox, NScrollbar, NPagination,
 } from 'naive-ui'
 import { PersonAddOutline, ShieldCheckmarkOutline, TrashOutline } from '@vicons/ionicons5'
 import {
@@ -14,32 +14,15 @@ import { useToast } from '../composables/useToast'
 import PageShell from '@/components/PageShell.vue'
 import { AppIcons } from '@/icons/appIcons'
 import UserBulkBar from './user-management/UserBulkBar.vue'
+import UserBulkPolicyModal from './user-management/UserBulkPolicyModal.vue'
+import UserSelectionBar from './user-management/UserSelectionBar.vue'
 import UserManagementList from './user-management/UserManagementList.vue'
 import UserManagementToolbar from './user-management/UserManagementToolbar.vue'
-
-interface PolicyState {
-  IsAdministrator: boolean
-  IsDisabled: boolean
-  IsHidden: boolean
-  EnableAllFolders: boolean
-  EnableRemoteAccess: boolean
-  EnableMediaPlayback: boolean
-  EnableAudioPlaybackTranscoding: boolean
-  EnableVideoPlaybackTranscoding: boolean
-  EnablePlaybackRemuxing: boolean
-  EnableContentDeletion: boolean
-  EnableContentDownloading: boolean
-  EnableSubtitleManagement: boolean
-  EnableLiveTvAccess: boolean
-  EnableLiveTvManagement: boolean
-  EnableUserPreferenceAccess: boolean
-  EnableRemoteControlOfOtherUsers: boolean
-  EnableSharedDeviceControl: boolean
-  RemoteClientBitrateLimit: number
-  SimultaneousStreamLimit: number
-  BlockedMediaFolders: string[]
-  EnabledFolders: string[]
-}
+import {
+  adminToggles, playbackToggles, featureToggles, remoteToggles,
+  streamLimitOptions, permissionTemplates, templatePatch,
+  type PolicyState,
+} from './user-management/policyFields'
 
 const { auth } = useAuth()
 const { showToast } = useToast()
@@ -74,7 +57,17 @@ const editConfirmPw = ref('')
 const showDeleteConfirm = ref(false)
 const showBulkDeleteConfirm = ref(false)
 const showBulkLibraryAccess = ref(false)
+const showBulkPolicy = ref(false)
 const bulkSaving = ref(false)
+
+// 客户端分页：一次性拉全部用户，仅渲染当前页，跨页选择不受影响。
+const currentPage = ref(1)
+const pageSize = ref(24)
+const pageSizeOptions = [
+  { label: '24 / 页', value: 24 },
+  { label: '48 / 页', value: 48 },
+  { label: '96 / 页', value: 96 },
+]
 const bulkEnableAllFolders = ref(true)
 const bulkFolderChecks = reactive<Record<string, boolean>>({})
 const solidModalMenuProps = { class: 'solid-modal-menu' }
@@ -101,12 +94,6 @@ const groupOptions = [
   { label: '普通用户', value: 'user' },
   { label: '受限媒体库', value: 'restricted' },
 ]
-const permissionTemplates = [
-  { label: '标准用户', value: 'standard' },
-  { label: '只读观影', value: 'readonly' },
-  { label: '访客受限', value: 'guest' },
-]
-
 const libraryNameMap = computed(() => {
   const map: Record<string, string> = {}
   for (const lib of libraries.value) {
@@ -140,10 +127,31 @@ const visibleUsers = computed(() => {
   })
 })
 
+// selectableVisibleIds = 当前筛选条件下「全部页」可选用户（用于跨页全选 + 修剪失效选择）
 const selectableVisibleIds = computed(() => visibleUsers.value.filter(u => u.Id !== auth.userId).map(u => u.Id))
 const selectedUsers = computed(() => users.value.filter(u => selectedUserIds.value.includes(u.Id)))
 const selectedCount = computed(() => selectedUsers.value.length)
-const allVisibleSelected = computed(() => selectableVisibleIds.value.length > 0 && selectableVisibleIds.value.every(id => selectedUserIds.value.includes(id)))
+const allFilteredSelected = computed(() => selectableVisibleIds.value.length > 0 && selectableVisibleIds.value.every(id => selectedUserIds.value.includes(id)))
+
+const totalFiltered = computed(() => visibleUsers.value.length)
+const pagedUsers = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return visibleUsers.value.slice(start, start + pageSize.value)
+})
+// 当前页可选 id（排除自己）
+const pageSelectableIds = computed(() => pagedUsers.value.filter(u => u.Id !== auth.userId).map(u => u.Id))
+const allPageSelected = computed(() => pageSelectableIds.value.length > 0 && pageSelectableIds.value.every(id => selectedUserIds.value.includes(id)))
+const pageIndeterminate = computed(() => {
+  const sel = pageSelectableIds.value.filter(id => selectedUserIds.value.includes(id)).length
+  return sel > 0 && sel < pageSelectableIds.value.length
+})
+
+// 筛选/搜索变化时回到第 1 页；当前页超出总页数时收敛。
+watch([searchTerm, statusFilter, groupFilter], () => { currentPage.value = 1 })
+watch([totalFiltered, pageSize], () => {
+  const maxPage = Math.max(1, Math.ceil(totalFiltered.value / pageSize.value))
+  if (currentPage.value > maxPage) currentPage.value = maxPage
+})
 
 function loadUsers() {
   loading.value = true
@@ -177,35 +185,6 @@ watch(visibleUsers, () => {
   const ids = new Set(selectableVisibleIds.value)
   selectedUserIds.value = selectedUserIds.value.filter(id => ids.has(id))
 })
-
-function templatePatch(key: string) {
-  if (key === 'readonly') {
-    return {
-      EnableContentDeletion: false,
-      EnableContentDownloading: false,
-      EnableSubtitleManagement: false,
-      EnableLiveTvManagement: false,
-      EnableRemoteControlOfOtherUsers: false,
-      EnableSharedDeviceControl: false,
-    }
-  }
-  if (key === 'guest') {
-    return {
-      IsAdministrator: false,
-      EnableAllFolders: false,
-      EnabledFolders: [],
-      EnableRemoteAccess: false,
-      EnableContentDeletion: false,
-      EnableContentDownloading: false,
-      EnableSubtitleManagement: false,
-      EnableLiveTvManagement: false,
-      EnableRemoteControlOfOtherUsers: false,
-      EnableSharedDeviceControl: false,
-      SimultaneousStreamLimit: 1,
-    }
-  }
-  return null
-}
 
 async function handleCreate() {
   if (!newName.value.trim()) { createError.value = '用户名不能为空'; return }
@@ -289,34 +268,6 @@ function syncFolderChecks(policy: PolicyState | null, libs: any[], target: Recor
   }
 }
 
-const playbackToggles: { key: keyof PolicyState; label: string }[] = [
-  { key: 'EnableMediaPlayback', label: '允许媒体播放' },
-  { key: 'EnableAudioPlaybackTranscoding', label: '允许音频转码播放' },
-  { key: 'EnableVideoPlaybackTranscoding', label: '允许视频转码播放' },
-  { key: 'EnablePlaybackRemuxing', label: '允许播放重新封装' },
-]
-const featureToggles: { key: keyof PolicyState; label: string }[] = [
-  { key: 'EnableContentDeletion', label: '允许删除媒体' },
-  { key: 'EnableContentDownloading', label: '允许下载内容' },
-  { key: 'EnableSubtitleManagement', label: '允许字幕管理' },
-  { key: 'EnableLiveTvAccess', label: '允许访问电视直播' },
-  { key: 'EnableLiveTvManagement', label: '允许管理电视直播' },
-]
-const remoteToggles: { key: keyof PolicyState; label: string }[] = [
-  { key: 'EnableRemoteAccess', label: '允许远程连接' },
-  { key: 'EnableRemoteControlOfOtherUsers', label: '允许远程控制其他用户' },
-  { key: 'EnableSharedDeviceControl', label: '允许远程控制共享设备' },
-]
-const adminToggles: { key: keyof PolicyState; label: string; desc?: string }[] = [
-  { key: 'IsAdministrator', label: '管理员', desc: '拥有所有设置和内容的完全访问权限' },
-  { key: 'IsDisabled', label: '禁用此用户', desc: '被禁用的用户无法登录' },
-  { key: 'IsHidden', label: '在登录页面隐藏', desc: '隐藏的用户需要手动输入用户名' },
-  { key: 'EnableUserPreferenceAccess', label: '管理个人偏好设置' },
-]
-const streamLimitOptions = [0, 1, 2, 3, 4, 5, 6, 8, 10].map(n => ({
-  label: n === 0 ? '不限制' : String(n), value: n,
-}))
-
 function togglePolicy(key: keyof PolicyState) {
   if (!editPolicy.value) return
   const cur = editPolicy.value[key]
@@ -386,9 +337,19 @@ function toggleUserSelection(userId: string, checked: boolean) {
     : selectedUserIds.value.filter(id => id !== userId)
 }
 
-function toggleAllVisible(checked: boolean) {
-  if (checked) selectedUserIds.value = Array.from(new Set([...selectedUserIds.value, ...selectableVisibleIds.value]))
-  else selectedUserIds.value = selectedUserIds.value.filter(id => !selectableVisibleIds.value.includes(id))
+// 仅勾选/取消当前页
+function toggleAllPage(checked: boolean) {
+  if (checked) selectedUserIds.value = Array.from(new Set([...selectedUserIds.value, ...pageSelectableIds.value]))
+  else selectedUserIds.value = selectedUserIds.value.filter(id => !pageSelectableIds.value.includes(id))
+}
+
+// 跨页选择全部筛选结果
+function selectAllFiltered() {
+  selectedUserIds.value = Array.from(new Set([...selectedUserIds.value, ...selectableVisibleIds.value]))
+}
+
+function clearSelection() {
+  selectedUserIds.value = []
 }
 
 async function applyBulkPolicy(patch: Record<string, any>, successText: string) {
@@ -425,6 +386,11 @@ async function applyBulkLibraryAccess() {
     : Object.entries(bulkFolderChecks).filter(([, checked]) => checked).map(([id]) => id)
   const ok = await applyBulkPolicy({ EnableAllFolders: bulkEnableAllFolders.value, EnabledFolders: enabledFolders }, '媒体库访问已批量更新')
   if (ok) showBulkLibraryAccess.value = false
+}
+
+async function applyBulkPolicyEdit(patch: Record<string, any>) {
+  const ok = await applyBulkPolicy(patch, '权限策略已批量更新')
+  if (ok) showBulkPolicy.value = false
 }
 
 async function handleBulkDelete() {
@@ -482,6 +448,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
       @show="applyBulkPolicy({ IsHidden: false }, '选中用户已显示')"
       @hide="applyBulkPolicy({ IsHidden: true }, '选中用户已隐藏')"
       @library="openBulkLibraryAccess"
+      @policy="showBulkPolicy = true"
       @delete="showBulkDeleteConfirm = true"
     />
 
@@ -518,20 +485,43 @@ const isSelf = computed(() => auth.userId === editUserId.value)
     <template v-else>
       <n-empty v-if="visibleUsers.length === 0" description="没有匹配的用户" style="padding: 40px 0" />
 
-      <user-management-list
-        v-else
-        :users="visibleUsers"
-        :view-mode="viewMode"
-        :selected-user-ids="selectedUserIds"
-        :auth-user-id="auth.userId"
-        :all-visible-selected="allVisibleSelected"
-        :selectable-count="selectableVisibleIds.length"
-        :avatar-color="avatarColor"
-        :access-summary="accessSummary"
-        @open-edit="openEdit"
-        @toggle-selection="toggleUserSelection"
-        @toggle-all="toggleAllVisible"
-      />
+      <template v-else>
+        <user-selection-bar
+          :filtered-count="totalFiltered"
+          :page-selectable-count="pageSelectableIds.length"
+          :selected-count="selectedCount"
+          :all-page-selected="allPageSelected"
+          :page-indeterminate="pageIndeterminate"
+          :all-filtered-selected="allFilteredSelected"
+          @toggle-page="toggleAllPage"
+          @select-all-filtered="selectAllFiltered"
+          @clear="clearSelection"
+        />
+
+        <user-management-list
+          :users="pagedUsers"
+          :view-mode="viewMode"
+          :selected-user-ids="selectedUserIds"
+          :auth-user-id="auth.userId"
+          :all-visible-selected="allPageSelected"
+          :selectable-count="pageSelectableIds.length"
+          :avatar-color="avatarColor"
+          :access-summary="accessSummary"
+          @open-edit="openEdit"
+          @toggle-selection="toggleUserSelection"
+          @toggle-all="toggleAllPage"
+        />
+
+        <div v-if="totalFiltered > pageSize" class="pagination-row">
+          <n-pagination
+            v-model:page="currentPage"
+            v-model:page-size="pageSize"
+            :item-count="totalFiltered"
+            :page-sizes="pageSizeOptions"
+            show-size-picker
+          />
+        </div>
+      </template>
     </template>
 
     <!-- Edit User Modal -->
@@ -689,6 +679,15 @@ const isSelf = computed(() => auth.userId === editUserId.value)
       </template>
     </n-modal>
 
+    <user-bulk-policy-modal
+      v-model:show="showBulkPolicy"
+      :selected-count="selectedCount"
+      :loading="bulkSaving"
+      :modal-style="forceSolidModalStyle"
+      :menu-props="solidModalMenuProps"
+      @apply="applyBulkPolicyEdit"
+    />
+
     <n-modal v-model:show="showBulkDeleteConfirm" preset="dialog" type="error" title="批量删除用户" positive-text="删除" negative-text="取消" @positive-click="handleBulkDelete">
       <p style="color: var(--app-text-muted); font-size: 14px">
         确定要删除选中的 <strong style="color: var(--app-text)">{{ selectedCount }}</strong> 个用户吗？当前用户不会出现在批量选择中。
@@ -779,6 +778,12 @@ const isSelf = computed(() => auth.userId === editUserId.value)
 
 .modal-actions {
   display: flex; align-items: center; gap: 8px; width: 100%;
+}
+
+.pagination-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
 }
 
 </style>
