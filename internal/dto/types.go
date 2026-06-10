@@ -128,6 +128,21 @@ type MediaStreamInfo struct {
 	BitDepth       *int32  `json:"BitDepth,omitempty"`
 	PixelFormat    *string `json:"PixelFormat,omitempty"`
 	DisplayTitle   *string `json:"DisplayTitle,omitempty"`
+
+	// 以下字段对齐 Emby MediaStream(主要用于外挂字幕),指针类型保证仅在显式赋值时序列化,
+	// 不污染视频/音频流。注意:指针指向 false/0 时 omitempty 仍会输出(omitempty 只判断 nil)。
+	DisplayLanguage                 *string `json:"DisplayLanguage,omitempty"`
+	IsInterlaced                    *bool   `json:"IsInterlaced,omitempty"`
+	IsHearingImpaired               *bool   `json:"IsHearingImpaired,omitempty"`
+	IsExternalUrl                   *bool   `json:"IsExternalUrl,omitempty"`
+	IsChunkedResponse               *bool   `json:"IsChunkedResponse,omitempty"`
+	IsTextSubtitleStream            *bool   `json:"IsTextSubtitleStream,omitempty"`
+	SupportsExternalStream          *bool   `json:"SupportsExternalStream,omitempty"`
+	Protocol                        *string `json:"Protocol,omitempty"`
+	ExtendedVideoType               *string `json:"ExtendedVideoType,omitempty"`
+	ExtendedVideoSubType            *string `json:"ExtendedVideoSubType,omitempty"`
+	ExtendedVideoSubTypeDescription *string `json:"ExtendedVideoSubTypeDescription,omitempty"`
+	AttachmentSize                  *int64  `json:"AttachmentSize,omitempty"`
 }
 
 type UserItemDataDto struct {
