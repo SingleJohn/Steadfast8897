@@ -228,7 +228,8 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		i.series_id, i.series_name, i.season_id, i.container, i.file_path,
 		i.resolved_path, i.provider_ids, i.primary_image_tag, i.backdrop_image_tag,
 		NULL::bigint AS child_count, NULL::bigint AS recursive_item_count,
-		i.tagline, i.studio, i.created_at, i.emby_id`
+		i.tagline, i.studio, i.created_at, i.emby_id,
+		i.merged_to_id, i.primary_image_path, i.updated_at`
 
 	seriesCols := `, sf.primary_image_tag AS series_primary_image_tag, sf.backdrop_image_tag AS series_backdrop_image_tag, sf.id AS series_fallback_id`
 	seriesJoin := " LEFT JOIN items sf ON sf.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)"
