@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSelect } from 'naive-ui'
 import { getImageUrl, getItem, getItems, getPlaybackInfo, getStreamUrl, getSubtitleUrl } from '../api/client'
@@ -87,13 +87,30 @@ const autoplayNext = ref(localStorage.getItem('fyms-autoplay-next') !== '0')
 
 // 初始缓冲态:加载层在「拉取元数据」与「首帧前缓冲」两阶段显示,首帧后永久隐藏。
 const playbackStarted = ref(false)
+const isBuffering = ref(false)
 const bufferedSeconds = ref(0)
 const loadSpeedBps = ref(0)
 
 const isEpisode = computed(() => currentItem.value?.Type === 'Episode')
 
+// 码率缺失(常见于未刮削的 mkv)时用 体积/时长 兜底,使「缓冲增长×码率」仍能测速。
+const effectiveBitrate = computed(() => {
+  const s = selectedSource.value
+  if (!s) return 0
+  if (s.Bitrate && s.Bitrate > 0) return s.Bitrate
+  const ticks = Number(currentItem.value?.RunTimeTicks) || 0
+  const size = s.Size || 0
+  if (ticks > 0 && size > 0) return Math.round((size * 8) / (ticks / 10_000_000))
+  return 0
+})
+
 const showLoadingOverlay = computed(() =>
   !error.value && !browserUnsupportedReason.value && (loading.value || (!!streamUrl.value && !playbackStarted.value)),
+)
+
+// 播放中(首帧后)的拖动/卡顿:用迷你环替代 ArtPlayer 默认动画。
+const showMiniBuffer = computed(() =>
+  !error.value && !browserUnsupportedReason.value && playbackStarted.value && isBuffering.value,
 )
 
 const loadingBackdrop = computed(() => {
@@ -122,13 +139,14 @@ const bufferedText = computed(() => (bufferedSeconds.value > 0 ? `已缓冲 ${bu
 const loadProgress = computed(() => Math.min(100, (bufferedSeconds.value / 15) * 100))
 
 function onBuffering(active: boolean) {
+  isBuffering.value = active
   if (!active) playbackStarted.value = true
 }
 
 function onLoadStats(stats: { bufferedSeconds: number; speedBps: number }) {
   bufferedSeconds.value = stats.bufferedSeconds
-  // 持续反映实时速率(含空闲时回落,使顶栏速率标签真实);加载层阶段为 0 时显示「···」。
-  loadSpeedBps.value = stats.speedBps
+  // 实测探针进行中不被码率估算覆盖;探针结束后由估算持续反映实时速率(含空闲回落)。
+  if (!probing.value) loadSpeedBps.value = stats.speedBps
 }
 
 // 直放尝试后真正失败(预判放行但浏览器实际解不了)→ 回退到外部播放器提示。
@@ -276,6 +294,68 @@ const unsupportedDetails = computed(() => {
   return rows
 })
 
+// 实测网速:自己 fetch 一段流、按 ReadableStream 读到的真实字节数计速。
+// 直出 <video> 浏览器不暴露下载字节,只能这样拿真实速率;HLS 走 hls.bandwidthEstimate 不用此法。
+let speedProbeController: AbortController | null = null
+const probing = ref(false)
+
+function stopSpeedProbe() {
+  if (speedProbeController) {
+    speedProbeController.abort()
+    speedProbeController = null
+  }
+  probing.value = false
+}
+
+async function startSpeedProbe(url: string, container?: string) {
+  stopSpeedProbe()
+  const c = (container || '').trim().toLowerCase()
+  if (!url || c === 'm3u8' || c === 'm3u') return // HLS 用 bandwidthEstimate
+  const controller = new AbortController()
+  speedProbeController = controller
+  probing.value = true
+  const PROBE_BYTES = 3 * 1024 * 1024
+  try {
+    // 抓文件尾部,避开视频开头要下载的字节,减少重复占用。
+    const resp = await fetch(url, {
+      headers: { Range: `bytes=-${PROBE_BYTES}` },
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+    // 服务器未按 Range 返回 206 → 放弃实测(避免误下整文件),回退码率估算。
+    if (resp.status !== 206 || !resp.body) {
+      await resp.body?.cancel().catch(() => {})
+      probing.value = false
+      return
+    }
+    const reader = resp.body.getReader()
+    const startTs = performance.now()
+    let lastTs = startTs
+    let windowBytes = 0
+    let smoothed = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      windowBytes += value?.length || 0
+      const now = performance.now()
+      if (now - lastTs >= 400) {
+        const sample = windowBytes / ((now - lastTs) / 1000)
+        smoothed = smoothed > 0 ? smoothed * 0.5 + sample * 0.5 : sample
+        loadSpeedBps.value = smoothed
+        windowBytes = 0
+        lastTs = now
+      }
+      if (now - startTs > 6000) break // 最多实测 6s
+    }
+    await reader.cancel().catch(() => {})
+  } catch {
+    // CORS / 中断 / 网络错误 → 回退码率估算。
+  } finally {
+    if (speedProbeController === controller) speedProbeController = null
+    probing.value = false
+  }
+}
+
 function applyMediaSource(source: MediaSourceInfo, positionTicks: number) {
   const id = resolvedItemId.value
   selectedSource.value = source
@@ -284,6 +364,7 @@ function applyMediaSource(source: MediaSourceInfo, positionTicks: number) {
   browserUnsupportedReason.value = resolveUnsupportedReason(source)
   startPosition.value = Math.max(0, positionTicks)
   streamUrl.value = id ? getStreamUrl(id, source.Id, source.DirectStreamUrl) : ''
+  if (streamUrl.value) void startSpeedProbe(streamUrl.value, source.Container)
 }
 
 function handleSourceChange(value: string | number | null) {
@@ -305,7 +386,9 @@ async function load() {
   selectedSourceId.value = ''
   playSessionId.value = ''
   browserUnsupportedReason.value = ''
+  stopSpeedProbe()
   playbackStarted.value = false
+  isBuffering.value = false
   bufferedSeconds.value = 0
   loadSpeedBps.value = 0
   try {
@@ -380,6 +463,8 @@ async function onEnded() {
 }
 
 function onPositionChange(ticks: number) { currentPositionTicks.value = ticks }
+
+onUnmounted(() => { stopSpeedProbe() })
 </script>
 
 <template>
@@ -451,7 +536,7 @@ function onPositionChange(ticks: number) { currentPositionTicks.value = ticks }
         :play-session-id="playSessionId"
         :container="selectedSource?.Container || ''"
         :start-position-ticks="startPosition"
-        :bitrate="selectedSource?.Bitrate || 0"
+        :bitrate="effectiveBitrate"
         :audio-tracks="audioTracks"
         :subtitle-tracks="subtitleTracks"
         @ended="onEnded"
@@ -472,6 +557,7 @@ function onPositionChange(ticks: number) { currentPositionTicks.value = ticks }
       :progress="loadProgress"
       @back="goBack"
     />
+    <PlayerLoading v-else-if="showMiniBuffer" compact :speed-text="loadSpeedText" />
   </div>
 </template>
 

@@ -77,7 +77,6 @@ let statsTimer: ReturnType<typeof setInterval> | undefined
 let lastSampleTs = 0
 let lastBufferedEnd = 0
 let smoothedBps = 0
-let initialBufferDone = false
 
 function currentTicks() {
   if (!art) return 0
@@ -164,15 +163,10 @@ function startStatsTimer() {
   }, 600)
 }
 
-// setBuffering 上报初始缓冲状态(仅控制加载层显隐)。首帧后置 initialBufferDone,后续卡顿不再触发加载层。
+// setBuffering 全程上报缓冲状态:初始缓冲、拖动、卡顿都触发。
+// 父级据 playbackStarted 区分「初始全屏加载层」与「播放中迷你环」。
 function setBuffering(active: boolean) {
-  if (initialBufferDone) return
-  if (active) {
-    emit('buffering', true)
-  } else {
-    initialBufferDone = true
-    emit('buffering', false)
-  }
+  emit('buffering', active)
 }
 
 function getPlaybackPayload(positionTicks = currentTicks(), isPaused?: boolean) {
@@ -310,7 +304,6 @@ function buildArt(autoplay = true) {
   if (!playerRootRef.value) return
 
   destroyArt()
-  initialBufferDone = false
 
   const artOptions: ConstructorParameters<typeof Artplayer>[0] = {
     container: playerRootRef.value,
@@ -443,7 +436,6 @@ watch(
       return
     }
     destroyHls()
-    initialBufferDone = false
     setBuffering(true)
     startStatsTimer()
     await art.switchUrl(src)
@@ -504,5 +496,10 @@ onUnmounted(() => {
 :deep(.art-video-player .art-top) {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+}
+
+/* 隐藏 ArtPlayer 自带加载动画(初始/拖动/卡顿),统一用 FYMS 自定义加载层。 */
+:deep(.art-video-player .art-loading) {
+  display: none !important;
 }
 </style>

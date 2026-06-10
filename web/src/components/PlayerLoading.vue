@@ -7,6 +7,7 @@ withDefaults(
     speedText?: string
     bufferedText?: string
     progress?: number
+    compact?: boolean
   }>(),
   {
     backdrop: '',
@@ -15,6 +16,7 @@ withDefaults(
     speedText: '',
     bufferedText: '',
     progress: 0,
+    compact: false,
   },
 )
 
@@ -22,7 +24,15 @@ const emit = defineEmits<{ back: [] }>()
 </script>
 
 <template>
-  <div class="ploading">
+  <!-- compact: 播放中拖动/卡顿时的迷你环,透明背景、点击穿透,不干扰播放控制 -->
+  <div v-if="compact" class="ploading is-compact">
+    <div class="ploading-mini">
+      <div class="ploading-spinner" />
+      <div v-if="speedText" class="ploading-mini-speed">{{ speedText }}</div>
+    </div>
+  </div>
+
+  <div v-else class="ploading">
     <div v-if="backdrop" class="ploading-bg" :style="{ backgroundImage: `url(${backdrop})` }" />
     <div class="ploading-bg-overlay" />
 
@@ -64,6 +74,34 @@ const emit = defineEmits<{ back: [] }>()
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 迷你模式:不铺背景、点击穿透,只在中心显示环 + 速率。 */
+.ploading.is-compact {
+  background: transparent;
+  pointer-events: none;
+  z-index: 12;
+}
+.ploading-mini {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.42);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.ploading-mini .ploading-spinner {
+  width: 50px;
+  border-width: 4px;
+}
+.ploading-mini-speed {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(186, 230, 253, 0.95);
+  font-variant-numeric: tabular-nums;
 }
 .ploading-bg {
   position: absolute;
