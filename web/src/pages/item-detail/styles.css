@@ -787,6 +787,9 @@
   object-fit: cover;
   border-radius: inherit;
 }
+.ep-thumb-empty {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.12), rgba(148, 163, 184, 0.04));
+}
 
 .ep-body {
   min-width: 0;

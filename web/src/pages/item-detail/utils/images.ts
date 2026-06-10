@@ -28,7 +28,7 @@ export function personImageUrl(person: any, brokenImages: Record<string, boolean
   if (brokenImages[imageKey]) return ''
   if (person.ImageUrl) return person.ImageUrl
   if (person.PrimaryImageTag || person.ImageTags?.Primary) return getImageUrl(imageId, 'Primary', 200)
-  if (imageId) return getImageUrl(imageId, 'Primary', 200)
+  // 无图标记则不请求,直接交给占位 SVG,避免对无头像演员产生 404。
   return ''
 }
 

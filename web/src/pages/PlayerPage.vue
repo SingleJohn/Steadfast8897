@@ -298,6 +298,7 @@ const unsupportedDetails = computed(() => {
 // 直出 <video> 浏览器不暴露下载字节,只能这样拿真实速率;HLS 走 hls.bandwidthEstimate 不用此法。
 let speedProbeController: AbortController | null = null
 const probing = ref(false)
+const probeFileSize = ref(0) // 探针从响应 Content-Length 拿到的真实文件大小,用于推算码率。
 
 function stopSpeedProbe() {
   if (speedProbeController) {
@@ -314,29 +315,29 @@ async function startSpeedProbe(url: string, container?: string) {
   const controller = new AbortController()
   speedProbeController = controller
   probing.value = true
-  const PROBE_BYTES = 3 * 1024 * 1024
+  const PROBE_BYTES = 4 * 1024 * 1024
   try {
-    // 抓文件尾部,避开视频开头要下载的字节,减少重复占用。
-    const resp = await fetch(url, {
-      headers: { Range: `bytes=-${PROBE_BYTES}` },
-      signal: controller.signal,
-      cache: 'no-store',
-    })
-    // 服务器未按 Range 返回 206 → 放弃实测(避免误下整文件),回退码率估算。
-    if (resp.status !== 206 || !resp.body) {
+    // 不带 Range 头:避免后缀范围 416 与跨域预检;读够 PROBE_BYTES 后主动中止,不会下整文件。
+    const resp = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+    if (!resp.ok || !resp.body) {
       await resp.body?.cancel().catch(() => {})
       probing.value = false
       return
     }
+    const len = Number(resp.headers.get('Content-Length') || 0)
+    if (len > 0) probeFileSize.value = len // 真实文件大小 → 供码率推算
     const reader = resp.body.getReader()
     const startTs = performance.now()
     let lastTs = startTs
     let windowBytes = 0
+    let totalBytes = 0
     let smoothed = 0
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
-      windowBytes += value?.length || 0
+      const n = value?.length || 0
+      windowBytes += n
+      totalBytes += n
       const now = performance.now()
       if (now - lastTs >= 400) {
         const sample = windowBytes / ((now - lastTs) / 1000)
@@ -345,7 +346,7 @@ async function startSpeedProbe(url: string, container?: string) {
         windowBytes = 0
         lastTs = now
       }
-      if (now - startTs > 6000) break // 最多实测 6s
+      if (totalBytes >= PROBE_BYTES || now - startTs > 8000) break
     }
     await reader.cancel().catch(() => {})
   } catch {
@@ -387,6 +388,7 @@ async function load() {
   playSessionId.value = ''
   browserUnsupportedReason.value = ''
   stopSpeedProbe()
+  probeFileSize.value = 0
   playbackStarted.value = false
   isBuffering.value = false
   bufferedSeconds.value = 0
@@ -537,6 +539,7 @@ onUnmounted(() => { stopSpeedProbe() })
         :container="selectedSource?.Container || ''"
         :start-position-ticks="startPosition"
         :bitrate="effectiveBitrate"
+        :size-bytes="probeFileSize"
         :audio-tracks="audioTracks"
         :subtitle-tracks="subtitleTracks"
         @ended="onEnded"

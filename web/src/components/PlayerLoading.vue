@@ -97,6 +97,8 @@ const emit = defineEmits<{ back: [] }>()
   width: 50px;
   border-width: 4px;
 }
+.ploading-mini .ploading-spinner::before { margin: 3px; }
+.ploading-mini .ploading-spinner::after { margin: 11px; }
 .ploading-mini-speed {
   font-size: 13px;
   font-weight: 600;
@@ -154,27 +156,27 @@ const emit = defineEmits<{ back: [] }>()
 
 /* 三层嵌套旋转环(loading-146 变体):三条弧分别用不同颜色、不同转速。 */
 .ploading-spinner {
-  width: 76px;
+  width: 152px;
   aspect-ratio: 1;
   display: grid;
-  border: 5px solid transparent;
+  border: 8px solid transparent;
   border-radius: 50%;
   border-right-color: #38bdf8;
-  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.35));
+  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.35));
   animation: ploading-spin 1s infinite linear;
 }
 .ploading-spinner::before,
 .ploading-spinner::after {
   content: "";
   grid-area: 1 / 1;
-  margin: 3px;
+  margin: 6px;
   border: inherit;
   border-radius: 50%;
   border-right-color: #818cf8;
   animation: ploading-spin 2s infinite;
 }
 .ploading-spinner::after {
-  margin: 11px;
+  margin: 22px;
   border-right-color: #2dd4bf;
   animation-duration: 3s;
 }

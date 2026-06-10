@@ -46,7 +46,8 @@ const emit = defineEmits<{
       >
         <div v-if="(ep.UserData?.PlayedPercentage || 0) > 0 && (ep.UserData?.PlayedPercentage || 0) < 100" class="ep-progress" :style="{ width: (ep.UserData?.PlayedPercentage || 0) + '%' }" />
         <div class="ep-thumb-wrap">
-          <img :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" width="200" height="113" loading="lazy" />
+          <img v-if="ep.ImageTags?.Primary" :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" width="200" height="113" loading="lazy" />
+          <div v-else class="ep-thumb ep-thumb-empty" />
         </div>
         <div class="ep-body">
           <div class="ep-header">
@@ -82,7 +83,8 @@ const emit = defineEmits<{
       >
         <div v-if="(ep.UserData?.PlayedPercentage || 0) > 0 && (ep.UserData?.PlayedPercentage || 0) < 100" class="ep-progress" :style="{ width: (ep.UserData?.PlayedPercentage || 0) + '%' }" />
         <div class="ep-thumb-wrap">
-          <img :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" width="200" height="113" loading="lazy" />
+          <img v-if="ep.ImageTags?.Primary" :src="getImageUrl(ep.Id, 'Primary', 200)" alt="" class="ep-thumb" width="200" height="113" loading="lazy" />
+          <div v-else class="ep-thumb ep-thumb-empty" />
         </div>
         <div class="ep-body">
           <div class="ep-header">

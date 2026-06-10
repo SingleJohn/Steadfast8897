@@ -39,6 +39,7 @@ const props = withDefaults(
     container?: string
     startPositionTicks?: number
     bitrate?: number
+    sizeBytes?: number
     audioTracks?: AudioTrack[]
     subtitleTracks?: SubtitleTrack[]
   }>(),
@@ -48,6 +49,7 @@ const props = withDefaults(
     container: '',
     startPositionTicks: 0,
     bitrate: 0,
+    sizeBytes: 0,
     audioTracks: () => [],
     subtitleTracks: () => [],
   },
@@ -130,6 +132,16 @@ function stopStatsTimer() {
   }
 }
 
+// currentBitrate 优先用元数据码率;缺失时用 文件大小 × 8 / 视频真实时长 兜底推算。
+function currentBitrate(): number {
+  if (props.bitrate > 0) return props.bitrate
+  const dur = art?.video?.duration
+  if (props.sizeBytes > 0 && dur && isFinite(dur) && dur > 0) {
+    return (props.sizeBytes * 8) / dur
+  }
+  return 0
+}
+
 // 测速贯穿整个播放周期(加载层 + 播放中):稳定播放时缓冲区随播放点同步推进,
 // 「缓冲增长 × 码率」恰好反映当前下载吞吐(≈ 码率);初始缓冲/补缓时则飙高。HLS 用 bandwidthEstimate。
 function startStatsTimer() {
@@ -145,12 +157,13 @@ function startStatsTimer() {
 
     let sample = 0
     const estimate = (hlsInstance as unknown as { bandwidthEstimate?: number } | null)?.bandwidthEstimate
+    const br = currentBitrate()
     if (estimate && estimate > 0) {
       sample = estimate / 8
-    } else if (props.bitrate > 0 && dt > 0) {
+    } else if (br > 0 && dt > 0) {
       // 限制单次缓冲增长上限,避免 seek 跳变导致的瞬时尖峰。
       const grown = Math.min(Math.max(0, end - lastBufferedEnd), dt * 30)
-      sample = (grown * props.bitrate) / 8 / dt
+      sample = (grown * br) / 8 / dt
     }
 
     // EWMA 平滑,读数不跳变。
