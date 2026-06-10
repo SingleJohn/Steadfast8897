@@ -291,6 +291,20 @@ export function getStreamUrl(itemId: string, mediaSourceId: string, directStream
   return `/Videos/${itemId}/stream?static=true&MediaSourceId=${mediaSourceId}&api_key=${token}`;
 }
 
+// getSubtitleUrl 把 PlaybackInfo 里外挂字幕流的 DeliveryUrl 补上 api_key，
+// 供 ArtPlayer 直接拉取(外挂字幕文件整文件直出，不转码)。
+export function getSubtitleUrl(deliveryUrl: string): string {
+  if (!deliveryUrl) return ''
+  const token = getToken()
+  const [path, query = ''] = deliveryUrl.split('?', 2)
+  const params = new URLSearchParams(query)
+  if (token && !params.has('api_key') && !params.has('ApiKey')) {
+    params.set('api_key', token)
+  }
+  const qs = params.toString()
+  return qs ? `${path}?${qs}` : path
+}
+
 type PlaybackReportPayload = {
   itemId: string
   positionTicks?: number

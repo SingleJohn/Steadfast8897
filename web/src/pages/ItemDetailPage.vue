@@ -43,6 +43,8 @@ const showBackdropPreview = ref(false)
 const showTrailerModal = ref(false)
 const selectedTrailerIndex = ref(0)
 
+const selectedVersionId = ref('')
+
 const showCustomScrape = ref(false)
 const customTmdbId = ref<number | null>(null)
 const customQuery = ref('')
@@ -110,6 +112,20 @@ const hasPoster = computed(() => !!item.value && !!(item.value.ImageTags?.Primar
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const canPlay = computed(() => !!item.value && (item.value.Type === 'Movie' || item.value.Type === 'Episode'))
+const playSources = computed<any[]>(() => (item.value?.MediaSources || []) as any[])
+const versionOptions = computed(() => playSources.value.map((s, i) => ({ label: versionLabel(s, i), value: s.Id })))
+
+function versionLabel(source: any, index: number): string {
+  const name = source.Name && source.Name !== 'Default' ? source.Name : `版本 ${index + 1}`
+  const quality = source.FymsQualityLabel || source.FymsResolution || ''
+  const container = source.Container ? String(source.Container).toUpperCase() : ''
+  return [name, quality, container].filter(Boolean).join(' · ')
+}
+
+// 切换条目后,版本下拉默认选中首个(主版本)。
+watch(playSources, (sources) => {
+  selectedVersionId.value = sources.length ? sources[0].Id : ''
+}, { immediate: true })
 const backdropSourceId = computed(() => backdropSourceIdFor(item.value))
 const posterId = computed(() => item.value ? item.value.SeriesPrimaryImageItemId || item.value.Id : '')
 const originalTitle = computed(() => {
@@ -260,12 +276,22 @@ async function handleApplyTmdb(tmdbId: number) {
   }
 }
 
+// playQuery 拼播放参数;仅当播放的是当前条目本身且选了非默认版本时带 mediaSourceId
+// (剧集列表里的其他集与本条目的版本无关,不带)。
+function playQuery(from: string, id: string): Record<string, string> {
+  const query: Record<string, string> = { from }
+  if (id === item.value?.Id && playSources.value.length > 1 && selectedVersionId.value) {
+    query.mediaSourceId = selectedVersionId.value
+  }
+  return query
+}
+
 function goPlay(id: string) {
-  router.push({ name: 'player', params: { itemId: id }, query: { from: 'resume' } })
+  router.push({ name: 'player', params: { itemId: id }, query: playQuery('resume', id) })
 }
 
 function goPlayFromStart(id: string) {
-  router.push({ name: 'player', params: { itemId: id }, query: { from: 'start' } })
+  router.push({ name: 'player', params: { itemId: id }, query: playQuery('start', id) })
 }
 
 function goDetail(id: string) {
@@ -332,6 +358,8 @@ function handleTagClick(tag: string) {
       :trailers-count="trailers.length"
       :scraping="scraping"
       :is-admin="auth.isAdmin"
+      :version-options="versionOptions"
+      v-model:selected-source-id="selectedVersionId"
       @play="goPlay(item.Id)"
       @play-from-start="goPlayFromStart(item.Id)"
       @trailer="openTrailer(0)"

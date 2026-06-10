@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NIcon } from 'naive-ui'
+import { NIcon, NSelect } from 'naive-ui'
 import {
   CheckmarkDoneOutline,
   FilmOutline,
@@ -13,19 +13,27 @@ import {
 import { getImageUrl } from '@/api/client'
 import { endTimeStr, formatRuntime } from '../utils/format'
 
-defineProps<{
-  item: any
-  hasPoster: boolean
-  posterId: string
-  originalTitle: string
-  titleDensity: string
-  canPlay: boolean
-  isFavorite: boolean
-  isPlayed: boolean
-  trailersCount: number
-  scraping: boolean
-  isAdmin: boolean
-}>()
+withDefaults(
+  defineProps<{
+    item: any
+    hasPoster: boolean
+    posterId: string
+    originalTitle: string
+    titleDensity: string
+    canPlay: boolean
+    isFavorite: boolean
+    isPlayed: boolean
+    trailersCount: number
+    scraping: boolean
+    isAdmin: boolean
+    versionOptions?: { label: string; value: string }[]
+    selectedSourceId?: string
+  }>(),
+  {
+    versionOptions: () => [],
+    selectedSourceId: '',
+  },
+)
 
 const emit = defineEmits<{
   play: []
@@ -36,6 +44,7 @@ const emit = defineEmits<{
   scrape: []
   customScrape: []
   genreClick: [genreId: string, genreName: string]
+  'update:selectedSourceId': [value: string]
 }>()
 </script>
 
@@ -112,6 +121,15 @@ const emit = defineEmits<{
                 <n-icon :size="18"><PlayOutline /></n-icon>
                 <span>播放</span>
               </button>
+              <n-select
+                v-if="versionOptions.length > 1"
+                class="version-select"
+                size="medium"
+                :value="selectedSourceId"
+                :options="versionOptions"
+                :consistent-menu-width="false"
+                @update:value="(v: string) => emit('update:selectedSourceId', v)"
+              />
             </template>
             <button
               v-if="trailersCount > 0"
@@ -161,3 +179,10 @@ const emit = defineEmits<{
     </div>
   </div>
 </template>
+
+<style scoped>
+.version-select {
+  width: min(260px, 60vw);
+  align-self: center;
+}
+</style>
