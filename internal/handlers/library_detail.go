@@ -28,7 +28,9 @@ func applyListMediaSourceDisplay(c *gin.Context, ctx context.Context, state *App
 	hideMediaSourceSizeForInfuse(c, sources)
 	item.MediaSources = sources
 	item.MediaStreams = sources[0].MediaStreams
-	if strings.TrimSpace(sources[0].Path) != "" {
+	// 仅 resolved 模式才用 MediaSource 的解析路径覆盖 item.Path;
+	// strm 模式(默认)保留 FormatItemDto 产出的 .strm 路径,对齐 Emby(item.Path=.strm)。
+	if dto.StrmItemPathResolved() && strings.TrimSpace(sources[0].Path) != "" {
 		path := sources[0].Path
 		item.Path = &path
 	}
@@ -564,7 +566,10 @@ func getItemDetail(c *gin.Context) {
 
 	hideMediaSourceSizeForInfuse(c, base.MediaSources)
 	if len(base.MediaSources) > 0 {
-		if strings.TrimSpace(base.MediaSources[0].Path) != "" {
+		// 仅 resolved 模式才用 MediaSource 的解析路径覆盖顶层 Path;
+		// strm 模式(默认)保留 FormatItemDto 产出的 .strm 路径,对齐 Emby:
+		// item 级 Path 为 .strm,解析后真实路径只出现在 MediaSources[].Path。
+		if dto.StrmItemPathResolved() && strings.TrimSpace(base.MediaSources[0].Path) != "" {
 			path := base.MediaSources[0].Path
 			base.Path = &path
 		}

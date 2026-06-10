@@ -29,6 +29,12 @@ func strmItemPathResolved() bool {
 	return strmItemPathResolvedFlag.Load()
 }
 
+// StrmItemPathResolved 导出当前模式:true=item.Path 取解析后真实路径;false=取 .strm 文件路径(默认)。
+// 供 handler 层判断是否应把 item 级 Path 覆盖为 MediaSources 的解析路径。
+func StrmItemPathResolved() bool {
+	return strmItemPathResolvedFlag.Load()
+}
+
 // studioNamespace 用于由 studio name 生成稳定 UUID。Emby/Jellyfin 客户端
 // （包括 VidHub）要求 Studios[].Id 必填且为 UUID 形式。
 var studioNamespace = uuid.MustParse("b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e")
