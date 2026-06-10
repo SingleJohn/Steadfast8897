@@ -64,8 +64,17 @@ func getUserViews(c *gin.Context) {
 			vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
 			colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
 			imgTags := gin.H{}
-			// 有生成封面、或是已知平台(内置 logo)时才挂 Primary
-			if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {
+			// 有生成封面、或是已知平台(内置 logo)时才挂 Primary。
+			// 生成封面用 CoverImageTag 作为 Primary tag——它每次换图都会刷新,
+			// 客户端据此感知图变;若仍用恒定的 vid,换封面后 tag 不变,客户端读缓存不更新。
+			// 内置 logo 无 tag,退回 vid 保持稳定。
+			if p.CoverImagePath != nil && *p.CoverImagePath != "" {
+				if p.CoverImageTag != nil && *p.CoverImageTag != "" {
+					imgTags["Primary"] = *p.CoverImageTag
+				} else {
+					imgTags["Primary"] = vid
+				}
+			} else if models.HasPlatformLogo(p.PlatformName) {
 				imgTags["Primary"] = vid
 			}
 			var unplayedCount interface{}
