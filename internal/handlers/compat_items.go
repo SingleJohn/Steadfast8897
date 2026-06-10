@@ -317,8 +317,8 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		}
 	}
 	if includeTypes != "" {
-		validTypes := map[string]bool{"Movie": true, "Series": true, "Episode": true, "Season": true}
-		typeMap := map[string]string{"Video": "Movie", "Folder": "CollectionFolder"}
+		validTypes := map[string]bool{"Movie": true, "Series": true, "Episode": true, "Season": true, "Folder": true}
+		typeMap := map[string]string{"Video": "Movie"}
 		typeList := strings.Split(includeTypes, ",")
 		seen := map[string]bool{}
 		var placeholders []string
@@ -723,7 +723,7 @@ func searchHints(c *gin.Context, state *AppState) {
 			hint["CommunityRating"] = *rating
 		}
 
-		isFolder := itemType == "Series" || itemType == "Season" || itemType == "CollectionFolder"
+		isFolder := itemType == "Series" || itemType == "Season" || itemType == "CollectionFolder" || itemType == "Folder"
 		hint["IsFolder"] = isFolder
 
 		hints = append(hints, hint)

@@ -26,7 +26,8 @@ func shouldUseLibraryRepresentative(options *ItemQueryOptions) bool {
 	if options == nil || options.Studio != nil {
 		return false
 	}
-	return options.ParentID != nil || len(options.ParentIDs) > 0 || options.LibraryID != nil
+	return options.ParentID != nil || len(options.ParentIDs) > 0 ||
+		options.ParentLibraryID != nil || options.RecursiveParentID != nil || options.LibraryID != nil
 }
 
 func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptions) (*ItemQueryResult, error) {
@@ -35,7 +36,26 @@ func QueryItems(ctx context.Context, pool *pgxpool.Pool, options *ItemQueryOptio
 	paramIdx := 1
 	useRepresentative := shouldUseLibraryRepresentative(options)
 
-	if len(options.ParentIDs) > 0 {
+	if options.ParentLibraryID != nil {
+		conditions = append(conditions, fmt.Sprintf("i.library_id = $%d::uuid", paramIdx))
+		params = append(params, *options.ParentLibraryID)
+		paramIdx++
+		if !options.Recursive {
+			conditions = append(conditions, "i.parent_id IS NULL")
+		}
+	} else if options.RecursiveParentID != nil {
+		conditions = append(conditions, fmt.Sprintf(
+			`i.id IN (
+				WITH RECURSIVE descendants AS (
+					SELECT id FROM items WHERE parent_id = $%d::uuid
+					UNION ALL
+					SELECT child.id FROM items child JOIN descendants d ON child.parent_id = d.id
+				)
+				SELECT id FROM descendants
+			)`, paramIdx))
+		params = append(params, *options.RecursiveParentID)
+		paramIdx++
+	} else if len(options.ParentIDs) > 0 {
 		col := "i.parent_id"
 		if options.Recursive {
 			col = "i.library_id"
@@ -438,6 +458,10 @@ func buildOrderByForAlias(options *ItemQueryOptions, itemAlias, userAlias string
 			}
 			var col string
 			switch f {
+			case "IsFolder":
+				col = "CASE WHEN " + itemAlias + ".type IN ('Folder','Series','Season','CollectionFolder') THEN 0 ELSE 1 END"
+			case "Filename":
+				col = itemAlias + ".file_path"
 			case "SortName":
 				col = itemAlias + ".sort_name"
 			case "DateCreated":

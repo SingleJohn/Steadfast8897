@@ -43,6 +43,7 @@ func pruneMissingPaths(
 		}
 	case libraryTypeMixed:
 		targets = []pruneTarget{
+			{itemType: "Folder", isDirEvent: true},
 			{itemType: "Movie"},
 			{itemType: "Series", isDirEvent: true},
 			{itemType: "Episode"},

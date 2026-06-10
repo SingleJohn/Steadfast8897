@@ -152,6 +152,9 @@ func ScanLibraryWithOptions(
 				LibraryID: libraryID, CollectionType: collectionType, DetectedAt: time.Now(),
 			})
 		}
+		markFolderSeen := func(e folderEntry) {
+			seenPaths[filepath.Clean(e.fullPath)] = struct{}{}
+		}
 
 		var total int64
 		switch collectionType {
@@ -173,7 +176,10 @@ func ScanLibraryWithOptions(
 			}
 			total = int64(len(mixed.movies) + len(mixed.shows))
 			tracker.UpdateTotal(libraryID, total)
-			slog.Info("[Scan] Collected entries", "library", libraryName, "movies", len(mixed.movies), "shows", len(mixed.shows), "total", total)
+			slog.Info("[Scan] Collected entries", "library", libraryName, "folders", len(mixed.folders), "movies", len(mixed.movies), "shows", len(mixed.shows), "total", total)
+			for _, folder := range mixed.folders {
+				markFolderSeen(folder)
+			}
 			for _, show := range mixed.shows {
 				submitShow(show)
 			}

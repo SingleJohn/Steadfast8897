@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"fyms/internal/dto"
 	"fyms/internal/models"
@@ -149,7 +150,26 @@ func getUserViews(c *gin.Context) {
 				"UnplayedItemCount":     unplayedCount,
 			},
 		}
-		if len(lib.Paths) > 0 {
+		if lib.CollectionType == "mixed" {
+			entry["CanDelete"] = false
+			entry["CanDownload"] = false
+			entry["PresentationUniqueKey"] = idStr
+			entry["DisplayPreferencesId"] = idStr
+			entry["ForcedSortName"] = lib.Name
+			entry["ProviderIds"] = gin.H{}
+			entry["ExternalUrls"] = []interface{}{}
+			entry["Taglines"] = []interface{}{}
+			entry["RemoteTrailers"] = []interface{}{}
+			entry["LockedFields"] = []interface{}{}
+			entry["LockData"] = false
+			delete(entry, "CollectionType")
+			delete(entry, "ChildCount")
+			delete(entry, "RecursiveItemCount")
+			if ud, ok := entry["UserData"].(gin.H); ok {
+				delete(ud, "PlayCount")
+				delete(ud, "UnplayedItemCount")
+			}
+		} else if len(lib.Paths) > 0 {
 			entry["Path"] = lib.Paths[0]
 		}
 		libEntries = append(libEntries, entry)
@@ -438,6 +458,14 @@ func getItems(c *gin.Context) {
 				opts.IncludeItemTypes = []string{"Movie", "Series"}
 			}
 			opts.Recursive = true
+		} else {
+			if empty, err := resolvePhysicalParentForItems(ctx, state, scope, opts); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+				return
+			} else if empty {
+				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
+				return
+			}
 		}
 	}
 	res, err := models.QueryItems(ctx, state.DB, opts)
@@ -465,6 +493,49 @@ func getItems(c *gin.Context) {
 		"Items":            items,
 		"TotalRecordCount": res.TotalCount,
 	})
+}
+
+func resolvePhysicalParentForItems(ctx context.Context, state *AppState, scope *userLibraryScope, opts *models.ItemQueryOptions) (bool, error) {
+	if opts == nil || opts.ParentID == nil {
+		return false, nil
+	}
+	parentID := strings.TrimSpace(*opts.ParentID)
+	if parentID == "" {
+		return false, nil
+	}
+
+	if uid, err := uuid.Parse(parentID); err == nil {
+		if lib, lerr := models.GetLibraryByID(ctx, state.DB, uid); lerr != nil {
+			return false, lerr
+		} else if lib != nil {
+			if scope != nil && !scope.allowsLibrary(parentID) {
+				return true, nil
+			}
+			opts.ParentLibraryID = &parentID
+			opts.ParentID = nil
+			return false, nil
+		}
+	}
+
+	resolved, err := models.ResolveToUUID(ctx, state.DB, parentID)
+	if err != nil {
+		return false, err
+	}
+	if resolved == nil {
+		return true, nil
+	}
+	item, err := models.GetItemByID(ctx, state.DB, *resolved)
+	if err != nil {
+		return false, err
+	}
+	if item == nil {
+		return true, nil
+	}
+	if opts.Recursive {
+		opts.RecursiveParentID = &item.ID
+		opts.ParentID = nil
+	}
+	return false, nil
 }
 
 func getResumeItems(c *gin.Context) {

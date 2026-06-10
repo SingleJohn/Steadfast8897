@@ -415,17 +415,24 @@ func (w *IngestWorker) processTvCreate(ctx context.Context, libID string, e Inge
 
 func (w *IngestWorker) processMixedCreate(ctx context.Context, libID string, e IngestEvent) error {
 	path := filepath.Clean(e.Path)
+	roots := w.libs.libraryRoots(libID)
 	if e.IsDir {
 		if IsExtrasDirName(filepath.Base(path)) {
 			return nil
 		}
 		if showPath := w.findMixedShowRoot(libID, path); showPath != "" {
-			scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
+			scanMixedShow(ctx, w.pool, libID, roots, showEntry{
+				name:       filepath.Base(showPath),
+				fullPath:   showPath,
+				videoPaths: collectShowVideoPaths(showPath),
+			})
 			return nil
 		}
 		if movie, ok := mixedMovieEntryForDir(filepath.Base(path), path); ok {
-			scanOneMovie(ctx, w.pool, libID, movie.name, movie.fullPath, true, map[string]bool{})
+			scanMixedMovie(ctx, w.pool, libID, roots, movie)
+			return nil
 		}
+		ensureMixedFolderTree(ctx, w.pool, libID, roots, path)
 		return nil
 	}
 
@@ -433,19 +440,28 @@ func (w *IngestWorker) processMixedCreate(ctx context.Context, libID string, e I
 		return nil
 	}
 	if root := findBdmvMovieRoot(path); root != "" {
-		scanOneMovie(ctx, w.pool, libID, filepath.Base(root), root, true, map[string]bool{})
+		vids := collectBdmvVideos(root)
+		paths := make([]string, 0, len(vids))
+		for _, v := range vids {
+			paths = append(paths, v[1])
+		}
+		scanMixedMovie(ctx, w.pool, libID, roots, movieEntry{name: filepath.Base(root), fullPath: root, isDir: true, videoPaths: paths})
 		return nil
 	}
 	if showPath := w.findMixedShowRoot(libID, path); showPath != "" {
-		scanOneShow(ctx, w.pool, libID, filepath.Base(showPath), showPath)
+		scanMixedShow(ctx, w.pool, libID, roots, showEntry{
+			name:       filepath.Base(showPath),
+			fullPath:   showPath,
+			videoPaths: collectShowVideoPaths(showPath),
+		})
 		return nil
 	}
 	parent := filepath.Dir(path)
 	if movie, ok := mixedMovieEntryForDir(filepath.Base(parent), parent); ok {
-		scanOneMovie(ctx, w.pool, libID, movie.name, movie.fullPath, true, map[string]bool{})
+		scanMixedMovie(ctx, w.pool, libID, roots, movie)
 		return nil
 	}
-	scanOneMovie(ctx, w.pool, libID, filepath.Base(path), path, false, map[string]bool{})
+	scanMixedMovie(ctx, w.pool, libID, roots, movieEntry{name: filepath.Base(path), fullPath: path, isDir: false})
 	return nil
 }
 

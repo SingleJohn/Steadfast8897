@@ -35,8 +35,8 @@ func normalizeProviderIDs(raw *json.RawMessage) *json.RawMessage {
 		if lk == "" || v == "" {
 			continue
 		}
-		out[lk] = v                      // 保留小写
-		out[canonicalProvider(lk)] = v   // 补官方大小写
+		out[lk] = v                    // 保留小写
+		out[canonicalProvider(lk)] = v // 补官方大小写
 	}
 	if len(out) == 0 {
 		return raw
@@ -97,7 +97,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 		isFolder := false
 		dto.MediaType = &mediaType
 		dto.IsFolder = &isFolder
-	case "Series", "Season", "CollectionFolder":
+	case "Series", "Season", "CollectionFolder", "Folder":
 		isFolder := true
 		dto.IsFolder = &isFolder
 	}

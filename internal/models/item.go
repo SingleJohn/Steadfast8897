@@ -14,6 +14,8 @@ type ProviderIDMatch struct {
 type ItemQueryOptions struct {
 	ParentID          *string
 	ParentIDs         []string // 多库聚合;非空时覆盖 ParentID 单值
+	ParentLibraryID   *string  // ParentId 指向物理库根;非递归查顶层,递归查全库
+	RecursiveParentID *string  // ParentId 指向普通 Folder;递归查该 Folder 子树
 	IncludeItemTypes  []string
 	SortBy            *string
 	SortOrder         *string
