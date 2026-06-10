@@ -91,6 +91,13 @@ const isBuffering = ref(false)
 const bufferedSeconds = ref(0)
 const loadSpeedBps = ref(0)
 
+// 结束态:下一集倒计时(Netflix 风格)与重播页
+const playerRef = ref<{ replay: () => void } | null>(null)
+const nextCountdown = ref(0)
+const pendingNextId = ref('')
+const showReplay = ref(false)
+let nextTimer: ReturnType<typeof setInterval> | undefined
+
 const isEpisode = computed(() => currentItem.value?.Type === 'Episode')
 
 // 码率缺失(常见于未刮削的 mkv)时用 体积/时长 兜底,使「缓冲增长×码率」仍能测速。
@@ -388,6 +395,7 @@ async function load() {
   playSessionId.value = ''
   browserUnsupportedReason.value = ''
   stopSpeedProbe()
+  resetEndState()
   probeFileSize.value = 0
   playbackStarted.value = false
   isBuffering.value = false
@@ -453,20 +461,53 @@ async function resolveNextEpisodeId(): Promise<string> {
   return ''
 }
 
+function clearNextTimer() {
+  if (nextTimer) { clearInterval(nextTimer); nextTimer = undefined }
+}
+
+function resetEndState() {
+  clearNextTimer()
+  nextCountdown.value = 0
+  pendingNextId.value = ''
+  showReplay.value = false
+}
+
 async function onEnded() {
-  if (autoplayNext.value) {
-    const nextId = await resolveNextEpisodeId()
-    if (nextId) {
-      router.replace({ name: 'player', params: { itemId: nextId }, query: { from: 'start' } })
-      return
-    }
+  const nextId = autoplayNext.value ? await resolveNextEpisodeId() : ''
+  if (nextId) {
+    pendingNextId.value = nextId
+    nextCountdown.value = 5
+    clearNextTimer()
+    nextTimer = setInterval(() => {
+      nextCountdown.value -= 1
+      if (nextCountdown.value <= 0) playNext()
+    }, 1000)
+  } else {
+    showReplay.value = true
   }
-  router.back()
+}
+
+function playNext() {
+  const id = pendingNextId.value
+  resetEndState()
+  if (id) router.replace({ name: 'player', params: { itemId: id }, query: { from: 'start' } })
+}
+
+function cancelNext() {
+  clearNextTimer()
+  nextCountdown.value = 0
+  pendingNextId.value = ''
+  showReplay.value = true // 取消连播后给重播/返回入口
+}
+
+function doReplay() {
+  resetEndState()
+  playerRef.value?.replay()
 }
 
 function onPositionChange(ticks: number) { currentPositionTicks.value = ticks }
 
-onUnmounted(() => { stopSpeedProbe() })
+onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
 </script>
 
 <template>
@@ -532,6 +573,7 @@ onUnmounted(() => { stopSpeedProbe() })
       </div>
       <ArtVideoPlayer
         v-else-if="streamUrl"
+        ref="playerRef"
         :src="streamUrl"
         :item-id="resolvedItemId"
         :media-source-id="selectedSource?.Id || ''"
@@ -561,6 +603,29 @@ onUnmounted(() => { stopSpeedProbe() })
       @back="goBack"
     />
     <PlayerLoading v-else-if="showMiniBuffer" compact :speed-text="loadSpeedText" />
+
+    <!-- Netflix 式下一集倒计时 -->
+    <div v-if="nextCountdown > 0" class="next-ep-card">
+      <div class="next-ep-info">
+        <span class="next-ep-label">即将播放下一集</span>
+        <span class="next-ep-count">{{ nextCountdown }}s</span>
+      </div>
+      <div class="next-ep-actions">
+        <button type="button" class="next-ep-btn primary" @click="playNext">立即播放</button>
+        <button type="button" class="next-ep-btn" @click="cancelNext">取消</button>
+      </div>
+    </div>
+
+    <!-- 重播页(无下一集 / 取消连播) -->
+    <div v-if="showReplay" class="replay-overlay">
+      <div class="replay-card">
+        <button type="button" class="replay-btn primary" @click="doReplay">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          <span>重播</span>
+        </button>
+        <button type="button" class="replay-btn" @click="goBack">返回</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -701,6 +766,81 @@ onUnmounted(() => { stopSpeedProbe() })
 }
 .player-source-select .n-base-selection-label {
   color: rgba(255,255,255,0.9);
+}
+.next-ep-card {
+  position: absolute;
+  right: 28px;
+  bottom: 96px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  min-width: 240px;
+  border-radius: 16px;
+  background: rgba(8, 12, 22, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.next-ep-info {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.next-ep-label { color: rgba(226, 232, 240, 0.95); font-size: 14px; font-weight: 600; }
+.next-ep-count { color: #38bdf8; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.next-ep-actions { display: flex; gap: 8px; }
+.next-ep-btn {
+  flex: 1;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.next-ep-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.next-ep-btn.primary {
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  border-color: transparent;
+  color: #fff;
+}
+.replay-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(2, 6, 23, 0.55), rgba(0, 0, 0, 0.82));
+}
+.replay-card { display: flex; gap: 16px; }
+.replay-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 24px;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.15s ease;
+}
+.replay-btn:hover { background: rgba(255, 255, 255, 0.18); transform: translateY(-1px); }
+.replay-btn.primary {
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  border-color: transparent;
+  color: #fff;
 }
 .player-back-btn {
   color: #fff; flex-shrink: 0; width: 36px; height: 36px;

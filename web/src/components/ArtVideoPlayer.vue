@@ -67,6 +67,12 @@ const emit = defineEmits<{
 }>()
 
 const playerRootRef = ref<HTMLDivElement | null>(null)
+const wrapRef = ref<HTMLDivElement | null>(null)
+// 手势反馈层状态
+const seekHint = ref<{ dir: 'forward' | 'backward'; seconds: number } | null>(null)
+const speedBoostActive = ref(false)
+const HOLD_SPEED = 2
+const RATE_KEY = 'fyms-playback-rate'
 let art: Artplayer | null = null
 let hlsInstance: Hls | null = null
 let progressTimer: ReturnType<typeof setInterval> | undefined
@@ -313,6 +319,143 @@ async function bindHls(video: HTMLVideoElement, url: string) {
   throw new Error('HLS_NOT_SUPPORTED')
 }
 
+// ---- 倍速记忆 ----
+function applyStoredRate() {
+  if (!art) return
+  const saved = Number(localStorage.getItem(RATE_KEY))
+  if (saved && saved > 0 && saved !== 1) art.playbackRate = saved as never
+}
+
+// ---- 控制栏前进/后退按钮(ArtPlayer 不自带) ----
+function setupControls() {
+  if (!art) return
+  art.controls.add({
+    name: 'fyms-backward',
+    position: 'left',
+    index: 11,
+    tooltip: '后退 10 秒',
+    html: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
+    click: () => { if (art) { art.backward = 10 } },
+  })
+  art.controls.add({
+    name: 'fyms-forward',
+    position: 'left',
+    index: 12,
+    tooltip: '前进 10 秒',
+    html: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+    click: () => { if (art) { art.forward = 10 } },
+  })
+}
+
+// ---- 扩展快捷键(桌面端,ArtPlayer 默认未绑 k/j/l/f/m) ----
+function setupHotkeys() {
+  if (!art) return
+  art.hotkey.add('k', () => art && art.toggle())
+  art.hotkey.add('j', () => { if (art) { art.backward = 10; art.notice.show = '« 10 秒' } })
+  art.hotkey.add('l', () => { if (art) { art.forward = 10; art.notice.show = '» 10 秒' } })
+  art.hotkey.add('f', () => { if (art) art.fullscreen = !art.fullscreen })
+  art.hotkey.add('m', () => { if (art) art.muted = !art.muted })
+}
+
+// ---- 手势:长按倍速 + 双击左右快进退 ----
+let holdTimer: ReturnType<typeof setTimeout> | undefined
+let holdRatePrev = 1
+let holdActive = false
+let suppressClick = false
+let seekDir: 'forward' | 'backward' | null = null
+let seekAccum = 0
+let seekHintTimer: ReturnType<typeof setTimeout> | undefined
+
+function isControlTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null
+  return !!el?.closest?.('.art-bottom, .art-top, .art-controls, .art-control, .art-settings, .art-setting, .art-layers, .art-contextmenus, .art-info')
+}
+
+function clearHoldTimer() {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined }
+}
+
+function endHold() {
+  clearHoldTimer()
+  if (holdActive) {
+    holdActive = false
+    speedBoostActive.value = false
+    if (art) art.playbackRate = holdRatePrev as never
+  }
+}
+
+function onPointerDown(e: PointerEvent) {
+  suppressClick = false
+  if (!art || isControlTarget(e.target)) return
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  clearHoldTimer()
+  holdTimer = setTimeout(() => {
+    if (!art) return
+    holdActive = true
+    suppressClick = true
+    holdRatePrev = art.playbackRate as number
+    speedBoostActive.value = true
+    art.playbackRate = HOLD_SPEED as never
+  }, 350)
+}
+
+function onClickCapture(e: MouseEvent) {
+  // 长按结束后浏览器仍会补发 click,拦掉避免误触发暂停。
+  if (suppressClick) {
+    suppressClick = false
+    e.stopPropagation()
+    e.preventDefault()
+  }
+}
+
+function onDblClick(e: MouseEvent) {
+  if (!art || !wrapRef.value || isControlTarget(e.target)) return
+  const rect = wrapRef.value.getBoundingClientRect()
+  const ratio = (e.clientX - rect.left) / rect.width
+  if (ratio > 0.35 && ratio < 0.65) return // 中间:让 ArtPlayer 处理全屏
+  // 侧边:拦截全屏,执行快进/快退并叠加
+  e.stopPropagation()
+  e.preventDefault()
+  const dir: 'forward' | 'backward' = ratio <= 0.35 ? 'backward' : 'forward'
+  if (dir !== seekDir) { seekAccum = 0; seekDir = dir }
+  seekAccum += 10
+  if (dir === 'forward') art.forward = 10
+  else art.backward = 10
+  seekHint.value = { dir, seconds: seekAccum }
+  if (seekHintTimer) clearTimeout(seekHintTimer)
+  seekHintTimer = setTimeout(() => { seekHint.value = null; seekDir = null; seekAccum = 0 }, 800)
+}
+
+function bindGestures() {
+  const el = playerRootRef.value
+  if (!el) return
+  el.addEventListener('pointerdown', onPointerDown)
+  el.addEventListener('pointerup', endHold)
+  el.addEventListener('pointercancel', endHold)
+  el.addEventListener('pointerleave', endHold)
+  el.addEventListener('click', onClickCapture, true)
+  el.addEventListener('dblclick', onDblClick, true)
+}
+
+function unbindGestures() {
+  const el = playerRootRef.value
+  if (!el) return
+  el.removeEventListener('pointerdown', onPointerDown)
+  el.removeEventListener('pointerup', endHold)
+  el.removeEventListener('pointercancel', endHold)
+  el.removeEventListener('pointerleave', endHold)
+  el.removeEventListener('click', onClickCapture, true)
+  el.removeEventListener('dblclick', onDblClick, true)
+}
+
+// 供父级在结束页触发重播。
+function replay() {
+  if (!art) return
+  art.currentTime = 0
+  void art.play().catch(() => {})
+}
+defineExpose({ replay })
+
 function buildArt(autoplay = true) {
   if (!playerRootRef.value) return
 
@@ -337,6 +480,8 @@ function buildArt(autoplay = true) {
     playbackRate: true,
     aspectRatio: true,
     setting: true,
+    pip: true,
+    screenshot: true,
     miniProgressBar: true,
     backdrop: true,
     mutex: true,
@@ -358,6 +503,15 @@ function buildArt(autoplay = true) {
   art.on('ready', () => {
     seekToStartPosition()
     refreshSubtitleSetting()
+    applyStoredRate()
+    setupHotkeys()
+    setupControls()
+  })
+
+  // 倍速记忆:用户切换倍速时持久化;长按 2x 期间不写入,避免覆盖偏好。
+  art.on('video:ratechange', () => {
+    if (!art || speedBoostActive.value) return
+    localStorage.setItem(RATE_KEY, String(art.playbackRate))
   })
 
   // 首帧可播放即结束初始缓冲;等待数据时(仅初始阶段)重新显示加载层。
@@ -479,18 +633,40 @@ watch(
 
 onMounted(() => {
   buildArt()
+  bindGestures()
 })
 
 onUnmounted(() => {
+  endHold()
+  if (seekHintTimer) clearTimeout(seekHintTimer)
+  unbindGestures()
   destroyArt()
 })
 </script>
 
 <template>
-  <div ref="playerRootRef" class="art-video-player" />
+  <div ref="wrapRef" class="art-video-wrap">
+    <div ref="playerRootRef" class="art-video-player" />
+
+    <transition name="gesture-fade">
+      <div v-if="seekHint" class="gesture-seek" :class="seekHint.dir">
+        <span class="gesture-seek-arrow">{{ seekHint.dir === 'forward' ? '»' : '«' }}</span>
+        <span class="gesture-seek-text">{{ seekHint.seconds }} 秒</span>
+      </div>
+    </transition>
+
+    <transition name="gesture-fade">
+      <div v-if="speedBoostActive" class="gesture-speed">{{ HOLD_SPEED }}x 倍速 ▶▶</div>
+    </transition>
+  </div>
 </template>
 
 <style scoped>
+.art-video-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
 .art-video-player {
   width: 100%;
   height: 100%;
@@ -498,6 +674,52 @@ onUnmounted(() => {
     radial-gradient(circle at top, rgba(14, 165, 233, 0.14), transparent 30%),
     linear-gradient(180deg, rgba(2, 6, 23, 0.96) 0%, rgba(0, 0, 0, 1) 100%);
 }
+
+/* 手势反馈层:不拦截点击 */
+.gesture-seek,
+.gesture-speed {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.gesture-seek {
+  top: 50%;
+  transform: translateY(-50%);
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 30px;
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.gesture-seek.backward { left: 12%; }
+.gesture-seek.forward { right: 12%; }
+.gesture-seek-arrow { font-size: 30px; line-height: 1; letter-spacing: -4px; }
+.gesture-seek-text { font-size: 15px; }
+.gesture-speed {
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  background: rgba(14, 165, 233, 0.32);
+  border: 1px solid rgba(56, 189, 248, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.gesture-fade-enter-active,
+.gesture-fade-leave-active { transition: opacity 0.2s ease; }
+.gesture-fade-enter-from,
+.gesture-fade-leave-to { opacity: 0; }
 
 :deep(.art-video-player .art-mask),
 :deep(.art-video-player .art-poster),
