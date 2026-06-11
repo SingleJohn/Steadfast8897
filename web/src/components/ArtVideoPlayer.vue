@@ -40,6 +40,7 @@ const props = withDefaults(
     startPositionTicks?: number
     bitrate?: number
     sizeBytes?: number
+    speedText?: string
     audioTracks?: AudioTrack[]
     subtitleTracks?: SubtitleTrack[]
   }>(),
@@ -50,6 +51,7 @@ const props = withDefaults(
     startPositionTicks: 0,
     bitrate: 0,
     sizeBytes: 0,
+    speedText: '',
     audioTracks: () => [],
     subtitleTracks: () => [],
   },
@@ -339,7 +341,7 @@ function applyStoredRate() {
 const ICON_BACK10 = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="12" y="15.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>'
 const ICON_FWD10 = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/><text x="12" y="15.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>'
 
-const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5]
 const ASPECT_OPTIONS = [
   { html: '默认', value: 'default' },
   { html: '16:9', value: '16:9' },
@@ -362,9 +364,18 @@ function setupControls() {
     html: ICON_FWD10, click: () => { if (art) art.forward = 10 },
   })
 
+  // 网速显示:从 PlayerPage 顶部移到控制栏内。无 click、无 selector,纯展示,内容随
+  // speedText 变化更新(见 updateNetspeedControl),空值时整个控件隐藏。
+  art.controls.add({
+    name: 'fyms-netspeed', position: 'right',
+    html: '<span class="fyms-netspeed"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 19 19 12"/></svg><span class="fyms-netspeed-text"></span></span>',
+  })
+  updateNetspeedControl()
+
+  // 不设 tooltip:ArtPlayer 的 tooltip 是悬浮在按钮上方的标签,会盖住选择列表最后一项。
   const curRate = art.playbackRate as number
   art.controls.add({
-    name: 'fyms-rate', position: 'right', tooltip: '播放速度', html: rateLabel(curRate),
+    name: 'fyms-rate', position: 'right', html: rateLabel(curRate),
     selector: RATE_OPTIONS.map((r) => ({ html: r === 1 ? '正常' : `${r}x`, value: r, default: r === curRate })),
     onSelect: (item: any) => {
       const r = Number(item.value)
@@ -375,13 +386,25 @@ function setupControls() {
 
   const curAspect = art.aspectRatio as string
   art.controls.add({
-    name: 'fyms-aspect', position: 'right', tooltip: '画面比例', html: '比例',
+    name: 'fyms-aspect', position: 'right', html: '比例',
     selector: ASPECT_OPTIONS.map((a) => ({ ...a, default: a.value === curAspect })),
     onSelect: (item: any) => {
       if (art) art.aspectRatio = String(item.value) as never
       return item.value === 'default' ? '比例' : String(item.html)
     },
   })
+}
+
+// updateNetspeedControl 把当前网速文本写进控制栏的网速控件;空文本时隐藏整个控件,
+// 用自有 class 定位(不依赖 ArtPlayer 内部 class 命名)。
+function updateNetspeedControl() {
+  const root = playerRootRef.value
+  if (!root) return
+  const txt = (props.speedText || '').trim()
+  const span = root.querySelector('.fyms-netspeed-text')
+  if (span) span.textContent = txt
+  const ctrl = root.querySelector('.fyms-netspeed')?.closest('.art-control') as HTMLElement | null
+  if (ctrl) ctrl.style.display = txt ? '' : 'none'
 }
 
 // ---- 扩展快捷键(桌面端,ArtPlayer 默认未绑 k/j/l/f/m) ----
@@ -711,6 +734,9 @@ watch(
   { deep: true },
 )
 
+// 网速文本变化时刷新控制栏里的网速控件。
+watch(() => props.speedText, () => { updateNetspeedControl() })
+
 onMounted(() => {
   buildArt()
   bindGestures()
@@ -819,5 +845,20 @@ onUnmounted(() => {
 /* 隐藏 ArtPlayer 自带加载动画(初始/拖动/卡顿),统一用 FYMS 自定义加载层。 */
 :deep(.art-video-player .art-loading) {
   display: none !important;
+}
+
+/* 控制栏内的网速显示(从顶部移入) */
+:deep(.fyms-netspeed) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(186, 230, 253, 0.98);
+  white-space: nowrap;
+}
+:deep(.fyms-netspeed svg) {
+  opacity: 0.85;
 }
 </style>

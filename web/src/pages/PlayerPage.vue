@@ -529,13 +529,6 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
         </svg>
       </button>
       <span class="player-title">{{ title }}</span>
-      <span v-if="loadSpeedText" class="player-speed-chip" title="实时下载速率">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <line x1="12" y1="19" x2="12" y2="5" />
-          <polyline points="5 12 12 19 19 12" />
-        </svg>
-        {{ loadSpeedText }}
-      </span>
       <button
         v-if="isEpisode"
         type="button"
@@ -582,6 +575,7 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
         :start-position-ticks="startPosition"
         :bitrate="effectiveBitrate"
         :size-bytes="probeFileSize"
+        :speed-text="loadSpeedText"
         :audio-tracks="audioTracks"
         :subtitle-tracks="subtitleTracks"
         @ended="onEnded"
@@ -715,25 +709,6 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
   white-space: nowrap;
   text-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
-.player-speed-chip {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 30px;
-  padding: 0 11px;
-  border-radius: 15px;
-  border: 1px solid rgba(56, 189, 248, 0.45);
-  background: rgba(8, 12, 22, 0.88);
-  color: rgba(186, 230, 253, 0.98);
-  font-size: 12.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-.player-speed-chip svg { opacity: 0.85; }
 .player-autoplay-btn {
   flex-shrink: 0;
   height: 30px;
