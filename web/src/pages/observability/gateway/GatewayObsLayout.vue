@@ -83,15 +83,18 @@ const pageDescription = computed(() => {
         </suspense>
       </transition>
     </router-view>
-  </page-shell>
 
-  <request-detail-modal
-    v-model:show="showDetail"
-    :selected-log="selectedLog"
-    :ip-location="selectedIPLocation"
-    :source-label="selectedSourceLabel"
-    :source-upstream="selectedSourceUpstream"
-  />
+    <!-- NModal teleport 到 body，放在 page-shell 内仅为保证本组件单根节点：
+         多根节点会让父级 <transition mode="out-in"> 的 leave 回调无法结算，
+         离开本页后下一个路由组件不挂载 → 白屏（需整页刷新）。 -->
+    <request-detail-modal
+      v-model:show="showDetail"
+      :selected-log="selectedLog"
+      :ip-location="selectedIPLocation"
+      :source-label="selectedSourceLabel"
+      :source-upstream="selectedSourceUpstream"
+    />
+  </page-shell>
 </template>
 
 <style scoped>

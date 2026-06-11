@@ -432,9 +432,8 @@ onMounted(() => {
         </div>
       </div>
     </n-card>
-  </page-shell>
 
-  <!-- 历史恢复弹窗 -->
+    <!-- 历史恢复弹窗（放在 page-shell 内保证单根节点，避免父级 out-in 过渡 leave 卡死致白屏） -->
   <n-modal
     :show="!!backupRestoreTarget"
     @update:show="(v: boolean) => { if (!v) backupRestoreTarget = null }"
@@ -483,6 +482,7 @@ onMounted(() => {
       </n-space>
     </template>
   </n-modal>
+  </page-shell>
 </template>
 
 <style scoped>
