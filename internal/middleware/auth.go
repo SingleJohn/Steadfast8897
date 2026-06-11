@@ -49,7 +49,10 @@ const (
 
 var (
 	authHeaderRe = regexp.MustCompile(`(?i)^(?:MediaBrowser|Emby)\s+(.+)$`)
-	pairRe       = regexp.MustCompile(`(\w+)="([^"]*)"`)
+	// 同时兼容带引号 key="value" 与不带引号 key=value(逗号分隔)两种格式:
+	// 标准 Emby/Web/Infuse 用前者,Yamby 等部分客户端用后者(不加引号),
+	// 旧的仅匹配引号的正则会让这些客户端的 Client/Device 全部解析失败 → 显示 Unknown。
+	pairRe = regexp.MustCompile(`(\w+)=(?:"([^"]*)"|([^,]*))`)
 )
 
 func parseAuthHeader(header string) AuthInfo {
@@ -61,7 +64,11 @@ func parseAuthHeader(header string) AuthInfo {
 	pairs := pairRe.FindAllStringSubmatch(m[1], -1)
 	for _, p := range pairs {
 		key := strings.ToLower(p[1])
-		value, _ := url.QueryUnescape(p[2])
+		raw := p[2]
+		if raw == "" {
+			raw = strings.TrimSpace(p[3])
+		}
+		value, _ := url.QueryUnescape(raw)
 		switch key {
 		case "userid":
 			info.UserID = &value
