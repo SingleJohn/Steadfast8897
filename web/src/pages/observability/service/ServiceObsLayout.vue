@@ -37,7 +37,9 @@ const pageDescription = computed(() => {
   <page-shell :title="pageTitle" :icon="pageIcon" :description="pageDescription" :divider="false">
     <router-view v-slot="{ Component }">
       <transition name="fade" mode="out-in">
-        <component :is="Component" />
+        <suspense>
+          <component :is="Component" />
+        </suspense>
       </transition>
     </router-view>
   </page-shell>

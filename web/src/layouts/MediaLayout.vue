@@ -243,7 +243,9 @@ onUnmounted(() => {
         <div class="media-page-inner">
           <router-view v-slot="{ Component }">
             <transition name="fade-slide" mode="out-in">
-              <component :is="Component" />
+              <suspense>
+                <component :is="Component" />
+              </suspense>
             </transition>
           </router-view>
         </div>

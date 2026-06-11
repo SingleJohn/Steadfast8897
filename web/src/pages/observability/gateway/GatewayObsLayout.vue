@@ -78,7 +78,9 @@ const pageDescription = computed(() => {
 
     <router-view v-slot="{ Component }">
       <transition name="fade" mode="out-in">
-        <component :is="Component" />
+        <suspense>
+          <component :is="Component" />
+        </suspense>
       </transition>
     </router-view>
   </page-shell>
