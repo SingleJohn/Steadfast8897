@@ -234,6 +234,24 @@ func GetPersonByName(ctx context.Context, pool *pgxpool.Pool, name string) (*Per
 	return &p, nil
 }
 
+// GetPersonByID 按 person id 取单个 person（Emby 里 person 也是 item，
+// `GET /Items/{personId}` 复用此与 GetPersonByName 同构的详情）。未命中或 id 非法返回 (nil, nil)。
+func GetPersonByID(ctx context.Context, pool *pgxpool.Pool, id string) (*Person, error) {
+	var p Person
+	err := pool.QueryRow(ctx,
+		`SELECT id::text, name, image_path, image_locked, tmdb_person_id, overview,
+		        EXTRACT(EPOCH FROM updated_at)::bigint::text
+		   FROM persons WHERE id = $1::uuid LIMIT 1`, id).Scan(
+		&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
 func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, offset int64) ([]Person, int64, error) {
 	var total int64
 	countSQL := `SELECT COUNT(*) FROM persons`

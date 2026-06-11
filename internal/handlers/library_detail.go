@@ -404,14 +404,26 @@ func strVal(s *string) string {
 
 func getItemDetail(c *gin.Context) {
 	state := GetState(c)
+	itemID := c.Param("itemId")
+	ctx := c.Request.Context()
+
+	// Emby 里 person 也是 item：/Items/{personId} 返回演员详情（与 /Persons/{Name} 同构）。
+	// 必须置于用户/库权限逻辑之前：person 是全局实体不做库级管控（与 /Persons 端点一致），
+	// 且用 API Key 鉴权（无具体用户）时下方 loadUserLibraryScope 会因空 userID 报错 500。
+	// 第三方刮削器（mdc-ng）取详情/回填前会拉这个 URL。
+	if _, perr := uuid.Parse(itemID); perr == nil {
+		if person, perr2 := models.GetPersonByID(ctx, state.DB, itemID); perr2 == nil && person != nil {
+			c.JSON(http.StatusOK, personDetailDTO(state, person))
+			return
+		}
+	}
+
 	pathUser := resolveUserID(c)
 	if !matchUserOrAdmin(c, pathUser) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
 
-	itemID := c.Param("itemId")
-	ctx := c.Request.Context()
 	scope, err := loadUserLibraryScope(ctx, state, pathUser)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
