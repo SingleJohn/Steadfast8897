@@ -230,6 +230,9 @@ func main() {
 	if err := taskcenter.ReconcileOnStartup(ctx, pool); err != nil {
 		slog.Warn("task_runs reconcile on startup failed", "error", err)
 	}
+	if err := adapters.ReconcileUpdateRunsOnStartup(ctx, pool, updater); err != nil {
+		slog.Warn("update task_runs reconcile on startup failed", "error", err)
+	}
 	// 接管上次进程中途退出时未完成的库清理:有 deleted_at 标记但 items 未清空的库。
 	go cleanupTask.ResumeAfterRestart(context.Background())
 	go ingestWorker.Run(ctx)

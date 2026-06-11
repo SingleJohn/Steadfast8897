@@ -9,6 +9,25 @@ on:
   workflow_dispatch:
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="nightly-$(date -u +'%Y%m%d%H%M%S')-${GITHUB_SHA::7}"
+          fi
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
   web-assets:
     runs-on: ubuntu-latest
     permissions:
@@ -41,7 +60,9 @@ jobs:
           retention-days: 1
 
   binaries:
-    needs: web-assets
+    needs:
+      - web-assets
+      - version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,17 +136,6 @@ jobs:
       - name: Fetch embedded fonts
         run: bash scripts/fetch-fonts.sh
 
-      - name: Resolve version
-        id: version
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="nightly-$(date -u +'%Y%m%d')-${GITHUB_SHA::7}"
-          fi
-          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Build and package binary
         shell: bash
         run: |
@@ -138,10 +148,10 @@ jobs:
             export GOARM=${{ matrix.goarm }}
           fi
           BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          LDFLAGS="-s -w -X fyms/internal/config.BuildVersion=${{ steps.version.outputs.value }} -X fyms/internal/config.BuildCommit=${GITHUB_SHA} -X fyms/internal/config.BuildTime=${BUILD_TIME} -X fyms/internal/config.BuildRepo=${GITHUB_REPOSITORY}"
+          LDFLAGS="-s -w -X fyms/internal/config.BuildVersion=${{ needs.version.outputs.value }} -X fyms/internal/config.BuildCommit=${GITHUB_SHA} -X fyms/internal/config.BuildTime=${BUILD_TIME} -X fyms/internal/config.BuildRepo=${GITHUB_REPOSITORY}"
           go build -trimpath -ldflags "${LDFLAGS}" -o "dist/${{ matrix.binary_name }}" .
 
-          ARCHIVE_BASENAME="fyms_${{ steps.version.outputs.value }}_${{ matrix.target }}"
+          ARCHIVE_BASENAME="fyms_${{ needs.version.outputs.value }}_${{ matrix.target }}"
           PACKAGE_DIR="package/${ARCHIVE_BASENAME}"
           mkdir -p "${PACKAGE_DIR}/migrations"
           cp "dist/${{ matrix.binary_name }}" "${PACKAGE_DIR}/${{ matrix.binary_name }}"
@@ -167,7 +177,7 @@ jobs:
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fyms_${{ steps.version.outputs.value }}_${{ matrix.target }}
+          name: fyms_${{ needs.version.outputs.value }}_${{ matrix.target }}
           path: |
             package/*.zip
             package/*.tar.gz
@@ -175,7 +185,9 @@ jobs:
           retention-days: 1
 
   docker:
-    needs: binaries
+    needs:
+      - binaries
+      - version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -227,6 +239,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=nightly,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ needs.version.outputs.value }},enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
             type=sha
 

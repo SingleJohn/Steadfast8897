@@ -19,7 +19,7 @@ func mapLegacyStatus(s string) taskcenter.Status {
 		return taskcenter.StatusIdle
 	case "queued":
 		return taskcenter.StatusQueued
-	case "running", "scanning", "checking", "updating":
+	case "running", "scanning", "checking", "updating", "backing_up", "pulling", "recreating", "restarting":
 		return taskcenter.StatusRunning
 	case "stopping":
 		return taskcenter.StatusStopping

@@ -171,12 +171,27 @@ func (u *Updater) GetStatus(ctx context.Context) UpdateStatus {
 func (u *Updater) applyDeploymentLocked() {
 	mode := DetectDeploymentMode()
 	u.status.DeploymentMode = string(mode)
-	u.status.NeedsDockerSocket = mode == DeployDocker
+	u.status.NeedsDockerSocket = mode == DeployDocker && !u.dockerSocketAvailable()
 	if mode == DeployManual {
 		u.status.DownloadURL = u.buildManualDownloadURL()
 	} else {
 		u.status.DownloadURL = ""
 	}
+}
+
+func (u *Updater) dockerSocketAvailable() bool {
+	socketPath := strings.TrimSpace(u.cfg.UpdateDockerSocket)
+	if socketPath == "" {
+		return false
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	dockerClient := newDockerClient(socketPath)
+	defer dockerClient.CloseIdleConnections()
+	return dockerClient.ping(ctx) == nil
 }
 
 // buildManualDownloadURL 给 Windows/未支持平台的用户返回 GitHub Release 的直链。
@@ -238,7 +253,7 @@ func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
 	u.status.ReleaseSource = release.ReleaseSource
 	u.status.ReleaseNotesURL = release.ReleaseNotesURL
 	u.status.GitHubReleaseURL = release.GitHubReleaseURL
-	u.status.HasUpdate = compareVersions(u.cfg.Version, release.Version) < 0
+	u.status.HasUpdate = hasUpdateForChannel(channel, u.cfg.Version, release.Version)
 	if u.status.HasUpdate {
 		u.status.Status = "available"
 		u.status.Message = fmt.Sprintf("发现新版本 %s", release.Version)
@@ -544,9 +559,10 @@ func (u *Updater) fetchGitHubRelease(ctx context.Context, preferredTag, channel 
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, err
 	}
+	normalizedPreferred := strings.TrimPrefix(preferredTag, "v")
 	for _, rel := range releases {
 		tag := strings.TrimPrefix(rel.TagName, "v")
-		if preferredTag != "" && tag == preferredTag {
+		if normalizedPreferred != "" && tag == normalizedPreferred {
 			return &rel, nil
 		}
 	}
@@ -624,8 +640,15 @@ func selectLatestNightlyTag(tags []string) string {
 var versionTagPattern = regexp.MustCompile(`^v?\d+(?:\.\d+)*(?:-[0-9A-Za-z]+)*$`)
 
 // nightlyTagPattern 匹配 CI 生成的 nightly 镜像 tag。
-// 必须与 .github/workflows/docker-publish.yml 中 nightly-$(date -u +'%Y%m%d')-${GITHUB_SHA::7} 的格式保持一致。
-var nightlyTagPattern = regexp.MustCompile(`^nightly-\d{8}-[0-9a-f]{7}$`)
+// 必须与 .github/workflows/docker-publish.yml 中 nightly-$(date -u +'%Y%m%d%H%M%S')-${GITHUB_SHA::7} 的格式保持一致。
+var nightlyTagPattern = regexp.MustCompile(`^nightly-\d{14}-[0-9a-f]{7}$`)
+
+func hasUpdateForChannel(channel, current, latest string) bool {
+	if channel == "nightly" {
+		return current != latest
+	}
+	return compareVersions(current, latest) < 0
+}
 
 func compareVersions(a, b string) int {
 	if a == b {
@@ -764,7 +787,7 @@ func (u *Updater) setConfigValue(ctx context.Context, key, value string) error {
 
 func isUpdateTaskActive(status string) bool {
 	switch status {
-	case "checking", "backing_up", "pulling", "recreating", "restarting":
+	case "checking", "pulling", "recreating", "restarting":
 		return true
 	default:
 		return false
@@ -852,6 +875,10 @@ func (dc *dockerClient) doStream(ctx context.Context, method, path string) error
 		return errors.New(msg)
 	}
 	return nil
+}
+
+func (dc *dockerClient) ping(ctx context.Context) error {
+	return dc.doStream(ctx, http.MethodGet, "/_ping")
 }
 
 type dockerInspect struct {
@@ -1040,8 +1067,15 @@ func RunUpdaterRunnerFromEnv() error {
 	})
 
 	if err := dockerClient.stopContainer(ctx, targetContainer, 15); err != nil {
-		writeRunnerFailure(statePath, fmt.Errorf("stop old container failed: %w", err))
-		return err
+		updateErr := fmt.Errorf("stop old container failed: %w", err)
+		writeRunnerState(statePath, func(st *UpdateStatus) {
+			appendRunnerLog(st, "旧容器停止失败，尝试恢复容器名称")
+		})
+		if rollbackErr := rollbackDockerUpdate(ctx, dockerClient, targetContainer, "", originalName); rollbackErr != nil {
+			updateErr = fmt.Errorf("%w; rollback failed: %v", updateErr, rollbackErr)
+		}
+		writeRunnerFailure(statePath, updateErr)
+		return updateErr
 	}
 	writeRunnerState(statePath, func(st *UpdateStatus) {
 		appendRunnerLog(st, "旧容器已停止")
@@ -1050,12 +1084,26 @@ func RunUpdaterRunnerFromEnv() error {
 	createBody := buildReplacementContainerBody(inspect, targetImage)
 	newID, err := dockerClient.createContainer(ctx, originalName, createBody)
 	if err != nil {
-		writeRunnerFailure(statePath, fmt.Errorf("create replacement container failed: %w", err))
-		return err
+		updateErr := fmt.Errorf("create replacement container failed: %w", err)
+		writeRunnerState(statePath, func(st *UpdateStatus) {
+			appendRunnerLog(st, "新容器创建失败，尝试恢复旧容器")
+		})
+		if rollbackErr := rollbackDockerUpdate(ctx, dockerClient, targetContainer, "", originalName); rollbackErr != nil {
+			updateErr = fmt.Errorf("%w; rollback failed: %v", updateErr, rollbackErr)
+		}
+		writeRunnerFailure(statePath, updateErr)
+		return updateErr
 	}
 	if err := dockerClient.startContainer(ctx, newID); err != nil {
-		writeRunnerFailure(statePath, fmt.Errorf("start replacement container failed: %w", err))
-		return err
+		updateErr := fmt.Errorf("start replacement container failed: %w", err)
+		writeRunnerState(statePath, func(st *UpdateStatus) {
+			appendRunnerLog(st, "新容器启动失败，尝试恢复旧容器")
+		})
+		if rollbackErr := rollbackDockerUpdate(ctx, dockerClient, targetContainer, newID, originalName); rollbackErr != nil {
+			updateErr = fmt.Errorf("%w; rollback failed: %v", updateErr, rollbackErr)
+		}
+		writeRunnerFailure(statePath, updateErr)
+		return updateErr
 	}
 
 	_ = dockerClient.removeContainer(ctx, targetContainer, false)
@@ -1070,6 +1118,39 @@ func RunUpdaterRunnerFromEnv() error {
 		appendRunnerLog(st, "新容器已启动")
 	})
 	return nil
+}
+
+func rollbackDockerUpdate(ctx context.Context, dockerClient *dockerClient, oldContainerID, replacementID, originalName string) error {
+	var errs []string
+	if replacementID != "" {
+		if err := dockerClient.removeContainer(ctx, replacementID, true); err != nil {
+			errs = append(errs, "remove replacement container: "+err.Error())
+		}
+	}
+	if originalName != "" {
+		if err := dockerClient.renameContainer(ctx, oldContainerID, originalName); err != nil {
+			errs = append(errs, "restore old container name: "+err.Error())
+		}
+	}
+	if err := dockerClient.startContainer(ctx, oldContainerID); err != nil {
+		if !isContainerAlreadyRunningError(err) {
+			errs = append(errs, "start old container: "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func isContainerAlreadyRunningError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already started") ||
+		strings.Contains(msg, "already running") ||
+		strings.Contains(msg, "304")
 }
 
 func buildReplacementContainerBody(inspect *dockerInspect, targetImage string) map[string]any {
@@ -1091,18 +1172,6 @@ func buildReplacementContainerBody(inspect *dockerInspect, targetImage string) m
 		}
 		if len(endpoint.Links) > 0 {
 			entry["Links"] = endpoint.Links
-		}
-		if endpoint.IPAMConfig != nil {
-			entry["IPAMConfig"] = endpoint.IPAMConfig
-		}
-		if endpoint.IPAddress != "" {
-			entry["IPv4Address"] = endpoint.IPAddress
-		}
-		if endpoint.GlobalIPv6Address != "" {
-			entry["IPv6Address"] = endpoint.GlobalIPv6Address
-		}
-		if endpoint.MacAddress != "" {
-			entry["MacAddress"] = endpoint.MacAddress
 		}
 		if len(endpoint.DriverOpts) > 0 {
 			entry["DriverOpts"] = endpoint.DriverOpts

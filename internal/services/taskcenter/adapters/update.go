@@ -19,7 +19,7 @@ import (
 // 两种 action：
 //   - "check" 同步阻塞，直接记录 Begin → End（成功/失败），无 tracker。
 //   - "apply" 异步，StartApply 启动后再 Begin + tracker；apply 成功会替换容器，
-//     本进程的 tracker 见不到 completed，由下次启动时 ReconcileOnStartup 收尾。
+//     本进程的 tracker 见不到 completed，由下次启动时 ReconcileUpdateRunsOnStartup 收尾。
 //
 // 默认 action = "check"。
 type UpdateAdapter struct {
@@ -35,6 +35,28 @@ var ErrUpdateUnknownAction = errors.New("update action must be 'check' or 'apply
 
 func NewUpdateAdapter(u *services.Updater, db *pgxpool.Pool) *UpdateAdapter {
 	return &UpdateAdapter{Updater: u, DB: db}
+}
+
+func ReconcileUpdateRunsOnStartup(ctx context.Context, db *pgxpool.Pool, u *services.Updater) error {
+	if db == nil || u == nil {
+		return nil
+	}
+	st := u.GetStatus(ctx)
+	final := mapLegacyStatus(st.Status)
+	if !final.Terminal() {
+		if final.Running() {
+			return nil
+		}
+		final = taskcenter.StatusCancelled
+	}
+	errMsg := ""
+	if st.Error != nil {
+		errMsg = *st.Error
+	}
+	if final == taskcenter.StatusCancelled && errMsg == "" {
+		errMsg = "interrupted by server restart"
+	}
+	return taskcenter.ReconcileUpdateOnStartup(ctx, db, final, st.Message, errMsg)
 }
 
 func (a *UpdateAdapter) Kind() taskcenter.Kind { return taskcenter.KindUpdate }
@@ -130,7 +152,7 @@ func (a *UpdateAdapter) startCheck(ctx context.Context, trigger taskcenter.Trigg
 }
 
 // startApply 启动异步更新流程，不阻塞请求。apply 成功会重启容器，
-// 本进程 tracker 捕捉不到 completed，由下次启动的 ReconcileOnStartup 兜底。
+// 本进程 tracker 捕捉不到 completed，由下次启动的 ReconcileUpdateRunsOnStartup 兜底。
 func (a *UpdateAdapter) startApply(ctx context.Context, trigger taskcenter.Trigger) (int64, error) {
 	a.mu.Lock()
 	if a.currentRunID != 0 {

@@ -56,7 +56,7 @@ function onChangeChannel(value: unknown) {
     </div>
 
     <n-alert v-if="deploymentMode === 'docker' && updateStatus?.needsDockerSocket" type="warning" size="small" class="update-alert">
-      启用应用内自更新需要为容器挂载 Docker Socket，并保证 `/app/data` 为持久化目录。
+      未检测到可用 Docker Socket。应用内自更新需要挂载 `/var/run/docker.sock`，并保证 `/app/data` 为持久化目录。
     </n-alert>
     <n-alert v-if="isManualUpdate" type="info" size="small" class="update-alert">
       当前平台（Windows）暂不支持应用内自动更新。请点击"下载更新包"获取压缩包，停止服务后替换 fyms.exe 再启动。

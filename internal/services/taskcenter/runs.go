@@ -252,7 +252,25 @@ func ReconcileOnStartup(ctx context.Context, db *pgxpool.Pool) error {
 		    completed_at = NOW(),
 		    duration_ms  = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000)
 		WHERE status IN ('queued','running','stopping')
+		  AND kind <> 'update'
 	`)
+	return err
+}
+
+func ReconcileUpdateOnStartup(ctx context.Context, db *pgxpool.Pool, status Status, message, errMsg string) error {
+	if !status.Terminal() {
+		return fmt.Errorf("ReconcileUpdateOnStartup called with non-terminal status: %s", status)
+	}
+	_, err := db.Exec(ctx, `
+		UPDATE task_runs
+		SET status       = $1,
+		    message      = NULLIF($2, ''),
+		    error        = NULLIF($3, ''),
+		    completed_at = NOW(),
+		    duration_ms  = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000)
+		WHERE kind = 'update'
+		  AND status IN ('queued','running','stopping')
+	`, string(status), message, errMsg)
 	return err
 }
 

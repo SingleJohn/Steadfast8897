@@ -61,7 +61,7 @@ const versionText = computed(() => props.serverInfo ? formatVersion(props.server
           </span>
           <span v-if="serverInfo?.LocalAddress" class="hero-sub-item">· {{ serverInfo.LocalAddress }}</span>
           <span v-if="updateStatus?.hasUpdate" class="hero-update-hint">
-            · <n-icon :component="CloudDownloadOutline" :size="13" /> 有新版本 v{{ updateStatus.latestVersion }}
+            · <n-icon :component="CloudDownloadOutline" :size="13" /> 有新版本 {{ updateStatus.latestVersion }}
           </span>
         </div>
       </div>
