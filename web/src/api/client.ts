@@ -910,6 +910,29 @@ export async function restoreBackup(filename: string, categories: string[]) {
 export function getBackupDownloadUrl(filename: string) {
   return `/System/Backups/${encodeURIComponent(filename)}`;
 }
+export interface BackupSummary {
+  filename: string;
+  version: string;
+  created_at: string;
+  categories: string[];
+  counts: Record<string, number>;
+}
+// 上传导出的 JSON,服务端解析校验后落盘,返回包含哪些类别/每表行数的摘要。
+export async function uploadBackup(file: File): Promise<BackupSummary> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch('/System/Backups/Upload', {
+    method: 'POST',
+    headers: { 'X-Emby-Token': getToken() || '' },
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+// 解析已存在的备份文件(历史备份恢复前预览行数)。
+export async function getBackupSummary(filename: string) {
+  return request<BackupSummary>(`/System/Backups/${encodeURIComponent(filename)}/Summary`);
+}
 
 // Library Sort Order
 export async function updateLibrarySortOrder(orders: { Id: string; SortOrder: number }[]) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -30,7 +31,8 @@ import (
 
 const backupDir = "data/backups"
 
-var backupCategories = []string{"settings", "users", "libraries", "media", "activity"}
+// backupCategories 同时是恢复时的表执行顺序(靠前先恢复)。新增类别须放在依赖它的类别之前。
+var backupCategories = []string{"settings", "users", "libraries", "platforms", "gateway", "media", "activity"}
 
 func tablesForCategory(cat string) []string {
 	switch cat {
@@ -40,6 +42,12 @@ func tablesForCategory(cat string) []string {
 		return []string{"users", "user_policies", "api_keys", "access_tokens", "user_library_access"}
 	case "libraries":
 		return []string{"libraries"}
+	case "platforms":
+		// 平台/虚拟库定义 + 实际库与虚拟库的混排顺序(library_display_order 按值引用库 id,无外键)
+		return []string{"platform_libraries", "library_display_order"}
+	case "gateway":
+		// 仅 302 回源配置(key='main'),不含请求日志/统计这些运行期数据
+		return []string{"gateway_config"}
 	case "media":
 		return []string{"genres", "items", "item_genres", "cast_members", "media_versions", "media_streams", "user_item_data"}
 	case "activity":
@@ -47,6 +55,20 @@ func tablesForCategory(cat string) []string {
 	default:
 		return nil
 	}
+}
+
+// categoriesForTables 由 data 里出现的表反推类别(用于上传文件缺 categories 字段时兜底)。
+func categoriesForTables(data map[string]json.RawMessage) []string {
+	var cats []string
+	for _, cat := range backupCategories {
+		for _, t := range tablesForCategory(cat) {
+			if _, ok := data[t]; ok {
+				cats = append(cats, cat)
+				break
+			}
+		}
+	}
+	return cats
 }
 
 func getLocalIP() string {
@@ -128,7 +150,9 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.GET("/System/Logs", adminMW, getLogs)
 	group.POST("/System/Backup", adminMW, createBackup)
 	group.GET("/System/Backups", adminMW, listBackups)
+	group.POST("/System/Backups/Upload", adminMW, uploadBackup)
 	group.GET("/System/Backups/:filename", adminMW, downloadBackup)
+	group.GET("/System/Backups/:filename/Summary", adminMW, backupSummaryHandler)
 	group.DELETE("/System/Backups/:filename", adminMW, deleteBackup)
 	group.POST("/System/Restore", adminMW, restoreBackup)
 	group.POST("/System/EmbyMigrate", adminMW, embyMigrate)
@@ -554,6 +578,128 @@ func parseBackupCategoriesHeader(filename string) []string {
 	return nil
 }
 
+// backupSummary 描述一个备份/导出文件里包含哪些类别、每张表多少行,
+// 供前端在恢复前"先解析展示有哪些东西"。
+type backupSummary struct {
+	Filename   string         `json:"filename"`
+	Version    string         `json:"version"`
+	CreatedAt  string         `json:"created_at"`
+	Categories []string       `json:"categories"`
+	Counts     map[string]int `json:"counts"`
+}
+
+// summarizeBackup 解析备份 JSON,返回摘要与原始 data(供导入时按规范格式重新落盘)。
+// 只数组长度,不深度反序列化每行,避免大媒体备份解析过重。
+func summarizeBackup(raw []byte) (*backupSummary, map[string]json.RawMessage, error) {
+	var parsed struct {
+		Version    string                     `json:"version"`
+		CreatedAt  string                     `json:"created_at"`
+		Categories []string                   `json:"categories"`
+		Data       map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, nil, fmt.Errorf("无法解析备份文件: %w", err)
+	}
+	if parsed.Data == nil {
+		return nil, nil, fmt.Errorf("备份文件中没有 data 数据")
+	}
+	counts := make(map[string]int)
+	for table, rawRows := range parsed.Data {
+		var rows []json.RawMessage
+		if json.Unmarshal(rawRows, &rows) == nil {
+			counts[table] = len(rows)
+		}
+	}
+	cats := parsed.Categories
+	if len(cats) == 0 {
+		cats = categoriesForTables(parsed.Data)
+	}
+	return &backupSummary{
+		Version:    parsed.Version,
+		CreatedAt:  parsed.CreatedAt,
+		Categories: cats,
+		Counts:     counts,
+	}, parsed.Data, nil
+}
+
+// uploadBackup 接收上传的导出 JSON,解析校验后以规范格式落盘到 data/backups,
+// 返回摘要供前端展示。落盘后即出现在备份历史,复用现有按类别恢复流程。
+func uploadBackup(c *gin.Context) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "缺少上传文件"})
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	summary, data, err := summarizeBackup(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	// 以规范格式重新落盘:保证 listBackups 头部 categories 解析与后续恢复一致。
+	payload := gin.H{
+		"version":    orDefault(summary.Version, "1.0"),
+		"created_at": orDefault(summary.CreatedAt, time.Now().UTC().Format(time.RFC3339)),
+		"categories": summary.Categories,
+		"data":       data,
+	}
+	content, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	_ = os.MkdirAll(backupDir, 0755)
+	filename := fmt.Sprintf("import_%s.json", time.Now().Format("20060102_150405"))
+	if err := os.WriteFile(filepath.Join(backupDir, filename), content, 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	summary.Filename = filename
+	slog.Info("[Backup] Imported", "filename", filename, "categories", summary.Categories)
+	c.JSON(http.StatusOK, summary)
+}
+
+// backupSummaryHandler 解析已存在的备份文件并返回摘要(供历史备份恢复前预览行数)。
+func backupSummaryHandler(c *gin.Context) {
+	filename := c.Param("filename")
+	if !safeBackupName(filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid filename"})
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(backupDir, filename))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
+		return
+	}
+	summary, _, err := summarizeBackup(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	summary.Filename = filename
+	c.JSON(http.StatusOK, summary)
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
 func safeBackupName(filename string) bool {
 	return filename != "" && !strings.Contains(filename, "..") && !strings.ContainsAny(filename, `/\`)
 }
@@ -633,7 +779,7 @@ func restoreBackup(c *gin.Context) {
 		categories = backupCategories
 	}
 
-	orderedCats := []string{"settings", "users", "libraries", "media", "activity"}
+	orderedCats := backupCategories
 	tx, err := state.DB.Begin(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
