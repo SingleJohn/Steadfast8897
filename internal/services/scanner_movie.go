@@ -141,6 +141,44 @@ func dirVideosAreDistinctMovies(videoPaths []string) bool {
 	return false
 }
 
+// resolveMovieDirTarget 把一个视频文件的「实时事件」解析成应入库的电影单元,
+// 与手动全扫 collectMovieEntries 的逐子目录判定保持一致 —— 否则实时入库逐文件落库,
+// 会把同一部电影的多 part(X-cd1 / X-cd2)拆成两条 Movie,且目录级 poster.jpg/fanart.jpg
+// 因「目录含多个视频/多条 Movie」被防合集护栏挡掉,导致没有封面。
+//
+// 判定规则(完全对齐 collectMovieEntries 第 188~198 行):
+//   - 父目录就是库根 → 平铺单片,逐文件入库(isDir=false)
+//   - 父目录非库根、且同级出现 >=2 个不同片名(合集平铺,如 .../9总全国探花/*.strm)
+//     → 仍逐文件入库
+//   - 其余(目录内单片,或多 part 同名)→ 整个父目录当一部电影(isDir=true),
+//     交给 scanOneMovie 把多 part 归并成同一 item 的多个 media_versions
+//
+// 单片也归到目录级是刻意的:collectMovieEntries 对「子目录含 1 个视频」同样产出 isDir=true,
+// 这样目录级的 poster.jpg/fanart.jpg 才能被 FindImageCached 直接命中。
+func resolveMovieDirTarget(filePath string, libraryRoots []string) (string, bool) {
+	parent := filepath.Clean(filepath.Dir(filePath))
+	for _, root := range libraryRoots {
+		if filepath.Clean(root) == parent {
+			return filePath, false
+		}
+	}
+	var siblingVideos []string
+	if entries, err := os.ReadDir(parent); err == nil {
+		for _, se := range entries {
+			if se.IsDir() {
+				continue
+			}
+			if IsVideoExt(strings.ToLower(filepath.Ext(se.Name()))) {
+				siblingVideos = append(siblingVideos, filepath.Join(parent, se.Name()))
+			}
+		}
+	}
+	if len(siblingVideos) >= 2 && dirVideosAreDistinctMovies(siblingVideos) {
+		return filePath, false
+	}
+	return parent, true
+}
+
 func collectMovieEntries(dir string, results *[]movieEntry) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -278,6 +316,13 @@ func scanOneMovie(
 			return
 		}
 
+		// 多 part 乱序到达兜底:某个非主分段(如 cd2)可能在主文件(字母序最靠前的 cd1)
+		// 落盘前就被实时事件先建了条目。此时直接 INSERT 主文件不会冲突 → 产生重复条目。
+		// 先把已建的同目录条目重指到当前主文件,随后的 INSERT 命中 ON CONFLICT 走同步分支。
+		if len(videoFiles) > 1 {
+			repointDirMovieToPrimary(ctx, pool, libraryID, primaryPath, videoFiles)
+		}
+
 		mi := ReadMediainfoJSONCached(primaryPath, dirCache)
 		var runtimeTicks *int64
 		if mi != nil {
@@ -407,6 +452,37 @@ func scanOneMovie(
 			}
 		}
 	}
+}
+
+// repointDirMovieToPrimary 在「目录级电影」入库前收敛多 part 乱序到达的重复条目:
+// 当主文件(videoFiles[0])尚未入库、但同目录其它分段已先建条目时,
+// 把已建条目重指到主文件,使随后的 INSERT 命中 ON CONFLICT 而走同步分支(补齐各分段为多版本),
+// 从而避免同一部多 part 电影被拆成多条 Movie。主文件已存在则无需处理(正常顺序到达)。
+func repointDirMovieToPrimary(ctx context.Context, pool *pgxpool.Pool, libraryID, primaryPath string, videoFiles [][2]string) {
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = $2)",
+		libraryID, primaryPath).Scan(&exists); err != nil || exists {
+		return
+	}
+	others := make([]string, 0, len(videoFiles))
+	for _, f := range videoFiles {
+		if f[1] != primaryPath {
+			others = append(others, f[1])
+		}
+	}
+	if len(others) == 0 {
+		return
+	}
+	var id uuid.UUID
+	if err := pool.QueryRow(ctx,
+		"SELECT id FROM items WHERE library_id = $1::uuid AND type = 'Movie' AND file_path = ANY($2) ORDER BY created_at ASC LIMIT 1",
+		libraryID, others).Scan(&id); err != nil {
+		return
+	}
+	pool.Exec(ctx,
+		"UPDATE items SET file_path = $1, updated_at = NOW() WHERE id = $2",
+		primaryPath, id)
 }
 
 func findExistingMovieItem(ctx context.Context, pool *pgxpool.Pool, libraryID, name string, year *int32, filePath string) *uuid.UUID {

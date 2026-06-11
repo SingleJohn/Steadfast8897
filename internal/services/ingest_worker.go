@@ -395,6 +395,9 @@ func (w *IngestWorker) processMovieCreate(ctx context.Context, libID string, e I
 		if root := findBdmvMovieRoot(path); root != "" {
 			path = root
 			isDir = true
+		} else if IsVideoExt(strings.ToLower(filepath.Ext(path))) {
+			// 逐文件事件解析到电影目录,与手动全扫一致:多 part 合并、目录级封面命中。
+			path, isDir = resolveMovieDirTarget(path, w.libs.libraryRoots(libID))
 		}
 	}
 	name := filepath.Base(path)
