@@ -293,6 +293,23 @@ export function getStreamUrl(itemId: string, mediaSourceId: string, directStream
 
 // getSubtitleUrl 把 PlaybackInfo 里外挂字幕流的 DeliveryUrl 补上 api_key，
 // 供 ArtPlayer 直接拉取(外挂字幕文件整文件直出，不转码)。
+// getExternalStreamUrl 构建交给外部播放器的绝对直链:带 .{container} 后缀(利于播放器识别封装)
+// 与 api_key(外部 App 无法带 header)。服务端会 302 到真实源,和浏览器内直出走同一路径。
+export function getExternalStreamUrl(itemId: string, source: { Id: string; Container?: string }): string {
+  const token = getToken()
+  const container = (source.Container || 'mp4').toLowerCase()
+  const params = new URLSearchParams({ MediaSourceId: source.Id, Static: 'true' })
+  if (token) params.set('api_key', token)
+  return `${window.location.origin}/Videos/${itemId}/stream.${container}?${params.toString()}`
+}
+
+// getAbsoluteUrl 把同源相对地址补成绝对地址(外部播放器/字幕需要绝对 URL)。
+export function getAbsoluteUrl(relativeOrAbsolute: string): string {
+  if (!relativeOrAbsolute) return ''
+  if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute
+  return window.location.origin + relativeOrAbsolute
+}
+
 export function getSubtitleUrl(deliveryUrl: string): string {
   if (!deliveryUrl) return ''
   const token = getToken()

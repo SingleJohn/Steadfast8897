@@ -23,6 +23,7 @@ import MediaInfoSection from './item-detail/components/MediaInfoSection.vue'
 import TrailerModal from './item-detail/components/TrailerModal.vue'
 import type { CrewGroup, TrailerInfo } from './item-detail/types'
 import { backdropSourceIdFor, backdropTagsFor, backdropUrl } from './item-detail/utils/images'
+import { canBrowserPlay } from '@/utils/playerSupport'
 
 const route = useRoute()
 const router = useRouter()
@@ -114,6 +115,9 @@ const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const canPlay = computed(() => !!item.value && (item.value.Type === 'Movie' || item.value.Type === 'Episode'))
 const playSources = computed<any[]>(() => (item.value?.MediaSources || []) as any[])
 const versionOptions = computed(() => playSources.value.map((s, i) => ({ label: versionLabel(s, i), value: s.Id })))
+// 外部播放器:当前选中版本 + 是否浏览器无法直出(用于高亮外部播放入口)。
+const selectedSource = computed(() => playSources.value.find((s) => s.Id === selectedVersionId.value) || playSources.value[0] || null)
+const browserUnsupported = computed(() => canPlay.value && !!selectedSource.value && !canBrowserPlay(selectedSource.value))
 
 function versionLabel(source: any, index: number): string {
   const name = source.Name && source.Name !== 'Default' ? source.Name : `版本 ${index + 1}`
@@ -359,6 +363,8 @@ function handleTagClick(tag: string) {
       :scraping="scraping"
       :is-admin="auth.isAdmin"
       :version-options="versionOptions"
+      :selected-source="selectedSource"
+      :browser-unsupported="browserUnsupported"
       v-model:selected-source-id="selectedVersionId"
       @play="goPlay(item.Id)"
       @play-from-start="goPlayFromStart(item.Id)"

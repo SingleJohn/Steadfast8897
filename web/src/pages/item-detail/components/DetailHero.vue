@@ -12,6 +12,7 @@ import {
 } from '@vicons/ionicons5'
 import { getImageUrl } from '@/api/client'
 import { endTimeStr, formatRuntime } from '../utils/format'
+import ExternalPlayMenu from './ExternalPlayMenu.vue'
 
 withDefaults(
   defineProps<{
@@ -28,10 +29,14 @@ withDefaults(
     isAdmin: boolean
     versionOptions?: { label: string; value: string }[]
     selectedSourceId?: string
+    selectedSource?: { Id: string; Container?: string; MediaStreams?: any[] } | null
+    browserUnsupported?: boolean
   }>(),
   {
     versionOptions: () => [],
     selectedSourceId: '',
+    selectedSource: null,
+    browserUnsupported: false,
   },
 )
 
@@ -130,6 +135,13 @@ const emit = defineEmits<{
                 :consistent-menu-width="false"
                 :menu-props="{ class: 'version-select-menu' }"
                 @update:value="(v: string) => emit('update:selectedSourceId', v)"
+              />
+              <ExternalPlayMenu
+                :item-id="item.Id"
+                :source="selectedSource"
+                :title="item.Name"
+                :position-ticks="item.UserData?.PlaybackPositionTicks || 0"
+                :highlight="browserUnsupported"
               />
             </template>
             <button

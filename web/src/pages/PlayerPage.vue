@@ -5,6 +5,8 @@ import { NButton, NSelect } from 'naive-ui'
 import { getImageUrl, getItem, getItems, getPlaybackInfo, getStreamUrl, getSubtitleUrl } from '../api/client'
 import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
 import PlayerLoading from '../components/PlayerLoading.vue'
+import ExternalPlayMenu from './item-detail/components/ExternalPlayMenu.vue'
+import { resolveUnsupportedReason } from '@/utils/playerSupport'
 
 export interface TrackInfo {
   index: number
@@ -185,10 +187,6 @@ function streamDisplayTitle(stream: MediaStreamInfo): string | undefined {
   return stream.Title || stream.Language
 }
 
-function normalizeCodec(value?: string): string {
-  return (value || '').trim().toLowerCase()
-}
-
 function formatFileSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return ''
   const gb = bytes / 1024 / 1024 / 1024
@@ -228,61 +226,6 @@ function resolveSourceTracks(source: MediaSourceInfo | null) {
       // 仅外挂文本字幕带 DeliveryUrl；内封字幕无地址(不转码无法提取)。
       url: s.DeliveryUrl ? getSubtitleUrl(s.DeliveryUrl) : '',
     }))
-}
-
-// 编码/容器兼容性按「是否浏览器可解」分类,而非按容器一刀切:
-// MKV 等封装 Chromium 多能解,真正决定能否直放的是内部编码。
-// 'no' = 确定不支持(拦截) / 'ok' = 浏览器可解 / 'unknown' = 交给浏览器尝试。
-function classifyVideoCodec(c: string): 'ok' | 'no' | 'unknown' {
-  if (!c) return 'unknown'
-  if (/h264|avc|x264/.test(c)) return 'ok'
-  if (/vp0?8|vp0?9/.test(c)) return 'ok'
-  if (/av0?1/.test(c)) return 'ok' // 现代浏览器普遍支持 AV1 解码
-  if (/hevc|h265|x265|265|vc-?1|mpeg-?2|mpeg2|wmv|divx|xvid|mpeg-?4|msmpeg/.test(c)) return 'no'
-  return 'unknown'
-}
-
-function classifyAudioCodec(c: string): 'ok' | 'no' | 'unknown' {
-  if (!c) return 'unknown'
-  if (/aac|mp3|mp2|opus|vorbis|flac|alac|pcm/.test(c)) return 'ok'
-  if (/eac-?3|ac-?3|ac3|dts|truehd|mlp/.test(c)) return 'no'
-  return 'unknown'
-}
-
-// 'no' = 浏览器无法解封装(拦截) / 'attempt' = 让浏览器尝试(含 mkv 与未知)。
-function classifyContainer(c: string): 'ok' | 'no' | 'attempt' {
-  if (!c) return 'attempt'
-  if (/mp4|m4v|mov|webm|ogg|ogv/.test(c)) return 'ok'
-  if (/mkv|matroska/.test(c)) return 'attempt' // Chromium 多数能直放 h264+aac 的 mkv
-  if (/m2ts|mts|\bts\b|avi|wmv|asf|flv|rmvb|\brm\b|vob|3gp/.test(c)) return 'no'
-  return 'attempt'
-}
-
-function resolveUnsupportedReason(source: MediaSourceInfo | null): string {
-  if (!source) return ''
-  const container = normalizeCodec(source.Container)
-  const videoCodec = normalizeCodec(source.FymsVideoCodec)
-  const audioCodec = normalizeCodec(source.FymsAudioCodec)
-
-  if (container === 'm3u8' || container === 'm3u') {
-    if (!(source.IsRemote || normalizeCodec(source.Protocol) === 'http')) {
-      return '当前版本仅支持远端 HLS(m3u8) 直链播放，本地 HLS 播单暂不支持。'
-    }
-    return ''
-  }
-
-  // 编码层优先:确定不支持的编码,容器再友好也放不了。
-  if (classifyVideoCodec(videoCodec) === 'no') {
-    return `当前浏览器无法解码该视频编码(${videoCodec.toUpperCase()})，建议使用外部播放器。`
-  }
-  if (classifyAudioCodec(audioCodec) === 'no') {
-    return `当前浏览器无法解码该音频编码(${audioCodec.toUpperCase()})，建议使用外部播放器。`
-  }
-  // 容器层:仅拦确定无法解封装的;mkv / 未知编码放行让浏览器尝试,失败由运行时兜底。
-  if (classifyContainer(container) === 'no') {
-    return `当前浏览器无法解封装该容器(${container.toUpperCase()})，建议使用外部播放器。`
-  }
-  return ''
 }
 
 // unsupportedDetails 汇总当前版本的容器/编码等技术规格,在无法直放时展示,便于排查。
@@ -560,8 +503,17 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
               <span class="spec-value">{{ row.value }}</span>
             </li>
           </ul>
-          <p class="player-unsupported-hint">FYMS 不做服务端转码，建议改用 Infuse 等外部播放器播放该资源。</p>
-          <n-button secondary style="min-width: 100px" @click="goBack">返回</n-button>
+          <p class="player-unsupported-hint">FYMS 不做服务端转码，建议改用外部播放器播放该资源。</p>
+          <div class="player-unsupported-actions">
+            <ExternalPlayMenu
+              :item-id="resolvedItemId"
+              :source="selectedSource"
+              :title="title"
+              :position-ticks="currentPositionTicks"
+              :highlight="true"
+            />
+            <n-button secondary style="min-width: 100px" @click="goBack">返回</n-button>
+          </div>
         </div>
       </div>
       <ArtVideoPlayer
@@ -689,6 +641,13 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
 .player-unsupported-hint {
   margin-bottom: 20px !important;
   color: rgba(148, 163, 184, 0.92) !important;
+}
+.player-unsupported-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .player-top-overlay {
   position: absolute; top: 0; left: 0; right: 0; z-index: 100000;
