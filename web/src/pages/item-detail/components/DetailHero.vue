@@ -128,6 +128,7 @@ const emit = defineEmits<{
                 :value="selectedSourceId"
                 :options="versionOptions"
                 :consistent-menu-width="false"
+                :menu-props="{ class: 'version-select-menu' }"
                 @update:value="(v: string) => emit('update:selectedSourceId', v)"
               />
             </template>

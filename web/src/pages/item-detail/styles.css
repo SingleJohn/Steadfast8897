@@ -78,6 +78,9 @@
       rgba(7, 7, 7, 0.04) 62%,
       rgba(7, 7, 7, 0) 100%
     );
+  /* 底部淡出整层暗化,避免左侧 0.36 透明度在 hero 底边硬切出一条暗色分界线 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
 }
 
 .hero-content {
@@ -366,6 +369,17 @@
 .genre-chip:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* ═══ 版本选择下拉(玻璃拟态)═══ */
+/* NSelect 菜单 teleport 到 body,经 menu-props 注入 .version-select-menu;
+   覆盖 naive-ui 默认不透明深色面板,与全站半透明表面一致。 */
+.version-select-menu.n-base-select-menu {
+  background-color: rgba(20, 20, 22, 0.7) !important;
+  backdrop-filter: blur(22px) saturate(1.2);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
 }
 
 /* ═══ Detail Body ═══ */
