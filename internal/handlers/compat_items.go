@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -112,7 +113,66 @@ func getPersonByName(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
 		return
 	}
-	c.JSON(http.StatusOK, personItemDTO(state, p))
+	c.JSON(http.StatusOK, personDetailDTO(state, p))
+}
+
+// personDetailDTO 严格镜像真实 Emby `GET /Persons/{Name}` 的返回字段集（依据官方
+// Emby 服务器实测样本对齐，不多不少）。第三方 Rust 客户端（mdc-ng）的演员详情结构体
+// 按真实 Emby 建模并 deny_unknown_fields——多出 Emby 不返回的字段（IsFolder /
+// LocationType / Overview / PrimaryImageTag 等）会触发 "error decoding response body"，
+// 故此处刻意不复用更宽松的 personItemDTO，也不附加任何 Emby 不返回的字段。
+func personDetailDTO(state *AppState, p *models.Person) gin.H {
+	ts := embyTimestampFromEpoch(p.ImageTag)
+	etag := p.ImageTag
+	if etag == "" {
+		etag = p.ID
+	}
+	providerIDs := gin.H{}
+	if p.TmdbPersonID != nil {
+		providerIDs["Tmdb"] = strconv.FormatInt(int64(*p.TmdbPersonID), 10)
+	}
+	item := gin.H{
+		"Name":                  p.Name,
+		"ServerId":              state.Config.ServerID,
+		"Id":                    p.ID,
+		"Etag":                  etag,
+		"DateCreated":           ts,
+		"DateModified":          ts,
+		"CanDelete":             false,
+		"CanDownload":           false,
+		"PresentationUniqueKey": p.ID,
+		"SortName":              p.Name,
+		"ForcedSortName":        p.Name,
+		"ExternalUrls":          []gin.H{},
+		"Taglines":              []string{},
+		"RemoteTrailers":        []gin.H{},
+		"ProviderIds":           providerIDs,
+		"Type":                  "Person",
+		"DisplayPreferencesId":  p.ID,
+		"ImageTags":             gin.H{},
+		"BackdropImageTags":     []string{},
+		"LockedFields":          []string{},
+		"LockData":              false,
+	}
+	if p.ImagePath != nil && *p.ImagePath != "" {
+		tag := p.ImageTag
+		if tag == "" {
+			tag = p.ID
+		}
+		item["ImageTags"] = gin.H{"Primary": tag}
+		item["PrimaryImageAspectRatio"] = 0.6666666666666666
+	}
+	return item
+}
+
+// embyTimestampFromEpoch 把 Unix 秒 epoch 字符串格式化成 Emby 的时间串（7 位小数 + Z）。
+// 用于 DateCreated / DateModified —— mdc-ng 会按 DateTime 解析，必须是合法格式。
+func embyTimestampFromEpoch(epoch string) string {
+	n, err := strconv.ParseInt(strings.TrimSpace(epoch), 10, 64)
+	if err != nil || n <= 0 {
+		return "2020-01-01T00:00:00.0000000Z"
+	}
+	return time.Unix(n, 0).UTC().Format("2006-01-02T15:04:05.0000000") + "Z"
 }
 
 // personItemDTO 把全局 person 渲染成 Emby 风格的 BaseItem（列表项与单条详情共用）。
