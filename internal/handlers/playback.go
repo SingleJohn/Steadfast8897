@@ -60,29 +60,46 @@ func ActivePlaybackCount(userID string) int {
 	return count
 }
 
+// resolveClientName 决定展示用的客户端名,通用两层策略(不再维护硬编码客户端清单):
+//  1. 优先用客户端鉴权头自报的 Client 字段(几乎所有 Emby 协议客户端都带,最权威);
+//  2. 没有时从 User-Agent 兜底 —— 见 clientNameFromUserAgent。
+// 新客户端无需改代码即可正确显示。
 func resolveClientName(authClient string, userAgent string) string {
-	if authClient != "" && authClient != "Unknown" && authClient != "Unknown Client" {
-		return authClient
+	if c := strings.TrimSpace(authClient); c != "" && !strings.EqualFold(c, "Unknown") && !strings.EqualFold(c, "Unknown Client") {
+		return c
 	}
-	if strings.Contains(userAgent, "VidHub") {
-		return "VidHub"
+	return clientNameFromUserAgent(userAgent)
+}
+
+// clientNameFromUserAgent 从 UA 兜底提取客户端名:
+//   - 浏览器(UA 以 Mozilla/ 开头,含各类 WebView)归一为 Chrome/Edge/Firefox/Safari 等友好名,
+//     不返回冗长且带版本号的 UA 原值,避免同一浏览器升级后碎成多条;
+//   - 原生 App 的 UA 形如 "Yamby/2.0.3.4 (Android)" / "Infuse/8.0",取首个产品名 token
+//     (到斜杠/空格/括号为止),通用提取,不写死任何 App 名。
+func clientNameFromUserAgent(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "Unknown"
 	}
-	if strings.Contains(userAgent, "Infuse") {
-		return "Infuse"
-	}
-	if strings.Contains(userAgent, "Emby") {
-		return "Emby"
-	}
-	if strings.Contains(userAgent, "SenPlayer") {
-		return "SenPlayer"
-	}
-	if strings.Contains(userAgent, "nPlayer") {
-		return "nPlayer"
-	}
-	if strings.Contains(userAgent, "Mozilla") {
+	if strings.HasPrefix(ua, "Mozilla/") {
+		switch {
+		case strings.Contains(ua, "Edg/"): // Chromium Edge 必须在 Chrome 之前判断
+			return "Microsoft Edge"
+		case strings.Contains(ua, "OPR/"), strings.Contains(ua, "Opera"):
+			return "Opera"
+		case strings.Contains(ua, "Firefox/"):
+			return "Firefox"
+		case strings.Contains(ua, "Chrome/"):
+			return "Chrome"
+		case strings.Contains(ua, "Safari/"):
+			return "Safari"
+		}
 		return "Web Browser"
 	}
-	return "Unknown"
+	if i := strings.IndexAny(ua, "/ ("); i > 0 {
+		return strings.TrimSpace(ua[:i])
+	}
+	return ua
 }
 
 func resolveDeviceName(authDevice string, userAgent string) string {
@@ -274,8 +291,8 @@ func OnPlaybackStart(c *gin.Context) {
 
 	st.SessionManager.UpdateSession(
 		auth.ID, auth.Name, deviceID,
-		strOrPtr(info.Device, ""),
-		strOrPtr(info.Client, ""),
+		deviceName,
+		clientName,
 		strOrPtr(info.Version, ""),
 		clientIP,
 	)
@@ -374,10 +391,13 @@ func OnPlaybackProgress(c *gin.Context) {
 		PositionTicks: body.PositionTicks,
 	})
 
+	clientName := resolveClientName(strOrPtr(info.Client, ""), userAgent)
+	deviceName := resolveDeviceName(strOrPtr(info.Device, ""), userAgent)
+
 	st.SessionManager.UpdateSession(
 		auth.ID, auth.Name, deviceID,
-		strOrPtr(info.Device, ""),
-		strOrPtr(info.Client, ""),
+		deviceName,
+		clientName,
 		strOrPtr(info.Version, ""),
 		clientIP,
 	)
@@ -440,8 +460,8 @@ func OnPlaybackProgress(c *gin.Context) {
 			itemName:          itemName,
 			itemType:          itemType,
 			seriesName:        seriesName,
-			clientName:        resolveClientName(strOrPtr(info.Client, ""), userAgent),
-			deviceName:        resolveDeviceName(strOrPtr(info.Device, ""), userAgent),
+			clientName:        clientName,
+			deviceName:        deviceName,
 			deviceID:          deviceID,
 			appVersion:        strOrPtr(info.Version, ""),
 			clientIP:          clientIP,
