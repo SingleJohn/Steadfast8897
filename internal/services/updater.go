@@ -1155,10 +1155,13 @@ func isContainerAlreadyRunningError(err error) bool {
 
 func buildReplacementContainerBody(inspect *dockerInspect, targetImage string) map[string]any {
 	hostConfig := cloneMap(inspect.HostConfig)
-	if anySliceLen(hostConfig["Binds"]) == 0 {
+	hasBinds := anySliceLen(hostConfig["Binds"]) > 0
+	if !hasBinds {
 		delete(hostConfig, "Binds")
 	}
-	if _, ok := hostConfig["Mounts"]; !ok && len(inspect.Mounts) > 0 {
+	if hasBinds {
+		delete(hostConfig, "Mounts")
+	} else if _, ok := hostConfig["Mounts"]; !ok && len(inspect.Mounts) > 0 {
 		hostConfig["Mounts"] = buildHostMounts(inspect.Mounts)
 	}
 	delete(hostConfig, "Links")
