@@ -50,4 +50,6 @@ func RegisterCompatRoutes(group *gin.RouterGroup, state *AppState, authMW, admin
 
 	group.POST("/user_usage_stats/submit_custom_query", adminMW, func(c *gin.Context) { submitCustomQuery(c, state) })
 	group.GET("/Persons", authMW, func(c *gin.Context) { getPersons(c, state) })
+	// Emby Items-by-Name 单演员详情。第三方刮削器（mdc-ng 等）按名取详情，缺此路由会“未找到详情页”。
+	group.GET("/Persons/:name", authMW, func(c *gin.Context) { getPersonByName(c, state) })
 }

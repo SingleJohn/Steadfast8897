@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -215,6 +216,24 @@ func PersonExists(ctx context.Context, pool *pgxpool.Pool, id string) bool {
 }
 
 // ListPersons 列出人物(供 /Persons 端点)。search 非空时按姓名前缀/包含过滤。
+// GetPersonByName 按精确姓名取单个 person（对齐 Emby `GET /Persons/{Name}` 的 Items-by-Name
+// 详情语义）。未命中返回 (nil, nil)，由调用方决定返回 404。
+func GetPersonByName(ctx context.Context, pool *pgxpool.Pool, name string) (*Person, error) {
+	var p Person
+	err := pool.QueryRow(ctx,
+		`SELECT id::text, name, image_path, image_locked, tmdb_person_id, overview,
+		        EXTRACT(EPOCH FROM updated_at)::bigint::text
+		   FROM persons WHERE name = $1 LIMIT 1`, name).Scan(
+		&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
 func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, offset int64) ([]Person, int64, error) {
 	var total int64
 	countSQL := `SELECT COUNT(*) FROM persons`
@@ -232,8 +251,13 @@ func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, 
 	                   EXTRACT(EPOCH FROM updated_at)::bigint::text
 	              FROM persons` + where + ` ORDER BY name`
 	listArgs := append([]any{}, args...)
-	listSQL += " LIMIT $" + strconv.Itoa(len(listArgs)+1) + " OFFSET $" + strconv.Itoa(len(listArgs)+2)
-	listArgs = append(listArgs, limit, offset)
+	// limit <= 0 表示不限量（对齐 Emby /Persons 未传 Limit 的语义，返回全部）。
+	if limit > 0 {
+		listSQL += " LIMIT $" + strconv.Itoa(len(listArgs)+1)
+		listArgs = append(listArgs, limit)
+	}
+	listSQL += " OFFSET $" + strconv.Itoa(len(listArgs)+1)
+	listArgs = append(listArgs, offset)
 
 	rows, err := pool.Query(ctx, listSQL, listArgs...)
 	if err != nil {

@@ -66,7 +66,10 @@ func getItemCounts(c *gin.Context, state *AppState) {
 
 func getPersons(c *gin.Context, state *AppState) {
 	start := int64(0)
-	limit := int64(50)
+	// 对齐 Emby：未显式传 Limit 时返回全部 person，不做默认分页。
+	// gfriends-inputer 等外部头像工具依赖一次性拿到全量演职人员来判断谁缺头像；
+	// 旧实现默认 50 会让它们只看到前 50 个（按名排序），误判“没有需要下载的头像”。
+	limit := int64(0)
 	if v := c.Query("StartIndex"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			start = n
@@ -87,30 +90,61 @@ func getPersons(c *gin.Context, state *AppState) {
 
 	items := make([]gin.H, 0, len(persons))
 	for i := range persons {
-		p := persons[i]
-		hasImage := (p.ImagePath != nil && *p.ImagePath != "")
-		item := gin.H{
-			"Name":      p.Name,
-			"Id":        p.ID,
-			"Type":      "Person",
-			"ServerId":  state.Config.ServerID,
-			"ImageTags": gin.H{},
-			"IsFolder":  false,
-		}
-		if hasImage {
-			tag := p.ImageTag
-			if tag == "" {
-				tag = p.ID
-			}
-			item["ImageTags"] = gin.H{"Primary": tag}
-			item["PrimaryImageTag"] = tag
-		}
-		if p.Overview != nil && *p.Overview != "" {
-			item["Overview"] = *p.Overview
-		}
-		items = append(items, item)
+		items = append(items, personItemDTO(state, &persons[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": total})
+}
+
+// getPersonByName 对齐 Emby `GET /Persons/{Name}`（Items-by-Name 单演员详情）。
+// 第三方刮削工具（mdc-ng 等）先用它拿到演员详情/Id，再回传头像；缺这个路由会报“未找到详情页”。
+func getPersonByName(c *gin.Context, state *AppState) {
+	name := c.Param("name")
+	if name == "" {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
+		return
+	}
+	p, err := models.GetPersonByName(c.Request.Context(), state.DB, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
+		return
+	}
+	c.JSON(http.StatusOK, personItemDTO(state, p))
+}
+
+// personItemDTO 把全局 person 渲染成 Emby 风格的 BaseItem（列表项与单条详情共用）。
+// 仅当 person 实际有头像时才带 ImageTags.Primary / PrimaryImageTag —— 这样
+// 客户端（gfriends-inputer / mdc-ng）能据此判断谁缺头像。
+func personItemDTO(state *AppState, p *models.Person) gin.H {
+	item := gin.H{
+		"Name":         p.Name,
+		"Id":           p.ID,
+		"Type":         "Person",
+		"ServerId":     state.Config.ServerID,
+		"ImageTags":    gin.H{},
+		"IsFolder":     false,
+		"LocationType": "Virtual",
+	}
+	if p.ImagePath != nil && *p.ImagePath != "" {
+		tag := p.ImageTag
+		if tag == "" {
+			tag = p.ID
+		}
+		item["ImageTags"] = gin.H{"Primary": tag}
+		item["PrimaryImageTag"] = tag
+	}
+	if p.Overview != nil && *p.Overview != "" {
+		item["Overview"] = *p.Overview
+	}
+	providerIDs := gin.H{}
+	if p.TmdbPersonID != nil {
+		providerIDs["Tmdb"] = strconv.FormatInt(int64(*p.TmdbPersonID), 10)
+	}
+	item["ProviderIds"] = providerIDs
+	return item
 }
 
 func deviceInfo(c *gin.Context, state *AppState) {
