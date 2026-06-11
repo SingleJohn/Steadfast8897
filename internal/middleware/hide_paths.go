@@ -67,7 +67,7 @@ func HideMediaPaths() gin.HandlerFunc {
 		if u := GetAuthUser(c); u == nil || !u.IsAdmin {
 			var v interface{}
 			if json.Unmarshal(body, &v) == nil {
-				stripPathKeys(v)
+				sanitizePathKeys(v)
 				if out, err := json.Marshal(v); err == nil {
 					body = out
 				}
@@ -80,18 +80,34 @@ func HideMediaPaths() gin.HandlerFunc {
 	}
 }
 
-// stripPathKeys 递归删除 JSON 结构中所有名为 "Path" 的键。
-// Emby 协议里 "Path" 一律代表文件系统 / URL 路径,对非管理员统一隐藏。
-func stripPathKeys(v interface{}) {
+// sanitizePathKeys 递归把 JSON 结构中所有名为 "Path" 的字符串值替换为其文件名(basename),
+// 去掉存储目录结构,只保留文件名与扩展名。
+//
+// 关键:保留 "Path" 键本身,不删除。早先做法是整键删除,导致非管理员响应里直接缺
+// "Path" 字段;部分第三方客户端(如 Infuse)在请求 Fields=...,Path 后遇到缺键会解析
+// 失败报错。改为脱敏赋值既不泄露 /mnt/... 这类存储路径,又保证字段存在。
+//
+// 非字符串值(如 null)原样保留,仍是一个存在的键。
+func sanitizePathKeys(v interface{}) {
 	switch t := v.(type) {
 	case map[string]interface{}:
-		delete(t, "Path")
+		if p, ok := t["Path"].(string); ok {
+			t["Path"] = pathBasename(p)
+		}
 		for _, child := range t {
-			stripPathKeys(child)
+			sanitizePathKeys(child)
 		}
 	case []interface{}:
 		for _, child := range t {
-			stripPathKeys(child)
+			sanitizePathKeys(child)
 		}
 	}
+}
+
+// pathBasename 取路径最后一段,兼容 / 与 \ 分隔。空值或无分隔符时原样返回。
+func pathBasename(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
