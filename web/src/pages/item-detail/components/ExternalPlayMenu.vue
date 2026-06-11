@@ -63,13 +63,13 @@ function pick(player: ExternalPlayer) {
   show.value = false
 }
 
-async function onCopy() {
-  if (!ctx.value) return
-  const ok = await copyText(ctx.value.streamUrl)
-  if (ok) message.success('已复制直链')
-  else message.error('复制失败')
-  show.value = false
-}
+// async function onCopy() {
+//   if (!ctx.value) return
+//   const ok = await copyText(ctx.value.streamUrl)
+//   if (ok) message.success('已复制直链')
+//   else message.error('复制失败')
+//   show.value = false
+// }
 </script>
 
 <template>
@@ -111,8 +111,8 @@ async function onCopy() {
       <button v-if="hasMore" type="button" class="ext-play-more" @click="showAll = true">
         显示全部播放器…
       </button>
-      <div class="ext-play-divider" />
-      <button type="button" class="ext-play-item ext-play-copy" @click="onCopy">复制直链</button>
+      <!-- <div class="ext-play-divider" /> -->
+      <!-- <button type="button" class="ext-play-item ext-play-copy" @click="onCopy">复制直链</button> -->
     </div>
   </n-popover>
 </template>
