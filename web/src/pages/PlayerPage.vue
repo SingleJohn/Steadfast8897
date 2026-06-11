@@ -697,7 +697,7 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
   color: rgba(148, 163, 184, 0.92) !important;
 }
 .player-top-overlay {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+  position: absolute; top: 0; left: 0; right: 0; z-index: 100000;
   display: flex; align-items: center; gap: 8px;
   padding: 16px 20px; height: 80px;
   background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 60%, transparent 100%);
@@ -723,9 +723,9 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
   height: 30px;
   padding: 0 11px;
   border-radius: 15px;
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  background: rgba(15, 23, 42, 0.66);
-  color: rgba(186, 230, 253, 0.95);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(8, 12, 22, 0.88);
+  color: rgba(186, 230, 253, 0.98);
   font-size: 12.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -771,7 +771,7 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
   position: absolute;
   right: 28px;
   bottom: 96px;
-  z-index: 25;
+  z-index: 100010;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -814,7 +814,7 @@ onUnmounted(() => { stopSpeedProbe(); clearNextTimer() })
 .replay-overlay {
   position: absolute;
   inset: 0;
-  z-index: 25;
+  z-index: 100020;
   display: flex;
   align-items: center;
   justify-content: center;

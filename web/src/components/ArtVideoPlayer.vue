@@ -232,7 +232,7 @@ function isHlsSource(url: string, container?: string) {
   return /\.m3u8($|\?)/i.test(url)
 }
 
-const SUBTITLE_SETTING_NAME = 'fyms-subtitle'
+const SUBTITLE_CONTROL_NAME = 'fyms-subtitle'
 
 // subtitleTypeFromCodec 把存储的字幕 codec 归一为 ArtPlayer 识别的类型。
 // ArtPlayer 内部会把 srt/ass 转成 vtt 渲染(ass 富样式会丢失，仅保留文本)。
@@ -262,9 +262,9 @@ function applySubtitleSelection(item: { value: string; subType?: 'vtt' | 'srt' |
   art.subtitle.show = true
 }
 
-// refreshSubtitleSetting 依据当前字幕轨重建设置面板里的「字幕」选择器，并应用默认轨。
-// 切换版本(switchUrl 不重建实例)或字幕轨变化时调用，保证菜单与轨道同步。
-function refreshSubtitleSetting() {
+// refreshSubtitleControl 依据当前字幕轨重建控制栏的「字幕」选择器,并应用默认轨。
+// 切换版本(switchUrl 不重建实例)或字幕轨变化时调用,保证菜单与轨道同步。
+function refreshSubtitleControl() {
   if (!art) return
   const subs = playableSubtitles()
   const def = subs.find((s) => s.isDefault) || null
@@ -278,17 +278,17 @@ function refreshSubtitleSetting() {
     })),
   ]
 
-  try { art.setting.remove(SUBTITLE_SETTING_NAME) } catch { /* 首次无此项 */ }
+  try { art.controls.remove(SUBTITLE_CONTROL_NAME) } catch { /* 首次无此项 */ }
   if (subs.length) {
-    art.setting.add({
-      name: SUBTITLE_SETTING_NAME,
-      html: '字幕',
-      tooltip: def ? subtitleLabel(def) : '关闭',
-      width: 250,
+    art.controls.add({
+      name: SUBTITLE_CONTROL_NAME,
+      position: 'right',
+      tooltip: '字幕',
+      html: def ? '字幕·开' : '字幕',
       selector,
-      onSelect(item: { html: string;[key: string]: any }) {
+      onSelect(item: any) {
         applySubtitleSelection({ value: item.value, subType: item.subType, html: item.html })
-        return item.html
+        return item.value ? '字幕·开' : '字幕'
       },
     })
   }
@@ -326,24 +326,52 @@ function applyStoredRate() {
   if (saved && saved > 0 && saved !== 1) art.playbackRate = saved as never
 }
 
-// ---- 控制栏前进/后退按钮(ArtPlayer 不自带) ----
+// 后退/前进 10 秒图标(Material replay_10 / forward_10:环形箭头 + 数字 10)
+const ICON_BACK10 = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="12" y="15.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>'
+const ICON_FWD10 = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/><text x="12" y="15.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>'
+
+const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const ASPECT_OPTIONS = [
+  { html: '默认', value: 'default' },
+  { html: '16:9', value: '16:9' },
+  { html: '4:3', value: '4:3' },
+]
+
+function rateLabel(r: number): string {
+  return r === 1 ? '倍速' : `${r}x`
+}
+
+// ---- 控制栏:前进/后退 + 倍速/画面比例(从设置面板移到控制栏) ----
 function setupControls() {
   if (!art) return
   art.controls.add({
-    name: 'fyms-backward',
-    position: 'left',
-    index: 11,
-    tooltip: '后退 10 秒',
-    html: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
-    click: () => { if (art) { art.backward = 10 } },
+    name: 'fyms-backward', position: 'left', index: 11, tooltip: '后退 10 秒',
+    html: ICON_BACK10, click: () => { if (art) art.backward = 10 },
   })
   art.controls.add({
-    name: 'fyms-forward',
-    position: 'left',
-    index: 12,
-    tooltip: '前进 10 秒',
-    html: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
-    click: () => { if (art) { art.forward = 10 } },
+    name: 'fyms-forward', position: 'left', index: 12, tooltip: '前进 10 秒',
+    html: ICON_FWD10, click: () => { if (art) art.forward = 10 },
+  })
+
+  const curRate = art.playbackRate as number
+  art.controls.add({
+    name: 'fyms-rate', position: 'right', tooltip: '播放速度', html: rateLabel(curRate),
+    selector: RATE_OPTIONS.map((r) => ({ html: r === 1 ? '正常' : `${r}x`, value: r, default: r === curRate })),
+    onSelect: (item: any) => {
+      const r = Number(item.value)
+      if (art) art.playbackRate = r as never
+      return rateLabel(r)
+    },
+  })
+
+  const curAspect = art.aspectRatio as string
+  art.controls.add({
+    name: 'fyms-aspect', position: 'right', tooltip: '画面比例', html: '比例',
+    selector: ASPECT_OPTIONS.map((a) => ({ ...a, default: a.value === curAspect })),
+    onSelect: (item: any) => {
+      if (art) art.aspectRatio = String(item.value) as never
+      return item.value === 'default' ? '比例' : String(item.html)
+    },
   })
 }
 
@@ -357,7 +385,7 @@ function setupHotkeys() {
   art.hotkey.add('m', () => { if (art) art.muted = !art.muted })
 }
 
-// ---- 手势:长按倍速 + 双击左右快进退 ----
+// ---- 手势:屏幕三分区(左/右 双击 ±10s,中间 单击 播放暂停 / 双击 全屏)+ 长按 2 倍速 ----
 let holdTimer: ReturnType<typeof setTimeout> | undefined
 let holdRatePrev = 1
 let holdActive = false
@@ -365,10 +393,33 @@ let suppressClick = false
 let seekDir: 'forward' | 'backward' | null = null
 let seekAccum = 0
 let seekHintTimer: ReturnType<typeof setTimeout> | undefined
+let clickTimer: ReturnType<typeof setTimeout> | undefined
+let lastClickTs = 0
 
 function isControlTarget(t: EventTarget | null): boolean {
   const el = t as HTMLElement | null
-  return !!el?.closest?.('.art-bottom, .art-top, .art-controls, .art-control, .art-settings, .art-setting, .art-layers, .art-contextmenus, .art-info')
+  return !!el?.closest?.('.art-bottom, .art-top, .art-controls, .art-control, .art-settings, .art-setting, .art-selector, .art-layers, .art-contextmenus, .art-info')
+}
+
+function regionOf(e: MouseEvent): 'left' | 'middle' | 'right' {
+  const el = wrapRef.value
+  if (!el) return 'middle'
+  const rect = el.getBoundingClientRect()
+  const r = (e.clientX - rect.left) / rect.width
+  if (r < 1 / 3) return 'left'
+  if (r > 2 / 3) return 'right'
+  return 'middle'
+}
+
+function doSeek(dir: 'forward' | 'backward') {
+  if (!art) return
+  if (dir !== seekDir) { seekAccum = 0; seekDir = dir }
+  seekAccum += 10
+  if (dir === 'forward') art.forward = 10
+  else art.backward = 10
+  seekHint.value = { dir, seconds: seekAccum }
+  if (seekHintTimer) clearTimeout(seekHintTimer)
+  seekHintTimer = setTimeout(() => { seekHint.value = null; seekDir = null; seekAccum = 0 }, 800)
 }
 
 function clearHoldTimer() {
@@ -399,31 +450,37 @@ function onPointerDown(e: PointerEvent) {
   }, 350)
 }
 
+// 接管点击:阻止 ArtPlayer 默认单击播放,改按区域分发(单/双击自行判定)。
 function onClickCapture(e: MouseEvent) {
-  // 长按结束后浏览器仍会补发 click,拦掉避免误触发暂停。
-  if (suppressClick) {
-    suppressClick = false
-    e.stopPropagation()
-    e.preventDefault()
-  }
-}
-
-function onDblClick(e: MouseEvent) {
-  if (!art || !wrapRef.value || isControlTarget(e.target)) return
-  const rect = wrapRef.value.getBoundingClientRect()
-  const ratio = (e.clientX - rect.left) / rect.width
-  if (ratio > 0.35 && ratio < 0.65) return // 中间:让 ArtPlayer 处理全屏
-  // 侧边:拦截全屏,执行快进/快退并叠加
+  if (isControlTarget(e.target)) return
   e.stopPropagation()
   e.preventDefault()
-  const dir: 'forward' | 'backward' = ratio <= 0.35 ? 'backward' : 'forward'
-  if (dir !== seekDir) { seekAccum = 0; seekDir = dir }
-  seekAccum += 10
-  if (dir === 'forward') art.forward = 10
-  else art.backward = 10
-  seekHint.value = { dir, seconds: seekAccum }
-  if (seekHintTimer) clearTimeout(seekHintTimer)
-  seekHintTimer = setTimeout(() => { seekHint.value = null; seekDir = null; seekAccum = 0 }, 800)
+  if (suppressClick) { suppressClick = false; return } // 长按结束补发的 click
+  const region = regionOf(e)
+  const now = performance.now()
+  if (now - lastClickTs < 280) {
+    // 双击
+    lastClickTs = 0
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = undefined }
+    if (region === 'left') doSeek('backward')
+    else if (region === 'right') doSeek('forward')
+    else if (art) art.fullscreen = !art.fullscreen // 中间双击全屏
+    return
+  }
+  lastClickTs = now
+  if (clickTimer) clearTimeout(clickTimer)
+  clickTimer = setTimeout(() => {
+    clickTimer = undefined
+    // 单击:仅中间区切换播放/暂停;两侧单击不动作(让位给双击快进退)。
+    if (region === 'middle' && art) art.toggle()
+  }, 280)
+}
+
+// 屏蔽 ArtPlayer 默认双击全屏(全屏改由 onClickCapture 的中间双击处理)。
+function onDblClickCapture(e: MouseEvent) {
+  if (isControlTarget(e.target)) return
+  e.stopPropagation()
+  e.preventDefault()
 }
 
 function bindGestures() {
@@ -434,7 +491,7 @@ function bindGestures() {
   el.addEventListener('pointercancel', endHold)
   el.addEventListener('pointerleave', endHold)
   el.addEventListener('click', onClickCapture, true)
-  el.addEventListener('dblclick', onDblClick, true)
+  el.addEventListener('dblclick', onDblClickCapture, true)
 }
 
 function unbindGestures() {
@@ -445,7 +502,7 @@ function unbindGestures() {
   el.removeEventListener('pointercancel', endHold)
   el.removeEventListener('pointerleave', endHold)
   el.removeEventListener('click', onClickCapture, true)
-  el.removeEventListener('dblclick', onDblClick, true)
+  el.removeEventListener('dblclick', onDblClickCapture, true)
 }
 
 // 供父级在结束页触发重播。
@@ -477,9 +534,9 @@ function buildArt(autoplay = true) {
     autoSize: true,
     fullscreen: true,
     fullscreenWeb: true,
-    playbackRate: true,
-    aspectRatio: true,
-    setting: true,
+    playbackRate: false,
+    aspectRatio: false,
+    setting: false,
     pip: true,
     screenshot: true,
     miniProgressBar: true,
@@ -502,10 +559,10 @@ function buildArt(autoplay = true) {
 
   art.on('ready', () => {
     seekToStartPosition()
-    refreshSubtitleSetting()
     applyStoredRate()
     setupHotkeys()
     setupControls()
+    refreshSubtitleControl()
   })
 
   // 倍速记忆:用户切换倍速时持久化;长按 2x 期间不写入,避免覆盖偏好。
@@ -627,7 +684,7 @@ watch(
 // 字幕轨变化(切换版本等)时同步设置面板。初次构建由 ready 事件兜底，故不用 immediate。
 watch(
   () => props.subtitleTracks,
-  () => { refreshSubtitleSetting() },
+  () => { refreshSubtitleControl() },
   { deep: true },
 )
 
@@ -639,6 +696,7 @@ onMounted(() => {
 onUnmounted(() => {
   endHold()
   if (seekHintTimer) clearTimeout(seekHintTimer)
+  if (clickTimer) clearTimeout(clickTimer)
   unbindGestures()
   destroyArt()
 })

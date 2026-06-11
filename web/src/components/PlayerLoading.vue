@@ -69,7 +69,7 @@ const emit = defineEmits<{ back: [] }>()
 .ploading {
   position: absolute;
   inset: 0;
-  z-index: 30;
+  z-index: 100020;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -80,7 +80,7 @@ const emit = defineEmits<{ back: [] }>()
 .ploading.is-compact {
   background: transparent;
   pointer-events: none;
-  z-index: 12;
+  z-index: 100010;
 }
 .ploading-mini {
   display: flex;
