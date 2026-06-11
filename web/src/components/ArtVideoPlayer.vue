@@ -198,11 +198,20 @@ function getPlaybackPayload(positionTicks = currentTicks(), isPaused?: boolean) 
   }
 }
 
-function stopPlaybackReporting() {
+function stopPlaybackReporting(keepalive = false) {
   clearProgressTimer()
   if (!hasReportedStart) return
   hasReportedStart = false
-  void reportPlaybackStopped(getPlaybackPayload(lastReportedTicks || currentTicks()))
+  void reportPlaybackStopped(
+    getPlaybackPayload(lastReportedTicks || currentTicks()),
+    keepalive ? { keepalive: true } : undefined,
+  )
+}
+
+// 关标签/刷新:onUnmounted 可能不跑或普通 fetch 被中止,用 keepalive 补发一次 Stopped,
+// 避免会话残留到 10min 超时才被后端清理。
+function handlePageHide() {
+  stopPlaybackReporting(true)
 }
 
 function startProgressTimer() {
@@ -581,26 +590,40 @@ function buildArt(autoplay = true) {
     emit('position-change', lastReportedTicks)
   })
 
-  art.on('play', () => {
-    startPlaybackReporting()
+  // 播放上报必须绑原生代理事件(video:*),不能用 ArtPlayer 自定义 'play'/'pause'/'ended':
+  // autoplay 直接驱动底层 <video>,从不调用 art.play(),自定义 'play' 永不触发(报告不会发出);
+  // 'ended' 更没有对应自定义事件。改用 video:* 后,自动播放/原生控件/键盘/手势下都可靠上报,
+  // 对齐 Emby 客户端「按真实播放状态变化回传」的行为。
+  art.on('video:playing', () => {
+    if (!hasReportedStart) {
+      startPlaybackReporting()
+    } else {
+      // 暂停后恢复:及时把 IsPaused 翻回 false。
+      lastReportedTicks = currentTicks()
+      void reportPlaybackProgress(getPlaybackPayload(lastReportedTicks, false))
+    }
   })
 
-  art.on('pause', () => {
+  art.on('video:pause', () => {
     if (!art || !hasReportedStart) return
     lastReportedTicks = currentTicks()
     void reportPlaybackProgress(getPlaybackPayload(lastReportedTicks, true))
   })
 
-  art.on('ended', () => {
+  art.on('video:ended', () => {
     lastReportedTicks = currentTicks()
     stopPlaybackReporting()
     emit('ended')
   })
 
-  // seek 后重置测速基线,避免缓冲区跳变产生尖峰。
+  // seek 后重置测速基线,避免缓冲区跳变产生尖峰;并立即回传一次位置,使后端进度随拖动同步。
   art.on('video:seeked', () => {
     lastBufferedEnd = bufferedEnd()
     lastSampleTs = performance.now()
+    if (hasReportedStart && art) {
+      lastReportedTicks = currentTicks()
+      void reportPlaybackProgress(getPlaybackPayload(lastReportedTicks, art.video.paused))
+    }
   })
 
   art.on('error', () => {
@@ -691,9 +714,11 @@ watch(
 onMounted(() => {
   buildArt()
   bindGestures()
+  window.addEventListener('pagehide', handlePageHide)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('pagehide', handlePageHide)
   endHold()
   if (seekHintTimer) clearTimeout(seekHintTimer)
   if (clickTimer) clearTimeout(clickTimer)

@@ -345,9 +345,11 @@ export async function reportPlaybackProgress(payload: PlaybackReportPayload) {
   });
 }
 
-export async function reportPlaybackStopped(payload: PlaybackReportPayload) {
+export async function reportPlaybackStopped(payload: PlaybackReportPayload, opts?: { keepalive?: boolean }) {
   return request('/Sessions/Playing/Stopped', {
     method: 'POST',
+    // keepalive 让请求在页面卸载(关标签/刷新)时仍能发出,避免会话残留到 10min 超时才清。
+    keepalive: opts?.keepalive,
     headers: {
       Authorization: getAuthorizationHeader(),
       'X-Play-Method': 'DirectPlay',
