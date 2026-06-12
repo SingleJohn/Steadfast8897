@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NConfigProvider, NGlobalStyle, NMessageProvider, darkTheme } from 'naive-ui'
+import { NConfigProvider, NDialogProvider, NGlobalStyle, NMessageProvider, darkTheme } from 'naive-ui'
 import { onMounted, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -57,8 +57,10 @@ onMounted(() => {
     :theme-overrides="ui.naiveThemeOverrides"
   >
     <n-message-provider>
-      <n-global-style />
-      <router-view />
+      <n-dialog-provider>
+        <n-global-style />
+        <router-view />
+      </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
 </template>
