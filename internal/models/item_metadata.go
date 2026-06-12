@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -144,7 +145,12 @@ func GetItemCast(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]map[
 		if image != nil && *image != "" {
 			val["PrimaryImageTag"] = imageTag
 			val["HasPrimaryImage"] = true
-			val["ImageUrl"] = *image
+			// 仅远程 URL(TMDB 等)直接给前端 ImageUrl;本地文件路径(手动 / mdc-ng 上传到
+			// data/metadata/persons)浏览器无法直接访问,留空让前端走
+			// /Items/{personId}/Images/Primary(serveImage 能正确吐本地文件)。
+			if strings.HasPrefix(*image, "http://") || strings.HasPrefix(*image, "https://") {
+				val["ImageUrl"] = *image
+			}
 		}
 		if orderIndex != nil {
 			val["OrderIndex"] = *orderIndex

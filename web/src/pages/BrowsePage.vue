@@ -3,7 +3,7 @@ import { computed, ref, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { NEmpty, NIcon, NSelect, NTag } from 'naive-ui'
 import { FunnelOutline } from '@vicons/ionicons5'
-import { getItems } from '../api/client'
+import { getItems, getItem, getImageUrl } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
 import ItemGrid from '../components/ItemGrid.vue'
 
@@ -152,6 +152,59 @@ watch([kind, value, displayName, statusFilter, sortBy, sortOrder], () => {
   loadInitial()
 }, { immediate: true })
 
+// ── 演员页头部:拉取 person 详情(头像/简介/生日/三围 Tags/外链)。
+// /Items/{personId} 现已返回完整 Emby person 详情;value 为 person UUID 时才取。
+const personDetail = ref<any>(null)
+const avatarBroken = ref(false)
+const showPersonHero = computed(() => kind.value === 'person' && !!personDetail.value)
+
+watch([kind, value], () => {
+  personDetail.value = null
+  avatarBroken.value = false
+  if (kind.value === 'person' && isUuidLike(value.value)) {
+    getItem(value.value)
+      .then((d) => { if (d && d.Type === 'Person') personDetail.value = d })
+      .catch(() => {})
+  }
+}, { immediate: true })
+
+const personAvatar = computed(() => {
+  const d = personDetail.value
+  if (!d || avatarBroken.value || !d.ImageTags?.Primary) return ''
+  return getImageUrl(d.Id, 'Primary', { maxWidth: 400 })
+})
+const personBackdrop = computed(() => {
+  const d = personDetail.value
+  if (!d || !(d.BackdropImageTags?.length)) return ''
+  return getImageUrl(d.Id, 'Backdrop', { maxWidth: 1280 })
+})
+const personOverview = computed(() => String(personDetail.value?.Overview || '').trim())
+const personBirthday = computed(() => {
+  const pd = personDetail.value?.PremiereDate
+  return pd ? String(pd).slice(0, 10) : ''
+})
+const personLocations = computed<string[]>(() => personDetail.value?.ProductionLocations || [])
+// mdc-ng 的 Tags 形如「罩杯: H」「身高: 151」「三围: 97/60/94」;过滤掉账号/纯链接项(已在外链里)。
+const personTags = computed<string[]>(() =>
+  (personDetail.value?.Tags || []).filter((t: string) => !/^账号\s*[:：]/.test(t) && !/^https?:\/\//i.test(t)),
+)
+const personLinks = computed<{ name: string; url: string }[]>(() => {
+  const ids = personDetail.value?.ProviderIds || {}
+  const out: { name: string; url: string }[] = []
+  for (const [k, raw] of Object.entries(ids)) {
+    const v = String(raw || '').trim()
+    if (!v) continue
+    switch (k.toLowerCase()) {
+      case 'imdb': out.push({ name: 'IMDb', url: `https://www.imdb.com/name/${v}` }); break
+      case 'tmdb': out.push({ name: 'TMDB', url: `https://www.themoviedb.org/person/${v}` }); break
+      case 'twitter': out.push({ name: 'Twitter', url: `https://twitter.com/${v}` }); break
+      case 'instagram': out.push({ name: 'Instagram', url: `https://www.instagram.com/${v}` }); break
+      case 'xhamster': out.push({ name: 'xHamster', url: `https://xhamster.com/pornstars/${v}` }); break
+    }
+  }
+  return out
+})
+
 watchEffect((onCleanup) => {
   const sentinel = sentinelRef.value
   if (!sentinel) return
@@ -166,16 +219,43 @@ watchEffect((onCleanup) => {
 </script>
 
 <template>
-  <div class="browse-page">
-    <header class="browse-header">
-      <div class="browse-kicker">{{ kindLabel }}</div>
+  <div class="browse-page" :class="{ 'has-person-hero': showPersonHero }">
+    <section v-if="showPersonHero" class="person-hero">
+      <div v-if="personBackdrop" class="person-hero-bg" :style="{ backgroundImage: `url(${personBackdrop})` }" />
+      <div class="person-hero-inner">
+        <div class="person-avatar">
+          <img v-if="personAvatar" :src="personAvatar" :alt="personDetail.Name" @error="avatarBroken = true" />
+          <svg v-else width="56" height="56" viewBox="0 0 24 24" fill="currentColor" opacity="0.3" aria-hidden="true"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        </div>
+        <div class="person-info">
+          <div class="browse-kicker">演员</div>
+          <h1 class="person-name">{{ personDetail.Name }}</h1>
+          <div class="person-meta">
+            <span v-if="personBirthday" class="meta-chip">🎂 {{ personBirthday }}</span>
+            <span v-for="loc in personLocations" :key="loc" class="meta-chip">📍 {{ loc }}</span>
+            <span v-if="!initialLoading" class="meta-chip meta-chip--count">{{ totalCount }} 部作品</span>
+          </div>
+          <div v-if="personTags.length" class="person-tags">
+            <span v-for="t in personTags" :key="t" class="person-tag">{{ t }}</span>
+          </div>
+          <p v-if="personOverview" class="person-overview">{{ personOverview }}</p>
+          <div v-if="personLinks.length" class="person-links">
+            <a v-for="l in personLinks" :key="l.url" :href="l.url" target="_blank" rel="noopener" class="person-link">{{ l.name }}</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <header class="browse-header" :class="{ 'browse-header--compact': showPersonHero }">
+      <div v-if="!showPersonHero" class="browse-kicker">{{ kindLabel }}</div>
       <div class="browse-title-row">
-        <div class="browse-title-wrap">
+        <div v-if="!showPersonHero" class="browse-title-wrap">
           <h1 class="browse-title">{{ pageTitle }}</h1>
           <div class="browse-meta">
             <span v-if="!initialLoading" class="browse-count">{{ totalCount }} 项</span>
           </div>
         </div>
+        <div v-else class="browse-title-wrap" />
 
         <div class="browse-actions">
           <n-select
@@ -428,7 +508,183 @@ watchEffect((onCleanup) => {
   transform: translateY(-12px);
 }
 
+/* ── 演员页头部 ───────────────────────────── */
+.has-person-hero {
+  padding-top: 0;
+}
+
+.person-hero {
+  position: relative;
+  margin: 0 8px 8px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+}
+
+.person-hero-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  opacity: 0.22;
+  filter: saturate(1.1);
+}
+
+.person-hero-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.1), var(--app-surface-2));
+}
+
+.person-hero-inner {
+  position: relative;
+  display: flex;
+  gap: 28px;
+  padding: 32px 32px 30px;
+  align-items: flex-start;
+}
+
+.person-avatar {
+  flex: none;
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  border: 3px solid rgba(255, 255, 255, 0.14);
+  box-shadow: var(--app-shadow-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text-muted);
+}
+
+.person-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.person-info {
+  min-width: 0;
+  flex: 1;
+  padding-top: 6px;
+}
+
+.person-name {
+  margin: 4px 0 0;
+  color: var(--app-text);
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+  font-size: 2.6rem;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.person-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.meta-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--app-border);
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.meta-chip--count {
+  background: rgba(var(--app-primary-rgb), 0.14);
+  border-color: rgba(var(--app-primary-rgb), 0.3);
+  color: var(--app-primary);
+}
+
+.person-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.person-tag {
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: rgba(var(--app-primary-rgb), 0.1);
+  color: var(--app-text);
+  font-size: 12.5px;
+}
+
+.person-overview {
+  margin: 16px 0 0;
+  max-width: 880px;
+  color: var(--app-text-muted);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.person-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.person-link {
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--app-primary-rgb), 0.35);
+  color: var(--app-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+
+.person-link:hover {
+  background: rgba(var(--app-primary-rgb), 0.12);
+}
+
+.browse-header--compact {
+  padding: 8px 8px 16px;
+}
+
 @media (max-width: 719px) {
+  .person-hero {
+    margin: 0 0 8px;
+  }
+
+  .person-hero-inner {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 18px;
+    padding: 24px 18px;
+  }
+
+  .person-avatar {
+    width: 128px;
+    height: 128px;
+  }
+
+  .person-name {
+    font-size: 2rem;
+  }
+
+  .person-meta,
+  .person-tags,
+  .person-links {
+    justify-content: center;
+  }
+
   .browse-page {
     padding-top: 18px;
   }
