@@ -83,7 +83,8 @@ func getPersons(c *gin.Context, state *AppState) {
 	}
 
 	search := strings.TrimSpace(c.Query("SearchTerm"))
-	persons, total, err := models.ListPersons(c.Request.Context(), state.DB, search, limit, start)
+	nameStartsWith := strings.TrimSpace(c.Query("NameStartsWith"))
+	persons, total, err := models.ListPersons(c.Request.Context(), state.DB, search, nameStartsWith, limit, start)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return

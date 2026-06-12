@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -252,7 +253,6 @@ func PersonExists(ctx context.Context, pool *pgxpool.Pool, id string) bool {
 	return exists
 }
 
-// ListPersons 列出人物(供 /Persons 端点)。search 非空时按姓名前缀/包含过滤。
 // GetPersonByName 按精确姓名取单个 person（对齐 Emby `GET /Persons/{Name}` 的 Items-by-Name
 // 详情语义）。未命中返回 (nil, nil)，由调用方决定返回 404。
 func GetPersonByName(ctx context.Context, pool *pgxpool.Pool, name string) (*Person, error) {
@@ -349,16 +349,25 @@ func SetPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID, path s
 	return err
 }
 
-func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, offset int64) ([]Person, int64, error) {
+// ListPersons 列出人物(供 /Persons)。search=SearchTerm(包含匹配);
+// nameStartsWith=Emby 的 NameStartsWith(前缀匹配,mdc-ng 等按名定位演员用)。两者可叠加。
+func ListPersons(ctx context.Context, pool *pgxpool.Pool, search, nameStartsWith string, limit, offset int64) ([]Person, int64, error) {
 	var total int64
-	countSQL := `SELECT COUNT(*) FROM persons`
 	args := []any{}
-	where := ""
+	conds := []string{}
 	if search != "" {
-		where = ` WHERE name ILIKE $1`
 		args = append(args, "%"+search+"%")
+		conds = append(conds, "name ILIKE $"+strconv.Itoa(len(args)))
 	}
-	if err := pool.QueryRow(ctx, countSQL+where, args...).Scan(&total); err != nil {
+	if nameStartsWith != "" {
+		args = append(args, nameStartsWith+"%")
+		conds = append(conds, "name ILIKE $"+strconv.Itoa(len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM persons`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
