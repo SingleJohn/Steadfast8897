@@ -211,7 +211,7 @@ async function removeImage(type: 'Primary' | 'Backdrop') {
             <n-form-item label="出身地">
               <n-dynamic-tags v-model:value="form.locations" />
             </n-form-item>
-            <n-form-item label="标签（罩杯 / 身高 / 三围 等）">
+            <n-form-item label="标签（爱好 / 地区 / 兴趣 等）">
               <n-dynamic-tags v-model:value="form.tags" />
             </n-form-item>
             <n-form-item label="副标题 / Taglines">
