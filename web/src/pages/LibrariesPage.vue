@@ -388,6 +388,7 @@ onUnmounted(() => {
         />
       </n-tab-pane>
 
+      <n-tab-pane name="platforms" tab="平台库">
         <PlatformLibrariesPanel
           :platforms-data="platformsData"
           :platform-task="platformTask"
