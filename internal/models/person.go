@@ -252,6 +252,19 @@ func GetPersonByID(ctx context.Context, pool *pgxpool.Pool, id string) (*Person,
 	return &p, nil
 }
 
+// UpdatePersonMetadata 持久化第三方刮削器(mdc-ng 等)POST /Items/{personId} 回写的演员
+// 字段。仅更新 persons 表已有的列:overview、tmdb_person_id。两者均为 nil 时只 bump
+// updated_at(令客户端缓存失效)。COALESCE 保证只覆盖显式提供的字段。
+func UpdatePersonMetadata(ctx context.Context, pool *pgxpool.Pool, id string, overview *string, tmdbID *int32) error {
+	_, err := pool.Exec(ctx,
+		`UPDATE persons
+		    SET overview = COALESCE($2, overview),
+		        tmdb_person_id = COALESCE($3, tmdb_person_id),
+		        updated_at = NOW()
+		  WHERE id = $1::uuid`, id, overview, tmdbID)
+	return err
+}
+
 func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, offset int64) ([]Person, int64, error) {
 	var total int64
 	countSQL := `SELECT COUNT(*) FROM persons`

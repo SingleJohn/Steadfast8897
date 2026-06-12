@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,6 +167,61 @@ func removeLibraryPath(c *gin.Context) {
 	}
 	invalidateViewsCache(c, state)
 	c.Status(http.StatusNoContent)
+}
+
+// updateItemMetadata 处理 Emby 的条目元数据更新(POST /Items/{Id})。第三方刮削器
+// (mdc-ng)回写演员信息时调用,真实 Emby 返回 204。目前仅对 person 落库(persons 表
+// 有的列:overview / tmdb_person_id),非 person 条目暂不支持编辑库内媒体元数据,返回 404。
+func updateItemMetadata(c *gin.Context) {
+	state := GetState(c)
+	itemID := c.Param("itemId")
+	ctx := c.Request.Context()
+
+	if _, perr := uuid.Parse(itemID); perr != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
+		return
+	}
+	person, err := models.GetPersonByID(ctx, state.DB, itemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if person == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
+		return
+	}
+
+	var body struct {
+		Overview    *string           `json:"Overview"`
+		ProviderIds map[string]string `json:"ProviderIds"`
+	}
+	_ = c.ShouldBindJSON(&body) // 容错:解析失败也按“无可更新字段”处理,仍返回 204
+
+	var overview *string
+	if body.Overview != nil {
+		if s := strings.TrimSpace(*body.Overview); s != "" {
+			overview = &s
+		}
+	}
+
+	if err := models.UpdatePersonMetadata(ctx, state.DB, itemID, overview, tmdbFromProviderIds(body.ProviderIds)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// tmdbFromProviderIds 从 Emby ProviderIds 里抽 TMDB person id(键大小写兼容)。
+func tmdbFromProviderIds(ids map[string]string) *int32 {
+	for k, v := range ids {
+		if strings.EqualFold(k, "Tmdb") {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				id := int32(n)
+				return &id
+			}
+		}
+	}
+	return nil
 }
 
 func uploadImage(c *gin.Context) {

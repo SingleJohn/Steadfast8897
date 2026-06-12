@@ -24,6 +24,9 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	// 标准 Emby 单条目(无 user 维度):EM 等管理端依赖。
 	// getItemDetail 内部 resolveUserID 在缺 :userId 时回退到当前 token 用户。
 	u.GET("/Items/:itemId", authMW, getItemDetail)
+	// Emby 条目元数据更新(POST /Items/{Id})。第三方刮削器(mdc-ng)回写演员
+	// Overview/ProviderIds 等;真实 Emby 返回 204。当前仅持久化 person 可存字段。
+	u.POST("/Items/:itemId", adminMW, updateItemMetadata)
 
 	u.POST("/Library/VirtualFolders", adminMW, addLibrary)
 	u.DELETE("/Library/VirtualFolders", adminMW, deleteLibrary)
