@@ -371,7 +371,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		return
 	}
 	if policy != nil && policy.SimultaneousStreamLimit > 0 {
-		if n := countUserPlayingStreams(state.SessionManager, authUser.ID); int32(n) >= policy.SimultaneousStreamLimit {
+		if n := state.SessionManager.CountActiveStreams(authUser.ID); int32(n) >= policy.SimultaneousStreamLimit {
 			c.JSON(http.StatusTooManyRequests, gin.H{"message": "Too many simultaneous streams"})
 			return
 		}
@@ -548,16 +548,6 @@ func resolveStreamUser(ctx context.Context, state *AppState, c *gin.Context) str
 	return userID
 }
 
-func countUserPlayingStreams(sm *services.SessionManager, userID string) int {
-	n := 0
-	for _, s := range sm.GetActiveSessions() {
-		if s.UserID == userID && s.NowPlaying != nil {
-			n++
-		}
-	}
-	return n
-}
-
 type resolvedPath struct {
 	filePath  string
 	container string
@@ -638,7 +628,7 @@ func streamVideo(c *gin.Context, state *AppState) {
 				return
 			}
 			if policy != nil && policy.SimultaneousStreamLimit > 0 {
-				if n := countUserPlayingStreams(state.SessionManager, userID); int32(n) > policy.SimultaneousStreamLimit {
+				if n := state.SessionManager.CountActiveStreams(userID); int32(n) > policy.SimultaneousStreamLimit {
 					c.JSON(http.StatusForbidden, gin.H{"message": "Stream limit reached"})
 					return
 				}

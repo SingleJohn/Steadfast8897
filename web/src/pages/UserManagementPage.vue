@@ -21,7 +21,8 @@ import UserManagementToolbar from './user-management/UserManagementToolbar.vue'
 import {
   adminToggles, playbackToggles, featureToggles, remoteToggles,
   streamLimitOptions, permissionTemplates, templatePatch,
-  type PolicyState,
+  POLICY_UNSUPPORTED_HINT,
+  type PolicyState, type ToggleDef,
 } from './user-management/policyFields'
 
 const { auth } = useAuth()
@@ -272,6 +273,12 @@ function togglePolicy(key: keyof PolicyState) {
   if (!editPolicy.value) return
   const cur = editPolicy.value[key]
   if (typeof cur === 'boolean') editPolicy.value = { ...editPolicy.value, [key]: !cur }
+}
+
+// 置灰开关的 tooltip 文案;effective 项返回空(不显示提示)。
+function toggleHint(row: ToggleDef): string | undefined {
+  if (row.effective) return undefined
+  return row.disabledHint || POLICY_UNSUPPORTED_HINT
 }
 
 function buildPolicyPayload(policy: PolicyState, folderChecks: Record<string, boolean>) {
@@ -563,12 +570,13 @@ const isSelf = computed(() => auth.userId === editUserId.value)
               <n-icon :size="16"><ShieldCheckmarkOutline /></n-icon>
               账户与安全
             </h3>
-            <div v-for="row in adminToggles" :key="row.key" class="toggle-row">
+            <div v-for="row in adminToggles" :key="row.key" class="toggle-row" :class="{ 'toggle-row--disabled': !row.effective }" :title="toggleHint(row)">
               <div class="toggle-label">
                 <span>{{ row.label }}</span>
                 <span v-if="row.desc" class="toggle-desc">{{ row.desc }}</span>
+                <span v-else-if="!row.effective" class="toggle-desc">{{ toggleHint(row) }}</span>
               </div>
-              <n-switch :value="!!editPolicy[row.key]" @update:value="togglePolicy(row.key)" />
+              <n-switch :value="!!editPolicy[row.key]" :disabled="!row.effective" @update:value="togglePolicy(row.key)" />
             </div>
           </div>
 
@@ -603,9 +611,12 @@ const isSelf = computed(() => auth.userId === editUserId.value)
           <!-- Playback -->
           <div class="section-card">
             <h3 class="section-title">播放权限</h3>
-            <div v-for="row in playbackToggles" :key="row.key" class="toggle-row">
-              <span class="toggle-label">{{ row.label }}</span>
-              <n-switch :value="!!editPolicy[row.key]" @update:value="togglePolicy(row.key)" />
+            <div v-for="row in playbackToggles" :key="row.key" class="toggle-row" :class="{ 'toggle-row--disabled': !row.effective }" :title="toggleHint(row)">
+              <div class="toggle-label">
+                <span>{{ row.label }}</span>
+                <span v-if="!row.effective" class="toggle-desc">{{ toggleHint(row) }}</span>
+              </div>
+              <n-switch :value="!!editPolicy[row.key]" :disabled="!row.effective" @update:value="togglePolicy(row.key)" />
             </div>
             <div class="toggle-row">
               <div class="toggle-label">
@@ -619,18 +630,24 @@ const isSelf = computed(() => auth.userId === editUserId.value)
           <!-- Features -->
           <div class="section-card">
             <h3 class="section-title">功能权限</h3>
-            <div v-for="row in featureToggles" :key="row.key" class="toggle-row">
-              <span class="toggle-label">{{ row.label }}</span>
-              <n-switch :value="!!editPolicy[row.key]" @update:value="togglePolicy(row.key)" />
+            <div v-for="row in featureToggles" :key="row.key" class="toggle-row" :class="{ 'toggle-row--disabled': !row.effective }" :title="toggleHint(row)">
+              <div class="toggle-label">
+                <span>{{ row.label }}</span>
+                <span v-if="!row.effective" class="toggle-desc">{{ toggleHint(row) }}</span>
+              </div>
+              <n-switch :value="!!editPolicy[row.key]" :disabled="!row.effective" @update:value="togglePolicy(row.key)" />
             </div>
           </div>
 
           <!-- Remote -->
           <div class="section-card">
             <h3 class="section-title">远程访问</h3>
-            <div v-for="row in remoteToggles" :key="row.key" class="toggle-row">
-              <span class="toggle-label">{{ row.label }}</span>
-              <n-switch :value="!!editPolicy[row.key]" @update:value="togglePolicy(row.key)" />
+            <div v-for="row in remoteToggles" :key="row.key" class="toggle-row" :class="{ 'toggle-row--disabled': !row.effective }" :title="toggleHint(row)">
+              <div class="toggle-label">
+                <span>{{ row.label }}</span>
+                <span v-if="!row.effective" class="toggle-desc">{{ toggleHint(row) }}</span>
+              </div>
+              <n-switch :value="!!editPolicy[row.key]" :disabled="!row.effective" @update:value="togglePolicy(row.key)" />
             </div>
           </div>
         </div>
@@ -763,6 +780,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
   font-size: 13px; color: var(--app-text);
   display: flex; flex-direction: column; gap: 2px;
 }
+.toggle-row--disabled .toggle-label { opacity: 0.5; }
 .toggle-desc {
   font-size: 11px; color: var(--app-text-muted); font-weight: 400;
 }

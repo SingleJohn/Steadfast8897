@@ -3,7 +3,7 @@ import { reactive, ref, watch } from 'vue'
 import { NModal, NSpace, NButton, NCheckbox, NSwitch, NSelect, NInputNumber, NTag } from 'naive-ui'
 import {
   adminToggles, policyGroups, streamLimitOptions, permissionTemplates,
-  templatePatch, defaultFullPolicy,
+  templatePatch, defaultFullPolicy, POLICY_UNSUPPORTED_HINT,
   type PolicyKey, type PolicyState, type ToggleDef,
 } from './policyFields'
 
@@ -32,20 +32,24 @@ const applyKeys = reactive<Record<string, boolean>>({})
 // 字段取值。
 const values = reactive<PolicyState>(defaultFullPolicy())
 const applyStreamLimit = ref(false)
-const applyBitrateLimit = ref(false)
 const template = ref<string | null>(null)
 
 function resetState() {
   for (const key of Object.keys(applyKeys)) delete applyKeys[key]
   Object.assign(values, defaultFullPolicy())
   applyStreamLimit.value = false
-  applyBitrateLimit.value = false
   template.value = null
 }
 
 watch(() => props.show, (open) => { if (open) resetState() })
 
-const flatToggleKeys: PolicyKey[] = groups.flatMap(g => g.toggles.map(t => t.key))
+// 仅纳入本服务真正生效的开关:置灰项不参与套用模板/全选/下发,避免批量写入无效字段。
+const flatToggleKeys: PolicyKey[] = groups.flatMap(g => g.toggles.filter(t => t.effective).map(t => t.key))
+
+function toggleHint(row: ToggleDef): string | undefined {
+  if (row.effective) return undefined
+  return row.disabledHint || POLICY_UNSUPPORTED_HINT
+}
 
 // 套用模板：勾选受影响的开关项并填入模板值，用户仍可继续微调。
 function applyTemplate(key: string | null) {
@@ -64,11 +68,10 @@ function applyTemplate(key: string | null) {
 function selectAll(on: boolean) {
   for (const k of flatToggleKeys) applyKeys[k] = on
   applyStreamLimit.value = on
-  applyBitrateLimit.value = on
 }
 
 const checkedCount = () => flatToggleKeys.filter(k => applyKeys[k]).length
-  + (applyStreamLimit.value ? 1 : 0) + (applyBitrateLimit.value ? 1 : 0)
+  + (applyStreamLimit.value ? 1 : 0)
 
 function buildPatch(): Record<string, any> {
   const patch: Record<string, any> = {}
@@ -76,7 +79,6 @@ function buildPatch(): Record<string, any> {
     if (applyKeys[k]) patch[k] = !!(values as any)[k]
   }
   if (applyStreamLimit.value) patch.SimultaneousStreamLimit = values.SimultaneousStreamLimit
-  if (applyBitrateLimit.value) patch.RemoteClientBitrateLimit = values.RemoteClientBitrateLimit
   return patch
 }
 
@@ -123,17 +125,18 @@ function handleApply() {
 
       <div v-for="group in groups" :key="group.title" class="section-card">
         <h3 class="section-title">{{ group.title }}</h3>
-        <div v-for="row in group.toggles" :key="row.key" class="policy-row" :class="{ inactive: !applyKeys[row.key] }">
-          <n-checkbox :checked="!!applyKeys[row.key]" @update:checked="(v: boolean) => applyKeys[row.key] = v">
+        <div v-for="row in group.toggles" :key="row.key" class="policy-row" :class="{ inactive: !applyKeys[row.key] || !row.effective }" :title="toggleHint(row)">
+          <n-checkbox :checked="!!applyKeys[row.key]" :disabled="!row.effective" @update:checked="(v: boolean) => applyKeys[row.key] = v">
             <span class="apply-label">应用</span>
           </n-checkbox>
           <div class="policy-label">
             <span>{{ row.label }}</span>
             <span v-if="row.desc" class="policy-desc">{{ row.desc }}</span>
+            <span v-else-if="!row.effective" class="policy-desc">{{ toggleHint(row) }}</span>
           </div>
           <n-switch
             :value="!!(values as any)[row.key]"
-            :disabled="!applyKeys[row.key]"
+            :disabled="!applyKeys[row.key] || !row.effective"
             size="small"
             @update:value="(v: boolean) => (values as any)[row.key] = v"
           />
@@ -157,16 +160,16 @@ function handleApply() {
             :menu-props="menuProps"
           />
         </div>
-        <div class="policy-row" :class="{ inactive: !applyBitrateLimit }">
-          <n-checkbox v-model:checked="applyBitrateLimit"><span class="apply-label">应用</span></n-checkbox>
+        <div class="policy-row inactive" :title="POLICY_UNSUPPORTED_HINT">
+          <n-checkbox :checked="false" disabled><span class="apply-label">应用</span></n-checkbox>
           <div class="policy-label">
             <span>远程码率限制（bps）</span>
-            <span class="policy-desc">0 表示不限制</span>
+            <span class="policy-desc">{{ POLICY_UNSUPPORTED_HINT }}</span>
           </div>
           <n-input-number
-            v-model:value="values.RemoteClientBitrateLimit"
+            :value="values.RemoteClientBitrateLimit"
             :min="0"
-            :disabled="!applyBitrateLimit"
+            disabled
             size="small"
             style="width: 160px"
           />

@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+// nowPlayingTimeout 是 NowPlaying 的存活窗口:超过这段时间没有播放进度刷新
+// (SetNowPlaying)就认为该流已经停止。用于防止客户端异常退出未发 Stopped 事件、
+// 但仍在浏览导致会话 LastActivity 持续刷新时,僵尸 NowPlaying 一直占用并发流名额。
+// 与 handlers 内 activePlaybacks 的 120s 回收阈值保持一致。
+const nowPlayingTimeout = 2 * time.Minute
+
 type ActiveSession struct {
 	UserID        string      `json:"UserId"`
 	UserName      string      `json:"UserName"`
@@ -16,6 +22,8 @@ type ActiveSession struct {
 	PlaySessionID string      `json:"PlaySessionId,omitempty"`
 	LastActivity  time.Time   `json:"LastActivity"`
 	NowPlaying    *NowPlaying `json:"NowPlaying,omitempty"`
+	// NowPlayingAt 记录 NowPlaying 最近一次被设置/刷新的时间,用于过期判定。
+	NowPlayingAt time.Time `json:"-"`
 }
 
 type NowPlaying struct {
@@ -66,9 +74,17 @@ func (sm *SessionManager) cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	cutoff := time.Now().Add(-10 * time.Minute)
+	playingCutoff := time.Now().Add(-nowPlayingTimeout)
 	for k, s := range sm.sessions {
 		if s.LastActivity.Before(cutoff) {
 			delete(sm.sessions, k)
+			continue
+		}
+		// 会话本身还活跃,但 NowPlaying 已过期(久未刷新进度)→ 清掉播放状态,
+		// 释放并发流名额。
+		if s.NowPlaying != nil && s.NowPlayingAt.Before(playingCutoff) {
+			s.NowPlaying = nil
+			s.PlaySessionID = ""
 		}
 	}
 }
@@ -113,7 +129,11 @@ func (sm *SessionManager) SetNowPlaying(userID, deviceID string, np *NowPlaying)
 		if np != nil && np.PlaySessionID != "" {
 			s.PlaySessionID = np.PlaySessionID
 		}
-		s.LastActivity = time.Now()
+		now := time.Now()
+		if np != nil {
+			s.NowPlayingAt = now
+		}
+		s.LastActivity = now
 	}
 }
 
@@ -167,6 +187,28 @@ func sessionMatchesID(s *ActiveSession, sessionID string) bool {
 		return true
 	}
 	return s.NowPlaying != nil && s.NowPlaying.PlaySessionID == sessionID
+}
+
+// CountActiveStreams 统计某用户当前真正在播放的并发流数量。只计入 NowPlaying
+// 仍新鲜(最近 nowPlayingTimeout 内有进度刷新)且会话活跃的流,读取时即过滤,
+// 不依赖后台 cleanup 的 30s 周期,避免僵尸会话误占名额导致错误拦截。
+func (sm *SessionManager) CountActiveStreams(userID string) int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	now := time.Now()
+	sessionCutoff := now.Add(-10 * time.Minute)
+	playingCutoff := now.Add(-nowPlayingTimeout)
+	n := 0
+	for _, s := range sm.sessions {
+		if s.UserID != userID || s.NowPlaying == nil {
+			continue
+		}
+		if s.LastActivity.After(sessionCutoff) && s.NowPlayingAt.After(playingCutoff) {
+			n++
+		}
+	}
+	return n
 }
 
 func (sm *SessionManager) GetActiveSessions() []ActiveSession {

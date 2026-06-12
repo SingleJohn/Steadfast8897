@@ -35,32 +35,40 @@ export interface ToggleDef {
   key: PolicyKey
   label: string
   desc?: string
+  // effective=true 表示本服务后端真正读取并执行该权限。未标记的项仅为兼容
+  // Emby 协议保留(存库 + 回显给第三方工具),本服务自身不生效 → UI 置灰禁用。
+  effective?: boolean
+  // 置灰时的提示文案,缺省用 POLICY_UNSUPPORTED_HINT。
+  disabledHint?: string
 }
 
+// 置灰开关的通用提示。第三方 Emby 管理工具仍可通过 API 读写这些字段。
+export const POLICY_UNSUPPORTED_HINT = '本服务器未实现该限制，仅为兼容 Emby 协议保留'
+
 export const adminToggles: ToggleDef[] = [
-  { key: 'IsAdministrator', label: '管理员', desc: '拥有所有设置和内容的完全访问权限' },
-  { key: 'IsDisabled', label: '禁用此用户', desc: '被禁用的用户无法登录' },
-  { key: 'IsHidden', label: '在登录页面隐藏', desc: '隐藏的用户需要手动输入用户名' },
+  { key: 'IsAdministrator', label: '管理员', desc: '拥有所有设置和内容的完全访问权限', effective: true },
+  { key: 'IsDisabled', label: '禁用此用户', desc: '被禁用的用户无法登录', effective: true },
+  { key: 'IsHidden', label: '在登录页面隐藏', desc: '隐藏的用户需要手动输入用户名', effective: true },
   { key: 'EnableUserPreferenceAccess', label: '管理个人偏好设置' },
 ]
 
 export const playbackToggles: ToggleDef[] = [
-  { key: 'EnableMediaPlayback', label: '允许媒体播放' },
-  { key: 'EnableAudioPlaybackTranscoding', label: '允许音频转码播放' },
-  { key: 'EnableVideoPlaybackTranscoding', label: '允许视频转码播放' },
-  { key: 'EnablePlaybackRemuxing', label: '允许播放重新封装' },
+  { key: 'EnableMediaPlayback', label: '允许媒体播放', effective: true },
+  { key: 'EnableAudioPlaybackTranscoding', label: '允许音频转码播放', disabledHint: '本服务器始终直出不转码，该项无效' },
+  { key: 'EnableVideoPlaybackTranscoding', label: '允许视频转码播放', disabledHint: '本服务器始终直出不转码，该项无效' },
+  { key: 'EnablePlaybackRemuxing', label: '允许播放重新封装', disabledHint: '本服务器始终直出不转码，该项无效' },
 ]
 
 export const featureToggles: ToggleDef[] = [
-  { key: 'EnableContentDeletion', label: '允许删除媒体' },
-  { key: 'EnableContentDownloading', label: '允许下载内容' },
+  { key: 'EnableContentDeletion', label: '允许删除媒体', disabledHint: '删除为管理员专属操作，不按用户单独控制' },
+  { key: 'EnableContentDownloading', label: '允许下载内容', disabledHint: '本服务器暂未实现下载接口' },
   { key: 'EnableSubtitleManagement', label: '允许字幕管理' },
-  { key: 'EnableLiveTvAccess', label: '允许访问电视直播' },
-  { key: 'EnableLiveTvManagement', label: '允许管理电视直播' },
+  { key: 'EnableLiveTvAccess', label: '允许访问电视直播', disabledHint: '本服务器无电视直播功能' },
+  { key: 'EnableLiveTvManagement', label: '允许管理电视直播', disabledHint: '本服务器无电视直播功能' },
 ]
 
 export const remoteToggles: ToggleDef[] = [
-  { key: 'EnableRemoteAccess', label: '允许远程连接' },
+  { key: 'EnableRemoteAccess', label: '允许远程连接', disabledHint: '本服务器不区分远程/本地连接' },
   { key: 'EnableRemoteControlOfOtherUsers', label: '允许远程控制其他用户' },
   { key: 'EnableSharedDeviceControl', label: '允许远程控制共享设备' },
 ]
