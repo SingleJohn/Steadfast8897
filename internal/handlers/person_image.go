@@ -86,16 +86,31 @@ func handlePersonImageUpload(c *gin.Context, state *AppState, personID, imageTyp
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// handlePersonImageDelete 清除 person 头像(磁盘文件 + 解锁)。
-func handlePersonImageDelete(c *gin.Context, state *AppState, personID string) {
+// handlePersonImageDelete 清除 person 图片(磁盘文件 + DB)。按 imageType 分流:
+// Backdrop → 清 backdrop_path;其余(Primary/空)→ 清 image_path 并解锁。
+func handlePersonImageDelete(c *gin.Context, state *AppState, personID, imageType string) {
 	ctx := c.Request.Context()
-	if img, ok := models.GetPersonImagePath(ctx, state.DB, personID); ok {
-		// 只删 data/metadata/persons 下我们自己写的文件,绝不碰 NFO/挂载盘里的原图。
-		if isUnderPersonsDir(state, img) {
-			_ = os.Remove(img)
-		}
+	isBackdrop := strings.EqualFold(imageType, "Backdrop")
+
+	var img string
+	var ok bool
+	if isBackdrop {
+		img, ok = models.GetPersonBackdropPath(ctx, state.DB, personID)
+	} else {
+		img, ok = models.GetPersonImagePath(ctx, state.DB, personID)
 	}
-	if err := models.ClearPersonImage(ctx, state.DB, personID); err != nil {
+	if ok && isUnderPersonsDir(state, img) {
+		// 只删 data/metadata/persons 下我们自己写的文件,绝不碰 NFO/挂载盘里的原图。
+		_ = os.Remove(img)
+	}
+
+	var err error
+	if isBackdrop {
+		err = models.ClearPersonBackdrop(ctx, state.DB, personID)
+	} else {
+		err = models.ClearPersonImage(ctx, state.DB, personID)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}

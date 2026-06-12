@@ -44,6 +44,13 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/ActorImages/BackfillAll", adminMW, backfillAllActorImages)
 	u.GET("/Library/ActorImages/Summary", adminMW, actorImageSummary)
 
+	// 演员管理(后台人工核对/编辑/清理)。头像上传/删除复用 /Items/{id}/Images/...。
+	u.GET("/Library/Actors", adminMW, listActorsAdmin)
+	u.POST("/Library/Actors/BulkDelete", adminMW, bulkDeleteActors)
+	u.GET("/Library/Actors/:id", adminMW, getActorAdmin)
+	u.PATCH("/Library/Actors/:id", adminMW, updateActorAdmin)
+	u.DELETE("/Library/Actors/:id", adminMW, deleteActor)
+
 	u.POST("/Library/Refresh", adminMW, refreshAll)
 	u.POST("/Items/:itemId/Refresh", adminMW, refreshItem)
 

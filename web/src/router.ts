@@ -129,6 +129,22 @@ const router = createRouter({
             requiresAdmin: true,
           },
         },
+        {
+          path: 'media/actors',
+          name: 'media_actors',
+          component: () => import('./pages/ActorManagementPage.vue'),
+          meta: {
+            title: '演员',
+            navLabel: '演员',
+            icon: 'users',
+            section: 'media',
+            sectionLabel: '媒体内容',
+            sectionIcon: 'media',
+            sectionOrder: 2,
+            order: 4,
+            requiresAdmin: true,
+          },
+        },
 
         // ── 模块 3：网关
         {

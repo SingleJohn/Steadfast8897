@@ -342,9 +342,9 @@ func deleteImage(c *gin.Context) {
 	imageType := strings.TrimSpace(c.Param("imageType"))
 	ctx := c.Request.Context()
 
-	// itemId 命中全局 persons → 清除演员头像。
+	// itemId 命中全局 persons → 清除演员图片(按 imageType 分流 Primary/Backdrop)。
 	if _, perr := uuid.Parse(itemID); perr == nil && models.PersonExists(ctx, state.DB, itemID) {
-		handlePersonImageDelete(c, state, itemID)
+		handlePersonImageDelete(c, state, itemID, imageType)
 		return
 	}
 

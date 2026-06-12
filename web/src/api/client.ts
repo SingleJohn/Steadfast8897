@@ -729,6 +729,86 @@ export async function backfillAllActorImages() {
   });
 }
 
+// 演员管理(后台人工核对/编辑/清理)
+export interface ActorAdminRow {
+  Id: string;
+  Name: string;
+  HasImage: boolean;
+  HasBackdrop: boolean;
+  ImageLocked: boolean;
+  HasOverview: boolean;
+  ProviderCount: number;
+  TagCount: number;
+  WorkCount: number;
+  IsJunk: boolean;
+  ImageTag: string;
+}
+
+export interface ActorListParams {
+  q?: string;
+  filter?: string;
+  sort?: string;
+  order?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listActors(params: ActorListParams = {}) {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  if (params.filter) qs.set('filter', params.filter);
+  if (params.sort) qs.set('sort', params.sort);
+  if (params.order) qs.set('order', params.order);
+  if (params.limit != null) qs.set('limit', String(params.limit));
+  if (params.offset != null) qs.set('offset', String(params.offset));
+  const s = qs.toString();
+  return request<{ Items: ActorAdminRow[]; TotalRecordCount: number }>(
+    `/Library/Actors${s ? '?' + s : ''}`,
+  );
+}
+
+export async function getActor(id: string) {
+  return request<any>(`/Library/Actors/${id}`);
+}
+
+export async function updateActor(id: string, body: Record<string, any>) {
+  return request<any>(`/Library/Actors/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export async function deleteActor(id: string) {
+  return request(`/Library/Actors/${id}`, { method: 'DELETE' });
+}
+
+export async function bulkDeleteActors(ids: string[]) {
+  return request<{ Deleted: number }>(`/Library/Actors/BulkDelete`, {
+    method: 'POST',
+    body: JSON.stringify({ Ids: ids }),
+  });
+}
+
+export async function deleteAllJunkActors() {
+  return request<{ Deleted: number }>(`/Library/Actors/BulkDelete`, {
+    method: 'POST',
+    body: JSON.stringify({ AllJunk: true }),
+  });
+}
+
+export async function uploadPersonImage(personId: string, type: 'Primary' | 'Backdrop', file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch(`/Items/${personId}/Images/${type}`, {
+    method: 'POST',
+    headers: { 'X-Emby-Token': getToken() || '' },
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json().catch(() => ({}));
+}
+
+export async function deletePersonImage(personId: string, type: 'Primary' | 'Backdrop') {
+  return request(`/Items/${personId}/Images/${type}`, { method: 'DELETE' });
+}
+
 export async function restartServer() {
   return request('/System/Restart', { method: 'POST' });
 }

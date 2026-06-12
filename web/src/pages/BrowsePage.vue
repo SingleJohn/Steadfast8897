@@ -178,7 +178,20 @@ const personBackdrop = computed(() => {
   if (!d || !(d.BackdropImageTags?.length)) return ''
   return getImageUrl(d.Id, 'Backdrop', { maxWidth: 1280 })
 })
-const personOverview = computed(() => String(personDetail.value?.Overview || '').trim())
+// mdc-ng 把 <br> 当字面文本塞进 Overview。转成真正的换行(配合 CSS white-space: pre-line),
+// 并剥掉其它残留 HTML 标签 —— 不用 v-html,避免 XSS。
+const personOverview = computed(() => {
+  const raw = String(personDetail.value?.Overview || '')
+  if (!raw) return ''
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n') // <br> / <br/> / <br /> → 换行
+    .replace(/<[^>]+>/g, '')       // 去掉其它 HTML 标签
+    // 剔除 mdc-ng 自动拼接的「===== 外部链接 =====」段及其后所有内容
+    // (这些链接已用下方 chips 展示,重复且是噪声;有真实 bio 时保留 bio)。
+    .replace(/={3,}\s*外部链接\s*={3,}[\s\S]*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')    // 合并多余空行
+    .trim()
+})
 const personBirthday = computed(() => {
   const pd = personDetail.value?.PremiereDate
   return pd ? String(pd).slice(0, 10) : ''

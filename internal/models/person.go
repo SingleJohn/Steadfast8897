@@ -349,6 +349,14 @@ func SetPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID, path s
 	return err
 }
 
+// ClearPersonBackdrop 清除 person 背景图路径。
+func ClearPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID string) error {
+	_, err := pool.Exec(ctx,
+		`UPDATE persons SET backdrop_path = NULL, updated_at = NOW() WHERE id = $1::uuid`,
+		personID)
+	return err
+}
+
 // ListPersons 列出人物(供 /Persons)。search=SearchTerm(包含匹配);
 // nameStartsWith=Emby 的 NameStartsWith(前缀匹配,mdc-ng 等按名定位演员用)。两者可叠加。
 func ListPersons(ctx context.Context, pool *pgxpool.Pool, search, nameStartsWith string, limit, offset int64) ([]Person, int64, error) {
