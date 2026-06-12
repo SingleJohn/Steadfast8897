@@ -903,6 +903,77 @@ export async function getRecentPlayback(limit = 50) {
   return request<any[]>(`/user_usage_stats/RecentPlayback?limit=${limit}`);
 }
 
+export type UserUsageRankingSortBy =
+  | 'last_seen'
+  | 'total_plays'
+  | 'total_duration'
+  | 'client_count'
+  | 'player_count'
+  | 'ip_count'
+  | 'user_name'
+
+export interface UserUsageRankingParams {
+  days?: number
+  page?: number
+  page_size?: number
+  sort_by?: UserUsageRankingSortBy
+  sort_order?: 'asc' | 'desc'
+  user?: string
+  client_name?: string
+  device_name?: string
+  client_ip?: string
+  min_client_count?: number
+  min_player_count?: number
+  min_ip_count?: number
+}
+
+export interface UserUsageBucket {
+  label: string
+  count: number
+}
+
+export interface UserUsageRankingRow {
+  user_id: string
+  user_name: string
+  total_plays: number
+  total_duration: number
+  client_count: number
+  player_count: number
+  ip_count: number
+  last_seen?: string
+  last_item_name: string
+  last_client_name: string
+  last_device_name: string
+  last_client_ip: string
+  top_clients: UserUsageBucket[]
+  top_players: UserUsageBucket[]
+  top_ips: UserUsageBucket[]
+}
+
+export interface UserUsageRankingResponse {
+  items: UserUsageRankingRow[]
+  total: number
+  page: number
+  page_size: number
+  summary: {
+    active_users: number
+    total_plays: number
+    total_duration: number
+    client_count: number
+    player_count: number
+    ip_count: number
+  }
+}
+
+export async function getUserUsageRanking(params: UserUsageRankingParams = {}) {
+  const search = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    search.set(key, String(value))
+  })
+  return request<UserUsageRankingResponse>(`/Stats/UserUsageRanking?${search.toString()}`)
+}
+
 // Scrape Progress
 export async function getScrapeProgress() {
   return request<any>('/Library/Scrape/Progress');
