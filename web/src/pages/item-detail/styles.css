@@ -579,6 +579,17 @@
   overflow-x: auto;
   padding: 4px 0 14px;
   scroll-snap-type: x mandatory;
+  cursor: grab;
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-x: contain;
+}
+
+.backdrop-strip.dragging {
+  cursor: grabbing;
+  scroll-snap-type: none;
 }
 
 .backdrop-strip::-webkit-scrollbar { height: 6px; }
@@ -599,6 +610,7 @@
   scroll-snap-align: start;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
   transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  touch-action: manipulation;
 }
 
 .backdrop-thumb:hover,
@@ -633,6 +645,23 @@
   font-size: 12px;
   font-weight: 800;
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+}
+
+/* ═══ Similar Items ═══ */
+.similar-section {
+  margin-bottom: 48px;
+}
+
+.similar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 22px 16px;
+}
+
+@media (min-width: 960px) {
+  .similar-grid {
+    grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
+  }
 }
 
 /* ═══ Cast Section ═══ */
@@ -1185,6 +1214,10 @@
   .backdrop-thumb {
     flex-basis: 76vw;
     min-width: 0;
+  }
+  .similar-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 12px;
   }
   .trailer-header {
     padding: 14px 16px;

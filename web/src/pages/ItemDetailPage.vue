@@ -5,6 +5,7 @@ import { NSkeleton, useMessage } from 'naive-ui'
 import {
   getItem,
   getItems,
+  getSimilarItems,
   scrapeItemByTmdbId,
   scrapeItemMetadata,
   searchTmdbForItem,
@@ -12,6 +13,7 @@ import {
   togglePlayed,
 } from '../api/client'
 import { useAuth } from '../composables/useAuth'
+import MediaCard from '../components/MediaCard.vue'
 import BackdropGallery from './item-detail/components/BackdropGallery.vue'
 import BackdropLightbox from './item-detail/components/BackdropLightbox.vue'
 import CastCarousel from './item-detail/components/CastCarousel.vue'
@@ -36,6 +38,7 @@ const item = ref<any>(null)
 const seasons = ref<any[]>([])
 const selectedSeason = ref('')
 const episodes = ref<any[]>([])
+const similarItems = ref<any[]>([])
 const loading = ref(true)
 const scraping = ref(false)
 
@@ -69,6 +72,7 @@ async function loadItem() {
   loading.value = true
   seasons.value = []
   episodes.value = []
+  similarItems.value = []
   selectedSeason.value = ''
   activeBackdropIndex.value = 0
   showBackdropPreview.value = false
@@ -92,6 +96,15 @@ async function loadItem() {
       const epData = await getItems({ ParentId: id, SortBy: 'IndexNumber', SortOrder: 'Ascending' })
       episodes.value = epData.Items || []
     }
+
+    getSimilarItems(data.Id || id)
+      .then((res) => {
+        if (itemId.value !== id) return
+        similarItems.value = (res.Items || []).filter((entry: any) => entry?.Id && entry.Id !== data.Id)
+      })
+      .catch(() => {
+        if (itemId.value === id) similarItems.value = []
+      })
   } catch {
     // 保持原页面行为:详情加载失败时由 skeleton/空态承接,不额外打扰用户。
   } finally {
@@ -393,6 +406,19 @@ function handleTagClick(tag: string) {
         @detail="goDetail"
         @play="goPlay"
       />
+      <section v-if="similarItems.length > 0" class="similar-section" aria-labelledby="similar-heading">
+        <div class="section-title-row">
+          <h3 id="similar-heading" class="section-heading section-heading-light">相关推荐</h3>
+          <span class="section-count">{{ similarItems.length }} 项</span>
+        </div>
+        <div class="similar-grid">
+          <MediaCard
+            v-for="similar in similarItems"
+            :key="similar.Id"
+            :item="similar"
+          />
+        </div>
+      </section>
       <MediaInfoSection :item="item" :is-admin="auth.isAdmin" />
 
       <div v-if="item.Type === 'Episode' && item.SeriesName" class="back-section">

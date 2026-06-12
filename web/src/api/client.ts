@@ -209,6 +209,10 @@ export async function getItem(itemId: string) {
   return request<any>(`/Users/${userId}/Items/${itemId}`);
 }
 
+export async function getSimilarItems(itemId: string, limit = 12) {
+  return request<any>(`/Items/${itemId}/Similar?Limit=${limit}`);
+}
+
 export async function getResumeItems(limit = 12) {
   const userId = getUserId();
   return request<any>(`/Users/${userId}/Items/Resume?Limit=${limit}`);
