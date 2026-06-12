@@ -127,10 +127,7 @@ func personDetailDTO(state *AppState, p *models.Person) gin.H {
 	if etag == "" {
 		etag = p.ID
 	}
-	providerIDs := gin.H{}
-	if p.TmdbPersonID != nil {
-		providerIDs["Tmdb"] = strconv.FormatInt(int64(*p.TmdbPersonID), 10)
-	}
+	providerIDs := personProviderIDMap(p)
 	item := gin.H{
 		"Name":                  p.Name,
 		"ServerId":              state.Config.ServerID,
@@ -143,8 +140,9 @@ func personDetailDTO(state *AppState, p *models.Person) gin.H {
 		"PresentationUniqueKey": p.ID,
 		"SortName":              p.Name,
 		"ForcedSortName":        p.Name,
-		"ExternalUrls":          []gin.H{},
-		"Taglines":              []string{},
+		"ExternalUrls":          personExternalUrls(providerIDs),
+		"ProductionLocations":   strOrEmpty(p.ProductionLocations),
+		"Taglines":              strOrEmpty(p.Taglines),
 		"RemoteTrailers":        []gin.H{},
 		"ProviderIds":           providerIDs,
 		"Type":                  "Person",
@@ -154,15 +152,97 @@ func personDetailDTO(state *AppState, p *models.Person) gin.H {
 		"LockedFields":          []string{},
 		"LockData":              false,
 	}
+	if p.Overview != nil && *p.Overview != "" {
+		item["Overview"] = *p.Overview
+	}
+	if pd := personPremiereDate(p); pd != "" {
+		item["PremiereDate"] = pd
+	}
+	if p.ProductionYear != nil {
+		item["ProductionYear"] = *p.ProductionYear
+	}
+	// Genres/Tags 仅在有值时输出：空时与真实 Emby 详情一致(不返回该键，规避客户端
+	// deny_unknown 风险)；有值时如实暴露给其它客户端(三围/身高/罩杯等存在 Tags 里)。
+	if len(p.Genres) > 0 {
+		item["Genres"] = p.Genres
+	}
+	if len(p.Tags) > 0 {
+		item["Tags"] = p.Tags
+	}
 	if p.ImagePath != nil && *p.ImagePath != "" {
-		tag := p.ImageTag
-		if tag == "" {
-			tag = p.ID
-		}
+		tag := imageTagOr(p, p.ImageTag)
 		item["ImageTags"] = gin.H{"Primary": tag}
 		item["PrimaryImageAspectRatio"] = 0.6666666666666666
 	}
+	if p.BackdropPath != nil && *p.BackdropPath != "" {
+		item["BackdropImageTags"] = []string{imageTagOr(p, p.ImageTag)}
+	}
 	return item
+}
+
+// personProviderIDMap 合并完整外部 id 映射 + Tmdb 兜底(键 "Tmdb",Emby 习惯)。
+func personProviderIDMap(p *models.Person) map[string]string {
+	out := map[string]string{}
+	for k, v := range p.ProviderIDs {
+		out[k] = v
+	}
+	if p.TmdbPersonID != nil {
+		if _, ok := out["Tmdb"]; !ok {
+			out["Tmdb"] = strconv.FormatInt(int64(*p.TmdbPersonID), 10)
+		}
+	}
+	return out
+}
+
+// personExternalUrls 依据外部 id 生成 Emby 风格 ExternalUrls(IMDb / TheMovieDb)。
+func personExternalUrls(ids map[string]string) []gin.H {
+	out := []gin.H{}
+	get := func(want string) string {
+		for k, v := range ids {
+			if strings.EqualFold(k, want) && strings.TrimSpace(v) != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	if v := get("Imdb"); v != "" {
+		out = append(out, gin.H{"Name": "IMDb", "Url": "https://www.imdb.com/name/" + v})
+	}
+	if v := get("Tmdb"); v != "" {
+		out = append(out, gin.H{"Name": "TheMovieDb", "Url": "https://www.themoviedb.org/person/" + v})
+	}
+	return out
+}
+
+// personPremiereDate 把存储的 "YYYY-MM-DD"(或已含 T 的串)转 Emby 时间串;空则 ""。
+func personPremiereDate(p *models.Person) string {
+	if p.PremiereDate == nil {
+		return ""
+	}
+	s := strings.TrimSpace(*p.PremiereDate)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "T") {
+		return s
+	}
+	return s + "T00:00:00.0000000Z"
+}
+
+// strOrEmpty 把可能为 nil 的切片渲染成 JSON 数组([] 而非 null)。
+func strOrEmpty(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+// imageTagFallback 取图片 tag(updated_at epoch),为空时退回 person id。
+func imageTagOr(p *models.Person, tag string) string {
+	if tag != "" {
+		return tag
+	}
+	return p.ID
 }
 
 // embyTimestampFromEpoch 把 Unix 秒 epoch 字符串格式化成 Emby 的时间串（7 位小数 + Z）。
@@ -175,35 +255,35 @@ func embyTimestampFromEpoch(epoch string) string {
 	return time.Unix(n, 0).UTC().Format("2006-01-02T15:04:05.0000000") + "Z"
 }
 
-// personItemDTO 把全局 person 渲染成 Emby 风格的 BaseItem（列表项与单条详情共用）。
-// 仅当 person 实际有头像时才带 ImageTags.Primary / PrimaryImageTag —— 这样
-// 客户端（gfriends-inputer / mdc-ng）能据此判断谁缺头像。
+// personItemDTO 把全局 person 渲染成 Emby `/Persons` 列表项(对齐真实 Emby:Name/
+// ServerId/Id/DateCreated/Type/UserData/ImageTags/BackdropImageTags,Overview 在有值时附带)。
+// 仅当 person 实际有头像时才带 ImageTags.Primary —— 客户端据此判断谁缺头像。
 func personItemDTO(state *AppState, p *models.Person) gin.H {
 	item := gin.H{
-		"Name":         p.Name,
-		"Id":           p.ID,
-		"Type":         "Person",
-		"ServerId":     state.Config.ServerID,
-		"ImageTags":    gin.H{},
-		"IsFolder":     false,
-		"LocationType": "Virtual",
+		"Name":              p.Name,
+		"ServerId":          state.Config.ServerID,
+		"Id":                p.ID,
+		"DateCreated":       embyTimestampFromEpoch(p.ImageTag),
+		"Type":              "Person",
+		"ImageTags":         gin.H{},
+		"BackdropImageTags": []string{},
+		"ProviderIds":       personProviderIDMap(p),
+		"UserData": gin.H{
+			"PlaybackPositionTicks": 0,
+			"PlayCount":             0,
+			"IsFavorite":            false,
+			"Played":                false,
+		},
 	}
 	if p.ImagePath != nil && *p.ImagePath != "" {
-		tag := p.ImageTag
-		if tag == "" {
-			tag = p.ID
-		}
-		item["ImageTags"] = gin.H{"Primary": tag}
-		item["PrimaryImageTag"] = tag
+		item["ImageTags"] = gin.H{"Primary": imageTagOr(p, p.ImageTag)}
+	}
+	if p.BackdropPath != nil && *p.BackdropPath != "" {
+		item["BackdropImageTags"] = []string{imageTagOr(p, p.ImageTag)}
 	}
 	if p.Overview != nil && *p.Overview != "" {
 		item["Overview"] = *p.Overview
 	}
-	providerIDs := gin.H{}
-	if p.TmdbPersonID != nil {
-		providerIDs["Tmdb"] = strconv.FormatInt(int64(*p.TmdbPersonID), 10)
-	}
-	item["ProviderIds"] = providerIDs
 	return item
 }
 

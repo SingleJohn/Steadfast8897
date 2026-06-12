@@ -192,23 +192,44 @@ func updateItemMetadata(c *gin.Context) {
 	}
 
 	var body struct {
-		Overview    *string           `json:"Overview"`
-		ProviderIds map[string]string `json:"ProviderIds"`
+		Overview            *string           `json:"Overview"`
+		PremiereDate        *string           `json:"PremiereDate"`
+		ProductionYear      *int32            `json:"ProductionYear"`
+		ProductionLocations []string          `json:"ProductionLocations"`
+		Genres              []string          `json:"Genres"`
+		Tags                []string          `json:"Tags"`
+		Taglines            []string          `json:"Taglines"`
+		ProviderIds         map[string]string `json:"ProviderIds"`
 	}
 	_ = c.ShouldBindJSON(&body) // 容错:解析失败也按“无可更新字段”处理,仍返回 204
 
-	var overview *string
-	if body.Overview != nil {
-		if s := strings.TrimSpace(*body.Overview); s != "" {
-			overview = &s
-		}
+	upd := models.PersonMetadataUpdate{
+		Overview:            nonEmptyPtr(body.Overview),
+		PremiereDate:        nonEmptyPtr(body.PremiereDate),
+		ProductionYear:      body.ProductionYear,
+		ProductionLocations: body.ProductionLocations,
+		Genres:              body.Genres,
+		Tags:                body.Tags,
+		Taglines:            body.Taglines,
+		ProviderIDs:         body.ProviderIds,
+		TmdbPersonID:        tmdbFromProviderIds(body.ProviderIds),
 	}
-
-	if err := models.UpdatePersonMetadata(ctx, state.DB, itemID, overview, tmdbFromProviderIds(body.ProviderIds)); err != nil {
+	if err := models.UpdatePersonMetadata(ctx, state.DB, itemID, upd); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// nonEmptyPtr 把指针字符串里的空白/空串视作“未提供”(返回 nil,保留原值)。
+func nonEmptyPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	if t := strings.TrimSpace(*s); t != "" {
+		return &t
+	}
+	return nil
 }
 
 // tmdbFromProviderIds 从 Emby ProviderIds 里抽 TMDB person id(键大小写兼容)。
@@ -232,7 +253,7 @@ func uploadImage(c *gin.Context) {
 
 	// itemId 命中全局 persons → 演员头像上传(写 persons,全库同名生效)。
 	if _, perr := uuid.Parse(itemID); perr == nil && models.PersonExists(ctx, state.DB, itemID) {
-		handlePersonImageUpload(c, state, itemID)
+		handlePersonImageUpload(c, state, itemID, imageType)
 		return
 	}
 

@@ -19,7 +19,18 @@ const personsImageSubdir = "persons"
 // handlePersonImageUpload 处理 person 头像上传。uploadImage 在 itemId 命中 persons
 // 表时分流到此。写 persons.image_path 并锁定 —— 全库同名条目随之生效。
 // 兼容 Emby/第三方客户端:body 可能是 multipart file、原始二进制或 base64 文本。
-func handlePersonImageUpload(c *gin.Context, state *AppState, personID string) {
+//
+// persons 有两张图:Primary(头像 image_path)与 Backdrop(背景图 backdrop_path),分别落
+// 不同文件与列。Thumb 等其它 imageType 接受但不写(返 204),否则像 mdc-ng「Primary→Backdrop」
+// 的上传序若都往同一文件写,会互相覆盖。
+func handlePersonImageUpload(c *gin.Context, state *AppState, personID, imageType string) {
+	isPrimary := imageType == "" || strings.EqualFold(imageType, "Primary")
+	isBackdrop := strings.EqualFold(imageType, "Backdrop")
+	if !isPrimary && !isBackdrop {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
 	ctx := c.Request.Context()
 
 	var data []byte
@@ -50,14 +61,26 @@ func handlePersonImageUpload(c *gin.Context, state *AppState, personID string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	// 文件名用 personID,重传覆盖,稳定可预测。
-	fpath := filepath.Join(dir, personID+ext)
+
+	// 文件名用 personID(+backdrop 后缀),重传覆盖,稳定可预测。
+	suffix := ""
+	if isBackdrop {
+		suffix = "-backdrop"
+	}
+	fpath := filepath.Join(dir, personID+suffix+ext)
 	if err := os.WriteFile(fpath, data, 0644); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if err := models.SetPersonImage(ctx, state.DB, personID, fpath, true); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+
+	var derr error
+	if isBackdrop {
+		derr = models.SetPersonBackdrop(ctx, state.DB, personID, fpath)
+	} else {
+		derr = models.SetPersonImage(ctx, state.DB, personID, fpath, true)
+	}
+	if derr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": derr.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

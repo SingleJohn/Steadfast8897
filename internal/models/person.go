@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -27,6 +28,42 @@ type Person struct {
 	TmdbPersonID *int32
 	Overview     *string
 	ImageTag     string // 随 updated_at 变化,用于客户端缓存失效
+
+	// 第三方刮削器(mdc-ng 等)回写并完整保存的扩展资料(迁移 060)。
+	PremiereDate        *string           // 出生日期 "YYYY-MM-DD"
+	ProductionYear      *int32            // 出生年
+	ProductionLocations []string          // 出身地
+	Genres              []string          //
+	Tags                []string          // 罩杯/身高/三围/年龄/生涯/账号 等
+	Taglines            []string          //
+	ProviderIDs         map[string]string // 完整外部 id 映射
+	BackdropPath        *string           // 背景图(独立于头像 ImagePath)
+}
+
+// personColumns 是 GetPersonByName/ByID/ListPersons 共用的列清单与 scanPerson 对应。
+// jsonb 列统一 ::text 取出，scanPerson 再 Unmarshal —— 不依赖 pgx 对 jsonb 的扫描细节。
+const personColumns = `id::text, name, image_path, image_locked, tmdb_person_id, overview,
+	EXTRACT(EPOCH FROM updated_at)::bigint::text,
+	premiere_date, production_year,
+	production_locations::text, genres::text, tags::text, taglines::text, provider_ids::text, backdrop_path`
+
+// scanPerson 扫描 personColumns 一行。jsonb 列以 text 入再 Unmarshal(空值容错)。
+func scanPerson(row pgx.Row) (*Person, error) {
+	var p Person
+	var locs, genres, tags, taglines, providerIDs string
+	if err := row.Scan(
+		&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag,
+		&p.PremiereDate, &p.ProductionYear,
+		&locs, &genres, &tags, &taglines, &providerIDs, &p.BackdropPath,
+	); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(locs), &p.ProductionLocations)
+	_ = json.Unmarshal([]byte(genres), &p.Genres)
+	_ = json.Unmarshal([]byte(tags), &p.Tags)
+	_ = json.Unmarshal([]byte(taglines), &p.Taglines)
+	_ = json.Unmarshal([]byte(providerIDs), &p.ProviderIDs)
+	return &p, nil
 }
 
 // EnsurePersonsForItem 为某 item 下还没有 person_id 的 cast_members 建立/关联 persons。
@@ -219,49 +256,96 @@ func PersonExists(ctx context.Context, pool *pgxpool.Pool, id string) bool {
 // GetPersonByName 按精确姓名取单个 person（对齐 Emby `GET /Persons/{Name}` 的 Items-by-Name
 // 详情语义）。未命中返回 (nil, nil)，由调用方决定返回 404。
 func GetPersonByName(ctx context.Context, pool *pgxpool.Pool, name string) (*Person, error) {
-	var p Person
-	err := pool.QueryRow(ctx,
-		`SELECT id::text, name, image_path, image_locked, tmdb_person_id, overview,
-		        EXTRACT(EPOCH FROM updated_at)::bigint::text
-		   FROM persons WHERE name = $1 LIMIT 1`, name).Scan(
-		&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	p, err := scanPerson(pool.QueryRow(ctx,
+		`SELECT `+personColumns+` FROM persons WHERE name = $1 LIMIT 1`, name))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return &p, nil
+	return p, err
 }
 
 // GetPersonByID 按 person id 取单个 person（Emby 里 person 也是 item，
 // `GET /Items/{personId}` 复用此与 GetPersonByName 同构的详情）。未命中或 id 非法返回 (nil, nil)。
 func GetPersonByID(ctx context.Context, pool *pgxpool.Pool, id string) (*Person, error) {
-	var p Person
-	err := pool.QueryRow(ctx,
-		`SELECT id::text, name, image_path, image_locked, tmdb_person_id, overview,
-		        EXTRACT(EPOCH FROM updated_at)::bigint::text
-		   FROM persons WHERE id = $1::uuid LIMIT 1`, id).Scan(
-		&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	p, err := scanPerson(pool.QueryRow(ctx,
+		`SELECT `+personColumns+` FROM persons WHERE id = $1::uuid LIMIT 1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return &p, nil
+	return p, err
 }
 
-// UpdatePersonMetadata 持久化第三方刮削器(mdc-ng 等)POST /Items/{personId} 回写的演员
-// 字段。仅更新 persons 表已有的列:overview、tmdb_person_id。两者均为 nil 时只 bump
-// updated_at(令客户端缓存失效)。COALESCE 保证只覆盖显式提供的字段。
-func UpdatePersonMetadata(ctx context.Context, pool *pgxpool.Pool, id string, overview *string, tmdbID *int32) error {
+// PersonMetadataUpdate 是 POST /Items/{personId} 回写的演员资料。每个字段：指针/切片/映射
+// 为 nil 表示“本次未提供，保留原值”；非 nil（含空切片/空串）表示显式覆盖。
+type PersonMetadataUpdate struct {
+	Overview            *string
+	PremiereDate        *string
+	ProductionYear      *int32
+	ProductionLocations []string
+	Genres              []string
+	Tags                []string
+	Taglines            []string
+	ProviderIDs         map[string]string
+	TmdbPersonID        *int32
+}
+
+// UpdatePersonMetadata 完整持久化第三方刮削器(mdc-ng 等)回写的演员资料。
+// COALESCE 保证只覆盖本次显式提供的字段；jsonb 列由 jsonbArg 决定传 nil(保留)或新值。
+func UpdatePersonMetadata(ctx context.Context, pool *pgxpool.Pool, id string, u PersonMetadataUpdate) error {
 	_, err := pool.Exec(ctx,
 		`UPDATE persons
-		    SET overview = COALESCE($2, overview),
-		        tmdb_person_id = COALESCE($3, tmdb_person_id),
-		        updated_at = NOW()
-		  WHERE id = $1::uuid`, id, overview, tmdbID)
+		    SET overview              = COALESCE($2, overview),
+		        premiere_date         = COALESCE($3, premiere_date),
+		        production_year       = COALESCE($4, production_year),
+		        tmdb_person_id        = COALESCE($5, tmdb_person_id),
+		        production_locations  = COALESCE($6::jsonb, production_locations),
+		        genres                = COALESCE($7::jsonb, genres),
+		        tags                  = COALESCE($8::jsonb, tags),
+		        taglines              = COALESCE($9::jsonb, taglines),
+		        provider_ids          = COALESCE($10::jsonb, provider_ids),
+		        updated_at            = NOW()
+		  WHERE id = $1::uuid`,
+		id, u.Overview, u.PremiereDate, u.ProductionYear, u.TmdbPersonID,
+		jsonbArg(u.ProductionLocations), jsonbArg(u.Genres), jsonbArg(u.Tags),
+		jsonbArg(u.Taglines), jsonbMapArg(u.ProviderIDs))
+	return err
+}
+
+// jsonbArg 把切片转成 jsonb 入参的 JSON 文本(配合 SQL 里的 $n::jsonb 转换):
+// nil 切片 → nil(COALESCE 保留原值);非 nil(含空切片)→ JSON 文本(显式覆盖，空切片写 '[]')。
+// 必须传文本而非 []byte —— pgx 会把 []byte 当 bytea 发送，与 jsonb 列类型不匹配。
+func jsonbArg(v []string) any {
+	if v == nil {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func jsonbMapArg(v map[string]string) any {
+	if v == nil {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// GetPersonBackdropPath 取 person 背景图路径(serveImage 处理 Backdrop 用)。
+func GetPersonBackdropPath(ctx context.Context, pool *pgxpool.Pool, personID string) (string, bool) {
+	var img *string
+	if err := pool.QueryRow(ctx,
+		`SELECT backdrop_path FROM persons WHERE id = $1::uuid`, personID).Scan(&img); err != nil ||
+		img == nil || *img == "" {
+		return "", false
+	}
+	return *img, true
+}
+
+// SetPersonBackdrop 写入 person 背景图路径。
+func SetPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID, path string) error {
+	_, err := pool.Exec(ctx,
+		`UPDATE persons SET backdrop_path = $1, updated_at = NOW() WHERE id = $2::uuid`,
+		path, personID)
 	return err
 }
 
@@ -278,9 +362,7 @@ func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, 
 		return nil, 0, err
 	}
 
-	listSQL := `SELECT id::text, name, image_path, image_locked, tmdb_person_id, overview,
-	                   EXTRACT(EPOCH FROM updated_at)::bigint::text
-	              FROM persons` + where + ` ORDER BY name`
+	listSQL := `SELECT ` + personColumns + ` FROM persons` + where + ` ORDER BY name`
 	listArgs := append([]any{}, args...)
 	// limit <= 0 表示不限量（对齐 Emby /Persons 未传 Limit 的语义，返回全部）。
 	if limit > 0 {
@@ -298,11 +380,11 @@ func ListPersons(ctx context.Context, pool *pgxpool.Pool, search string, limit, 
 
 	var result []Person
 	for rows.Next() {
-		var p Person
-		if err := rows.Scan(&p.ID, &p.Name, &p.ImagePath, &p.ImageLocked, &p.TmdbPersonID, &p.Overview, &p.ImageTag); err != nil {
+		p, err := scanPerson(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		result = append(result, p)
+		result = append(result, *p)
 	}
 	return result, total, rows.Err()
 }

@@ -235,9 +235,16 @@ func serveImage(c *gin.Context, state *AppState) {
 		var libImgPath *string
 		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&libImgPath)
 		if lerr != nil || libImgPath == nil || *libImgPath == "" {
-			// 演员头像:itemId 可能是全局 persons.id(新)或 cast_members.id(旧/兜底)。
-			// Emby 客户端请求 GET /Items/{personId}/Images/Primary,personId 不在 items 表。
-			if img, ok := models.GetPersonImagePath(ctx, state.DB, *uid); ok {
+			// 演员图:itemId 可能是全局 persons.id(新)或 cast_members.id(旧/兜底)。
+			// Emby 客户端请求 GET /Items/{personId}/Images/{Primary|Backdrop},personId 不在 items 表。
+			if strings.EqualFold(imageType, "Backdrop") {
+				if img, ok := models.GetPersonBackdropPath(ctx, state.DB, *uid); ok {
+					castImageURL = img
+				} else {
+					c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+					return
+				}
+			} else if img, ok := models.GetPersonImagePath(ctx, state.DB, *uid); ok {
 				castImageURL = img
 			} else {
 				var imgURL *string
