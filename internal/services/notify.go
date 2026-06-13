@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -264,10 +265,87 @@ func (d *NotifyDispatcher) buildEnvelope(ctx context.Context, e NotifyEvent) (*n
 		if item != nil {
 			env.Item = dto.FormatItemDto(item, d.cfg.ServerID, e.UserData)
 		} else {
-			env.Item = map[string]string{"Id": e.ItemID}
+			person, perr := models.GetPersonByID(ctx, d.pool, e.ItemID)
+			if perr != nil {
+				return nil, perr
+			}
+			if person != nil {
+				env.Item = notifyPersonItem(d.cfg.ServerID, person, e.UserData)
+			} else {
+				env.Item = map[string]string{"Id": e.ItemID}
+			}
 		}
 	}
 	return env, nil
+}
+
+func notifyPersonItem(serverID string, p *models.Person, userData *dto.UserDataRow) map[string]any {
+	ts := notifyPersonTimestamp(p.ImageTag)
+	etag := p.ImageTag
+	if etag == "" {
+		etag = p.ID
+	}
+	out := map[string]any{
+		"Name":                  p.Name,
+		"ServerId":              serverID,
+		"Id":                    p.ID,
+		"Etag":                  etag,
+		"DateCreated":           ts,
+		"DateModified":          ts,
+		"CanDelete":             false,
+		"CanDownload":           false,
+		"PresentationUniqueKey": p.ID,
+		"SortName":              p.Name,
+		"ForcedSortName":        p.Name,
+		"Type":                  "Person",
+		"DisplayPreferencesId":  p.ID,
+		"ImageTags":             map[string]string{},
+		"BackdropImageTags":     []string{},
+		"ProviderIds":           p.ProviderIDs,
+		"UserData":              notifyPersonUserData(userData),
+	}
+	if p.ImagePath != nil && *p.ImagePath != "" {
+		out["ImageTags"] = map[string]string{"Primary": etag}
+		out["PrimaryImageAspectRatio"] = 0.6666666666666666
+	}
+	if p.BackdropPath != nil && *p.BackdropPath != "" {
+		out["BackdropImageTags"] = []string{etag}
+	}
+	if p.Overview != nil && *p.Overview != "" {
+		out["Overview"] = *p.Overview
+	}
+	if p.ProductionYear != nil {
+		out["ProductionYear"] = *p.ProductionYear
+	}
+	if p.PremiereDate != nil && strings.TrimSpace(*p.PremiereDate) != "" {
+		pd := strings.TrimSpace(*p.PremiereDate)
+		if !strings.Contains(pd, "T") {
+			pd += "T00:00:00.0000000Z"
+		}
+		out["PremiereDate"] = pd
+	}
+	return out
+}
+
+func notifyPersonUserData(userData *dto.UserDataRow) map[string]any {
+	isFavorite := false
+	if userData != nil && userData.IsFavorite != nil {
+		isFavorite = *userData.IsFavorite
+	}
+	return map[string]any{
+		"PlaybackPositionTicks": int64(0),
+		"PlayCount":             int32(0),
+		"IsFavorite":            isFavorite,
+		"Played":                false,
+	}
+}
+
+func notifyPersonTimestamp(epoch string) string {
+	n, err := strconv.ParseInt(strings.TrimSpace(epoch), 10, 64)
+	if err != nil || n <= 0 {
+		return "2020-01-01T00:00:00.0000000Z"
+	}
+	return time.Unix(n, 0).UTC().Format("2006-01-02T15:04:05.0000000") + "Z"
 }
 
 func defaultNotifyTitle(e NotifyEvent) string {

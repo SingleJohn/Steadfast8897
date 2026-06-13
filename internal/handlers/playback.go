@@ -652,6 +652,16 @@ func MarkFavorite(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if _, err := uuid.Parse(itemID); err == nil && models.PersonExists(c.Request.Context(), st.DB, itemID) {
+		if err := models.UpsertUserPersonFavorite(c.Request.Context(), st.DB, userID, itemID, true); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		ud := models.PersonUserDataRow(true)
+		services.EmitUserDataNotify(services.NotifyEventItemRate, itemID, userID, notifyUserName(c.Request.Context(), st, userID), ud)
+		c.JSON(http.StatusOK, userDataResponse(ud))
+		return
+	}
 	resolved, err := models.ResolveToUUID(c.Request.Context(), st.DB, itemID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -668,7 +678,7 @@ func MarkFavorite(c *gin.Context) {
 	}
 	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
 	services.EmitUserDataNotify(services.NotifyEventItemRate, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
-	c.JSON(http.StatusOK, gin.H{"IsFavorite": true})
+	c.JSON(http.StatusOK, userDataResponse(ud))
 }
 
 func UnmarkFavorite(c *gin.Context) {
@@ -679,6 +689,16 @@ func UnmarkFavorite(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if _, err := uuid.Parse(itemID); err == nil && models.PersonExists(c.Request.Context(), st.DB, itemID) {
+		if err := models.UpsertUserPersonFavorite(c.Request.Context(), st.DB, userID, itemID, false); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		ud := models.PersonUserDataRow(false)
+		services.EmitUserDataNotify(services.NotifyEventItemRate, itemID, userID, notifyUserName(c.Request.Context(), st, userID), ud)
+		c.JSON(http.StatusOK, userDataResponse(ud))
+		return
+	}
 	resolved, err := models.ResolveToUUID(c.Request.Context(), st.DB, itemID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -695,7 +715,32 @@ func UnmarkFavorite(c *gin.Context) {
 	}
 	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
 	services.EmitUserDataNotify(services.NotifyEventItemRate, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
-	c.JSON(http.StatusOK, gin.H{"IsFavorite": false})
+	c.JSON(http.StatusOK, userDataResponse(ud))
+}
+
+func userDataResponse(ud *dto.UserDataRow) gin.H {
+	resp := gin.H{
+		"PlaybackPositionTicks": int64(0),
+		"PlayCount":             int32(0),
+		"IsFavorite":            false,
+		"Played":                false,
+	}
+	if ud == nil {
+		return resp
+	}
+	if ud.PlaybackPositionTicks != nil {
+		resp["PlaybackPositionTicks"] = *ud.PlaybackPositionTicks
+	}
+	if ud.PlayCount != nil {
+		resp["PlayCount"] = *ud.PlayCount
+	}
+	if ud.IsFavorite != nil {
+		resp["IsFavorite"] = *ud.IsFavorite
+	}
+	if ud.Played != nil {
+		resp["Played"] = *ud.Played
+	}
+	return resp
 }
 
 // HideFromResume 处理 POST /Users/:userId/Items/:itemId/HideFromResume?Hide=true|false

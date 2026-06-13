@@ -91,8 +91,23 @@ func getPersons(c *gin.Context, state *AppState) {
 	}
 
 	items := make([]gin.H, 0, len(persons))
+	userID := resolveUserID(c)
+	personIDs := make([]string, 0, len(persons))
 	for i := range persons {
-		items = append(items, personItemDTO(state, &persons[i]))
+		personIDs = append(personIDs, persons[i].ID)
+	}
+	favoriteMap := map[string]bool{}
+	if userID != "" {
+		if m, merr := models.GetUserPersonFavoriteMap(c.Request.Context(), state.DB, userID, personIDs); merr == nil {
+			favoriteMap = m
+		}
+	}
+	for i := range persons {
+		var ud *dto.UserDataRow
+		if fav, ok := favoriteMap[persons[i].ID]; ok {
+			ud = models.PersonUserDataRow(fav)
+		}
+		items = append(items, personItemDTO(state, &persons[i], ud))
 	}
 	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": total})
 }
@@ -114,7 +129,14 @@ func getPersonByName(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Not found"})
 		return
 	}
-	c.JSON(http.StatusOK, personDetailDTO(state, p))
+	userID := resolveUserID(c)
+	var ud *dto.UserDataRow
+	if userID != "" {
+		if u, uerr := models.GetUserPersonData(c.Request.Context(), state.DB, userID, p.ID); uerr == nil {
+			ud = u
+		}
+	}
+	c.JSON(http.StatusOK, personDetailDTO(state, p, ud))
 }
 
 // personDetailDTO 严格镜像真实 Emby `GET /Persons/{Name}` 的返回字段集（依据官方
@@ -122,7 +144,7 @@ func getPersonByName(c *gin.Context, state *AppState) {
 // 按真实 Emby 建模并 deny_unknown_fields——多出 Emby 不返回的字段（IsFolder /
 // LocationType / Overview / PrimaryImageTag 等）会触发 "error decoding response body"，
 // 故此处刻意不复用更宽松的 personItemDTO，也不附加任何 Emby 不返回的字段。
-func personDetailDTO(state *AppState, p *models.Person) gin.H {
+func personDetailDTO(state *AppState, p *models.Person, userData *dto.UserDataRow) gin.H {
 	ts := embyTimestampFromEpoch(p.ImageTag)
 	etag := p.ImageTag
 	if etag == "" {
@@ -152,6 +174,7 @@ func personDetailDTO(state *AppState, p *models.Person) gin.H {
 		"BackdropImageTags":     []string{},
 		"LockedFields":          []string{},
 		"LockData":              false,
+		"UserData":              personUserDataDTO(userData),
 	}
 	if p.Overview != nil && *p.Overview != "" {
 		item["Overview"] = *p.Overview
@@ -246,6 +269,19 @@ func imageTagOr(p *models.Person, tag string) string {
 	return p.ID
 }
 
+func personUserDataDTO(userData *dto.UserDataRow) gin.H {
+	isFavorite := false
+	if userData != nil && userData.IsFavorite != nil {
+		isFavorite = *userData.IsFavorite
+	}
+	return gin.H{
+		"PlaybackPositionTicks": 0,
+		"PlayCount":             0,
+		"IsFavorite":            isFavorite,
+		"Played":                false,
+	}
+}
+
 // embyTimestampFromEpoch 把 Unix 秒 epoch 字符串格式化成 Emby 的时间串（7 位小数 + Z）。
 // 用于 DateCreated / DateModified —— mdc-ng 会按 DateTime 解析，必须是合法格式。
 func embyTimestampFromEpoch(epoch string) string {
@@ -259,7 +295,7 @@ func embyTimestampFromEpoch(epoch string) string {
 // personItemDTO 把全局 person 渲染成 Emby `/Persons` 列表项(对齐真实 Emby:Name/
 // ServerId/Id/DateCreated/Type/UserData/ImageTags/BackdropImageTags,Overview 在有值时附带)。
 // 仅当 person 实际有头像时才带 ImageTags.Primary —— 客户端据此判断谁缺头像。
-func personItemDTO(state *AppState, p *models.Person) gin.H {
+func personItemDTO(state *AppState, p *models.Person, userData *dto.UserDataRow) gin.H {
 	item := gin.H{
 		"Name":              p.Name,
 		"ServerId":          state.Config.ServerID,
@@ -269,12 +305,7 @@ func personItemDTO(state *AppState, p *models.Person) gin.H {
 		"ImageTags":         gin.H{},
 		"BackdropImageTags": []string{},
 		"ProviderIds":       personProviderIDMap(p),
-		"UserData": gin.H{
-			"PlaybackPositionTicks": 0,
-			"PlayCount":             0,
-			"IsFavorite":            false,
-			"Played":                false,
-		},
+		"UserData":          personUserDataDTO(userData),
 	}
 	if p.ImagePath != nil && *p.ImagePath != "" {
 		item["ImageTags"] = gin.H{"Primary": imageTagOr(p, p.ImageTag)}

@@ -3,14 +3,17 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/dto"
@@ -413,7 +416,14 @@ func getItemDetail(c *gin.Context) {
 	// 第三方刮削器（mdc-ng）取详情/回填前会拉这个 URL。
 	if _, perr := uuid.Parse(itemID); perr == nil {
 		if person, perr2 := models.GetPersonByID(ctx, state.DB, itemID); perr2 == nil && person != nil {
-			c.JSON(http.StatusOK, personDetailDTO(state, person))
+			userID := resolveUserID(c)
+			var ud *dto.UserDataRow
+			if userID != "" {
+				if u, uerr := models.GetUserPersonData(ctx, state.DB, userID, itemID); uerr == nil {
+					ud = u
+				}
+			}
+			c.JSON(http.StatusOK, personDetailDTO(state, person, ud))
 			return
 		}
 	}
@@ -629,6 +639,12 @@ func getSimilarItems(c *gin.Context) {
 	state := GetState(c)
 	itemID := c.Param("itemId")
 	ctx := c.Request.Context()
+	limit := int64(12)
+	if s := strings.TrimSpace(queryAny(c, "Limit", "limit")); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			limit = n
+		}
+	}
 
 	resolved, err := models.ResolveToUUID(ctx, state.DB, itemID)
 	if err != nil || resolved == nil {
@@ -639,6 +655,14 @@ func getSimilarItems(c *gin.Context) {
 	var libID string
 	err = state.DB.QueryRow(ctx, "SELECT library_id::text FROM items WHERE id = $1::uuid", *resolved).Scan(&libID)
 	if err != nil {
+		if models.PersonExists(ctx, state.DB, *resolved) {
+			c.JSON(http.StatusOK, gin.H{"Items": []dto.BaseItemDto{}, "TotalRecordCount": 0})
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -646,8 +670,8 @@ func getSimilarItems(c *gin.Context) {
 	idRows, err := state.DB.Query(ctx,
 		`SELECT id::text FROM items WHERE library_id = $1::uuid AND id <> $2::uuid
 		 AND type IN ('Movie', 'Series', 'Episode', 'Video')
-		 ORDER BY RANDOM() LIMIT 12`,
-		libID, *resolved)
+		 ORDER BY RANDOM() LIMIT $3::bigint`,
+		libID, *resolved, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
