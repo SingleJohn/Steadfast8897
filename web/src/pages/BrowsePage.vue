@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
-import { NEmpty, NIcon, NSelect, NTag } from 'naive-ui'
-import { FunnelOutline } from '@vicons/ionicons5'
-import { getItems, getItem, getImageUrl } from '../api/client'
+import { NEmpty, NIcon, NSelect, NTag, useMessage } from 'naive-ui'
+import { FunnelOutline, Heart, HeartOutline } from '@vicons/ionicons5'
+import { getItems, getItem, getImageUrl, toggleFavorite } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
 import ItemGrid from '../components/ItemGrid.vue'
 
@@ -28,6 +28,7 @@ const STATUS_OPTIONS: { label: string; value: StatusFilter }[] = [
 ]
 
 const route = useRoute()
+const message = useMessage()
 
 const items = ref<any[]>([])
 const totalCount = ref(0)
@@ -156,11 +157,14 @@ watch([kind, value, displayName, statusFilter, sortBy, sortOrder], () => {
 // /Items/{personId} 现已返回完整 Emby person 详情;value 为 person UUID 时才取。
 const personDetail = ref<any>(null)
 const avatarBroken = ref(false)
+const favoriteBusy = ref(false)
 const showPersonHero = computed(() => kind.value === 'person' && !!personDetail.value)
+const personIsFavorite = computed(() => !!personDetail.value?.UserData?.IsFavorite)
 
 watch([kind, value], () => {
   personDetail.value = null
   avatarBroken.value = false
+  favoriteBusy.value = false
   if (kind.value === 'person' && isUuidLike(value.value)) {
     getItem(value.value)
       .then((d) => { if (d && d.Type === 'Person') personDetail.value = d })
@@ -218,6 +222,27 @@ const personLinks = computed<{ name: string; url: string }[]>(() => {
   return out
 })
 
+async function handlePersonFavorite() {
+  if (!personDetail.value || favoriteBusy.value) return
+  const next = !personIsFavorite.value
+  favoriteBusy.value = true
+  try {
+    const userData = await toggleFavorite(personDetail.value.Id, next) as any
+    personDetail.value = {
+      ...personDetail.value,
+      UserData: {
+        ...(personDetail.value.UserData || {}),
+        ...(userData || {}),
+        IsFavorite: userData?.IsFavorite ?? next,
+      },
+    }
+  } catch (e: any) {
+    message.error(e?.message || '收藏状态更新失败')
+  } finally {
+    favoriteBusy.value = false
+  }
+}
+
 watchEffect((onCleanup) => {
   const sentinel = sentinelRef.value
   if (!sentinel) return
@@ -242,7 +267,24 @@ watchEffect((onCleanup) => {
         </div>
         <div class="person-info">
           <div class="browse-kicker">演员</div>
-          <h1 class="person-name">{{ personDetail.Name }}</h1>
+          <div class="person-title-row">
+            <h1 class="person-name">{{ personDetail.Name }}</h1>
+            <button
+              type="button"
+              class="person-favorite-btn"
+              :class="{ active: personIsFavorite }"
+              :disabled="favoriteBusy"
+              :aria-pressed="personIsFavorite"
+              :aria-label="personIsFavorite ? '取消收藏演员' : '收藏演员'"
+              :title="personIsFavorite ? '取消收藏演员' : '收藏演员'"
+              @click="handlePersonFavorite"
+            >
+              <n-icon :size="17">
+                <component :is="personIsFavorite ? Heart : HeartOutline" />
+              </n-icon>
+              <span>{{ personIsFavorite ? '已收藏' : '收藏' }}</span>
+            </button>
+          </div>
           <div class="person-meta">
             <span v-if="personBirthday" class="meta-chip">🎂 {{ personBirthday }}</span>
             <span v-for="loc in personLocations" :key="loc" class="meta-chip">📍 {{ loc }}</span>
@@ -586,6 +628,13 @@ watchEffect((onCleanup) => {
   padding-top: 6px;
 }
 
+.person-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
 .person-name {
   margin: 4px 0 0;
   color: var(--app-text);
@@ -593,6 +642,40 @@ watchEffect((onCleanup) => {
   font-size: 2.6rem;
   font-weight: 900;
   line-height: 1.05;
+}
+
+.person-favorite-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 15px;
+  margin-top: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s;
+}
+
+.person-favorite-btn:hover {
+  background: rgba(var(--app-primary-rgb), 0.12);
+  border-color: rgba(var(--app-primary-rgb), 0.35);
+}
+
+.person-favorite-btn.active {
+  color: var(--app-primary);
+  background: rgba(var(--app-primary-rgb), 0.16);
+  border-color: rgba(var(--app-primary-rgb), 0.42);
+}
+
+.person-favorite-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .person-meta {
@@ -690,6 +773,10 @@ watchEffect((onCleanup) => {
 
   .person-name {
     font-size: 2rem;
+  }
+
+  .person-title-row {
+    justify-content: center;
   }
 
   .person-meta,
