@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { getImageUrl } from '../api/client'
-import { getPlatformIcon, platformIconMap } from '../icons/PlatformIcons'
+import { getPlatformIcon } from '../icons/PlatformIcons'
 
 const props = withDefaults(
   defineProps<{
@@ -23,6 +23,10 @@ function formatDuration(ticks?: number): string {
   const m = totalMin % 60
   return m > 0 ? `${h}时${m}分` : `${h}时`
 }
+
+const isPlatformLib = computed(() => {
+  return !!props.item.PlatformLibrary
+})
 
 const hasImage = computed(() => {
   if (isPlatformLib.value) return !!props.item.ImageTags?.Primary
@@ -60,7 +64,11 @@ watch(imgSrc, () => {
 })
 
 const progress = computed(() => props.item.UserData?.PlayedPercentage || 0)
-const rating = computed(() => props.item.CommunityRating)
+const rating = computed(() => {
+  const value = Number(props.item.CommunityRating)
+  return Number.isFinite(value) ? value : 0
+})
+const ratingLabel = computed(() => rating.value > 0 ? rating.value.toFixed(1) : '')
 const duration = computed(() => formatDuration(props.item.RunTimeTicks))
 const isEpisode = computed(() => props.item.Type === 'Episode')
 const subtitle = computed(() => {
@@ -75,10 +83,6 @@ const shapeClass = computed(() => {
   if (props.shape === 'thumb') return 'thumb-card'
   if (props.shape === 'square') return 'square-card'
   return 'portrait-card'
-})
-
-const isPlatformLib = computed(() => {
-  return !!props.item.PlatformLibrary
 })
 
 const platformName = computed(() => {
@@ -199,7 +203,7 @@ const linkTarget = computed(() => {
         </div>
 
         <div v-if="rating > 0 || duration || item.UserData?.Played || item.UserData?.UnplayedItemCount" class="card-upper">
-          <span v-if="rating > 0" class="card-badge badge-rating">&#9733; {{ rating.toFixed(1) }}</span>
+          <span v-if="rating > 0" class="card-badge badge-rating">&#9733; {{ ratingLabel }}</span>
           <span v-if="item.UserData?.UnplayedItemCount" class="card-badge badge-unplayed">{{ item.UserData.UnplayedItemCount }}</span>
           <span v-if="item.UserData?.Played" class="card-badge badge-played">&#10003;</span>
         </div>
