@@ -86,6 +86,10 @@ func getEpisodes(c *gin.Context, state *AppState) {
 	if seasonID == "" {
 		seasonID = c.Query("seasonId")
 	}
+	seasonNumQuery := c.Query("Season")
+	if seasonNumQuery == "" {
+		seasonNumQuery = c.Query("season")
+	}
 
 	suid, err := models.ResolveToUUID(ctx, state.DB, seriesID)
 	if err != nil || suid == nil {
@@ -130,6 +134,25 @@ func getEpisodes(c *gin.Context, state *AppState) {
 			return
 		}
 		bindID = *sid
+		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
+		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
+	} else if seasonNumQuery != "" {
+		seasonNum, perr := strconv.ParseInt(seasonNumQuery, 10, 32)
+		if perr != nil || seasonNum < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid Season"})
+			return
+		}
+		var resolvedSeasonID string
+		if err := state.DB.QueryRow(ctx,
+			`SELECT id::text FROM items
+			  WHERE parent_id = $1::uuid AND type = 'Season' AND index_number = $2
+			  LIMIT 1`,
+			*suid, int32(seasonNum),
+		).Scan(&resolvedSeasonID); err != nil {
+			c.JSON(http.StatusOK, gin.H{"Items": []dto.BaseItemDto{}, "TotalRecordCount": 0})
+			return
+		}
+		bindID = resolvedSeasonID
 		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
 		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
 	} else {

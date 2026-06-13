@@ -69,40 +69,33 @@ func collectShowDirs(dir string, results *[][2]string) {
 }
 
 func collectShowVideoPaths(showPath string) []string {
-	entries, err := os.ReadDir(showPath)
-	if err != nil {
-		return nil
-	}
 	var paths []string
+	collectShowVideoPathsRecursive(showPath, &paths)
+	return paths
+}
+
+func collectShowVideoPathsRecursive(dir string, paths *[]string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "@") {
 			continue
 		}
-		fullPath := filepath.Join(showPath, name)
+		fullPath := filepath.Join(dir, name)
 		if entry.IsDir() {
-			if extractSeasonNumber(name) < 0 {
+			if IsExtrasDirName(name) {
 				continue
 			}
-			seasonEntries, err := os.ReadDir(fullPath)
-			if err != nil {
-				continue
-			}
-			for _, se := range seasonEntries {
-				if se.IsDir() || strings.HasPrefix(se.Name(), ".") || strings.HasPrefix(se.Name(), "@") {
-					continue
-				}
-				if IsVideoExt(filepath.Ext(se.Name())) {
-					paths = append(paths, filepath.Join(fullPath, se.Name()))
-				}
-			}
+			collectShowVideoPathsRecursive(fullPath, paths)
 			continue
 		}
 		if IsVideoExt(filepath.Ext(name)) {
-			paths = append(paths, fullPath)
+			*paths = append(*paths, fullPath)
 		}
 	}
-	return paths
 }
 
 func collectMixedEntries(dir string, results *mixedScanEntries) {

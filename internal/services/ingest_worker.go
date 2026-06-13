@@ -484,6 +484,14 @@ func (w *IngestWorker) findShowRoot(libID, filePath string) string {
 		}
 		cur := cleaned
 		for cur != root && cur != filepath.Dir(cur) {
+			if dirHasTVShowNfo(cur) {
+				return cur
+			}
+			cur = filepath.Dir(cur)
+		}
+
+		cur = cleaned
+		for cur != root && cur != filepath.Dir(cur) {
 			if isShowDir(cur) {
 				return cur
 			}
