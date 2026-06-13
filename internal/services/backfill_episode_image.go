@@ -13,6 +13,7 @@ import (
 // runEpisodeImageBackfill(Phase 2 改造版):
 //  1. 对每个 primary_image_path IS NULL 的 Episode,先做本地兜底(<basename>-thumb.* 等);
 //  2. 剩余按 season_id 聚合,EnqueueBatch 到 scrape_queue;worker 调 TMDB 拉 season 里所有 stills。
+//
 // Progress 语义:Total=本地兜底候选数 + 入队 season 数,Processed=已处理 + 已入队。
 func (t *BackfillTask) runEpisodeImageBackfill(ctx context.Context, pool *pgxpool.Pool) error {
 	type candidate struct {
@@ -116,15 +117,18 @@ func (t *BackfillTask) runEpisodeImageBackfill(ctx context.Context, pool *pgxpoo
 // processBackfillEpisodeImageTask 由 ScrapeWorker 调用:处理单个 Season。
 // 查 season.index + series.tmdb_id,调 TMDB 拉 season.episodes 的 still_path,下载分发。
 func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonID string) error {
-	var seasonNum *int32
 	var seriesTmdbID *int64
 	err := pool.QueryRow(ctx,
-		`SELECT se.index_number, sr.tmdb_id
+		`SELECT sr.tmdb_id
 		   FROM items se
 		   JOIN items sr ON sr.id = se.parent_id AND sr.type = 'Series'
 		  WHERE se.id = $1::uuid AND se.type = 'Season'`,
 		seasonID,
-	).Scan(&seasonNum, &seriesTmdbID)
+	).Scan(&seriesTmdbID)
+	if err != nil {
+		return err
+	}
+	seasonNum, err := loadRemoteSeasonNumber(ctx, pool, seasonID)
 	if err != nil {
 		return err
 	}

@@ -134,6 +134,37 @@ func loadSeriesSeasonIDs(ctx context.Context, pool *pgxpool.Pool, seriesID strin
 	return seasonIDs, nil
 }
 
+func loadRemoteSeasonNumber(ctx context.Context, pool *pgxpool.Pool, seasonID string) (*int32, error) {
+	var episodeSeasonNum *int32
+	err := pool.QueryRow(ctx,
+		`SELECT parent_index_number
+		   FROM items
+		  WHERE season_id = $1::uuid
+		    AND type = 'Episode'
+		    AND parent_index_number IS NOT NULL
+		  GROUP BY parent_index_number
+		  ORDER BY COUNT(*) DESC, parent_index_number ASC
+		  LIMIT 1`,
+		seasonID,
+	).Scan(&episodeSeasonNum)
+	if err == nil && episodeSeasonNum != nil {
+		return episodeSeasonNum, nil
+	}
+
+	var seasonNum *int32
+	err = pool.QueryRow(ctx,
+		`SELECT index_number
+		   FROM items
+		  WHERE id = $1::uuid
+		    AND type = 'Season'`,
+		seasonID,
+	).Scan(&seasonNum)
+	if err != nil {
+		return nil, err
+	}
+	return seasonNum, nil
+}
+
 func loadRefreshItemType(ctx context.Context, pool *pgxpool.Pool, itemID string) (string, error) {
 	var itemType string
 	if err := pool.QueryRow(ctx,

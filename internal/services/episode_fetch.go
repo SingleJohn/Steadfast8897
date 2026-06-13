@@ -48,12 +48,16 @@ func scrapeEpisodeMetadata(ctx context.Context, pool *pgxpool.Pool, client *Tmdb
 	saveMode := getScrapeSaveMode(ctx, pool)
 
 	for _, s := range seasons {
-		num := int32(1)
-		if s.indexNum != nil {
-			num = *s.indexNum
+		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, s.id)
+		if err != nil || remoteSeasonNum == nil {
+			num := int32(1)
+			if s.indexNum != nil {
+				num = *s.indexNum
+			}
+			remoteSeasonNum = &num
 		}
-		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, num, stillEnabled, saveMode); err != nil {
-			slog.Debug("[TMDB] episode fetch failed", "season_id", s.id, "tmdb_id", tmdbID, "season", num, "error", err)
+		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, *remoteSeasonNum, stillEnabled, saveMode); err != nil {
+			slog.Debug("[TMDB] episode fetch failed", "season_id", s.id, "tmdb_id", tmdbID, "season", *remoteSeasonNum, "error", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

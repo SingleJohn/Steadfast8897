@@ -484,9 +484,13 @@ func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbCl
 	rows.Close()
 
 	for _, s := range seasons {
-		num := int32(1)
-		if s.indexNum != nil {
-			num = *s.indexNum
+		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, s.id.String())
+		if err != nil || remoteSeasonNum == nil {
+			num := int32(1)
+			if s.indexNum != nil {
+				num = *s.indexNum
+			}
+			remoteSeasonNum = &num
 		}
 
 		var existingTag *string
@@ -497,7 +501,7 @@ func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbCl
 			continue
 		}
 
-		posterPath := client.GetSeasonImages(ctx, tmdbID, num)
+		posterPath := client.GetSeasonImages(ctx, tmdbID, *remoteSeasonNum)
 		if posterPath == nil {
 			continue
 		}

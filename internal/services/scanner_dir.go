@@ -42,6 +42,11 @@ func FindImage(dir string, prefixes []string) *string {
 }
 
 func FindImageCached(cache DirCache, prefixes []string) *string {
+	for _, prefix := range prefixes {
+		if p := findImageByStemCached(cache, prefix); p != nil {
+			return p
+		}
+	}
 	for _, entry := range cache {
 		name, path := entry[0], entry[1]
 		ext := strings.TrimPrefix(filepath.Ext(name), ".")
