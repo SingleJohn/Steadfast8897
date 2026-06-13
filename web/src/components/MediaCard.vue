@@ -241,22 +241,22 @@ const linkTarget = computed(() => {
 
 .portrait-card {
   position: relative;
-  padding-bottom: 150%;
-  contain: strict;
+  aspect-ratio: 2 / 3;
+  contain: layout paint style;
   border-radius: var(--app-radius-xl, 24px);
 }
 
 .thumb-card {
   position: relative;
-  padding-bottom: 56.25%;
-  contain: strict;
+  aspect-ratio: 16 / 9;
+  contain: layout paint style;
   border-radius: var(--app-radius-xl, 24px);
 }
 
 .square-card {
   position: relative;
-  padding-bottom: 100%;
-  contain: strict;
+  aspect-ratio: 1 / 1;
+  contain: layout paint style;
   border-radius: var(--app-radius-xl, 24px);
 }
 

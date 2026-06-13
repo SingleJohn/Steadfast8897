@@ -85,6 +85,9 @@ const breakpoints = computed(() => {
       :free-mode="isMobile"
       :navigation="{ prevEl: navPrev, nextEl: navNext, disabledClass: 'sr-arrow-disabled' }"
       :breakpoints="breakpoints"
+      :observer="true"
+      :observe-parents="true"
+      :resize-observer="true"
       class="sr-swiper"
     >
       <SwiperSlide v-for="item in items" :key="item.Id">
