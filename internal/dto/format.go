@@ -2,12 +2,17 @@ package dto
 
 import (
 	"encoding/json"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	_ "golang.org/x/image/webp"
 )
 
 // strmItemPathResolvedFlag 控制 strm 条目「item 级 Path」字段的取值:
@@ -18,6 +23,14 @@ import (
 // 无论该开关取值如何,strm 的 item.Container 都解析为真实内层容器(如 mp4),与 Emby 一致。
 // 由 main.go 启动时按 system_config 'strm_item_path_mode' 设置,postConfiguration 保存时实时刷新。
 var strmItemPathResolvedFlag atomic.Bool
+
+type imageAspectRatioCacheEntry struct {
+	mtimeUnixNano int64
+	size          int64
+	ratio         float64
+}
+
+var primaryImageAspectRatioCache sync.Map
 
 // SetStrmItemPathMode 设置 strm item.Path 模式。mode=="resolved" 时返回解析后真实路径,
 // 其它值(含默认空值 / "strm")返回 .strm 文件路径。
@@ -210,6 +223,9 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if len(imageTags) > 0 {
 		dto.ImageTags = imageTags
 	}
+	if ratio := primaryImageAspectRatio(item.PrimaryImagePath); ratio != nil {
+		dto.PrimaryImageAspectRatio = ratio
+	}
 
 	if item.BackdropImageTag != nil {
 		dto.BackdropImageTags = []string{*item.BackdropImageTag}
@@ -298,6 +314,45 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	}
 
 	return dto
+}
+
+func primaryImageAspectRatio(path *string) *float64 {
+	if path == nil {
+		return nil
+	}
+	p := strings.TrimSpace(*path)
+	if p == "" || strings.HasPrefix(strings.ToLower(p), "http") {
+		return nil
+	}
+	info, err := os.Stat(p)
+	if err != nil || info.IsDir() {
+		return nil
+	}
+	mtimeUnixNano := info.ModTime().UnixNano()
+	size := info.Size()
+	if cached, ok := primaryImageAspectRatioCache.Load(p); ok {
+		entry := cached.(imageAspectRatioCacheEntry)
+		if entry.mtimeUnixNano == mtimeUnixNano && entry.size == size {
+			ratio := entry.ratio
+			return &ratio
+		}
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil
+	}
+	ratio := float64(cfg.Width) / float64(cfg.Height)
+	primaryImageAspectRatioCache.Store(p, imageAspectRatioCacheEntry{
+		mtimeUnixNano: mtimeUnixNano,
+		size:          size,
+		ratio:         ratio,
+	})
+	return &ratio
 }
 
 func FormatMediaStreamDto(stream *StreamRow) MediaStreamInfo {

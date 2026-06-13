@@ -25,6 +25,7 @@ type BaseItemDto struct {
 	CollectionType           *string                  `json:"CollectionType,omitempty"`
 	ImageTags                map[string]string        `json:"ImageTags,omitempty"`
 	BackdropImageTags        []string                 `json:"BackdropImageTags,omitempty"`
+	PrimaryImageAspectRatio  *float64                 `json:"PrimaryImageAspectRatio,omitempty"`
 	ChildCount               *int64                   `json:"ChildCount,omitempty"`
 	RecursiveItemCount       *int64                   `json:"RecursiveItemCount,omitempty"`
 	SeriesID                 *string                  `json:"SeriesId,omitempty"`
@@ -185,6 +186,7 @@ type ItemRow struct {
 	FilePath               *string
 	ResolvedPath           *string
 	ProviderIDs            *json.RawMessage
+	PrimaryImagePath       *string
 	PrimaryImageTag        *string
 	BackdropImageTag       *string
 	SeriesPrimaryImageTag  *string

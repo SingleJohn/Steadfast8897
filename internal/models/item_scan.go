@@ -119,6 +119,7 @@ func MapColsToItemRow(m map[string]interface{}) dto.ItemRow {
 			item.ProviderIDs = &rm
 		}
 	}
+	item.PrimaryImagePath = getStringPtr(m, "primary_image_path")
 	item.PrimaryImageTag = getStringPtr(m, "primary_image_tag")
 	item.BackdropImageTag = getStringPtr(m, "backdrop_image_tag")
 	item.SeriesPrimaryImageTag = getStringPtr(m, "series_primary_image_tag")

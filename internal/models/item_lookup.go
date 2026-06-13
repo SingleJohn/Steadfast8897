@@ -15,7 +15,7 @@ const singleItemSelect = `SELECT id, name, type, sort_name, NULL::text AS collec
 	production_year, premiere_date, community_rating, official_rating,
 	runtime_ticks, index_number, parent_index_number, parent_id,
 	series_id, series_name, season_id, container, file_path,
-	resolved_path, provider_ids, primary_image_tag, backdrop_image_tag,
+	resolved_path, provider_ids, primary_image_path, primary_image_tag, backdrop_image_tag,
 	NULL::bigint AS child_count, NULL::bigint AS recursive_item_count
 	FROM items`
 
