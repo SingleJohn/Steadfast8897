@@ -58,6 +58,8 @@ type mediaVersionRow struct {
 	AudioCodec   *string
 	Source       *string
 	QualityLabel *string
+
+	ChaptersJSON []byte
 }
 
 func loadMediaVersions(ctx context.Context, state *AppState, itemID string) ([]mediaVersionRow, error) {

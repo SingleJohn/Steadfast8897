@@ -74,6 +74,13 @@ type StudioItem struct {
 	ID   string `json:"Id"`
 }
 
+type ChapterInfo struct {
+	ChapterIndex       int    `json:"ChapterIndex"`
+	MarkerType         string `json:"MarkerType"`
+	Name               string `json:"Name"`
+	StartPositionTicks int64  `json:"StartPositionTicks"`
+}
+
 type MediaSourceInfo struct {
 	ID                         string            `json:"Id"`
 	Path                       string            `json:"Path"`
@@ -106,6 +113,8 @@ type MediaSourceInfo struct {
 	FymsAudioCodec   *string `json:"FymsAudioCodec,omitempty"`
 	FymsSource       *string `json:"FymsSource,omitempty"`
 	FymsQualityLabel *string `json:"FymsQualityLabel,omitempty"`
+
+	Chapters []ChapterInfo `json:"Chapters,omitempty"`
 }
 
 type MediaStreamInfo struct {

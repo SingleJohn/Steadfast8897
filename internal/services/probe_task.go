@@ -86,6 +86,7 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 		    OR NOT (mv.mediainfo ? 'Size')
 		    OR NOT (mv.mediainfo ? 'Bitrate')
 		    OR NOT (mv.mediainfo ? 'MediaStreams')
+		    OR mv.chapters IS NULL
 		 ORDER BY mv.id`)
 	if err != nil {
 		return err
@@ -291,15 +292,23 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 	}
 	dbInfoJSON, _ := json.Marshal(dbInfo)
 
+	chaptersSlice := result.Chapters
+	if chaptersSlice == nil {
+		chaptersSlice = []ProbeChapter{}
+	}
+	chaptersJSON, _ := json.Marshal(chaptersSlice)
+
 	// 用 COALESCE 保护 size/bitrate:远程探测传 nil 时不覆盖已有列值。
+	// chapters 每次探测都更新（空数组表示"探过但无章节"，区分 NULL "未探"）。
 	_, err := pool.Exec(ctx,
 		`UPDATE media_versions
 		 SET mediainfo = $1,
 		     runtime_ticks = CASE WHEN $2 > 0 THEN $2 ELSE runtime_ticks END,
 		     bitrate = COALESCE($3, bitrate),
-		     size = COALESCE($4, size)
+		     size = COALESCE($4, size),
+		     chapters = $6
 		 WHERE id = $5::uuid`,
-		string(dbInfoJSON), result.DurationTicks, bitrate, fileSize, mvID)
+		string(dbInfoJSON), result.DurationTicks, bitrate, fileSize, mvID, string(chaptersJSON))
 	if err != nil {
 		return err
 	}
@@ -322,7 +331,8 @@ func GetMissingMediainfoCount(ctx context.Context, pool *pgxpool.Pool) (int64, e
 		    OR NOT (mediainfo ? 'RunTimeTicks')
 		    OR NOT (mediainfo ? 'Size')
 		    OR NOT (mediainfo ? 'Bitrate')
-		    OR NOT (mediainfo ? 'MediaStreams')`).Scan(&count)
+		    OR NOT (mediainfo ? 'MediaStreams')
+		    OR chapters IS NULL`).Scan(&count)
 	return count, err
 }
 

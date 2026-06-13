@@ -10,9 +10,15 @@ import (
 )
 
 type ProbeResult struct {
-	DurationTicks int64        `json:"DurationTicks"`
-	Streams       []StreamInfo `json:"Streams"`
-	Container     string       `json:"Container"`
+	DurationTicks int64          `json:"DurationTicks"`
+	Streams       []StreamInfo   `json:"Streams"`
+	Container     string         `json:"Container"`
+	Chapters      []ProbeChapter `json:"Chapters"`
+}
+
+type ProbeChapter struct {
+	StartPositionTicks int64  `json:"StartPositionTicks"`
+	Name               string `json:"Name"`
 }
 
 type StreamInfo struct {
@@ -34,8 +40,14 @@ type StreamInfo struct {
 }
 
 type ffprobeOutput struct {
-	Format  *ffprobeFormat  `json:"format"`
-	Streams []ffprobeStream `json:"streams"`
+	Format   *ffprobeFormat   `json:"format"`
+	Streams  []ffprobeStream  `json:"streams"`
+	Chapters []ffprobeChapter `json:"chapters"`
+}
+
+type ffprobeChapter struct {
+	StartTime *string           `json:"start_time"`
+	Tags      map[string]string `json:"tags"`
 }
 
 type ffprobeFormat struct {
@@ -80,6 +92,7 @@ func runFFProbe(target string, remote bool) (*ProbeResult, error) {
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
+		"-show_chapters",
 	}
 	if remote {
 		// 输入协议选项需置于目标 URL 之前。-rw_timeout 单位为微秒。
@@ -205,10 +218,27 @@ func runFFProbe(target string, remote bool) (*ProbeResult, error) {
 		streams = append(streams, info)
 	}
 
+	var chapters []ProbeChapter
+	for i, ch := range data.Chapters {
+		startSec := 0.0
+		if ch.StartTime != nil {
+			fmt.Sscanf(*ch.StartTime, "%f", &startSec)
+		}
+		name := fmt.Sprintf("章节 %d", i+1)
+		if v, ok := ch.Tags["title"]; ok && strings.TrimSpace(v) != "" {
+			name = v
+		}
+		chapters = append(chapters, ProbeChapter{
+			StartPositionTicks: utils.SecondsToTicks(startSec),
+			Name:               name,
+		})
+	}
+
 	return &ProbeResult{
 		DurationTicks: utils.SecondsToTicks(duration),
 		Streams:       streams,
 		Container:     container,
+		Chapters:      chapters,
 	}, nil
 }
 

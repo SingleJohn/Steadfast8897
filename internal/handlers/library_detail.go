@@ -147,7 +147,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 
 	mvRows, err := pool.Query(ctx,
 		`SELECT id::text, name, file_path, COALESCE(container, ''), is_primary, runtime_ticks, bitrate, size, mediainfo,
-		        resolution, hdr_format, video_codec, audio_codec, source, quality_label
+		        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
 		 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
 		item.ID)
 	if err != nil {
@@ -163,10 +163,10 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		var rt *int64
 		var br *int32
 		var sz *int64
-		var mediaInfoJSON []byte
+		var mediaInfoJSON, chaptersJSON []byte
 		var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
 		if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
-			&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel); err != nil {
+			&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel, &chaptersJSON); err != nil {
 			return base, err
 		}
 		bitrate := (*int64)(nil)
@@ -216,6 +216,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			FymsAudioCodec:        audioCodec,
 			FymsSource:            source,
 			FymsQualityLabel:      qualityLabel,
+			Chapters:              parseChaptersJSON(chaptersJSON),
 		}
 		sources = append(sources, ms)
 		mvIdx++
@@ -291,7 +292,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 	for _, sib := range siblings {
 		mvRows, err := pool.Query(ctx,
 			`SELECT id::text, name, file_path, COALESCE(container,''), is_primary, runtime_ticks, bitrate, size, mediainfo,
-			        resolution, hdr_format, video_codec, audio_codec, source, quality_label
+			        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
 			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
 			sib.ID)
 		if err != nil {
@@ -303,10 +304,10 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 			var rt *int64
 			var br *int32
 			var sz *int64
-			var mediaInfoJSON []byte
+			var mediaInfoJSON, chaptersJSON []byte
 			var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
 			if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
-				&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel); err != nil {
+				&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel, &chaptersJSON); err != nil {
 				continue
 			}
 			bitrate := (*int64)(nil)
@@ -354,6 +355,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				FymsAudioCodec:        audioCodec,
 				FymsSource:            source,
 				FymsQualityLabel:      qualityLabel,
+				Chapters:              parseChaptersJSON(chaptersJSON),
 			}
 			merged = append(merged, ms)
 		}

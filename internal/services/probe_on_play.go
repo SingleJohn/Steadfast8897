@@ -32,13 +32,14 @@ func ProbeOnPlay(pool *pgxpool.Pool, itemID, mediaSourceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	// 选当前播放、且缺 MediaStreams 的那条 media_version;优先匹配本次播放的 mediaSourceID。
+	// 选当前播放、且缺 MediaStreams 或尚未采集过章节的那条 media_version;
+	// 优先匹配本次播放的 mediaSourceID。
 	var mvID, mvItemID, filePath, name string
 	err := pool.QueryRow(ctx,
 		`SELECT id::text, item_id::text, file_path, COALESCE(name, '')
 		 FROM media_versions
 		 WHERE item_id = $1::uuid
-		   AND (mediainfo IS NULL OR NOT (mediainfo ? 'MediaStreams'))
+		   AND (mediainfo IS NULL OR NOT (mediainfo ? 'MediaStreams') OR chapters IS NULL)
 		 ORDER BY (id::text = $2) DESC, is_primary DESC, created_at ASC
 		 LIMIT 1`,
 		itemID, mediaSourceID,
