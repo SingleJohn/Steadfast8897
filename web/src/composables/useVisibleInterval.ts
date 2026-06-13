@@ -13,7 +13,7 @@ export function useVisibleInterval(
   delay: number,
   options: UseVisibleIntervalOptions = {},
 ) {
-  let timer: ReturnType<typeof window.setInterval> | null = null
+  let timer: number | null = null
   let mounted = false
 
   const isClient = typeof window !== 'undefined' && typeof document !== 'undefined'
