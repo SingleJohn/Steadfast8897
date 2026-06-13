@@ -22,7 +22,7 @@ import DetailOverview from './item-detail/components/DetailOverview.vue'
 import EpisodeSection from './item-detail/components/EpisodeSection.vue'
 import MediaInfoSection from './item-detail/components/MediaInfoSection.vue'
 import type { CrewGroup, TrailerInfo } from './item-detail/types'
-import { backdropSourceIdFor, backdropTagsFor, backdropUrl } from './item-detail/utils/images'
+import { backdropSourceIdFor, backdropTagsFor, backdropUrl, primaryUrl } from './item-detail/utils/images'
 import { canBrowserPlay } from '@/utils/playerSupport'
 
 const BackdropLightbox = defineAsyncComponent(() => import('./item-detail/components/BackdropLightbox.vue'))
@@ -93,11 +93,6 @@ async function loadItem() {
     const data = await getItem(id)
     if (seq !== loadSeq) return
     item.value = data
-    const tags = backdropTagsFor(data)
-    if (tags.length > 0) {
-      setBackdrop(backdropUrl(backdropSourceIdFor(data), 0, tags[0], 1920))
-    }
-
     loading.value = false
 
     if (data.Type === 'Series') {
@@ -160,8 +155,10 @@ watch(selectedSeason, (id) => {
     })
 })
 
-const hasBackdrop = computed(() => backdropTagsFor(item.value).length > 0)
 const hasPoster = computed(() => !!item.value && !!(item.value.ImageTags?.Primary || item.value.SeriesPrimaryImageItemId))
+const primaryAspectRatio = computed(() => Number(item.value?.PrimaryImageAspectRatio || 0))
+const primaryIsLandscape = computed(() => primaryAspectRatio.value >= 1.25)
+const showHeroPoster = computed(() => hasPoster.value && !primaryIsLandscape.value)
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const canPlay = computed(() => !!item.value && (item.value.Type === 'Movie' || item.value.Type === 'Episode'))
@@ -206,6 +203,18 @@ const backdropImages = computed(() => {
   }))
 })
 const activeBackdropImage = computed(() => backdropImages.value[activeBackdropIndex.value] || backdropImages.value[0] || null)
+const primaryLandscapeImage = computed(() => {
+  if (!item.value || !primaryIsLandscape.value || !item.value.ImageTags?.Primary) return null
+  return {
+    src: primaryUrl(item.value.Id, item.value.ImageTags.Primary, 1920),
+    tag: item.value.ImageTags.Primary,
+  }
+})
+const detailBackground = computed(() => activeBackdropImage.value?.src || primaryLandscapeImage.value?.src || '')
+
+watch(detailBackground, (url) => {
+  setBackdrop(url)
+}, { immediate: true })
 const trailers = computed<TrailerInfo[]>(() => (
   (item.value?.RemoteTrailers || []) as TrailerInfo[]
 ).filter((t) => typeof t?.Url === 'string' && t.Url.length > 0))
@@ -373,6 +382,10 @@ function handleTagClick(tag: string) {
   if (!name) return
   router.push({ name: 'browse', params: { kind: 'tag', value: name }, query: { name } })
 }
+
+function similarCardShape(entry: any): 'portrait' | 'thumb' {
+  return Number(entry?.PrimaryImageAspectRatio || 0) >= 1.25 ? 'thumb' : 'portrait'
+}
 </script>
 
 <template>
@@ -388,10 +401,9 @@ function handleTagClick(tag: string) {
   </div>
 
   <div v-else class="detail-page">
-    <div v-if="hasBackdrop" class="detail-page-bg">
+    <div v-if="detailBackground" class="detail-page-bg">
       <img
-        v-if="activeBackdropImage"
-        :src="activeBackdropImage.src"
+        :src="detailBackground"
         alt=""
         class="detail-page-bg-img"
         width="1920"
@@ -404,7 +416,7 @@ function handleTagClick(tag: string) {
 
     <DetailHero
       :item="item"
-      :has-poster="hasPoster"
+      :has-poster="showHeroPoster"
       :poster-id="posterId"
       :original-title="originalTitle"
       :title-density="titleDensity"
@@ -463,6 +475,7 @@ function handleTagClick(tag: string) {
             v-for="similar in similarItems"
             :key="similar.Id"
             :item="similar"
+            :shape="similarCardShape(similar)"
           />
         </div>
       </section>

@@ -22,6 +22,13 @@ export function backdropUrl(sourceId: string, index: number, tag: string | undef
   })
 }
 
+export function primaryUrl(sourceId: string, tag: string | undefined, maxWidth: number): string {
+  return getImageUrl(sourceId, 'Primary', {
+    maxWidth,
+    tag,
+  })
+}
+
 export function personImageUrl(person: any, brokenImages: Record<string, boolean>): string {
   const imageId = person.PrimaryImageItemId || person.Id
   const imageKey = String(imageId || person.Name || '')
@@ -31,4 +38,3 @@ export function personImageUrl(person: any, brokenImages: Record<string, boolean
   // 无图标记则不请求,直接交给占位 SVG,避免对无头像演员产生 404。
   return ''
 }
-
