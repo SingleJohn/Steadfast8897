@@ -74,8 +74,19 @@ type epFile struct {
 	name       string
 	path       string
 	ext        string
+	seasonNum  int32
 	episodeNum int32
 	cache      DirCache
+}
+
+type tvSeasonScan struct {
+	name      string
+	path      string
+	sortName  string
+	indexNum  int32
+	poster    *string
+	posterTag *string
+	files     []epFile
 }
 
 var episodeScanLocks sync.Map
@@ -126,7 +137,7 @@ func dirHasTVShowNfo(path string) bool {
 	return false
 }
 
-func collectEpisodeFilesRecursive(dir string, forcedSeason *int32, out map[int32][]epFile) {
+func collectEpisodeFilesRecursive(dir string, forcedSeason *int32, out *[]epFile) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -163,14 +174,164 @@ func collectEpisodeFilesRecursive(dir string, forcedSeason *int32, out map[int32
 				epNum = *epInfo.Episode
 			}
 		}
-		out[seasonNum] = append(out[seasonNum], epFile{
+		*out = append(*out, epFile{
 			name:       name,
 			path:       fullPath,
 			ext:        ext,
+			seasonNum:  seasonNum,
 			episodeNum: epNum,
 			cache:      cache,
 		})
 	}
+}
+
+func collectDirectEpisodeFiles(dir string, forcedSeason *int32) []epFile {
+	cache := CacheDir(dir)
+	files := make([]epFile, 0)
+	for _, entry := range cache {
+		name, path := entry[0], entry[1]
+		ext := strings.TrimPrefix(filepath.Ext(name), ".")
+		if !IsVideoExt("." + ext) {
+			continue
+		}
+		seasonNum := int32(1)
+		if forcedSeason != nil {
+			seasonNum = *forcedSeason
+		}
+		epNum := int32(0)
+		if epInfo := ParseEpisodeInfo(name); epInfo != nil {
+			if forcedSeason == nil {
+				seasonNum = epInfo.Season
+			}
+			if epInfo.Episode != nil {
+				epNum = *epInfo.Episode
+			}
+		}
+		files = append(files, epFile{
+			name:       name,
+			path:       path,
+			ext:        ext,
+			seasonNum:  seasonNum,
+			episodeNum: epNum,
+			cache:      cache,
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files
+}
+
+func looksLikeEpisodeGroupDir(path string) bool {
+	cache := CacheDir(path)
+	if cache == nil {
+		return false
+	}
+	for _, entry := range cache {
+		if entry[0] == "season.nfo" {
+			return true
+		}
+		if IsVideoExt(filepath.Ext(entry[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectTVSeasonScans(showPath string) []tvSeasonScan {
+	entries, err := os.ReadDir(showPath)
+	if err != nil {
+		return nil
+	}
+	var seasons []tvSeasonScan
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "@") || IsExtrasDirName(name) {
+			continue
+		}
+		fullPath := filepath.Join(showPath, name)
+		if entry.IsDir() {
+			seasonNum := extractSeasonNumber(name)
+			if seasonNum >= 0 {
+				seasonCache := CacheDir(fullPath)
+				seasonPoster := FindImageCached(seasonCache, posterImagePrefixes)
+				var files []epFile
+				collectEpisodeFilesRecursive(fullPath, &seasonNum, &files)
+				if len(files) == 0 {
+					continue
+				}
+				seasons = append(seasons, tvSeasonScan{
+					name:      fmt.Sprintf("Season %d", seasonNum),
+					path:      fullPath,
+					sortName:  fmt.Sprintf("season %04d", seasonNum),
+					indexNum:  seasonNum,
+					poster:    seasonPoster,
+					posterTag: ptrAndThen(seasonPoster, GenerateImageTag),
+					files:     files,
+				})
+				continue
+			}
+			if looksLikeEpisodeGroupDir(fullPath) {
+				seasonCache := CacheDir(fullPath)
+				seasonPoster := FindImageCached(seasonCache, posterImagePrefixes)
+				files := collectDirectEpisodeFiles(fullPath, nil)
+				if len(files) == 0 {
+					continue
+				}
+				seasons = append(seasons, tvSeasonScan{
+					name:      name,
+					path:      fullPath,
+					sortName:  strings.ToLower(name),
+					indexNum:  -1,
+					poster:    seasonPoster,
+					posterTag: ptrAndThen(seasonPoster, GenerateImageTag),
+					files:     files,
+				})
+			}
+			continue
+		}
+	}
+
+	if len(seasons) == 0 {
+		files := collectDirectEpisodeFiles(showPath, nil)
+		if len(files) > 0 {
+			seasonPoster := FindImageCached(CacheDir(showPath), posterImagePrefixes)
+			seasons = append(seasons, tvSeasonScan{
+				name:      "Season 1",
+				path:      showPath,
+				sortName:  "season 0001",
+				indexNum:  1,
+				poster:    seasonPoster,
+				posterTag: ptrAndThen(seasonPoster, GenerateImageTag),
+				files:     files,
+			})
+		}
+	}
+
+	sort.Slice(seasons, func(i, j int) bool {
+		return seasons[i].path < seasons[j].path
+	})
+	usedIndexNums := make(map[int32]struct{}, len(seasons))
+	for _, season := range seasons {
+		if season.indexNum >= 0 {
+			usedIndexNums[season.indexNum] = struct{}{}
+		}
+	}
+	nextIndexNum := int32(1)
+	for i := range seasons {
+		if seasons[i].indexNum < 0 {
+			for {
+				if _, ok := usedIndexNums[nextIndexNum]; !ok {
+					break
+				}
+				nextIndexNum++
+			}
+			seasons[i].indexNum = nextIndexNum
+			usedIndexNums[nextIndexNum] = struct{}{}
+		}
+		if seasons[i].sortName == "" {
+			seasons[i].sortName = fmt.Sprintf("season %04d", seasons[i].indexNum)
+		}
+	}
+	return seasons
 }
 
 func scanOneShow(
@@ -295,75 +456,28 @@ func scanOneShow(
 		enqueueIdentifyIfEligible(ctx, pool, seriesID, ScrapePriorityIdentify, "scan.series.create")
 	}
 
-	entries, err := os.ReadDir(showPath)
-	if err != nil {
-		return
-	}
-
-	// Collect explicit season directories. If the show uses intermediate episode
-	// group folders instead (for example 第01期20240910/*.strm), fall back to
-	// recursively collecting videos under the show root and use SxEy tokens.
-	type seasonDir struct {
-		path      string
-		seasonNum int32
-	}
-	var seasonDirs []seasonDir
-	for _, se := range entries {
-		if se.IsDir() {
-			dirName := se.Name()
-			seasonNum := extractSeasonNumber(dirName)
-			if seasonNum >= 0 {
-				seasonDirs = append(seasonDirs, seasonDir{path: filepath.Join(showPath, dirName), seasonNum: seasonNum})
-			}
-		}
-	}
-
-	seasonFiles := make(map[int32][]epFile)
-	seasonPosters := make(map[int32]*string)
-	seasonPosterTags := make(map[int32]*string)
-	if len(seasonDirs) > 0 {
-		for _, sd := range seasonDirs {
-			seasonCache := CacheDir(sd.path)
-			seasonPoster := FindImageCached(seasonCache, posterImagePrefixes)
-			seasonPosters[sd.seasonNum] = seasonPoster
-			seasonPosterTags[sd.seasonNum] = ptrAndThen(seasonPoster, GenerateImageTag)
-
-			seasonNum := sd.seasonNum
-			collectEpisodeFilesRecursive(sd.path, &seasonNum, seasonFiles)
-		}
-	} else {
-		collectEpisodeFilesRecursive(showPath, nil, seasonFiles)
-	}
+	seasonScans := collectTVSeasonScans(showPath)
 
 	// 已刮削 Series 下新增 Episode 的增量补全:收集本次新建 Episode 所在的 seasonID。
 	// scanOneShow 结束时,若 Series.tmdb_id 存在,就针对这些 season 入队
 	// backfill_episode_name / backfill_episode_image,避免新集停在占位符名/无缩略图状态。
 	newEpisodeSeasonIDs := map[string]struct{}{}
 
-	seasonNums := make([]int32, 0, len(seasonFiles))
-	for seasonNum := range seasonFiles {
-		seasonNums = append(seasonNums, seasonNum)
-	}
-	sort.Slice(seasonNums, func(i, j int) bool { return seasonNums[i] < seasonNums[j] })
-
-	for _, seasonNum := range seasonNums {
-		filesForSeason := seasonFiles[seasonNum]
-		if len(filesForSeason) == 0 {
+	for _, ss := range seasonScans {
+		if len(ss.files) == 0 {
 			continue
 		}
-		seasonPoster := seasonPosters[seasonNum]
-		seasonPosterTag := seasonPosterTags[seasonNum]
 
 		var seasonID string
 		var seasonInsertedID *uuid.UUID
 		err := pool.QueryRow(ctx,
-			"INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, series_id, series_name, primary_image_path, primary_image_tag) "+
-				"VALUES ($1::uuid, $2::uuid, 'Season', $3, $4, $5, $6::uuid, $7, $8, $9) "+
-				"ON CONFLICT DO NOTHING RETURNING id",
+			`INSERT INTO items (library_id, parent_id, type, name, sort_name, index_number, file_path, series_id, series_name, primary_image_path, primary_image_tag)
+			 VALUES ($1::uuid, $2::uuid, 'Season', $3, $4, $5, $6, $7::uuid, $8, $9, $10)
+			 ON CONFLICT DO NOTHING RETURNING id`,
 			libraryID, seriesID,
-			fmt.Sprintf("Season %d", seasonNum), fmt.Sprintf("season %04d", seasonNum),
-			seasonNum, seriesID, finalShowName,
-			derefStr(seasonPoster), derefStr(seasonPosterTag),
+			ss.name, ss.sortName,
+			ss.indexNum, ss.path, seriesID, finalShowName,
+			derefStr(ss.poster), derefStr(ss.posterTag),
 		).Scan(&seasonInsertedID)
 
 		if err == nil && seasonInsertedID != nil {
@@ -371,18 +485,34 @@ func scanOneShow(
 		} else {
 			var existingSeasonID uuid.UUID
 			err = pool.QueryRow(ctx,
-				"SELECT id FROM items WHERE parent_id = $1::uuid AND type = 'Season' AND index_number = $2 LIMIT 1",
-				seriesID, seasonNum).Scan(&existingSeasonID)
+				`SELECT id FROM items
+				  WHERE parent_id = $1::uuid
+				    AND type = 'Season'
+				    AND (file_path = $2 OR index_number = $3)
+				  ORDER BY CASE WHEN file_path = $2 THEN 0 ELSE 1 END
+				  LIMIT 1`,
+				seriesID, ss.path, ss.indexNum).Scan(&existingSeasonID)
 			if err != nil {
 				continue
 			}
-			syncItemArtwork(ctx, pool, existingSeasonID, seasonPoster, seasonPosterTag, nil, nil)
+			pool.Exec(ctx,
+				`UPDATE items
+				    SET name = $1,
+				        sort_name = $2,
+				        index_number = $3,
+				        file_path = COALESCE(NULLIF($4, ''), file_path),
+				        series_id = $5::uuid,
+				        series_name = $6,
+				        updated_at = NOW()
+				  WHERE id = $7::uuid`,
+				ss.name, ss.sortName, ss.indexNum, ss.path, seriesID, finalShowName, existingSeasonID)
+			syncItemArtwork(ctx, pool, existingSeasonID, ss.poster, ss.posterTag, nil, nil)
 			seasonID = existingSeasonID.String()
 		}
 
 		// Group episodes by episode number
 		epGroups := make(map[int32][]epFile)
-		for _, f := range filesForSeason {
+		for _, f := range ss.files {
 			epGroups[f.episodeNum] = append(epGroups[f.episodeNum], f)
 		}
 
@@ -400,14 +530,15 @@ func scanOneShow(
 			}
 			sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 			primary := files[0]
+			episodeSeasonNum := primary.seasonNum
 			episodeCache := primary.cache
 			if episodeCache == nil {
 				episodeCache = CacheDir(filepath.Dir(primary.path))
 			}
 
-			lockKey := fmt.Sprintf("%s|%s|%d|%d", libraryID, strings.ToLower(finalShowName), seasonNum, epNum)
+			lockKey := fmt.Sprintf("%s|%s|%d|%d", libraryID, strings.ToLower(finalShowName), episodeSeasonNum, epNum)
 			withEpisodeScanLock(lockKey, func() {
-				itemID, createdEpisode := ensureCanonicalEpisodeItem(ctx, pool, libraryID, seasonID, seriesID, finalShowName, seasonNum, epNum, primary, episodeCache)
+				itemID, createdEpisode := ensureCanonicalEpisodeItem(ctx, pool, libraryID, seasonID, seriesID, finalShowName, episodeSeasonNum, epNum, primary, episodeCache)
 				if itemID == uuid.Nil {
 					return
 				}
@@ -484,6 +615,27 @@ func scanOneShow(
 				"tmdb_id", *seriesTmdbID, "seasons", len(allSeasonIDs))
 		}
 	}
+
+	cleanupLegacyVirtualSeasons(ctx, pool, seriesID)
+}
+
+func cleanupLegacyVirtualSeasons(ctx context.Context, pool *pgxpool.Pool, seriesID string) {
+	_, err := pool.Exec(ctx,
+		`DELETE FROM items old
+		  WHERE old.parent_id = $1::uuid
+		    AND old.type = 'Season'
+		    AND old.file_path IS NULL
+		    AND EXISTS (
+		      SELECT 1 FROM items cur
+		       WHERE cur.parent_id = $1::uuid
+		         AND cur.type = 'Season'
+		         AND cur.file_path IS NOT NULL
+		    )`,
+		seriesID,
+	)
+	if err != nil {
+		slog.Warn("[Scan] cleanup legacy virtual seasons failed", "series", seriesID, "error", err)
+	}
 }
 
 func ensureCanonicalEpisodeItem(
@@ -517,6 +669,17 @@ func ensureCanonicalEpisodeItem(
 	}
 	defer rows.Close()
 
+	var existingByPath uuid.UUID
+	hasExistingByPath := pool.QueryRow(ctx,
+		`SELECT id
+		   FROM items
+		  WHERE library_id = $1::uuid
+		    AND type = 'Episode'
+		    AND file_path = $2
+		  LIMIT 1`,
+		libraryID, primary.path,
+	).Scan(&existingByPath) == nil
+
 	var candidates []episodeCandidate
 	for rows.Next() {
 		var c episodeCandidate
@@ -525,6 +688,37 @@ func ensureCanonicalEpisodeItem(
 		}
 	}
 	if len(candidates) > 0 {
+		if hasExistingByPath {
+			canonicalID := existingByPath
+			mi := ReadMediainfoJSONCached(primary.path, seasonCache)
+			var runtimeTicks *int64
+			if mi != nil {
+				runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+			}
+			thumbPath, thumbTag := localEpisodeThumb(seasonCache, primary.name)
+			pool.Exec(ctx,
+				`UPDATE items
+				    SET parent_id = $1::uuid,
+				        season_id = $1::uuid,
+				        series_id = $2::uuid,
+				        series_name = $3,
+				        index_number = $4,
+				        parent_index_number = $5,
+				        container = $6,
+				        runtime_ticks = COALESCE($7::bigint, runtime_ticks),
+				        primary_image_path = COALESCE(NULLIF(primary_image_path, ''), $8),
+				        primary_image_tag = COALESCE(NULLIF(primary_image_tag, ''), $9),
+				        updated_at = NOW()
+				  WHERE id = $10::uuid`,
+				seasonID, seriesID, finalShowName, epNum, seasonNum, primary.ext, runtimeTicks,
+				derefStr(thumbPath), derefStr(thumbTag), canonicalID)
+			for _, dup := range candidates {
+				if dup.ID != canonicalID {
+					mergeDuplicateEpisodeIntoCanonical(ctx, pool, canonicalID, dup.ID)
+				}
+			}
+			return canonicalID, false
+		}
 		canonical := candidates[0]
 		canonicalID := canonical.ID
 		if canonical.FilePath == nil || *canonical.FilePath == "" || !scanPathExists(*canonical.FilePath) {
@@ -548,6 +742,32 @@ func ensureCanonicalEpisodeItem(
 		return canonicalID, false
 	}
 
+	if hasExistingByPath {
+		mi := ReadMediainfoJSONCached(primary.path, seasonCache)
+		var runtimeTicks *int64
+		if mi != nil {
+			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
+		}
+		thumbPath, thumbTag := localEpisodeThumb(seasonCache, primary.name)
+		pool.Exec(ctx,
+			`UPDATE items
+			    SET parent_id = $1::uuid,
+			        season_id = $1::uuid,
+			        series_id = $2::uuid,
+			        series_name = $3,
+			        index_number = $4,
+			        parent_index_number = $5,
+			        container = $6,
+			        runtime_ticks = COALESCE($7::bigint, runtime_ticks),
+			        primary_image_path = COALESCE(NULLIF(primary_image_path, ''), $8),
+			        primary_image_tag = COALESCE(NULLIF(primary_image_tag, ''), $9),
+			        updated_at = NOW()
+			  WHERE id = $10::uuid`,
+			seasonID, seriesID, finalShowName, epNum, seasonNum, primary.ext, runtimeTicks,
+			derefStr(thumbPath), derefStr(thumbTag), existingByPath)
+		return existingByPath, false
+	}
+
 	// M7.1:写入占位符标题,避免文件名污染;后续 scrapeEpisodeMetadata 会识别为占位符并用 TMDB 真实标题覆盖。
 	epTitle := fmt.Sprintf("Episode %d", epNum)
 	if seasonNum == 0 {
@@ -560,11 +780,7 @@ func ensureCanonicalEpisodeItem(
 	}
 
 	// M7.2:新扫时兜底本地分集封面(<basename>-thumb.jpg 等)。
-	var thumbPath, thumbTag *string
-	if tp := FindEpisodeThumbCached(seasonCache, primary.name); tp != nil {
-		thumbPath = tp
-		thumbTag = GenerateImageTag(*tp)
-	}
+	thumbPath, thumbTag := localEpisodeThumb(seasonCache, primary.name)
 
 	var insertedEpID *uuid.UUID
 	err = pool.QueryRow(ctx,
@@ -604,6 +820,14 @@ func ensureCanonicalEpisodeItem(
 		}
 	}
 	return uuid.Nil, false
+}
+
+func localEpisodeThumb(seasonCache DirCache, videoBasename string) (*string, *string) {
+	tp := FindEpisodeThumbCached(seasonCache, videoBasename)
+	if tp == nil {
+		return nil, nil
+	}
+	return tp, GenerateImageTag(*tp)
 }
 
 func scanPathExists(path string) bool {

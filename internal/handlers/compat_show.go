@@ -81,7 +81,7 @@ func getSeasons(c *gin.Context, state *AppState) {
 
 func getEpisodes(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
-	seriesID := c.Param("seriesId")
+	seriesIDParam := c.Param("seriesId")
 	seasonID := c.Query("SeasonId")
 	if seasonID == "" {
 		seasonID = c.Query("seasonId")
@@ -91,10 +91,30 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		seasonNumQuery = c.Query("season")
 	}
 
-	suid, err := models.ResolveToUUID(ctx, state.DB, seriesID)
-	if err != nil || suid == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid series id"})
-		return
+	var suid *string
+	var err error
+	var resolvedSeasonID string
+	if seasonID != "" {
+		sid, rerr := models.ResolveToUUID(ctx, state.DB, seasonID)
+		if rerr != nil || sid == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid SeasonId"})
+			return
+		}
+		var parentSeriesID string
+		if err := state.DB.QueryRow(ctx,
+			`SELECT parent_id::text FROM items WHERE id = $1::uuid AND type = 'Season'`,
+			*sid,
+		).Scan(&parentSeriesID); err == nil && parentSeriesID != "" {
+			resolvedSeasonID = *sid
+			suid = &parentSeriesID
+		}
+	}
+	if suid == nil {
+		suid, err = models.ResolveToUUID(ctx, state.DB, seriesIDParam)
+		if err != nil || suid == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid series id"})
+			return
+		}
 	}
 
 	auth := middleware.GetAuthUser(c)
@@ -127,13 +147,8 @@ func getEpisodes(c *gin.Context, state *AppState) {
 
 	var countSQL, itemSQL string
 	var bindID string
-	if seasonID != "" {
-		sid, rerr := models.ResolveToUUID(ctx, state.DB, seasonID)
-		if rerr != nil || sid == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid SeasonId"})
-			return
-		}
-		bindID = *sid
+	if resolvedSeasonID != "" {
+		bindID = resolvedSeasonID
 		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
 		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
 	} else if seasonNumQuery != "" {
@@ -142,17 +157,17 @@ func getEpisodes(c *gin.Context, state *AppState) {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid Season"})
 			return
 		}
-		var resolvedSeasonID string
+		var seasonIDByNumber string
 		if err := state.DB.QueryRow(ctx,
 			`SELECT id::text FROM items
 			  WHERE parent_id = $1::uuid AND type = 'Season' AND index_number = $2
 			  LIMIT 1`,
 			*suid, int32(seasonNum),
-		).Scan(&resolvedSeasonID); err != nil {
+		).Scan(&seasonIDByNumber); err != nil {
 			c.JSON(http.StatusOK, gin.H{"Items": []dto.BaseItemDto{}, "TotalRecordCount": 0})
 			return
 		}
-		bindID = resolvedSeasonID
+		bindID = seasonIDByNumber
 		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
 		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
 	} else {

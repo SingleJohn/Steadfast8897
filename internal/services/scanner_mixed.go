@@ -17,9 +17,10 @@ const (
 )
 
 type showEntry struct {
-	name       string
-	fullPath   string
-	videoPaths []string
+	name        string
+	fullPath    string
+	videoPaths  []string
+	seasonPaths []string
 }
 
 type mixedScanEntries struct {
@@ -50,9 +51,10 @@ func collectShowEntries(dir string, results *[]showEntry) {
 		fullPath := filepath.Join(dir, name)
 		if isShowDir(fullPath) {
 			*results = append(*results, showEntry{
-				name:       name,
-				fullPath:   fullPath,
-				videoPaths: collectShowVideoPaths(fullPath),
+				name:        name,
+				fullPath:    fullPath,
+				videoPaths:  collectShowVideoPaths(fullPath),
+				seasonPaths: collectShowSeasonPaths(fullPath),
 			})
 		} else {
 			collectShowEntries(fullPath, results)
@@ -71,6 +73,19 @@ func collectShowDirs(dir string, results *[][2]string) {
 func collectShowVideoPaths(showPath string) []string {
 	var paths []string
 	collectShowVideoPathsRecursive(showPath, &paths)
+	return paths
+}
+
+func collectShowSeasonPaths(showPath string) []string {
+	scans := collectTVSeasonScans(showPath)
+	paths := make([]string, 0, len(scans))
+	cleanShowPath := filepath.Clean(showPath)
+	for _, scan := range scans {
+		cleanSeasonPath := filepath.Clean(scan.path)
+		if cleanSeasonPath != "" && cleanSeasonPath != cleanShowPath {
+			paths = append(paths, scan.path)
+		}
+	}
 	return paths
 }
 
@@ -115,9 +130,10 @@ func collectMixedEntries(dir string, results *mixedScanEntries) {
 			}
 			if mixedLooksLikeShowDir(fullPath) {
 				results.shows = append(results.shows, showEntry{
-					name:       name,
-					fullPath:   fullPath,
-					videoPaths: collectShowVideoPaths(fullPath),
+					name:        name,
+					fullPath:    fullPath,
+					videoPaths:  collectShowVideoPaths(fullPath),
+					seasonPaths: collectShowSeasonPaths(fullPath),
 				})
 				continue
 			}

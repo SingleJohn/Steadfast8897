@@ -140,6 +140,9 @@ func ScanLibraryWithOptions(
 		}
 		markShowSeen := func(e showEntry) {
 			seenPaths[filepath.Clean(e.fullPath)] = struct{}{}
+			for _, seasonPath := range e.seasonPaths {
+				seenPaths[filepath.Clean(seasonPath)] = struct{}{}
+			}
 			for _, v := range e.videoPaths {
 				seenPaths[filepath.Clean(v)] = struct{}{}
 			}
