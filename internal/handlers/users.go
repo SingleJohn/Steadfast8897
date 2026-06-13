@@ -303,7 +303,7 @@ func CreateUser(c *gin.Context) {
 
 func GetUserByID(c *gin.Context) {
 	st := GetState(c)
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
@@ -358,7 +358,7 @@ type updateUserPolicyVal struct {
 func UpdateUser(c *gin.Context) {
 	st := GetState(c)
 	ctx := c.Request.Context()
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
@@ -450,7 +450,7 @@ func hasPolicyField(p *models.PolicyUpdate) bool {
 
 func DeleteUser(c *gin.Context) {
 	st := GetState(c)
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
@@ -618,7 +618,7 @@ type changePasswordBody struct {
 
 func ChangePassword(c *gin.Context) {
 	st := GetState(c)
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
@@ -656,7 +656,7 @@ func ChangePassword(c *gin.Context) {
 
 func UpdatePolicy(c *gin.Context) {
 	st := GetState(c)
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
@@ -690,7 +690,7 @@ type authenticateByIDBody struct {
 
 func AuthenticateByUserID(c *gin.Context) {
 	st := GetState(c)
-	uid, err := uuid.Parse(c.Param("userId"))
+	uid, err := parseUserIDParam(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
