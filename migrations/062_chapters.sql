@@ -1,0 +1,1 @@
+ALTER TABLE media_versions ADD COLUMN IF NOT EXISTS chapters JSONB;
