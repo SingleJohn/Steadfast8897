@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { h, ref, computed, onMounted, onUnmounted } from 'vue'
+import { h, ref, computed, onMounted } from 'vue'
 import { NCard, NTag, NDataTable, type DataTableColumns } from 'naive-ui'
 import { getActiveSessions, getRecentPlayback } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorBanner from '@/components/ErrorBanner.vue'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 
 const sessions = ref<any[]>([])
 const recentPlayback = ref<any[]>([])
@@ -104,7 +105,7 @@ const recentColumns: DataTableColumns<any> = [
   },
 ]
 
-let refreshTimer: ReturnType<typeof setInterval> | null = null
+let playbackRefreshing = false
 
 async function refreshSessions() {
   try {
@@ -128,17 +129,21 @@ async function refreshRecentPlayback(showLoading = false) {
   }
 }
 
+async function refreshPlaybackSnapshot() {
+  if (playbackRefreshing) return
+  playbackRefreshing = true
+  try {
+    await Promise.allSettled([refreshSessions(), refreshRecentPlayback()])
+  } finally {
+    playbackRefreshing = false
+  }
+}
+
+useVisibleInterval(refreshPlaybackSnapshot, 5000)
+
 onMounted(() => {
   void refreshSessions()
   void refreshRecentPlayback(true)
-  refreshTimer = setInterval(() => {
-    void refreshSessions()
-    void refreshRecentPlayback()
-  }, 5000)
-})
-
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
 })
 </script>
 

@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { ref, watch, computed, defineAsyncComponent, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSelect } from 'naive-ui'
 import { getImageUrl, getItem, getItems, getPlaybackInfo, getStreamUrl, getSubtitleUrl } from '../api/client'
-import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
 import PlayerLoading from '../components/PlayerLoading.vue'
 import ExternalPlayMenu from './item-detail/components/ExternalPlayMenu.vue'
 import { resolveUnsupportedReason } from '@/utils/playerSupport'
@@ -70,6 +69,7 @@ function formatTitle(item: Record<string, unknown>): string {
 
 const route = useRoute()
 const router = useRouter()
+const ArtVideoPlayer = defineAsyncComponent(() => import('../components/ArtVideoPlayer.vue'))
 
 const streamUrl = ref('')
 const startPosition = ref(0)
@@ -149,7 +149,10 @@ const loadProgress = computed(() => Math.min(100, (bufferedSeconds.value / 15) *
 
 function onBuffering(active: boolean) {
   isBuffering.value = active
-  if (!active) playbackStarted.value = true
+  if (!active) {
+    playbackStarted.value = true
+    startPendingSpeedProbe()
+  }
 }
 
 function onLoadStats(stats: { bufferedSeconds: number; speedBps: number }) {
@@ -247,6 +250,7 @@ const unsupportedDetails = computed(() => {
 // 实测网速:自己 fetch 一段流、按 ReadableStream 读到的真实字节数计速。
 // 直出 <video> 浏览器不暴露下载字节,只能这样拿真实速率;HLS 走 hls.bandwidthEstimate 不用此法。
 let speedProbeController: AbortController | null = null
+let pendingSpeedProbe: { url: string; container?: string } | null = null
 const probing = ref(false)
 const probeFileSize = ref(0) // 探针从响应 Content-Length 拿到的真实文件大小,用于推算码率。
 
@@ -255,7 +259,15 @@ function stopSpeedProbe() {
     speedProbeController.abort()
     speedProbeController = null
   }
+  pendingSpeedProbe = null
   probing.value = false
+}
+
+function startPendingSpeedProbe() {
+  const probe = pendingSpeedProbe
+  pendingSpeedProbe = null
+  if (!probe) return
+  void startSpeedProbe(probe.url, probe.container)
 }
 
 async function startSpeedProbe(url: string, container?: string) {
@@ -315,7 +327,10 @@ function applyMediaSource(source: MediaSourceInfo, positionTicks: number) {
   browserUnsupportedReason.value = resolveUnsupportedReason(source)
   startPosition.value = Math.max(0, positionTicks)
   streamUrl.value = id ? getStreamUrl(id, source.Id, source.DirectStreamUrl) : ''
-  if (streamUrl.value) void startSpeedProbe(streamUrl.value, source.Container)
+  if (streamUrl.value) {
+    pendingSpeedProbe = { url: streamUrl.value, container: source.Container }
+    if (playbackStarted.value) startPendingSpeedProbe()
+  }
 }
 
 function handleSourceChange(value: string | number | null) {

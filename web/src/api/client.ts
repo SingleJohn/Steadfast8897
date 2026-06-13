@@ -11,6 +11,15 @@ export class ApiError extends Error {
 
 type RequestOptions = RequestInit & { timeoutMs?: number }
 
+function clearAuthAndRedirect() {
+  localStorage.removeItem('accessToken')
+  localStorage.removeItem('auth_role')
+  localStorage.removeItem('userId')
+  localStorage.removeItem('userName')
+  localStorage.removeItem('isAdmin')
+  window.location.href = '/#/login'
+}
+
 export async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { timeoutMs = 12_000, ...init } = options
   const headers = new Headers(init.headers)
@@ -24,13 +33,10 @@ export async function requestJson<T>(path: string, options: RequestOptions = {})
   try {
     const res = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: controller.signal })
     if (res.status === 401) {
-      localStorage.removeItem('accessToken')
-      localStorage.removeItem('userId')
-      localStorage.removeItem('userName')
-      localStorage.removeItem('isAdmin')
-      window.location.href = '/#/login'
+      clearAuthAndRedirect()
       throw new ApiError('未登录或会话过期', 401)
     }
+    if (res.status === 204) return undefined as T
     const contentType = res.headers.get('content-type') || ''
     const isJson = contentType.includes('application/json')
     const body = isJson ? await res.json().catch(() => null) : await res.text().catch(() => '')
@@ -75,25 +81,14 @@ function getAuthHeaders(): Record<string, string> {
   return headers;
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return requestJson<T>(path, {
     ...options,
     headers: {
       ...getAuthHeaders(),
       ...options.headers,
     },
   });
-  if (res.status === 401) {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('userId');
-    localStorage.removeItem('userName');
-    localStorage.removeItem('isAdmin');
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
-  }
-  if (res.status === 204) return undefined as T;
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 // Auth

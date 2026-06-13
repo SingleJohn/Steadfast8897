@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useIntersectionObserver } from '@vueuse/core'
+import { computed, ref, watch } from 'vue'
 import { getImageUrl } from '../api/client'
 import { getPlatformIcon, platformIconMap } from '../icons/PlatformIcons'
 
@@ -35,35 +34,30 @@ const hasImage = computed(() => {
 
 const imgSrc = computed(() => {
   const it = props.item
-  if (isPlatformLib.value) return getImageUrl(it.Id, 'Primary', props.shape === 'thumb' ? 500 : 300)
+  if (isPlatformLib.value) return getImageUrl(it.Id, 'Primary', { maxWidth: props.shape === 'thumb' ? 500 : 300, quality: 82 })
   if (props.shape === 'thumb') {
     // 横版卡片(例:继续观看)优先用横图:Episode backdrop > 父级 backdrop > Episode thumb。
     // 三者皆空时落到下面竖版分支 —— 竖版海报在 16:9 卡里会裁切,但比空占位好。
-    if (it.BackdropImageTags?.length > 0) return getImageUrl(it.Id, 'Backdrop', 500)
-    if (it.ParentBackdropItemId) return getImageUrl(it.ParentBackdropItemId, 'Backdrop', 500)
-    if (it.ImageTags?.Thumb) return getImageUrl(it.Id, 'Thumb', 500)
+    if (it.BackdropImageTags?.length > 0) return getImageUrl(it.Id, 'Backdrop', { maxWidth: 500, quality: 82 })
+    if (it.ParentBackdropItemId) return getImageUrl(it.ParentBackdropItemId, 'Backdrop', { maxWidth: 500, quality: 82 })
+    if (it.ImageTags?.Thumb) return getImageUrl(it.Id, 'Thumb', { maxWidth: 500, quality: 82 })
   }
   // 竖版/方形:
   // - Episode 没有竖版海报,显示父剧海报是 Emby 客户端通用行为(竖版卡里显示 still 比例不协调)
   // - Movie/Series 显示自己的 Primary
   // 注意 ItemDetailPage 的分集缩略图是横图场景,那里要用 Episode.Id 拿 still,不走这里。
   const id = (it.Type === 'Episode' && it.SeriesPrimaryImageItemId) ? it.SeriesPrimaryImageItemId : it.Id
-  return getImageUrl(id, 'Primary', 300)
+  return getImageUrl(id, 'Primary', { maxWidth: 300, quality: 82 })
 })
 
-const cardRef = ref<HTMLElement | null>(null)
-const imgVisible = ref(false)
-const { stop: stopObserve } = useIntersectionObserver(
-  cardRef,
-  ([entry]) => {
-    if (entry?.isIntersecting) {
-      imgVisible.value = true
-      stopObserve()
-    }
-  },
-  { rootMargin: '200px' },
-)
-const lazyImgSrc = computed(() => (imgVisible.value ? imgSrc.value : ''))
+const imageLoaded = ref(false)
+const imageFailed = ref(false)
+const shouldShowImage = computed(() => hasImage.value && !imageFailed.value)
+
+watch(imgSrc, () => {
+  imageLoaded.value = false
+  imageFailed.value = false
+})
 
 const progress = computed(() => props.item.UserData?.PlayedPercentage || 0)
 const rating = computed(() => props.item.CommunityRating)
@@ -154,17 +148,27 @@ const linkTarget = computed(() => {
 </script>
 
 <template>
-  <div ref="cardRef" class="card-box">
+  <div class="card-box">
     <router-link :to="linkTarget" class="card-link">
       <div :class="shapeClass" class="card-surface elevation-2">
         <div
-          v-if="hasImage"
+          v-if="shouldShowImage"
           class="card-content"
-          :class="{ 'card-content-loading': !imgVisible }"
-          :style="lazyImgSrc ? { backgroundImage: `url(${lazyImgSrc})` } : {}"
-        />
+          :class="{ 'card-content-loading': !imageLoaded }"
+        >
+          <img
+            :src="imgSrc"
+            :alt="item.Name || ''"
+            class="card-image"
+            loading="lazy"
+            decoding="async"
+            draggable="false"
+            @load="imageLoaded = true"
+            @error="imageFailed = true"
+          />
+        </div>
         <div v-else-if="isPlatformLib" class="card-content card-platform" :style="{ background: platformGradient }">
-          <img v-if="platformLogoSrc" :src="platformLogoSrc" class="platform-logo-img" alt="" />
+          <img v-if="platformLogoSrc" :src="platformLogoSrc" class="platform-logo-img" alt="" loading="lazy" decoding="async" />
           <component v-else :is="platformIcon" class="platform-icon-large" />
         </div>
         <div v-else-if="isLibrary" class="card-content card-library" :style="{ background: libraryGradient }">
@@ -282,6 +286,20 @@ const linkTarget = computed(() => {
   transform: scale(1.05);
 }
 
+.card-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center center;
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.card-content-loading .card-image {
+  opacity: 0;
+}
+
 .card-content-loading {
   background: linear-gradient(
     135deg,
@@ -296,6 +314,19 @@ const linkTarget = computed(() => {
 @keyframes card-content-shimmer {
   0% { background-position: 0% 0%; }
   100% { background-position: 200% 200%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .elevation-2,
+  .card-content,
+  .card-image,
+  .card-hover-overlay {
+    transition: none;
+  }
+
+  .card-content-loading {
+    animation: none;
+  }
 }
 
 .card-noimg {

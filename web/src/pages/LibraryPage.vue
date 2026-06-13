@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NEmpty, NIcon, NSelect, NTag } from 'naive-ui'
 import { FunnelOutline, PlayOutline, ChevronUpOutline, GridOutline } from '@vicons/ionicons5'
@@ -49,6 +49,7 @@ const loadingMore = ref(false)
 const libraryName = ref('')
 const libraryItem = ref<any>(null)
 const genres = ref<any[]>([])
+const genresLoaded = ref(false)
 const selectedGenres = ref<string[]>([])
 const statusFilter = ref<StatusFilter>('all')
 const sortBy = ref('SortName')
@@ -57,6 +58,7 @@ const filterOpen = ref(false)
 const sentinelRef = ref<HTMLDivElement | null>(null)
 const loadingLock = ref(false)
 const showScrollTop = ref(false)
+let initialLoadSeq = 0
 
 const sortOptions = SORTS.map((sort) => ({ label: sort.label, value: sort.value }))
 const allLoaded = computed(() => items.value.length >= totalCount.value && !initialLoading.value)
@@ -107,6 +109,22 @@ function toggleSortOrder() {
   sortOrder.value = sortOrder.value === 'Ascending' ? 'Descending' : 'Ascending'
 }
 
+async function loadGenresOnce() {
+  if (genresLoaded.value) return
+  genresLoaded.value = true
+  try {
+    const data = await getGenres()
+    genres.value = data.Items || []
+  } catch {
+    genres.value = []
+  }
+}
+
+function toggleFilterOpen() {
+  filterOpen.value = !filterOpen.value
+  if (filterOpen.value) void loadGenresOnce()
+}
+
 function toggleGenre(genreId: string) {
   const nextGenres = selectedGenres.value.includes(genreId)
     ? selectedGenres.value.filter((id) => id !== genreId)
@@ -122,6 +140,7 @@ function clearFilters() {
 }
 
 function loadInitial() {
+  const seq = ++initialLoadSeq
   if (aggregateMode.value) {
     if (aggregateParentIds.value === null) return // 还在等 getViews
     if (aggregateParentIds.value.length === 0) {
@@ -138,11 +157,17 @@ function loadInitial() {
   totalCount.value = 0
   getItems(buildParams(0))
     .then((data) => {
+      if (seq !== initialLoadSeq) return
       items.value = data.Items || []
       totalCount.value = data.TotalRecordCount || 0
     })
-    .catch(() => {})
+    .catch(() => {
+      if (seq !== initialLoadSeq) return
+      items.value = []
+      totalCount.value = 0
+    })
     .finally(() => {
+      if (seq !== initialLoadSeq) return
       initialLoading.value = false
     })
 }
@@ -230,10 +255,11 @@ watchEffect((onCleanup) => {
 })
 
 onMounted(() => {
-  getGenres().then((data) => {
-    genres.value = data.Items || []
-  }).catch(() => {})
   window.addEventListener('scroll', handleScroll, { passive: true })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('scroll', handleScroll)
 })
 </script>
 
@@ -268,7 +294,7 @@ onMounted(() => {
             </svg>
             {{ sortOrder === 'Ascending' ? '升序' : '降序' }}
           </button>
-          <button class="action-chip" :class="{ active: filterOpen || hasActiveFilters }" @click="filterOpen = !filterOpen">
+          <button class="action-chip" :class="{ active: filterOpen || hasActiveFilters }" @click="toggleFilterOpen">
             <n-icon :size="14"><FunnelOutline /></n-icon>
             筛选
             <span v-if="hasActiveFilters" class="filter-dot" />
@@ -320,7 +346,7 @@ onMounted(() => {
 
     <!-- Content -->
     <div class="library-content">
-      <CardSkeleton v-if="initialLoading" :count="12" />
+      <CardSkeleton v-if="initialLoading" :count="12" density="compact" />
       <n-empty
         v-else-if="items.length === 0"
         :description="hasActiveFilters ? '没有找到匹配的内容' : '此媒体库中没有内容'"
@@ -330,7 +356,7 @@ onMounted(() => {
       <template v-else>
         <ItemGrid :items="items" density="compact" />
         <div v-if="loadingMore" class="library-loading-more">
-          <CardSkeleton :count="6" />
+          <CardSkeleton :count="6" density="compact" />
         </div>
         <div v-if="!allLoaded" ref="sentinelRef" style="height: 1px" />
       </template>

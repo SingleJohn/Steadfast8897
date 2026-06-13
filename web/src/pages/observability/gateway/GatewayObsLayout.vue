@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, provide } from 'vue'
+import { computed, defineAsyncComponent, provide } from 'vue'
 import { NSelect, useMessage } from 'naive-ui'
 import { useRoute } from 'vue-router'
 
@@ -7,7 +7,6 @@ import { AppIcons } from '@/icons/appIcons'
 import { useGatewayObservability } from '@/composables/useGatewayObservability'
 import { GW_OBS_KEY } from '@/composables/observabilityContext'
 import PageShell from '@/components/PageShell.vue'
-import RequestDetailModal from './RequestDetailModal.vue'
 
 /**
  * 网关观测父容器：
@@ -19,6 +18,7 @@ import RequestDetailModal from './RequestDetailModal.vue'
 const message = useMessage()
 const obs = useGatewayObservability(message)
 provide(GW_OBS_KEY, obs)
+const RequestDetailModal = defineAsyncComponent(() => import('./RequestDetailModal.vue'))
 
 const {
   sourceId,
@@ -88,6 +88,7 @@ const pageDescription = computed(() => {
          多根节点会让父级 <transition mode="out-in"> 的 leave 回调无法结算，
          离开本页后下一个路由组件不挂载 → 白屏（需整页刷新）。 -->
     <request-detail-modal
+      v-if="showDetail"
       v-model:show="showDetail"
       :selected-log="selectedLog"
       :ip-location="selectedIPLocation"

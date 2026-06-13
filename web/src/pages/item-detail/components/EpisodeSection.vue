@@ -9,6 +9,7 @@ defineProps<{
   seasons: any[]
   selectedSeason: string
   episodes: any[]
+  loading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,7 +34,17 @@ const emit = defineEmits<{
         {{ s.Name }}
       </button>
     </div>
-    <div v-if="episodes.length > 0" class="ep-list">
+    <div v-if="loading" class="ep-list">
+      <div v-for="i in 3" :key="i" class="ep-card ep-card-skeleton" aria-hidden="true">
+        <div class="ep-thumb ep-thumb-empty" />
+        <div class="ep-body">
+          <div class="ep-skeleton-line ep-skeleton-line-title" />
+          <div class="ep-skeleton-line ep-skeleton-line-short" />
+          <div class="ep-skeleton-line" />
+        </div>
+      </div>
+    </div>
+    <div v-else-if="episodes.length > 0" class="ep-list">
       <div
         v-for="ep in episodes"
         :key="ep.Id"
@@ -68,9 +79,19 @@ const emit = defineEmits<{
     <p v-else class="empty-hint">暂无剧集信息</p>
   </div>
 
-  <div v-if="item.Type === 'Season' && episodes.length > 0" class="episodes-section">
+  <div v-if="item.Type === 'Season' && (loading || episodes.length > 0)" class="episodes-section">
     <h3 class="section-heading">剧集</h3>
-    <div class="ep-list">
+    <div v-if="loading" class="ep-list">
+      <div v-for="i in 3" :key="i" class="ep-card ep-card-skeleton" aria-hidden="true">
+        <div class="ep-thumb ep-thumb-empty" />
+        <div class="ep-body">
+          <div class="ep-skeleton-line ep-skeleton-line-title" />
+          <div class="ep-skeleton-line ep-skeleton-line-short" />
+          <div class="ep-skeleton-line" />
+        </div>
+      </div>
+    </div>
+    <div v-else class="ep-list">
       <div
         v-for="ep in episodes"
         :key="ep.Id"
@@ -105,3 +126,43 @@ const emit = defineEmits<{
   </div>
 </template>
 
+<style scoped>
+.ep-card-skeleton {
+  cursor: default;
+  pointer-events: none;
+}
+
+.ep-skeleton-line {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent),
+    rgba(148, 163, 184, 0.14);
+  background-size: 220px 100%, 100% 100%;
+  animation: ep-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.ep-skeleton-line + .ep-skeleton-line {
+  margin-top: 10px;
+}
+
+.ep-skeleton-line-title {
+  width: 64%;
+}
+
+.ep-skeleton-line-short {
+  width: 36%;
+}
+
+@keyframes ep-skeleton-shimmer {
+  0% { background-position: -220px 0, 0 0; }
+  100% { background-position: calc(100% + 220px) 0, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ep-skeleton-line {
+    animation: none;
+  }
+}
+</style>

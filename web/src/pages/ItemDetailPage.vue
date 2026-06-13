@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, inject, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NSkeleton, useMessage } from 'naive-ui'
 import {
@@ -13,19 +13,21 @@ import {
   togglePlayed,
 } from '../api/client'
 import { useAuth } from '../composables/useAuth'
+import CardSkeleton from '../components/CardSkeleton.vue'
 import MediaCard from '../components/MediaCard.vue'
 import BackdropGallery from './item-detail/components/BackdropGallery.vue'
-import BackdropLightbox from './item-detail/components/BackdropLightbox.vue'
 import CastCarousel from './item-detail/components/CastCarousel.vue'
-import CustomScrapeModal from './item-detail/components/CustomScrapeModal.vue'
 import DetailHero from './item-detail/components/DetailHero.vue'
 import DetailOverview from './item-detail/components/DetailOverview.vue'
 import EpisodeSection from './item-detail/components/EpisodeSection.vue'
 import MediaInfoSection from './item-detail/components/MediaInfoSection.vue'
-import TrailerModal from './item-detail/components/TrailerModal.vue'
 import type { CrewGroup, TrailerInfo } from './item-detail/types'
 import { backdropSourceIdFor, backdropTagsFor, backdropUrl } from './item-detail/utils/images'
 import { canBrowserPlay } from '@/utils/playerSupport'
+
+const BackdropLightbox = defineAsyncComponent(() => import('./item-detail/components/BackdropLightbox.vue'))
+const CustomScrapeModal = defineAsyncComponent(() => import('./item-detail/components/CustomScrapeModal.vue'))
+const TrailerModal = defineAsyncComponent(() => import('./item-detail/components/TrailerModal.vue'))
 
 const route = useRoute()
 const router = useRouter()
@@ -40,7 +42,11 @@ const selectedSeason = ref('')
 const episodes = ref<any[]>([])
 const similarItems = ref<any[]>([])
 const loading = ref(true)
+const episodesLoading = ref(false)
+const similarLoading = ref(false)
 const scraping = ref(false)
+let loadSeq = 0
+let episodeSeq = 0
 
 const activeBackdropIndex = ref(0)
 const showBackdropPreview = ref(false)
@@ -69,7 +75,11 @@ const forceSolidModalStyle: Record<string, string> = {
 async function loadItem() {
   const id = itemId.value
   if (!id) return
+  const seq = ++loadSeq
   loading.value = true
+  episodesLoading.value = false
+  similarLoading.value = false
+  item.value = null
   seasons.value = []
   episodes.value = []
   similarItems.value = []
@@ -81,44 +91,73 @@ async function loadItem() {
 
   try {
     const data = await getItem(id)
+    if (seq !== loadSeq) return
     item.value = data
     const tags = backdropTagsFor(data)
     if (tags.length > 0) {
       setBackdrop(backdropUrl(backdropSourceIdFor(data), 0, tags[0], 1920))
     }
 
+    loading.value = false
+
     if (data.Type === 'Series') {
+      episodesLoading.value = true
       const seasonData = await getItems({ ParentId: id, SortBy: 'IndexNumber', SortOrder: 'Ascending' })
+      if (seq !== loadSeq) return
       const s = seasonData.Items || []
       seasons.value = s
-      if (s.length > 0) selectedSeason.value = s[0].Id
+      if (s.length > 0) {
+        selectedSeason.value = s[0].Id
+      } else {
+        episodesLoading.value = false
+      }
     } else if (data.Type === 'Season') {
+      episodesLoading.value = true
       const epData = await getItems({ ParentId: id, SortBy: 'IndexNumber', SortOrder: 'Ascending' })
+      if (seq !== loadSeq) return
       episodes.value = epData.Items || []
+      episodesLoading.value = false
     }
 
+    similarLoading.value = true
     getSimilarItems(data.Id || id)
       .then((res) => {
-        if (itemId.value !== id) return
+        if (seq !== loadSeq || itemId.value !== id) return
         similarItems.value = (res.Items || []).filter((entry: any) => entry?.Id && entry.Id !== data.Id)
       })
       .catch(() => {
-        if (itemId.value === id) similarItems.value = []
+        if (seq === loadSeq && itemId.value === id) similarItems.value = []
+      })
+      .finally(() => {
+        if (seq === loadSeq && itemId.value === id) similarLoading.value = false
       })
   } catch {
     // 保持原页面行为:详情加载失败时由 skeleton/空态承接,不额外打扰用户。
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
 watch(itemId, () => { void loadItem() }, { immediate: true })
 
 watch(selectedSeason, (id) => {
-  if (!id) return
+  const seq = ++episodeSeq
+  if (!id) {
+    episodesLoading.value = false
+    return
+  }
+  episodesLoading.value = true
   getItems({ ParentId: id, SortBy: 'IndexNumber', SortOrder: 'Ascending' })
-    .then((d) => { episodes.value = d.Items || [] })
-    .catch(() => {})
+    .then((d) => {
+      if (seq !== episodeSeq || selectedSeason.value !== id) return
+      episodes.value = d.Items || []
+    })
+    .catch(() => {
+      if (seq === episodeSeq && selectedSeason.value === id) episodes.value = []
+    })
+    .finally(() => {
+      if (seq === episodeSeq && selectedSeason.value === id) episodesLoading.value = false
+    })
 })
 
 const hasBackdrop = computed(() => backdropTagsFor(item.value).length > 0)
@@ -403,9 +442,17 @@ function handleTagClick(tag: string) {
         :item="item"
         :seasons="seasons"
         :episodes="episodes"
+        :loading="episodesLoading"
         @detail="goDetail"
         @play="goPlay"
       />
+      <section v-if="similarLoading" class="similar-section" aria-labelledby="similar-heading-loading">
+        <div class="section-title-row">
+          <h3 id="similar-heading-loading" class="section-heading section-heading-light">相关推荐</h3>
+          <span class="section-count">加载中</span>
+        </div>
+        <CardSkeleton :count="6" density="compact" />
+      </section>
       <section v-if="similarItems.length > 0" class="similar-section" aria-labelledby="similar-heading">
         <div class="section-title-row">
           <h3 id="similar-heading" class="section-heading section-heading-light">相关推荐</h3>

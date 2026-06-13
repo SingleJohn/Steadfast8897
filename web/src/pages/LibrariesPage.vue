@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import {
   NTabs, NTabPane,
 } from 'naive-ui'
 import PageShell from '@/components/PageShell.vue'
-import LibraryEditModal from '@/components/LibraryEditModal.vue'
-import LibraryCoverBatchModal from '@/components/libraries/LibraryCoverBatchModal.vue'
-import LibraryCreateModals from '@/components/libraries/LibraryCreateModals.vue'
 import LibraryDisplayOrderPanel from '@/components/libraries/LibraryDisplayOrderPanel.vue'
 import LibraryGridPanel from '@/components/libraries/LibraryGridPanel.vue'
 import LibraryScanPanel from '@/components/libraries/LibraryScanPanel.vue'
-import PlatformLibraryModals from '@/components/libraries/PlatformLibraryModals.vue'
 import PlatformLibrariesPanel from '@/components/libraries/PlatformLibrariesPanel.vue'
 import { AppIcons } from '@/icons/appIcons'
 import {
@@ -24,8 +20,13 @@ import { useLibraryCardOrder } from '@/composables/libraries/useLibraryCardOrder
 import { useLibraryCreate } from '@/composables/libraries/useLibraryCreate'
 import { usePlatformLibraries } from '@/composables/libraries/usePlatformLibraries'
 import { useLibraryScanState } from '@/composables/useLibraryScanState'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 
 const { showToast } = useToast()
+const LibraryEditModal = defineAsyncComponent(() => import('@/components/LibraryEditModal.vue'))
+const LibraryCoverBatchModal = defineAsyncComponent(() => import('@/components/libraries/LibraryCoverBatchModal.vue'))
+const LibraryCreateModals = defineAsyncComponent(() => import('@/components/libraries/LibraryCreateModals.vue'))
+const PlatformLibraryModals = defineAsyncComponent(() => import('@/components/libraries/PlatformLibraryModals.vue'))
 
 const scanThreadsOptions = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20].map((n) => ({ label: String(n), value: String(n) }))
 const libTypeOptions = [
@@ -230,6 +231,8 @@ const {
   handleAddPathManual,
   handleAddLibrary,
 } = useLibraryCreate(libraries, showToast)
+const showCreateModals = computed(() => showAddLib.value || showDirBrowser.value)
+const showPlatformModals = computed(() => showPlatformCover.value || showRename.value || showAlias.value)
 
 const editLibraryId = ref<string | null>(null)
 
@@ -323,7 +326,21 @@ async function saveLibrarySettings() {
   }
 }
 
-const timers: ReturnType<typeof setInterval>[] = []
+let taskSummaryRefreshing = false
+
+async function refreshTaskSummary() {
+  if (taskSummaryRefreshing) return
+  taskSummaryRefreshing = true
+  try {
+    await loadTaskSummary()
+  } catch {
+    // 下次可见轮询会自动重试。
+  } finally {
+    taskSummaryRefreshing = false
+  }
+}
+
+useVisibleInterval(refreshTaskSummary, 3000)
 
 onMounted(() => {
   getLibraries().then((l) => (libraries.value = l)).catch(() => {})
@@ -334,13 +351,10 @@ onMounted(() => {
     showLibraryItemCount.value = cfg.library_show_item_count !== 'false'
   }).catch(() => {})
   loadPlatforms()
-  loadTaskSummary().then(resumeRescrapePolling).catch(() => {})
-  // platform rescrape 的 task summary 不在作业调度范围内，保留独立轮询。
-  timers.push(setInterval(() => { void loadTaskSummary() }, 3000))
+  refreshTaskSummary().then(resumeRescrapePolling)
 })
 
 onUnmounted(() => {
-  timers.forEach((t) => clearInterval(t))
   clearRescrapeTimer()
 })
 </script>
@@ -448,6 +462,7 @@ onUnmounted(() => {
     </n-tabs>
 
     <LibraryCoverBatchModal
+      v-if="showGenerateAllCovers"
       :show="showGenerateAllCovers"
       :batch-cover-style="batchCoverStyle"
       :cover-style-options="coverStyleOptions"
@@ -472,6 +487,7 @@ onUnmounted(() => {
     />
 
     <PlatformLibraryModals
+      v-if="showPlatformModals"
       :show-platform-cover="showPlatformCover"
       :platform-cover-target-id="platformCoverTargetId"
       :platform-cover-style="platformCoverStyle"
@@ -511,6 +527,7 @@ onUnmounted(() => {
     />
 
     <LibraryCreateModals
+      v-if="showCreateModals"
       :show-add-lib="showAddLib"
       :new-lib-name="newLibName"
       :new-lib-type="newLibType"
@@ -539,6 +556,7 @@ onUnmounted(() => {
 
     <!-- Library Edit Modal -->
     <LibraryEditModal
+      v-if="editLibraryId"
       :library-id="editLibraryId"
       @close="closeEditModal"
       @updated="onLibraryUpdated"

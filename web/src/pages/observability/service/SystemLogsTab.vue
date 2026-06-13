@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, watchEffect, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick, onMounted } from 'vue'
 import { NButton, NSwitch, NSelect, NIcon, NTag } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { getSystemLogs } from '@/api/client'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 
 const LOG_LEVELS = ['ALL', 'INFO', 'WARN', 'ERROR'] as const
 const LOG_COLORS: Record<string, string> = {
@@ -27,16 +28,31 @@ const logLevel = ref<string>('ALL')
 const logAutoRefresh = ref(true)
 const logRetentionDays = ref('7')
 const logContainerRef = ref<HTMLElement | null>(null)
+let logRefreshing = false
+let logRefreshQueued = false
 
 async function fetchLogs() {
+  if (logRefreshing) {
+    logRefreshQueued = true
+    return
+  }
+  logRefreshing = true
+  const level = logLevel.value
   try {
-    const res = await getSystemLogs(logLevel.value, 500)
+    const res = await getSystemLogs(level, 500)
+    if (level !== logLevel.value) return
     logEntries.value = (res as any)?.entries || []
     await nextTick()
     const el = logContainerRef.value
     if (el) el.scrollTop = el.scrollHeight
   } catch {
     /* ignore */
+  } finally {
+    logRefreshing = false
+    if (logRefreshQueued) {
+      logRefreshQueued = false
+      void fetchLogs()
+    }
   }
 }
 
@@ -44,12 +60,7 @@ watch(logLevel, () => {
   void fetchLogs()
 })
 
-watchEffect((onCleanup) => {
-  if (!logAutoRefresh.value) return
-  void fetchLogs()
-  const t = window.setInterval(fetchLogs, 3000)
-  onCleanup(() => clearInterval(t))
-})
+useVisibleInterval(fetchLogs, 3000, { enabled: logAutoRefresh })
 
 watch(
   logEntries,

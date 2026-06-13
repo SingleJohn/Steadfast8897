@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import {
   NCard,
   NButton,
@@ -15,6 +15,7 @@ import {
 import { CloudDownloadOutline, RefreshOutline, SaveOutline } from '@vicons/ionicons5'
 import { useToast } from '@/composables/useToast'
 import EmptyState from '@/components/EmptyState.vue'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 import {
   getScrapeQueueStats,
   getScrapeQueueRecent,
@@ -68,9 +69,11 @@ const refreshWorkerInput = ref<number>(1)
 const refreshWorkerSaving = ref(false)
 const scrapeAllLoading = ref(false)
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 5000
 const PAGE_SIZE = 50
+let refreshing = false
+let scrapeListRequestId = 0
+let refreshListRequestId = 0
 
 const scrapeActiveTab = ref<TaskListTab>('failed')
 const scrapeFailedPage = ref(1)
@@ -127,6 +130,7 @@ const refreshCurrentPage = computed({
 })
 
 async function loadScrapeTaskList() {
+  const requestId = ++scrapeListRequestId
   scrapeListLoading.value = true
   try {
     const status = scrapeActiveTab.value
@@ -136,6 +140,7 @@ async function loadScrapeTaskList() {
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     })
+    if (requestId !== scrapeListRequestId) return
     if (status === 'failed') {
       scrapeFailedTasks.value = r.tasks || []
       scrapeFailedTotal.value = r.total ?? 0
@@ -146,11 +151,12 @@ async function loadScrapeTaskList() {
   } catch {
     // 静默;下次轮询自动重试
   } finally {
-    scrapeListLoading.value = false
+    if (requestId === scrapeListRequestId) scrapeListLoading.value = false
   }
 }
 
 async function loadRefreshTaskList() {
+  const requestId = ++refreshListRequestId
   refreshListLoading.value = true
   try {
     const status = refreshActiveTab.value
@@ -160,6 +166,7 @@ async function loadRefreshTaskList() {
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     })
+    if (requestId !== refreshListRequestId) return
     if (status === 'failed') {
       refreshFailedTasks.value = r.tasks || []
       refreshFailedTotal.value = r.total ?? 0
@@ -170,11 +177,13 @@ async function loadRefreshTaskList() {
   } catch {
     // 静默;下次轮询自动重试
   } finally {
-    refreshListLoading.value = false
+    if (requestId === refreshListRequestId) refreshListLoading.value = false
   }
 }
 
 async function refresh() {
+  if (refreshing) return
+  refreshing = true
   loading.value = true
   try {
     const [scrapeStatsRes, refreshStatsRes, metricsRes] = await Promise.allSettled([
@@ -200,17 +209,18 @@ async function refresh() {
     firstLoaded.value = true
   } finally {
     loading.value = false
+    refreshing = false
   }
 }
 
 watch([scrapeActiveTab, scrapeFailedPage, scrapeRunningPage], () => {
   scrapeExpandedId.value = null
-  loadScrapeTaskList()
+  void loadScrapeTaskList()
 })
 
 watch([refreshActiveTab, refreshFailedPage, refreshRunningPage], () => {
   refreshExpandedId.value = null
-  loadRefreshTaskList()
+  void loadRefreshTaskList()
 })
 
 async function handleScrapeRetry(id: number) {
@@ -492,14 +502,7 @@ function displayTitle(t: DisplayTask): string {
   return t.item_name || t.item_id
 }
 
-onMounted(() => {
-  refresh()
-  pollTimer = setInterval(refresh, POLL_INTERVAL)
-})
-
-onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer)
-})
+useVisibleInterval(refresh, POLL_INTERVAL, { immediate: true })
 </script>
 
 <template>

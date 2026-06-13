@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { NEmpty } from 'naive-ui'
 import { getItems } from '../api/client'
@@ -29,9 +29,11 @@ const results = ref<any[]>([])
 const loading = ref(false)
 const searched = ref(false)
 const activeTab = ref<FilterType>('all')
+let searchSeq = 0
 
 async function doSearch(term: string) {
-  if (!term.trim()) { results.value = []; searched.value = false; return }
+  const seq = ++searchSeq
+  if (!term.trim()) { results.value = []; searched.value = false; loading.value = false; return }
   loading.value = true; searched.value = true
   try {
     const data = await getItems({
@@ -39,18 +41,21 @@ async function doSearch(term: string) {
       IncludeItemTypes: 'Movie,Series,Episode',
       Limit: '60', SortBy: 'SortName', SortOrder: 'Ascending',
     })
+    if (seq !== searchSeq) return
     results.value = data.Items || []
-  } catch { results.value = [] } finally { loading.value = false }
+  } catch {
+    if (seq === searchSeq) results.value = []
+  } finally {
+    if (seq === searchSeq) loading.value = false
+  }
 }
 
 watch(() => route.query.q, (q) => {
   const s = typeof q === 'string' ? q : Array.isArray(q) ? q[0] || '' : ''
   query.value = s
   if (s) doSearch(s)
-  else { results.value = []; searched.value = false }
-})
-
-onMounted(() => { if (query.value) doSearch(query.value) })
+  else { searchSeq++; results.value = []; searched.value = false; loading.value = false }
+}, { immediate: true })
 
 const filtered = computed(() =>
   activeTab.value === 'all' ? results.value : results.value.filter(r => r.Type === activeTab.value)

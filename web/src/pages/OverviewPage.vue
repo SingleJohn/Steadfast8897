@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NIcon, NSpin } from 'naive-ui'
 import {
@@ -39,6 +39,7 @@ import {
   type UpdateStatus,
 } from '@/api/client'
 import { useToast } from '@/composables/useToast'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 import KpiGroup from './overview/components/KpiGroup.vue'
 import OverviewDialogs from './overview/components/OverviewDialogs.vue'
 import OverviewHero from './overview/components/OverviewHero.vue'
@@ -362,7 +363,8 @@ function openManualDownload() {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-const timers: ReturnType<typeof setInterval>[] = []
+let refreshingSessions = false
+let refreshingUpdateStatus = false
 
 async function loadGatewayData() {
   const [stats, config] = await Promise.allSettled([
@@ -409,23 +411,36 @@ async function loadAll() {
   loading.value = false
 }
 
+async function refreshActiveSessions() {
+  if (refreshingSessions) return
+  refreshingSessions = true
+  try {
+    const s = await getActiveSessions()
+    if (Array.isArray(s)) sessions.value = s
+  } catch {
+    // Keep the last successful snapshot when polling fails.
+  } finally {
+    refreshingSessions = false
+  }
+}
+
+async function refreshUpdateStatus() {
+  if (refreshingUpdateStatus) return
+  refreshingUpdateStatus = true
+  try {
+    await loadUpdateStatus()
+  } catch {
+    // Update status is opportunistic; the card will refresh on the next tick.
+  } finally {
+    refreshingUpdateStatus = false
+  }
+}
+
+useVisibleInterval(refreshActiveSessions, 5000)
+useVisibleInterval(refreshUpdateStatus, 4000)
+
 onMounted(() => {
   loadAll()
-
-  timers.push(
-    setInterval(() => {
-      getActiveSessions()
-        .then((s) => { if (Array.isArray(s)) sessions.value = s })
-        .catch(() => {})
-    }, 5000),
-    setInterval(() => {
-      loadUpdateStatus().catch(() => {})
-    }, 4000),
-  )
-})
-
-onUnmounted(() => {
-  timers.forEach((t) => clearInterval(t))
 })
 </script>
 

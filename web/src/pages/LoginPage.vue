@@ -44,12 +44,15 @@ onMounted(() => {
     })
     .catch(() => {})
   requestAnimationFrame(() => { visible.value = true })
-  initParticles()
+  if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    initParticles()
+  }
 })
 
 /* ── Floating particle background ── */
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let animId = 0
+let cleanupCanvas = () => {}
 
 interface Particle {
   x: number; y: number; r: number
@@ -80,6 +83,7 @@ function initParticles() {
     h = canvas!.height = window.innerHeight
   }
   window.addEventListener('resize', resize)
+  cleanupCanvas = () => window.removeEventListener('resize', resize)
 
   function draw() {
     ctx!.clearRect(0, 0, w, h)
@@ -117,7 +121,10 @@ function initParticles() {
   draw()
 }
 
-onUnmounted(() => { cancelAnimationFrame(animId) })
+onUnmounted(() => {
+  cancelAnimationFrame(animId)
+  cleanupCanvas()
+})
 
 async function handleLogin() {
   error.value = ''

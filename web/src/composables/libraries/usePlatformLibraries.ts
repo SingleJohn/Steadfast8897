@@ -20,6 +20,7 @@ import {
   updatePlatformSortOrder,
   updateSystemConfig,
 } from '@/api/client'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 
 type ToastFn = (message: string, type?: any) => void
 
@@ -67,7 +68,11 @@ export function usePlatformLibraries(
   const filenameScanning = ref(false)
   const rescraping = ref(false)
   const rescrapeStatus = ref<any>(null)
-  let rescrapeTimer: ReturnType<typeof setInterval> | null = null
+  let rescrapeRefreshing = false
+  const rescrapePollingEnabled = computed(() => Boolean(rescrapeStatus.value?.running))
+  const rescrapePolling = useVisibleInterval(pollRescrapeProgress, 2000, {
+    enabled: rescrapePollingEnabled,
+  })
 
   const platformCoverIsShowcase = computed(() => platformCoverStyle.value === 'showcase')
 
@@ -326,16 +331,19 @@ export function usePlatformLibraries(
   }
 
   async function pollRescrapeProgress() {
+    if (rescrapeRefreshing) return
+    rescrapeRefreshing = true
     try {
       await loadTaskSummary()
       const p = rescrapeStatus.value
-      if (!p.running && rescrapeTimer) {
-        clearInterval(rescrapeTimer)
-        rescrapeTimer = null
+      if (!p?.running) {
         rescraping.value = false
         void loadPlatforms()
       }
-    } catch {}
+    } catch {
+    } finally {
+      rescrapeRefreshing = false
+    }
   }
 
   async function handleRescrape() {
@@ -344,8 +352,8 @@ export function usePlatformLibraries(
     try {
       const res = await rescrapeMissingStudio()
       showToast(`正在重新刮削 ${res.total} 个项目`, 'success')
-      if (rescrapeTimer) clearInterval(rescrapeTimer)
-      rescrapeTimer = setInterval(pollRescrapeProgress, 2000)
+      rescrapeStatus.value = { running: true, total: res.total }
+      void pollRescrapeProgress()
     } catch {
       showToast('刮削失败', 'error')
       rescraping.value = false
@@ -355,12 +363,11 @@ export function usePlatformLibraries(
   function resumeRescrapePolling() {
     if (rescrapeStatus.value?.running) {
       rescraping.value = true
-      rescrapeTimer = setInterval(pollRescrapeProgress, 2000)
     }
   }
 
   function clearRescrapeTimer() {
-    if (rescrapeTimer) clearInterval(rescrapeTimer)
+    rescrapePolling.pause()
   }
 
   return {

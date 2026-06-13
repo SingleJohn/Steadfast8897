@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NSkeleton } from 'naive-ui'
 import {
@@ -10,9 +10,7 @@ import {
   getViews,
 } from '../api/client'
 import CardSkeleton from '../components/CardSkeleton.vue'
-import HeroCarousel from '../components/HeroCarousel.vue'
 import LibraryTabs from '../components/LibraryTabs.vue'
-import SwiperRow from '../components/SwiperRow.vue'
 import { useBranding } from '@/composables/useBranding'
 import { useAuthStore } from '../stores/auth'
 
@@ -25,6 +23,8 @@ interface LibrarySection {
 const router = useRouter()
 const auth = useAuthStore()
 const branding = useBranding()
+const HeroCarousel = defineAsyncComponent(() => import('../components/HeroCarousel.vue'))
+const SwiperRow = defineAsyncComponent(() => import('../components/SwiperRow.vue'))
 
 const heroItems = ref<any[]>([])
 const resumeItems = ref<any[]>([])
@@ -32,6 +32,8 @@ const favoriteItems = ref<any[]>([])
 const libraryViews = ref<any[]>([])
 const latestByLibrary = ref<LibrarySection[]>([])
 const loading = ref(true)
+const latestLoading = ref(false)
+const latestLoaded = ref(false)
 
 const heroReady = computed(() => heroItems.value.length > 0)
 const hasContent = computed(() => (
@@ -39,6 +41,26 @@ const hasContent = computed(() => (
   || favoriteItems.value.length > 0
   || latestByLibrary.value.length > 0
 ))
+const showEmpty = computed(() => !loading.value && latestLoaded.value && !hasContent.value)
+const showHomeShell = computed(() => heroReady.value || hasContent.value || latestLoading.value || libraryViews.value.length > 0)
+
+async function loadLatestSections(libraries: any[]) {
+  latestLoading.value = true
+  latestLoaded.value = false
+  latestByLibrary.value = []
+  try {
+    const libraryIds = libraries.map((lib: any) => lib.Id)
+    const batchResult = libraryIds.length > 0 ? await getLatestBatch(libraryIds, 20) : {}
+    latestByLibrary.value = libraries
+      .map((lib: any) => ({ id: lib.Id, name: lib.Name, items: batchResult[lib.Id] || [] }))
+      .filter((section: LibrarySection) => section.items.length > 0)
+  } catch {
+    latestByLibrary.value = []
+  } finally {
+    latestLoading.value = false
+    latestLoaded.value = true
+  }
+}
 
 async function loadHome() {
   try {
@@ -62,15 +84,12 @@ async function loadHome() {
 
     const libraries = views.Items || []
     libraryViews.value = libraries
-    const libraryIds = libraries.map((lib: any) => lib.Id)
-    const batchResult = libraryIds.length > 0 ? await getLatestBatch(libraryIds, 20) : {}
-    latestByLibrary.value = libraries
-      .map((lib: any) => ({ id: lib.Id, name: lib.Name, items: batchResult[lib.Id] || [] }))
-      .filter((section: LibrarySection) => section.items.length > 0)
+    loading.value = false
+    void loadLatestSections(libraries)
   } catch (err) {
     console.error('Failed to load home:', err)
-  } finally {
     loading.value = false
+    latestLoaded.value = true
   }
 }
 
@@ -109,7 +128,7 @@ onMounted(() => {
     </div>
   </div>
 
-  <div v-else-if="!hasContent" class="home-empty">
+  <div v-else-if="showEmpty" class="home-empty">
     <div class="empty-icon-wrap">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
         <rect x="2" y="2" width="20" height="20" rx="2" />
@@ -132,9 +151,14 @@ onMounted(() => {
     </div>
   </div>
 
-  <div v-else class="home-page">
+  <div v-else-if="showHomeShell" class="home-page">
     <div v-if="heroReady" class="home-hero-wrap">
-      <HeroCarousel :items="heroItems" />
+      <Suspense>
+        <HeroCarousel :items="heroItems" />
+        <template #fallback>
+          <n-skeleton class="home-hero-skeleton" height="clamp(480px, 72vh, 720px)" style="border-radius: 0" />
+        </template>
+      </Suspense>
     </div>
 
     <div class="home-sections">
@@ -145,28 +169,55 @@ onMounted(() => {
           title="媒体库"
           shape="thumb"
         />
-        <SwiperRow
-          v-if="resumeItems.length > 0"
-          title="继续观看"
-          :items="resumeItems"
-          shape="thumb"
-          density="compact"
-          :show-progress="true"
-        />
-        <SwiperRow
-          v-if="favoriteItems.length > 0"
-          title="我的收藏"
-          :items="favoriteItems"
-          density="compact"
-        />
-        <SwiperRow
+        <Suspense v-if="resumeItems.length > 0">
+          <SwiperRow
+            title="继续观看"
+            :items="resumeItems"
+            shape="thumb"
+            density="compact"
+            :show-progress="true"
+          />
+          <template #fallback>
+            <div class="home-loading-row">
+              <n-skeleton text style="width: 140px; margin-bottom: 16px" />
+              <CardSkeleton :count="6" density="compact" />
+            </div>
+          </template>
+        </Suspense>
+        <Suspense v-if="favoriteItems.length > 0">
+          <SwiperRow
+            title="我的收藏"
+            :items="favoriteItems"
+            density="compact"
+          />
+          <template #fallback>
+            <div class="home-loading-row">
+              <n-skeleton text style="width: 140px; margin-bottom: 16px" />
+              <CardSkeleton :count="6" density="compact" />
+            </div>
+          </template>
+        </Suspense>
+        <Suspense
           v-for="{ id, name, items } in latestByLibrary"
           :key="id"
-          :title="`最新 ${name}`"
-          :items="items"
-          :link-to="`/library/${id}`"
-          density="compact"
-        />
+        >
+          <SwiperRow
+            :title="`最新 ${name}`"
+            :items="items"
+            :link-to="`/library/${id}`"
+            density="compact"
+          />
+          <template #fallback>
+            <div class="home-loading-row">
+              <n-skeleton text style="width: 140px; margin-bottom: 16px" />
+              <CardSkeleton :count="6" density="compact" />
+            </div>
+          </template>
+        </Suspense>
+        <div v-if="latestLoading" class="home-loading-row home-latest-loading">
+          <n-skeleton text style="width: 140px; margin-bottom: 16px" />
+          <CardSkeleton :count="6" density="compact" />
+        </div>
       </div>
     </div>
   </div>

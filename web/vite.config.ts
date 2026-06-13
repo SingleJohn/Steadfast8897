@@ -55,5 +55,20 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('naive-ui') || id.includes('vueuc') || id.includes('vdirs')) return 'vendor-naive'
+          if (id.includes('swiper')) return 'vendor-swiper'
+          if (id.includes('echarts') || id.includes('zrender') || id.includes('vue-echarts')) return 'vendor-charts'
+          if (id.includes('artplayer') || id.includes('hls.js')) return 'vendor-player'
+          if (id.includes('sql.js')) return 'vendor-sql'
+          if (id.includes('vue') || id.includes('vue-router') || id.includes('pinia') || id.includes('@vueuse')) return 'vendor-vue'
+          return 'vendor'
+        },
+      },
+    },
   },
 })

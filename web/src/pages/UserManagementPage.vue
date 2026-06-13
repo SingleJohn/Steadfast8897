@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue'
 import {
   NButton, NModal, NInput, NSpace, NTag, NSpin, NIcon, NEmpty,
   NSwitch, NSelect, NCheckbox, NScrollbar, NPagination,
@@ -14,7 +14,6 @@ import { useToast } from '../composables/useToast'
 import PageShell from '@/components/PageShell.vue'
 import { AppIcons } from '@/icons/appIcons'
 import UserBulkBar from './user-management/UserBulkBar.vue'
-import UserBulkPolicyModal from './user-management/UserBulkPolicyModal.vue'
 import UserSelectionBar from './user-management/UserSelectionBar.vue'
 import UserManagementList from './user-management/UserManagementList.vue'
 import UserManagementToolbar from './user-management/UserManagementToolbar.vue'
@@ -27,6 +26,7 @@ import {
 
 const { auth } = useAuth()
 const { showToast } = useToast()
+const UserBulkPolicyModal = defineAsyncComponent(() => import('./user-management/UserBulkPolicyModal.vue'))
 
 const users = ref<any[]>([])
 const libraries = ref<any[]>([])
@@ -697,6 +697,7 @@ const isSelf = computed(() => auth.userId === editUserId.value)
     </n-modal>
 
     <user-bulk-policy-modal
+      v-if="showBulkPolicy"
       v-model:show="showBulkPolicy"
       :selected-count="selectedCount"
       :loading="bulkSaving"

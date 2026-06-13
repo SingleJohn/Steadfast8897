@@ -14,6 +14,7 @@ import {
   type RedirectTraceAggMetricRow,
 } from '@/api/redirects'
 import { getDailyStats } from '@/api/stats'
+import { useVisibleInterval } from '@/composables/useVisibleInterval'
 import type { Config, DailyStat, EmbySourceConfig, IPInfoLite, IPStatsSummary, RedirectSummary, RequestLog } from '@/types'
 
 const DEFAULT_REDIRECT_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -70,7 +71,8 @@ export function useGatewayObservability(message: MessageApi) {
   const selectedLog = ref<RequestLog | null>(null)
 
   const isLive = ref(false)
-  let liveTimer: number | null = null
+  const liveSuspended = ref(false)
+  const livePollingEnabled = computed(() => isLive.value && !liveSuspended.value)
 
   const status = ref<number | null>(null)
   const ip = ref('')
@@ -102,7 +104,8 @@ export function useGatewayObservability(message: MessageApi) {
   })
 
   const redirectIsLive = ref(false)
-  let redirectLiveTimer: number | null = null
+  const redirectLiveSuspended = ref(false)
+  const redirectLivePollingEnabled = computed(() => redirectIsLive.value && !redirectLiveSuspended.value)
 
   const redirectBackend = ref<string>('')
   const redirectUserID = ref('')
@@ -561,32 +564,33 @@ export function useGatewayObservability(message: MessageApi) {
     }
   }
 
+  const livePolling = useVisibleInterval(() => refreshLogs(false), 3000, {
+    enabled: livePollingEnabled,
+  })
+  const redirectLivePolling = useVisibleInterval(() => {
+    void refreshRedirectSummary()
+    void refreshRedirectLogs(false)
+    void refreshRedirectTraceAgg()
+  }, 3000, {
+    enabled: redirectLivePollingEnabled,
+  })
+
   function startLive() {
-    stopLive()
-    liveTimer = window.setInterval(() => {
-      void refreshLogs(false)
-    }, 3000)
+    liveSuspended.value = false
   }
 
   function stopLive() {
-    if (!liveTimer) return
-    window.clearInterval(liveTimer)
-    liveTimer = null
+    liveSuspended.value = true
+    livePolling.pause()
   }
 
   function startRedirectLive() {
-    stopRedirectLive()
-    redirectLiveTimer = window.setInterval(() => {
-      void refreshRedirectSummary()
-      void refreshRedirectLogs(false)
-      void refreshRedirectTraceAgg()
-    }, 3000)
+    redirectLiveSuspended.value = false
   }
 
   function stopRedirectLive() {
-    if (!redirectLiveTimer) return
-    window.clearInterval(redirectLiveTimer)
-    redirectLiveTimer = null
+    redirectLiveSuspended.value = true
+    redirectLivePolling.pause()
   }
 
   async function nextPage() {

@@ -72,17 +72,20 @@ function titleClass(item: any): string {
     <Swiper
       :modules="modules"
       :slides-per-view="1"
-      :autoplay="{ delay: 8000, disableOnInteraction: false }"
+      :autoplay="items.length > 1 ? { delay: 8000, disableOnInteraction: false } : false"
       :pagination="{ clickable: true, el: '.hero-pagination' }"
-      loop
+      :loop="items.length > 1"
       class="hero-swiper"
     >
-      <SwiperSlide v-for="item in items" :key="item.Id">
+      <SwiperSlide v-for="(item, index) in items" :key="item.Id">
         <article class="hero-slide">
           <img
-            :src="getImageUrl(backdropId(item), 'Backdrop', 1920)"
+            :src="getImageUrl(backdropId(item), 'Backdrop', { maxWidth: 1920, quality: 86 })"
             :alt="item.Name"
             class="hero-backdrop"
+            :fetchpriority="index === 0 ? 'high' : 'auto'"
+            :loading="index === 0 ? 'eager' : 'lazy'"
+            decoding="async"
           />
           <div class="hero-shade" />
 

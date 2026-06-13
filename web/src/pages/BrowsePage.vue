@@ -37,6 +37,7 @@ const loadingMore = ref(false)
 const loadingLock = ref(false)
 const filterOpen = ref(false)
 const sentinelRef = ref<HTMLDivElement | null>(null)
+let initialLoadSeq = 0
 
 const sortBy = ref('SortName')
 const sortOrder = ref('Ascending')
@@ -115,20 +116,24 @@ function clearFilters() {
 }
 
 function loadInitial() {
+  const seq = ++initialLoadSeq
   if (!value.value && !displayName.value) return
   initialLoading.value = true
   items.value = []
   totalCount.value = 0
   getItems(buildParams(0))
     .then((data) => {
+      if (seq !== initialLoadSeq) return
       items.value = data.Items || []
       totalCount.value = data.TotalRecordCount || 0
     })
     .catch(() => {
+      if (seq !== initialLoadSeq) return
       items.value = []
       totalCount.value = 0
     })
     .finally(() => {
+      if (seq !== initialLoadSeq) return
       initialLoading.value = false
     })
 }
@@ -360,7 +365,7 @@ watchEffect((onCleanup) => {
     </transition>
 
     <main class="browse-content">
-      <CardSkeleton v-if="initialLoading" :count="12" />
+      <CardSkeleton v-if="initialLoading" :count="12" density="compact" />
       <n-empty
         v-else-if="items.length === 0"
         :description="hasActiveFilters ? '没有找到匹配的内容' : '暂无相关内容'"
@@ -370,7 +375,7 @@ watchEffect((onCleanup) => {
       <template v-else>
         <ItemGrid :items="items" density="compact" />
         <div v-if="loadingMore" class="browse-loading-more">
-          <CardSkeleton :count="6" />
+          <CardSkeleton :count="6" density="compact" />
         </div>
         <div v-if="!allLoaded" ref="sentinelRef" style="height: 1px" />
       </template>
