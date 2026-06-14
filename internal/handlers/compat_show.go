@@ -30,6 +30,21 @@ func getSeasons(c *gin.Context, state *AppState) {
 		seriesNameVal = &seriesRow.Name
 	}
 
+	auth := middleware.GetAuthUser(c)
+	userID := ""
+	if quid := c.Query("UserId"); quid != "" {
+		userID = quid
+	} else if quid := c.Query("userId"); quid != "" {
+		userID = quid
+	} else if auth != nil && !strings.HasPrefix(auth.ID, "api-key-") {
+		userID = auth.ID
+	}
+	if userID != "" {
+		if _, err := uuid.Parse(userID); err != nil {
+			userID = ""
+		}
+	}
+
 	rows, err := state.DB.Query(ctx,
 		`SELECT id FROM items WHERE parent_id = $1::uuid AND type = 'Season' ORDER BY index_number NULLS LAST, sort_name ASC`,
 		*suid)
@@ -58,13 +73,23 @@ func getSeasons(c *gin.Context, state *AppState) {
 		childCount, _ := models.GetChildCount(ctx, state.DB, id)
 		d.ChildCount = &childCount
 
-		if len(d.ImageTags) == 0 && seriesImageTag != nil {
+		if seriesImageTag != nil {
 			d.SeriesPrimaryImageTag = seriesImageTag
-			d.SeriesPrimaryImageItemID = suid
-			d.ParentPrimaryImageItemID = suid
-			d.ParentPrimaryImageTag = seriesImageTag
-			d.ParentThumbItemID = suid
-			d.ParentThumbImageTag = seriesImageTag
+			if d.SeriesPrimaryImageItemID == nil {
+				d.SeriesPrimaryImageItemID = suid
+			}
+			if d.ParentPrimaryImageItemID == nil {
+				d.ParentPrimaryImageItemID = suid
+			}
+			if d.ParentPrimaryImageTag == nil {
+				d.ParentPrimaryImageTag = seriesImageTag
+			}
+			if d.ParentThumbItemID == nil {
+				d.ParentThumbItemID = suid
+			}
+			if d.ParentThumbImageTag == nil {
+				d.ParentThumbImageTag = seriesImageTag
+			}
 		}
 		if len(d.BackdropImageTags) == 0 && seriesBackdropTag != nil {
 			d.ParentBackdropItemID = suid
@@ -76,7 +101,8 @@ func getSeasons(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": len(items)})
+	applyUnplayedItemCounts(ctx, state.DB, userID, items)
+	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, int64(len(items)))})
 }
 
 func getEpisodes(c *gin.Context, state *AppState) {
@@ -226,13 +252,23 @@ func getEpisodes(c *gin.Context, state *AppState) {
 			d.SeriesName = seriesNameVal
 		}
 
-		if len(d.ImageTags) == 0 && seriesImageTag != nil {
+		if seriesImageTag != nil {
 			d.SeriesPrimaryImageTag = seriesImageTag
-			d.SeriesPrimaryImageItemID = suid
-			d.ParentPrimaryImageItemID = suid
-			d.ParentPrimaryImageTag = seriesImageTag
-			d.ParentThumbItemID = suid
-			d.ParentThumbImageTag = seriesImageTag
+			if d.SeriesPrimaryImageItemID == nil {
+				d.SeriesPrimaryImageItemID = suid
+			}
+			if d.ParentPrimaryImageItemID == nil {
+				d.ParentPrimaryImageItemID = suid
+			}
+			if d.ParentPrimaryImageTag == nil {
+				d.ParentPrimaryImageTag = seriesImageTag
+			}
+			if d.ParentThumbItemID == nil {
+				d.ParentThumbItemID = suid
+			}
+			if d.ParentThumbImageTag == nil {
+				d.ParentThumbImageTag = seriesImageTag
+			}
 		}
 		if len(d.BackdropImageTags) == 0 && seriesBackdropTag != nil {
 			d.ParentBackdropItemID = suid
@@ -254,5 +290,6 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": totalCount})
+	applySeasonNames(ctx, state.DB, items)
+	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, totalCount)})
 }

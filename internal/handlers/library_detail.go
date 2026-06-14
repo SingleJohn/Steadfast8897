@@ -50,6 +50,15 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	}
 
 	base := dto.FormatItemDto(item, serverID, ud)
+	if item.ItemType == "Series" || item.ItemType == "Season" {
+		items := []dto.BaseItemDto{base}
+		applyUnplayedItemCounts(ctx, pool, userID, items)
+		base = items[0]
+	} else if item.ItemType == "Episode" {
+		items := []dto.BaseItemDto{base}
+		applySeasonNames(ctx, pool, items)
+		base = items[0]
+	}
 
 	var seriesItem *dto.ItemRow
 	if item.ItemType == "Episode" || item.ItemType == "Season" {
@@ -218,6 +227,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			FymsQualityLabel:      qualityLabel,
 			Chapters:              parseChaptersJSON(chaptersJSON),
 		}
+		applyMediaSourceCompatDefaults(&ms, item.ID)
 		sources = append(sources, ms)
 		mvIdx++
 	}
@@ -241,6 +251,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			ReadAtNativeFramerate: false,
 			Formats:               []string{},
 		}
+		applyMediaSourceCompatDefaults(&ms, item.ID)
 		sources = []dto.MediaSourceInfo{ms}
 	}
 	base.MediaSources = sources
@@ -357,6 +368,7 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				FymsQualityLabel:      qualityLabel,
 				Chapters:              parseChaptersJSON(chaptersJSON),
 			}
+			applyMediaSourceCompatDefaults(&ms, itemID)
 			merged = append(merged, ms)
 		}
 		mvRows.Close()

@@ -498,6 +498,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 			b := int64(*mv.Bitrate)
 			src.Bitrate = &b
 		}
+		applyMediaSourceCompatDefaults(&src, *uid)
 		sources = append(sources, src)
 	}
 
@@ -987,6 +988,7 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 				b := int64(*mv.Bitrate)
 				src.Bitrate = &b
 			}
+			applyMediaSourceCompatDefaults(&src, primaryID)
 			merged = append(merged, src)
 		}
 		mvRows.Close()

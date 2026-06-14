@@ -41,6 +41,23 @@ func parseChaptersJSON(data []byte) []dto.ChapterInfo {
 	return chapters
 }
 
+func applyMediaSourceCompatDefaults(src *dto.MediaSourceInfo, itemID string) {
+	if src == nil {
+		return
+	}
+	src.ItemID = itemID
+	src.SupportsProbing = true
+	if src.RequiredHTTPHeaders == nil {
+		src.RequiredHTTPHeaders = map[string]string{}
+	}
+	if src.Formats == nil {
+		src.Formats = []string{}
+	}
+	if src.Chapters == nil {
+		src.Chapters = []dto.ChapterInfo{}
+	}
+}
+
 func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) []dto.MediaSourceInfo {
 	rows, err := state.DB.Query(ctx,
 		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
@@ -158,6 +175,7 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 			b := int64(*mv.Bitrate)
 			src.Bitrate = &b
 		}
+		applyMediaSourceCompatDefaults(&src, itemID)
 		sources = append(sources, src)
 	}
 
@@ -275,6 +293,7 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 				b := int64(*mv.Bitrate)
 				src.Bitrate = &b
 			}
+			applyMediaSourceCompatDefaults(&src, itemID)
 			merged = append(merged, src)
 		}
 		mvRows.Close()

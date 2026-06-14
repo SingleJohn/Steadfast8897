@@ -497,10 +497,12 @@ func getItems(c *gin.Context) {
 		}
 		items = append(items, item)
 	}
+	applyUnplayedItemCounts(ctx, state.DB, pathUser, items)
+	applySeasonNames(ctx, state.DB, items)
 
 	c.JSON(http.StatusOK, gin.H{
 		"Items":            items,
-		"TotalRecordCount": res.TotalCount,
+		"TotalRecordCount": embyTotalRecordCount(c, res.TotalCount),
 	})
 }
 
@@ -603,7 +605,7 @@ func getResumeItems(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"Items":            items,
-		"TotalRecordCount": res.TotalCount,
+		"TotalRecordCount": embyTotalRecordCount(c, res.TotalCount),
 	})
 }
 
@@ -661,12 +663,13 @@ func getLatestItems(c *gin.Context) {
 				applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
 				items = append(items, item)
 			}
+			applyUnplayedItemCounts(ctx, state.DB, pathUser, items)
 			c.JSON(http.StatusOK, items)
 			return
 		}
 	}
 
-	items, err := queryLatestItemsForParent(ctx, state, parentID, limit, scope)
+	items, err := queryLatestItemsForParent(ctx, state, parentID, limit, scope, pathUser)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -675,7 +678,7 @@ func getLatestItems(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
-func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope) ([]dto.BaseItemDto, error) {
+func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope, userID string) ([]dto.BaseItemDto, error) {
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
 		if scope != nil && !scope.AllowAll {
 			return []dto.BaseItemDto{}, nil
@@ -700,6 +703,7 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 		for i := range res.Items {
 			items = append(items, dto.FormatItemDto(&res.Items[i], sid, nil))
 		}
+		applyUnplayedItemCounts(ctx, state.DB, userID, items)
 		return items, nil
 	}
 
@@ -715,6 +719,7 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 	for i := range rows {
 		items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
 	}
+	applyUnplayedItemCounts(ctx, state.DB, userID, items)
 	return items, nil
 }
 
@@ -756,7 +761,7 @@ func getLatestBatch(c *gin.Context) {
 		if libID == "" {
 			continue
 		}
-		items, err := queryLatestItemsForParent(ctx, state, libID, limit, scope)
+		items, err := queryLatestItemsForParent(ctx, state, libID, limit, scope, pathUser)
 		if err != nil {
 			continue
 		}

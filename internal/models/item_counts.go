@@ -38,6 +38,47 @@ func GetRecursiveItemCount(ctx context.Context, pool *pgxpool.Pool, parentID str
 	return count, err
 }
 
+func GetUnplayedEpisodeCounts(ctx context.Context, pool *pgxpool.Pool, userID string, itemIDs []string, itemType string) (map[string]int64, error) {
+	counts := make(map[string]int64, len(itemIDs))
+	if userID == "" || len(itemIDs) == 0 {
+		return counts, nil
+	}
+
+	var keyExpr string
+	switch itemType {
+	case "Series":
+		keyExpr = "e.series_id::text"
+	case "Season":
+		keyExpr = "e.parent_id::text"
+	default:
+		return counts, nil
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT `+keyExpr+`, COUNT(*)
+		   FROM items e
+		   LEFT JOIN user_item_data uid ON uid.item_id = e.id AND uid.user_id = $1::uuid
+		  WHERE e.type = 'Episode'
+		    AND `+keyExpr+` = ANY($2::text[])
+		    AND (uid.played IS NULL OR uid.played = FALSE)
+		  GROUP BY `+keyExpr,
+		userID, itemIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var count int64
+		if err := rows.Scan(&id, &count); err != nil {
+			return nil, err
+		}
+		counts[id] = count
+	}
+	return counts, rows.Err()
+}
+
 func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, limit int64) ([]dto.ItemRow, error) {
 	var libType string
 	err := pool.QueryRow(ctx,

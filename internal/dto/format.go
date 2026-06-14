@@ -129,16 +129,28 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 		Type:     item.ItemType,
 		SortName: &sortName,
 	}
+	canDelete := false
+	supportsSync := true
+	dto.CanDelete = &canDelete
+	dto.SupportsSync = &supportsSync
 
 	switch item.ItemType {
 	case "Movie", "Episode":
 		mediaType := "Video"
 		isFolder := false
+		canDownload := true
 		dto.MediaType = &mediaType
 		dto.IsFolder = &isFolder
+		dto.CanDownload = &canDownload
 	case "Series", "Season", "CollectionFolder", "Folder":
 		isFolder := true
+		canDownload := false
 		dto.IsFolder = &isFolder
+		dto.CanDownload = &canDownload
+		if item.ItemType == "Series" {
+			airDays := []string{}
+			dto.AirDays = &airDays
+		}
 	}
 
 	dto.CollectionType = item.CollectionType
@@ -306,6 +318,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 			PlayCount:             playCount,
 			IsFavorite:            isFav,
 			Played:                played,
+			UnplayedItemCount:     userData.UnplayedItemCount,
 			LastPlayedDate:        lastPlayed,
 			PlayedPercentage:      percentage,
 		}

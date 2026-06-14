@@ -21,6 +21,9 @@ type BaseItemDto struct {
 	IndexNumber              *int32                   `json:"IndexNumber,omitempty"`
 	ParentIndexNumber        *int32                   `json:"ParentIndexNumber,omitempty"`
 	ParentID                 *string                  `json:"ParentId,omitempty"`
+	CanDelete                *bool                    `json:"CanDelete,omitempty"`
+	CanDownload              *bool                    `json:"CanDownload,omitempty"`
+	SupportsSync             *bool                    `json:"SupportsSync,omitempty"`
 	SortName                 *string                  `json:"SortName,omitempty"`
 	CollectionType           *string                  `json:"CollectionType,omitempty"`
 	ImageTags                map[string]string        `json:"ImageTags,omitempty"`
@@ -31,6 +34,8 @@ type BaseItemDto struct {
 	SeriesID                 *string                  `json:"SeriesId,omitempty"`
 	SeriesName               *string                  `json:"SeriesName,omitempty"`
 	SeasonID                 *string                  `json:"SeasonId,omitempty"`
+	SeasonName               *string                  `json:"SeasonName,omitempty"`
+	AirDays                  *[]string                `json:"AirDays,omitempty"`
 	Container                *string                  `json:"Container,omitempty"`
 	ProviderIDs              *json.RawMessage         `json:"ProviderIds,omitempty"`
 	MediaSourceCount         *int32                   `json:"MediaSourceCount,omitempty"`
@@ -92,17 +97,23 @@ type MediaSourceInfo struct {
 	Name                       string            `json:"Name"`
 	IsRemote                   bool              `json:"IsRemote"`
 	ETag                       string            `json:"ETag,omitempty"`
+	HasMixedProtocols          bool              `json:"HasMixedProtocols"`
 	RunTimeTicks               *int64            `json:"RunTimeTicks,omitempty"`
 	SupportsDirectPlay         bool              `json:"SupportsDirectPlay"`
 	SupportsDirectStream       bool              `json:"SupportsDirectStream"`
 	SupportsTranscoding        bool              `json:"SupportsTranscoding"`
+	SupportsProbing            bool              `json:"SupportsProbing"`
+	IsInfiniteStream           bool              `json:"IsInfiniteStream"`
 	RequiresOpening            bool              `json:"RequiresOpening"`
 	RequiresClosing            bool              `json:"RequiresClosing"`
 	RequiresLooping            bool              `json:"RequiresLooping"`
 	MediaStreams               []MediaStreamInfo `json:"MediaStreams"`
 	Bitrate                    *int64            `json:"Bitrate,omitempty"`
+	RequiredHTTPHeaders        map[string]string `json:"RequiredHttpHeaders"`
 	ReadAtNativeFramerate      bool              `json:"ReadAtNativeFramerate"`
 	DirectStreamURL            string            `json:"DirectStreamUrl,omitempty"`
+	AddApiKeyToDirectStreamURL bool              `json:"AddApiKeyToDirectStreamUrl"`
+	ItemID                     string            `json:"ItemId,omitempty"`
 	DefaultAudioStreamIndex    *int32            `json:"DefaultAudioStreamIndex,omitempty"`
 	DefaultSubtitleStreamIndex *int32            `json:"DefaultSubtitleStreamIndex,omitempty"`
 	Formats                    []string          `json:"Formats"`
@@ -115,7 +126,7 @@ type MediaSourceInfo struct {
 	FymsSource       *string `json:"FymsSource,omitempty"`
 	FymsQualityLabel *string `json:"FymsQualityLabel,omitempty"`
 
-	Chapters []ChapterInfo `json:"Chapters,omitempty"`
+	Chapters []ChapterInfo `json:"Chapters"`
 }
 
 type MediaStreamInfo struct {
@@ -160,6 +171,7 @@ type UserItemDataDto struct {
 	PlayCount             int32    `json:"PlayCount"`
 	IsFavorite            bool     `json:"IsFavorite"`
 	Played                bool     `json:"Played"`
+	UnplayedItemCount     *int64   `json:"UnplayedItemCount,omitempty"`
 	LastPlayedDate        *string  `json:"LastPlayedDate,omitempty"`
 	PlayedPercentage      *float64 `json:"PlayedPercentage,omitempty"`
 }
@@ -204,6 +216,7 @@ type UserDataRow struct {
 	PlayCount             *int32
 	IsFavorite            *bool
 	Played                *bool
+	UnplayedItemCount     *int64
 	LastPlayedDate        *time.Time
 }
 

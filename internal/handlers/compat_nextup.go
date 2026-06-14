@@ -59,9 +59,10 @@ func getNextUpItems(c *gin.Context, state *AppState) {
 		}
 		items = append(items, dto.FormatItemDto(&res.Items[i], serverID, ud))
 	}
+	applySeasonNames(ctx, state.DB, items)
 
 	c.JSON(http.StatusOK, gin.H{
 		"Items":            items,
-		"TotalRecordCount": res.TotalCount,
+		"TotalRecordCount": embyTotalRecordCount(c, res.TotalCount),
 	})
 }
