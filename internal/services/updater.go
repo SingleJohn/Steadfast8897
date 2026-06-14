@@ -82,6 +82,26 @@ type UpdateRelease struct {
 	Assets           []gitHubAsset
 }
 
+type UpdateVersion struct {
+	Version          string `json:"version"`
+	Channel          string `json:"channel"`
+	Image            string `json:"image,omitempty"`
+	ReleaseSource    string `json:"releaseSource,omitempty"`
+	ReleaseNotesURL  string `json:"releaseNotesUrl,omitempty"`
+	GitHubReleaseURL string `json:"githubReleaseUrl,omitempty"`
+	Current          bool   `json:"current"`
+	Direction        string `json:"direction"`
+	Installable      bool   `json:"installable"`
+	Reason           string `json:"reason,omitempty"`
+}
+
+type UpdateVersionsResponse struct {
+	Channel        string          `json:"channel"`
+	CurrentVersion string          `json:"currentVersion"`
+	DeploymentMode string          `json:"deploymentMode"`
+	Versions       []UpdateVersion `json:"versions"`
+}
+
 type Updater struct {
 	mu         sync.Mutex
 	cfg        *config.AppConfig
@@ -371,6 +391,39 @@ func (u *Updater) StartApply(ctx context.Context) (UpdateStatus, error) {
 	}
 }
 
+func (u *Updater) StartApplyVersion(ctx context.Context, channel, version string) (UpdateStatus, error) {
+	channel = normalizeUpdateChannel(channel)
+	if channel == "" {
+		return u.GetStatus(ctx), fmt.Errorf("invalid update channel")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return u.GetStatus(ctx), fmt.Errorf("version is required")
+	}
+	mode := DetectDeploymentMode()
+	switch mode {
+	case DeployDocker:
+		release, err := u.resolveDockerReleaseVersion(ctx, channel, version)
+		if err != nil {
+			return u.GetStatus(ctx), err
+		}
+		return u.startApplyDockerRelease(ctx, release)
+	case DeployBinary:
+		release, err := u.resolveBinaryReleaseVersion(ctx, channel, version)
+		if err != nil {
+			return u.GetStatus(ctx), err
+		}
+		if len(release.Assets) == 0 {
+			return u.GetStatus(ctx), fmt.Errorf("github release has no assets,cannot auto-update")
+		}
+		return u.startApplyBinaryRelease(ctx, release)
+	case DeployManual:
+		return u.GetStatus(ctx), fmt.Errorf("platform does not support auto-update, please download manually")
+	default:
+		return u.GetStatus(ctx), fmt.Errorf("unknown deployment mode")
+	}
+}
+
 func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.mu.Lock()
 	u.reloadStateLocked()
@@ -388,8 +441,29 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	if !checked.HasUpdate || checked.TargetImage == "" {
 		return checked, fmt.Errorf("no update available")
 	}
+	release := UpdateRelease{
+		Version: checked.TargetVersion,
+		Channel: checked.Channel,
+		Image:   checked.TargetImage,
+	}
+	return u.startApplyDockerRelease(ctx, release)
+}
+
+func (u *Updater) startApplyDockerRelease(ctx context.Context, release UpdateRelease) (UpdateStatus, error) {
+	if release.Image == "" || release.Version == "" {
+		return u.GetStatus(ctx), fmt.Errorf("target version is not available")
+	}
+	u.mu.Lock()
+	u.reloadStateLocked()
+	if isUpdateTaskActive(u.status.Status) {
+		st := cloneUpdateStatus(u.status)
+		u.mu.Unlock()
+		return st, fmt.Errorf("update task already running")
+	}
+	u.mu.Unlock()
+
 	if _, err := os.Stat(u.cfg.UpdateDockerSocket); err != nil {
-		return checked, fmt.Errorf("docker socket unavailable: %w", err)
+		return u.GetStatus(ctx), fmt.Errorf("docker socket unavailable: %w", err)
 	}
 
 	dockerClient := newDockerClient(u.cfg.UpdateDockerSocket)
@@ -397,11 +471,11 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 
 	containerID, err := currentContainerID()
 	if err != nil {
-		return checked, err
+		return u.GetStatus(ctx), err
 	}
 	inspect, err := dockerClient.inspectContainer(ctx, containerID)
 	if err != nil {
-		return checked, fmt.Errorf("inspect current container: %w", err)
+		return u.GetStatus(ctx), fmt.Errorf("inspect current container: %w", err)
 	}
 
 	helperName := fmt.Sprintf("fyms-updater-%d", time.Now().Unix())
@@ -412,8 +486,8 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 		"FYMS_UPDATE_ACTION=apply",
 		fmt.Sprintf("FYMS_UPDATE_DOCKER_SOCKET=%s", u.cfg.UpdateDockerSocket),
 		fmt.Sprintf("FYMS_UPDATE_TARGET_CONTAINER=%s", containerID),
-		fmt.Sprintf("FYMS_UPDATE_TARGET_IMAGE=%s", checked.TargetImage),
-		fmt.Sprintf("FYMS_UPDATE_TARGET_VERSION=%s", checked.TargetVersion),
+		fmt.Sprintf("FYMS_UPDATE_TARGET_IMAGE=%s", release.Image),
+		fmt.Sprintf("FYMS_UPDATE_TARGET_VERSION=%s", release.Version),
 		fmt.Sprintf("FYMS_UPDATE_STATE_PATH=%s", u.statePath),
 	}
 
@@ -433,7 +507,7 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 
 	helperID, err := dockerClient.createContainer(ctx, helperName, helperBody)
 	if err != nil {
-		return checked, fmt.Errorf("create update helper: %w", err)
+		return u.GetStatus(ctx), fmt.Errorf("create update helper: %w", err)
 	}
 	u.mu.Lock()
 	u.reloadStateLocked()
@@ -447,7 +521,7 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.mu.Unlock()
 
 	if err := dockerClient.startContainer(ctx, helperID); err != nil {
-		return checked, fmt.Errorf("start update helper: %w", err)
+		return u.GetStatus(ctx), fmt.Errorf("start update helper: %w", err)
 	}
 
 	u.mu.Lock()
@@ -460,8 +534,8 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.status.StartedAt = &now
 	u.status.CompletedAt = nil
 	u.status.Error = nil
-	u.status.TargetImage = checked.TargetImage
-	u.status.TargetVersion = checked.TargetVersion
+	u.status.TargetImage = release.Image
+	u.status.TargetVersion = release.Version
 	u.status.CurrentVersion = u.cfg.Version
 	u.status.CurrentImage = currentImage
 	u.status.PreviousVersion = u.cfg.Version
@@ -472,7 +546,7 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.appendLogLocked(fmt.Sprintf("更新助手已启动: %s", helperName))
 	u.persistStateLocked()
 	_ = u.setConfigValue(ctx, lastUpdateAttemptAtKey, now)
-	_ = u.setConfigValue(ctx, lastUpdateTargetKey, checked.TargetImage)
+	_ = u.setConfigValue(ctx, lastUpdateTargetKey, release.Image)
 	_ = u.setConfigValue(ctx, lastUpdateResultKey, "started")
 	return cloneUpdateStatus(u.status), nil
 }

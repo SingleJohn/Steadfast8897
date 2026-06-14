@@ -160,6 +160,8 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.GET("/System/Update/Progress", adminMW, getUpdateStatus)
 	group.POST("/System/Update/Check", adminMW, checkForUpdate)
 	group.POST("/System/Update/Apply", adminMW, applyUpdate)
+	group.GET("/System/Update/Versions", adminMW, listUpdateVersions)
+	group.POST("/System/Update/ApplyVersion", adminMW, applyUpdateVersion)
 	group.POST("/System/Update/Rollback", adminMW, rollbackUpdate)
 	group.POST("/System/Update/Channel", adminMW, setUpdateChannel)
 }
@@ -404,6 +406,11 @@ type backupRequest struct {
 
 type updateApplyRequest struct {
 	Categories []string `json:"categories"`
+}
+
+type updateApplyVersionRequest struct {
+	Channel string `json:"channel"`
+	Version string `json:"version"`
 }
 
 type updateChannelRequest struct {
@@ -892,6 +899,17 @@ func setUpdateChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+func listUpdateVersions(c *gin.Context) {
+	state := GetState(c)
+	channel := c.Query("channel")
+	versions, err := state.Updater.ListVersions(c.Request.Context(), channel)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error(), "versions": versions})
+		return
+	}
+	c.JSON(http.StatusOK, versions)
+}
+
 func applyUpdate(c *gin.Context) {
 	state := GetState(c)
 	var body updateApplyRequest
@@ -918,6 +936,36 @@ func applyUpdate(c *gin.Context) {
 	status, err := state.Updater.StartApply(ctx)
 	if err != nil {
 		state.Updater.MarkFailure(err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": status})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func applyUpdateVersion(c *gin.Context) {
+	state := GetState(c)
+	var body updateApplyVersionRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	if t := state.TaskCenter.Get(taskcenter.KindUpdate); t != nil {
+		if _, err := t.Start(ctx, taskcenter.StartParams{
+			"action":  "apply_version",
+			"channel": body.Channel,
+			"version": body.Version,
+		}, taskcenter.TriggerManual); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": state.Updater.GetStatus(ctx)})
+			return
+		}
+		c.JSON(http.StatusOK, state.Updater.GetStatus(ctx))
+		return
+	}
+
+	status, err := state.Updater.StartApplyVersion(ctx, body.Channel, body.Version)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": status})
 		return
 	}

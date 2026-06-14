@@ -20,6 +20,7 @@ import (
 //   - "check" 同步阻塞，直接记录 Begin → End（成功/失败），无 tracker。
 //   - "apply" 异步，StartApply 启动后再 Begin + tracker；apply 成功会替换容器，
 //     本进程的 tracker 见不到 completed，由下次启动时 ReconcileUpdateRunsOnStartup 收尾。
+//   - "apply_version" 异步，切换到指定通道里的指定版本。
 //   - "rollback" 异步，StartRollback 启动后再 Begin + tracker；成功同样可能重启进程。
 //
 // 默认 action = "check"。
@@ -32,7 +33,7 @@ type UpdateAdapter struct {
 	stopRequested atomic.Bool
 }
 
-var ErrUpdateUnknownAction = errors.New("update action must be 'check', 'apply' or 'rollback'")
+var ErrUpdateUnknownAction = errors.New("update action must be 'check', 'apply', 'apply_version' or 'rollback'")
 
 func NewUpdateAdapter(u *services.Updater, db *pgxpool.Pool) *UpdateAdapter {
 	return &UpdateAdapter{Updater: u, DB: db}
@@ -108,6 +109,8 @@ func (a *UpdateAdapter) Start(ctx context.Context, params taskcenter.StartParams
 		return a.startCheck(ctx, trigger)
 	case "apply":
 		return a.startApply(ctx, trigger)
+	case "apply_version":
+		return a.startApplyVersion(ctx, params, trigger)
 	case "rollback":
 		return a.startRollback(ctx, trigger)
 	default:
@@ -208,6 +211,40 @@ func (a *UpdateAdapter) startRollback(ctx context.Context, trigger taskcenter.Tr
 	})
 	if err != nil {
 		slog.Warn("update rollback: begin run failed", "error", err)
+		return 0, nil
+	}
+
+	a.mu.Lock()
+	a.currentRunID = runID
+	a.mu.Unlock()
+	a.stopRequested.Store(false)
+
+	go a.trackApply(runID)
+	return runID, nil
+}
+
+func (a *UpdateAdapter) startApplyVersion(ctx context.Context, params taskcenter.StartParams, trigger taskcenter.Trigger) (int64, error) {
+	a.mu.Lock()
+	if a.currentRunID != 0 {
+		rid := a.currentRunID
+		a.mu.Unlock()
+		return rid, nil
+	}
+	a.mu.Unlock()
+
+	channel := paramString(params, "channel", "")
+	version := paramString(params, "version", "")
+	if _, err := a.Updater.StartApplyVersion(ctx, channel, version); err != nil {
+		return 0, err
+	}
+
+	runID, err := taskcenter.Begin(ctx, a.DB, taskcenter.BeginParams{
+		Kind:    taskcenter.KindUpdate,
+		Trigger: trigger,
+		Payload: map[string]any{"action": "apply_version", "channel": channel, "version": version},
+	})
+	if err != nil {
+		slog.Warn("update apply version: begin run failed", "error", err)
 		return 0, nil
 	}
 

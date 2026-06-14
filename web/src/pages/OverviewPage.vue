@@ -32,12 +32,14 @@ import {
   getLibraries,
   getSystemInfo,
   getUpdateStatus,
+  getUpdateVersions,
   restartServer,
-  rollbackUpdate,
+  applyUpdateVersion,
   setUpdateChannel,
   shutdownServer,
   type ItemCounts,
   type UpdateStatus,
+  type UpdateVersion,
 } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useVisibleInterval } from '@/composables/useVisibleInterval'
@@ -92,13 +94,14 @@ const scanProgress = computed<ScanProgressItem[]>(() => {
 const showRestart = ref(false)
 const showShutdown = ref(false)
 const showUpdateConfirm = ref(false)
-const showRollbackConfirm = ref(false)
 const checkingUpdate = ref(false)
 const applyingUpdate = ref(false)
-const rollingBackUpdate = ref(false)
+const loadingUpdateVersions = ref(false)
 const updateConnectionLost = ref(false)
 const updateChannel = ref<UpdateChannel>('stable')
 const updateStatus = ref<UpdateStatus | null>(null)
+const updateVersions = ref<UpdateVersion[]>([])
+const selectedUpdateVersion = ref<string | null>(null)
 const updateChannelOptions: { label: string; value: UpdateChannel }[] = [
   { label: '稳定版', value: 'stable' },
   { label: '开发版', value: 'nightly' },
@@ -257,15 +260,19 @@ const updateStatusText = computed(() => {
 const updateLogLines = computed(() => updateStatus.value?.logs || [])
 const deploymentMode = computed(() => updateStatus.value?.deploymentMode || 'docker')
 const isManualUpdate = computed(() => deploymentMode.value === 'manual')
+const selectedVersionInfo = computed(() =>
+  updateVersions.value.find((item) => item.version === selectedUpdateVersion.value) || null,
+)
 const updateConfirmText = computed(() => {
+  const selected = selectedVersionInfo.value
+  if (selected) {
+    const action = selected.direction === 'downgrade' ? '降级' : '切换'
+    return `将${action}到 ${selected.version} 程序版本。配置、媒体库和用户数据不会恢复或修改，服务会短暂重启。`
+  }
   if (deploymentMode.value === 'binary') {
     return '更新前会备份当前二进制，然后下载新版本并替换，进程会自动重启。过程中服务会短暂中断。'
   }
   return '更新前会自动创建备份，并通过 Docker 拉取新镜像后重建当前容器。过程中服务会短暂中断。'
-})
-const rollbackConfirmText = computed(() => {
-  const target = updateStatus.value?.previousVersion || updateStatus.value?.rollbackTargetVersion || '上一版本'
-  return `将回滚到 ${target} 的程序版本。配置、媒体库和用户数据不会恢复或修改，服务会短暂重启。`
 })
 
 async function copyServerId() {
@@ -324,11 +331,30 @@ async function loadUpdateStatus() {
   }
 }
 
+async function loadUpdateVersions(channel: UpdateChannel = updateChannel.value) {
+  loadingUpdateVersions.value = true
+  try {
+    const resp = await getUpdateVersions(channel)
+    updateVersions.value = resp.versions || []
+    const currentSelected = updateVersions.value.find((item) => item.version === selectedUpdateVersion.value)
+    if (!currentSelected || currentSelected.current || !currentSelected.installable) {
+      selectedUpdateVersion.value = updateVersions.value.find((item) => item.installable && !item.current)?.version || null
+    }
+  } catch (err: any) {
+    updateVersions.value = []
+    selectedUpdateVersion.value = null
+    showToast(err?.message || '加载版本列表失败', 'error')
+  } finally {
+    loadingUpdateVersions.value = false
+  }
+}
+
 async function handleCheckUpdate() {
   checkingUpdate.value = true
   try {
     updateStatus.value = await checkForUpdate()
     updateChannel.value = (updateStatus.value.channel as UpdateChannel) || 'stable'
+    await loadUpdateVersions(updateChannel.value)
     showToast(updateStatus.value.hasUpdate ? '发现新版本' : '当前已是最新版本', 'success')
   } catch (err: any) {
     showToast(err?.message || '检查更新失败', 'error')
@@ -341,6 +367,7 @@ async function handleChangeUpdateChannel(value: UpdateChannel) {
   try {
     updateStatus.value = await setUpdateChannel(value)
     updateChannel.value = value
+    await loadUpdateVersions(value)
     showToast('更新通道已保存', 'success')
   } catch (err: any) {
     showToast(err?.message || '保存更新通道失败', 'error')
@@ -352,26 +379,16 @@ async function handleApplyUpdate() {
   applyingUpdate.value = true
   updateConnectionLost.value = false
   try {
-    updateStatus.value = await applyUpdate(['settings', 'users', 'libraries', 'media'])
-    showToast('更新任务已启动，服务会短暂重启', 'success')
+    if (selectedUpdateVersion.value) {
+      updateStatus.value = await applyUpdateVersion(updateChannel.value, selectedUpdateVersion.value)
+    } else {
+      updateStatus.value = await applyUpdate(['settings', 'users', 'libraries', 'media'])
+    }
+    showToast('版本切换任务已启动，服务会短暂重启', 'success')
   } catch (err: any) {
-    showToast(err?.message || '启动更新失败', 'error')
+    showToast(err?.message || '启动版本切换失败', 'error')
   } finally {
     applyingUpdate.value = false
-  }
-}
-
-async function handleRollbackUpdate() {
-  showRollbackConfirm.value = false
-  rollingBackUpdate.value = true
-  updateConnectionLost.value = false
-  try {
-    updateStatus.value = await rollbackUpdate()
-    showToast('回滚任务已启动，服务会短暂重启', 'success')
-  } catch (err: any) {
-    showToast(err?.message || '启动回滚失败', 'error')
-  } finally {
-    rollingBackUpdate.value = false
   }
 }
 
@@ -422,6 +439,7 @@ async function loadServerData() {
   if (update.status === 'fulfilled') {
     updateStatus.value = update.value
     updateChannel.value = (update.value.channel as UpdateChannel) || 'stable'
+    await loadUpdateVersions(updateChannel.value)
   }
 }
 
@@ -528,7 +546,9 @@ onMounted(() => {
               :update-channel-options="updateChannelOptions"
               :checking-update="checkingUpdate"
               :applying-update="applyingUpdate"
-              :rolling-back-update="rollingBackUpdate"
+              :loading-update-versions="loadingUpdateVersions"
+              :update-versions="updateVersions"
+              :selected-update-version="selectedUpdateVersion"
               :deployment-mode="deploymentMode"
               :is-manual-update="isManualUpdate"
               :update-connection-lost="updateConnectionLost"
@@ -536,7 +556,8 @@ onMounted(() => {
               :update-status-text="updateStatusText"
               :update-log-lines="updateLogLines"
               @change-channel="handleChangeUpdateChannel"
-              @rollback-update="showRollbackConfirm = true"
+              @update:selected-update-version="selectedUpdateVersion = $event"
+              @apply-version="showUpdateConfirm = true"
             />
           </div>
         </div>
@@ -546,13 +567,10 @@ onMounted(() => {
         v-model:show-restart="showRestart"
         v-model:show-shutdown="showShutdown"
         v-model:show-update-confirm="showUpdateConfirm"
-        v-model:show-rollback-confirm="showRollbackConfirm"
         :update-confirm-text="updateConfirmText"
-        :rollback-confirm-text="rollbackConfirmText"
         @restart="handleRestart"
         @shutdown="handleShutdown"
         @apply-update="handleApplyUpdate"
-        @rollback-update="handleRollbackUpdate"
       />
     </div>
   </page-shell>

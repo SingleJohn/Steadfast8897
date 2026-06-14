@@ -51,7 +51,26 @@ func (u *Updater) startApplyBinary(ctx context.Context) (UpdateStatus, error) {
 	if len(release.Assets) == 0 {
 		return checked, fmt.Errorf("github release has no assets,cannot auto-update")
 	}
+	return u.startApplyBinaryRelease(ctx, release)
+}
 
+func (u *Updater) startApplyBinaryRelease(ctx context.Context, release UpdateRelease) (UpdateStatus, error) {
+	u.mu.Lock()
+	u.reloadStateLocked()
+	if isUpdateTaskActive(u.status.Status) {
+		st := cloneUpdateStatus(u.status)
+		u.mu.Unlock()
+		return st, fmt.Errorf("update task already running")
+	}
+	u.mu.Unlock()
+
+	target := BuildTargetName()
+	if target == "" {
+		return u.GetStatus(ctx), fmt.Errorf("unsupported platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	if len(release.Assets) == 0 {
+		return u.GetStatus(ctx), fmt.Errorf("github release has no assets,cannot auto-update")
+	}
 	ext := BuildArchiveExt()
 	assetName := fmt.Sprintf("fyms_%s_%s.%s", release.Version, target, ext)
 	var archiveAsset, checksumAsset *gitHubAsset
@@ -65,10 +84,10 @@ func (u *Updater) startApplyBinary(ctx context.Context) (UpdateStatus, error) {
 		}
 	}
 	if archiveAsset == nil {
-		return checked, fmt.Errorf("no release asset for target %s (%s)", target, assetName)
+		return u.GetStatus(ctx), fmt.Errorf("no release asset for target %s (%s)", target, assetName)
 	}
 	if checksumAsset == nil {
-		return checked, fmt.Errorf("checksums.txt missing in release")
+		return u.GetStatus(ctx), fmt.Errorf("checksums.txt missing in release")
 	}
 
 	// 标记 pulling

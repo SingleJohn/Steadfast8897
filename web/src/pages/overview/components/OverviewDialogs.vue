@@ -5,20 +5,16 @@ defineProps<{
   showRestart: boolean
   showShutdown: boolean
   showUpdateConfirm: boolean
-  showRollbackConfirm: boolean
   updateConfirmText: string
-  rollbackConfirmText: string
 }>()
 
 const emit = defineEmits<{
   'update:showRestart': [value: boolean]
   'update:showShutdown': [value: boolean]
   'update:showUpdateConfirm': [value: boolean]
-  'update:showRollbackConfirm': [value: boolean]
   restart: []
   shutdown: []
   applyUpdate: []
-  rollbackUpdate: []
 }>()
 </script>
 
@@ -61,18 +57,5 @@ const emit = defineEmits<{
     @negative-click="emit('update:showUpdateConfirm', false)"
   >
     {{ updateConfirmText }}
-  </n-modal>
-  <n-modal
-    :show="showRollbackConfirm"
-    preset="dialog"
-    title="回滚程序版本"
-    type="warning"
-    positive-text="开始回滚"
-    negative-text="取消"
-    @update:show="emit('update:showRollbackConfirm', $event)"
-    @positive-click="emit('rollbackUpdate')"
-    @negative-click="emit('update:showRollbackConfirm', false)"
-  >
-    {{ rollbackConfirmText }}
   </n-modal>
 </template>

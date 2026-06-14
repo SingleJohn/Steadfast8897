@@ -170,6 +170,26 @@ export type UpdateStatus = {
   downloadUrl?: string
 }
 
+export type UpdateVersion = {
+  version: string
+  channel: string
+  image?: string
+  releaseSource?: string
+  releaseNotesUrl?: string
+  githubReleaseUrl?: string
+  current: boolean
+  direction: 'upgrade' | 'downgrade' | 'current'
+  installable: boolean
+  reason?: string
+}
+
+export type UpdateVersionsResponse = {
+  channel: string
+  currentVersion: string
+  deploymentMode: 'docker' | 'binary' | 'manual'
+  versions: UpdateVersion[]
+}
+
 export async function getUpdateStatus() {
   return requestJson<UpdateStatus>('/System/Update/Status')
 }
@@ -185,8 +205,15 @@ export async function applyUpdate(categories: string[] = ['settings', 'users', '
   })
 }
 
-export async function rollbackUpdate() {
-  return requestJson<UpdateStatus>('/System/Update/Rollback', { method: 'POST' })
+export async function getUpdateVersions(channel: 'stable' | 'nightly') {
+  return requestJson<UpdateVersionsResponse>(`/System/Update/Versions?channel=${encodeURIComponent(channel)}`)
+}
+
+export async function applyUpdateVersion(channel: 'stable' | 'nightly', version: string) {
+  return requestJson<UpdateStatus>('/System/Update/ApplyVersion', {
+    method: 'POST',
+    body: JSON.stringify({ channel, version }),
+  })
 }
 
 export async function setUpdateChannel(channel: 'stable' | 'nightly') {

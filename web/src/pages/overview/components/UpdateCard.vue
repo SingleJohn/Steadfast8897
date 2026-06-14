@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NIcon, NProgress, NSelect, NTag } from 'naive-ui'
-import { ArrowBackOutline, ArrowForwardOutline } from '@vicons/ionicons5'
-import type { UpdateStatus } from '@/api/client'
+import { CloudDownloadOutline, ArrowForwardOutline } from '@vicons/ionicons5'
+import type { UpdateStatus, UpdateVersion } from '@/api/client'
 import type { UpdateChannel } from '../types'
 import { formatUpdateTime, isUpdateBusy } from '../utils'
 
@@ -13,7 +13,9 @@ const props = defineProps<{
   updateChannelOptions: { label: string; value: UpdateChannel }[]
   checkingUpdate: boolean
   applyingUpdate: boolean
-  rollingBackUpdate: boolean
+  loadingUpdateVersions: boolean
+  updateVersions: UpdateVersion[]
+  selectedUpdateVersion: string | null
   deploymentMode: string
   isManualUpdate: boolean
   updateConnectionLost: boolean
@@ -24,20 +26,53 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   changeChannel: [value: UpdateChannel]
-  rollbackUpdate: []
+  'update:selectedUpdateVersion': [value: string | null]
+  applyVersion: []
 }>()
 
-const rollbackDisabled = computed(() =>
+const versionOptions = computed(() => props.updateVersions.map((item) => ({
+  label: versionOptionLabel(item),
+  value: item.version,
+  disabled: !item.installable || item.current,
+})))
+
+const selectedVersion = computed(() =>
+  props.updateVersions.find((item) => item.version === props.selectedUpdateVersion) || null,
+)
+
+const applyDisabled = computed(() =>
   props.checkingUpdate ||
   props.applyingUpdate ||
-  props.rollingBackUpdate ||
   props.isManualUpdate ||
-  !props.updateStatus?.rollbackAvailable ||
+  props.loadingUpdateVersions ||
+  !selectedVersion.value ||
+  !selectedVersion.value.installable ||
+  selectedVersion.value.current ||
   isUpdateBusy(props.updateStatus?.status),
 )
 
+const applyLabel = computed(() => {
+  const selected = selectedVersion.value
+  if (!selected) return '切换版本'
+  if (selected.direction === 'upgrade') return `升级到 ${selected.version}`
+  if (selected.direction === 'downgrade') return `降级到 ${selected.version}`
+  return '当前版本'
+})
+
 function onChangeChannel(value: unknown) {
   if (value === 'stable' || value === 'nightly') emit('changeChannel', value)
+}
+
+function onChangeVersion(value: unknown) {
+  emit('update:selectedUpdateVersion', typeof value === 'string' ? value : null)
+}
+
+function versionOptionLabel(item: UpdateVersion) {
+  const suffix =
+    item.current ? '当前' :
+    item.direction === 'upgrade' ? '升级' :
+    item.direction === 'downgrade' ? '降级' : '切换'
+  return `${item.version} · ${suffix}`
 }
 </script>
 
@@ -125,22 +160,28 @@ function onChangeChannel(value: unknown) {
       </n-collapse-item>
     </n-collapse>
 
-    <div v-if="updateStatus?.rollbackAvailable && !isManualUpdate" class="update-actions">
+    <div class="update-actions">
+      <n-select
+        :value="selectedUpdateVersion"
+        :options="versionOptions"
+        size="small"
+        placeholder="选择目标版本"
+        :loading="loadingUpdateVersions"
+        :disabled="checkingUpdate || applyingUpdate || isManualUpdate || isUpdateBusy(updateStatus?.status)"
+        @update:value="onChangeVersion"
+      />
       <n-button
         size="small"
-        secondary
-        type="warning"
-        :loading="rollingBackUpdate"
-        :disabled="rollbackDisabled"
-        @click="emit('rollbackUpdate')"
+        type="primary"
+        :loading="applyingUpdate"
+        :disabled="applyDisabled"
+        @click="emit('applyVersion')"
       >
-        <template #icon><n-icon :component="ArrowBackOutline" /></template>
-        回滚到上一版本
+        <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+        {{ applyLabel }}
       </n-button>
-      <span class="rollback-target">
-        目标版本 {{ updateStatus.previousVersion || updateStatus.rollbackTargetVersion || '-' }}
-      </span>
     </div>
+    <div v-if="selectedVersion?.reason" class="version-reason">{{ selectedVersion.reason }}</div>
   </n-card>
 </template>
 
@@ -152,8 +193,13 @@ function onChangeChannel(value: unknown) {
   margin-top: 14px;
 }
 
-.rollback-target {
+.update-actions :deep(.n-select) {
+  flex: 1;
+}
+
+.version-reason {
   color: var(--text-muted);
   font-size: 12px;
+  margin-top: 8px;
 }
 </style>
