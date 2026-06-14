@@ -230,8 +230,10 @@ func getUserUsageRanking(c *gin.Context) {
 	offsetArg := "$" + strconv.Itoa(len(args)+2)
 	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	orderBy := sortCol + " " + sortOrder + " NULLS LAST, user_name ASC, user_id ASC"
+	outerOrderBy := "paged." + sortCol + " " + sortOrder + " NULLS LAST, paged.user_name ASC, paged.user_id ASC"
 	if sortCol == "user_name" {
 		orderBy = sortCol + " " + sortOrder + " NULLS LAST, user_id ASC"
+		outerOrderBy = "paged." + sortCol + " " + sortOrder + " NULLS LAST, paged.user_id ASC"
 	}
 
 	query := `WITH filtered AS (
@@ -350,7 +352,8 @@ func getUserUsageRanking(c *gin.Context) {
 	LEFT JOIN top_clients ON top_clients.user_id = paged.user_id
 	LEFT JOIN top_players ON top_players.user_id = paged.user_id
 	LEFT JOIN top_ips ON top_ips.user_id = paged.user_id
-	LEFT JOIN top_user_agents ON top_user_agents.user_id = paged.user_id`
+	LEFT JOIN top_user_agents ON top_user_agents.user_id = paged.user_id
+	ORDER BY ` + outerOrderBy
 
 	rows, err := state.DB.Query(c.Request.Context(), query, queryArgs...)
 	if err != nil {
