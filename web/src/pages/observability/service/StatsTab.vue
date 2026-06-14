@@ -59,6 +59,7 @@ const loading = ref(false)
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const total = ref(0)
+let statsRequestSeq = 0
 const summary = reactive({
   active_users: 0,
   total_plays: 0,
@@ -115,7 +116,7 @@ function breakdownOptions(items: any[], selected: string) {
   const seen = new Map<string, number>()
   for (const item of items) {
     const label = String(item.label || '').trim()
-    if (!label || label === 'Unknown') continue
+    if (!label) continue
     seen.set(label, Number(item.count || 0))
   }
   if (selected && !seen.has(selected)) seen.set(selected, 0)
@@ -143,6 +144,7 @@ function requestParams() {
 }
 
 async function loadStats() {
+  const requestSeq = ++statsRequestSeq
   loading.value = true
   error.value = null
   try {
@@ -155,6 +157,7 @@ async function loadStats() {
     ])
 
     if (rankingResp.status === 'rejected') throw rankingResp.reason
+    if (requestSeq !== statsRequestSeq) return
     ranking.value = Array.isArray(rankingResp.value.items) ? rankingResp.value.items : []
     total.value = Number(rankingResp.value.total || 0)
     Object.assign(summary, rankingResp.value.summary || {})
@@ -164,11 +167,14 @@ async function loadStats() {
     playerBreakdown.value = playerResp.status === 'fulfilled' && Array.isArray(playerResp.value) ? playerResp.value : []
     loaded.value = true
   } catch (e) {
+    if (requestSeq !== statsRequestSeq) return
     const message = e instanceof Error ? e.message : '加载统计数据失败'
     error.value = message
     showToast(message, 'error')
   } finally {
-    loading.value = false
+    if (requestSeq === statsRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -240,10 +246,7 @@ const columns = computed<DataTableColumns<UserUsageRankingRow>>(() => [
     sortOrder: pager.sortBy === 'user_name' ? toNaiveSort(pager.sortOrder) : false,
     width: 150,
     ellipsis: { tooltip: true },
-    render: (row) => h('div', { class: 'user-cell' }, [
-      h('span', { class: 'user-cell__name' }, row.user_name || 'Unknown'),
-      h('span', { class: 'user-cell__sub' }, row.last_client_ip || '无 IP 记录'),
-    ]),
+    render: (row) => h('span', { class: 'user-cell__name' }, row.user_name || 'Unknown'),
   },
   numericColumn('播放次数', 'total_plays', 112),
   {
@@ -314,6 +317,7 @@ function renderExpand(row: UserUsageRankingRow) {
     detailGroup('客户端', row.top_clients),
     detailGroup('播放器', row.top_players),
     detailGroup('IP', row.top_ips),
+    detailGroup('User-Agent', row.top_user_agents || []),
     h('div', { class: 'usage-detail__last' }, [
       h('span', { class: 'usage-detail__label' }, '最近环境'),
       h('span', {}, [row.last_client_name, row.last_device_name].filter(Boolean).join(' / ') || '-'),
@@ -675,14 +679,8 @@ onMounted(() => {
   background: rgba(14, 165, 233, 0.15);
 }
 
-.user-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
 .user-cell__name {
+  display: block;
   font-weight: 600;
   color: var(--app-text);
   overflow: hidden;
@@ -690,17 +688,9 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.user-cell__sub {
-  font-size: 12px;
-  color: var(--app-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .usage-detail {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(160px, 0.8fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(220px, 1.2fr) minmax(160px, 0.8fr);
   gap: 14px;
   padding: 12px 6px;
 }

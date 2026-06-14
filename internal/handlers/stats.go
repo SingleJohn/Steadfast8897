@@ -152,10 +152,10 @@ func statsUsageFilter(c *gin.Context, startArg int) (string, []any, bool) {
 		filters = append(filters, "COALESCE(u.name, '') ILIKE "+addArg("%"+v+"%"))
 	}
 	if v := strings.TrimSpace(c.Query("client_name")); v != "" {
-		filters = append(filters, "pa.client_name = "+addArg(v))
+		filters = append(filters, "COALESCE(NULLIF(BTRIM(pa.client_name), ''), 'Unknown') = "+addArg(v))
 	}
 	if v := strings.TrimSpace(c.Query("device_name")); v != "" {
-		filters = append(filters, "pa.device_name = "+addArg(v))
+		filters = append(filters, "COALESCE(NULLIF(BTRIM(pa.device_name), ''), 'Unknown') = "+addArg(v))
 	}
 	if v := strings.TrimSpace(c.Query("client_ip")); v != "" {
 		filters = append(filters, "pa.client_ip = "+addArg(v))
@@ -229,6 +229,10 @@ func getUserUsageRanking(c *gin.Context) {
 	limitArg := "$" + strconv.Itoa(len(args)+1)
 	offsetArg := "$" + strconv.Itoa(len(args)+2)
 	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
+	orderBy := sortCol + " " + sortOrder + " NULLS LAST, user_name ASC, user_id ASC"
+	if sortCol == "user_name" {
+		orderBy = sortCol + " " + sortOrder + " NULLS LAST, user_id ASC"
+	}
 
 	query := `WITH filtered AS (
 		SELECT pa.*, u.name AS user_name
@@ -243,8 +247,8 @@ func getUserUsageRanking(c *gin.Context) {
 			MAX(date_created) AS last_seen,
 			COUNT(*)::bigint AS total_plays,
 			COALESCE(SUM(play_duration), 0)::bigint AS total_duration,
-			COUNT(DISTINCT NULLIF(device_name, ''))::bigint AS client_count,
-			COUNT(DISTINCT NULLIF(client_name, ''))::bigint AS player_count,
+			COUNT(DISTINCT COALESCE(NULLIF(BTRIM(device_name), ''), 'Unknown'))::bigint AS client_count,
+			COUNT(DISTINCT COALESCE(NULLIF(BTRIM(client_name), ''), 'Unknown'))::bigint AS player_count,
 			COUNT(DISTINCT NULLIF(client_ip, ''))::bigint AS ip_count,
 			(
 				ARRAY_AGG(item_name ORDER BY date_created DESC)
@@ -261,7 +265,11 @@ func getUserUsageRanking(c *gin.Context) {
 			(
 				ARRAY_AGG(client_ip ORDER BY date_created DESC)
 				FILTER (WHERE client_ip IS NOT NULL AND client_ip <> '')
-			)[1] AS last_client_ip
+			)[1] AS last_client_ip,
+			(
+				ARRAY_AGG(user_agent ORDER BY date_created DESC)
+				FILTER (WHERE user_agent IS NOT NULL AND BTRIM(user_agent) <> '')
+			)[1] AS last_user_agent
 		FROM filtered
 		GROUP BY user_id, user_name
 	),
@@ -271,11 +279,10 @@ func getUserUsageRanking(c *gin.Context) {
 	top_clients AS (
 		SELECT user_id::text, jsonb_agg(jsonb_build_object('label', label, 'count', count) ORDER BY count DESC, label ASC) AS items
 		FROM (
-			SELECT user_id, device_name AS label, COUNT(*)::bigint AS count,
-				ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, device_name ASC) AS rn
+			SELECT user_id, COALESCE(NULLIF(BTRIM(device_name), ''), 'Unknown') AS label, COUNT(*)::bigint AS count,
+				ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, COALESCE(NULLIF(BTRIM(device_name), ''), 'Unknown') ASC) AS rn
 			FROM filtered
-			WHERE device_name IS NOT NULL AND device_name <> ''
-			GROUP BY user_id, device_name
+			GROUP BY user_id, COALESCE(NULLIF(BTRIM(device_name), ''), 'Unknown')
 		) x
 		WHERE rn <= 5
 		GROUP BY user_id
@@ -283,11 +290,10 @@ func getUserUsageRanking(c *gin.Context) {
 	top_players AS (
 		SELECT user_id::text, jsonb_agg(jsonb_build_object('label', label, 'count', count) ORDER BY count DESC, label ASC) AS items
 		FROM (
-			SELECT user_id, client_name AS label, COUNT(*)::bigint AS count,
-				ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, client_name ASC) AS rn
+			SELECT user_id, COALESCE(NULLIF(BTRIM(client_name), ''), 'Unknown') AS label, COUNT(*)::bigint AS count,
+				ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, COALESCE(NULLIF(BTRIM(client_name), ''), 'Unknown') ASC) AS rn
 			FROM filtered
-			WHERE client_name IS NOT NULL AND client_name <> ''
-			GROUP BY user_id, client_name
+			GROUP BY user_id, COALESCE(NULLIF(BTRIM(client_name), ''), 'Unknown')
 		) x
 		WHERE rn <= 5
 		GROUP BY user_id
@@ -304,9 +310,21 @@ func getUserUsageRanking(c *gin.Context) {
 		WHERE rn <= 5
 		GROUP BY user_id
 	),
+	top_user_agents AS (
+		SELECT user_id::text, jsonb_agg(jsonb_build_object('label', label, 'count', count) ORDER BY count DESC, label ASC) AS items
+		FROM (
+			SELECT user_id, user_agent AS label, COUNT(*)::bigint AS count,
+				ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, user_agent ASC) AS rn
+			FROM filtered
+			WHERE user_agent IS NOT NULL AND BTRIM(user_agent) <> ''
+			GROUP BY user_id, user_agent
+		) x
+		WHERE rn <= 5
+		GROUP BY user_id
+	),
 	paged AS (
 		SELECT * FROM ranked
-		ORDER BY ` + sortCol + ` ` + sortOrder + ` NULLS LAST, user_name ASC
+		ORDER BY ` + orderBy + `
 		LIMIT ` + limitArg + ` OFFSET ` + offsetArg + `
 	)
 	SELECT
@@ -322,14 +340,17 @@ func getUserUsageRanking(c *gin.Context) {
 		paged.last_client_name,
 		paged.last_device_name,
 		paged.last_client_ip,
+		paged.last_user_agent,
 		COALESCE(top_clients.items, '[]'::jsonb)::text,
 		COALESCE(top_players.items, '[]'::jsonb)::text,
 		COALESCE(top_ips.items, '[]'::jsonb)::text,
+		COALESCE(top_user_agents.items, '[]'::jsonb)::text,
 		(SELECT COUNT(*)::bigint FROM ranked) AS total
 	FROM paged
 	LEFT JOIN top_clients ON top_clients.user_id = paged.user_id
 	LEFT JOIN top_players ON top_players.user_id = paged.user_id
-	LEFT JOIN top_ips ON top_ips.user_id = paged.user_id`
+	LEFT JOIN top_ips ON top_ips.user_id = paged.user_id
+	LEFT JOIN top_user_agents ON top_user_agents.user_id = paged.user_id`
 
 	rows, err := state.DB.Query(c.Request.Context(), query, queryArgs...)
 	if err != nil {
@@ -347,13 +368,16 @@ func getUserUsageRanking(c *gin.Context) {
 			totalPlays, totalDuration            int64
 			clientCount, playerCount, ipCount    int64
 			lastItem, lastClient, lastDevice, ip *string
+			lastUserAgent                        *string
 			topClients, topPlayers, topIPs       string
+			topUserAgents                        string
 			rowTotal                             int64
 		)
 		if err := rows.Scan(
 			&userID, &userName, &lastSeen, &totalPlays, &totalDuration,
 			&clientCount, &playerCount, &ipCount, &lastItem, &lastClient,
-			&lastDevice, &ip, &topClients, &topPlayers, &topIPs, &rowTotal,
+			&lastDevice, &ip, &lastUserAgent, &topClients, &topPlayers, &topIPs,
+			&topUserAgents, &rowTotal,
 		); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
@@ -371,9 +395,11 @@ func getUserUsageRanking(c *gin.Context) {
 			"last_client_name": ptrStrOr(lastClient, ""),
 			"last_device_name": ptrStrOr(lastDevice, ""),
 			"last_client_ip":   ptrStrOr(ip, ""),
+			"last_user_agent":  ptrStrOr(lastUserAgent, ""),
 			"top_clients":      statsUsageBuckets(topClients),
 			"top_players":      statsUsageBuckets(topPlayers),
 			"top_ips":          statsUsageBuckets(topIPs),
+			"top_user_agents":  statsUsageBuckets(topUserAgents),
 		}
 		if lastSeen != nil {
 			entry["last_seen"] = lastSeen.UTC().Format(time.RFC3339)
@@ -398,8 +424,8 @@ func getUserUsageRanking(c *gin.Context) {
 				user_id,
 				COUNT(*)::bigint AS total_plays,
 				COALESCE(SUM(play_duration), 0)::bigint AS total_duration,
-				COUNT(DISTINCT NULLIF(device_name, ''))::bigint AS client_count,
-				COUNT(DISTINCT NULLIF(client_name, ''))::bigint AS player_count,
+				COUNT(DISTINCT COALESCE(NULLIF(BTRIM(device_name), ''), 'Unknown'))::bigint AS client_count,
+				COUNT(DISTINCT COALESCE(NULLIF(BTRIM(client_name), ''), 'Unknown'))::bigint AS player_count,
 				COUNT(DISTINCT NULLIF(client_ip, ''))::bigint AS ip_count
 			FROM filtered
 			GROUP BY user_id, user_name
@@ -561,11 +587,11 @@ func breakdownReportQuery(c *gin.Context, reportType string) {
 		groupCol = "pa.item_type"
 		labelCol = "pa.item_type"
 	case "ClientName":
-		groupCol = "pa.client_name"
-		labelCol = "pa.client_name"
+		groupCol = "COALESCE(NULLIF(BTRIM(pa.client_name), ''), 'Unknown')"
+		labelCol = groupCol
 	case "DeviceName":
-		groupCol = "pa.device_name"
-		labelCol = "pa.device_name"
+		groupCol = "COALESCE(NULLIF(BTRIM(pa.device_name), ''), 'Unknown')"
+		labelCol = groupCol
 	case "PlaybackMethod":
 		groupCol = "pa.play_method"
 		labelCol = "pa.play_method"

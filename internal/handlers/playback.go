@@ -30,6 +30,7 @@ type activePlayback struct {
 	deviceID          string
 	appVersion        string
 	clientIP          string
+	userAgent         string
 	playMethod        string
 	playSessionID     string
 	startTimeMs       int64
@@ -63,6 +64,7 @@ func ActivePlaybackCount(userID string) int {
 // resolveClientName 决定展示用的客户端名,通用两层策略(不再维护硬编码客户端清单):
 //  1. 优先用客户端鉴权头自报的 Client 字段(几乎所有 Emby 协议客户端都带,最权威);
 //  2. 没有时从 User-Agent 兜底 —— 见 clientNameFromUserAgent。
+//
 // 新客户端无需改代码即可正确显示。
 func resolveClientName(authClient string, userAgent string) string {
 	if c := strings.TrimSpace(authClient); c != "" && !strings.EqualFold(c, "Unknown") && !strings.EqualFold(c, "Unknown Client") {
@@ -141,7 +143,7 @@ func getClientIP(c *gin.Context) string {
 	return c.ClientIP()
 }
 
-func insertPlaybackActivity(ctx context.Context, st *AppState, userID, itemID, itemType, itemName, clientName, deviceName, clientIP, playMethod string, seriesName *string, durationSec int64) {
+func insertPlaybackActivity(ctx context.Context, st *AppState, userID, itemID, itemType, itemName, clientName, deviceName, clientIP, userAgent, playMethod string, seriesName *string, durationSec int64) {
 	if durationSec <= 5 {
 		return
 	}
@@ -149,9 +151,9 @@ func insertPlaybackActivity(ctx context.Context, st *AppState, userID, itemID, i
 		playMethod = "DirectPlay"
 	}
 	_, err := st.DB.Exec(ctx,
-		`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		userID, itemID, &itemType, &itemName, playMethod, clientName, deviceName, int(durationSec), clientIP, seriesName,
+		`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name, user_agent)
+		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		userID, itemID, &itemType, &itemName, playMethod, clientName, deviceName, int(durationSec), clientIP, seriesName, userAgent,
 	)
 	if err != nil {
 		log.Printf("[Play] Failed to insert playback activity: %v", err)
@@ -179,9 +181,9 @@ func FlushStalePlaybacks(pool *pgxpool.Pool, sm *services.SessionManager) {
 					pm = "DirectPlay"
 				}
 				_, err := pool.Exec(context.Background(),
-					`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name)
-					 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)`,
-					userID, pb.itemID, &pb.itemType, &pb.itemName, pm, pb.clientName, pb.deviceName, int(durationSec), pb.clientIP, sn,
+					`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name, user_agent)
+					 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+					userID, pb.itemID, &pb.itemType, &pb.itemName, pm, pb.clientName, pb.deviceName, int(durationSec), pb.clientIP, sn, pb.userAgent,
 				)
 				if err != nil {
 					slog.Debug("stale playback flush insert failed", "error", err)
@@ -335,6 +337,7 @@ func OnPlaybackStart(c *gin.Context) {
 		deviceID:          deviceID,
 		appVersion:        strOrPtr(info.Version, ""),
 		clientIP:          clientIP,
+		userAgent:         userAgent,
 		playMethod:        playMethod,
 		playSessionID:     body.PlaySessionId,
 		startTimeMs:       nowMs,
@@ -418,7 +421,7 @@ func OnPlaybackProgress(c *gin.Context) {
 			if existing.seriesName != "" {
 				sn = &existing.seriesName
 			}
-			insertPlaybackActivity(c.Request.Context(), st, auth.ID, existing.itemID, existing.itemType, existing.itemName, existing.clientName, existing.deviceName, existing.clientIP, existing.playMethod, sn, durationSec)
+			insertPlaybackActivity(c.Request.Context(), st, auth.ID, existing.itemID, existing.itemType, existing.itemName, existing.clientName, existing.deviceName, existing.clientIP, existing.userAgent, existing.playMethod, sn, durationSec)
 		}
 		needNew = true
 	} else {
@@ -465,6 +468,7 @@ func OnPlaybackProgress(c *gin.Context) {
 			deviceID:          deviceID,
 			appVersion:        strOrPtr(info.Version, ""),
 			clientIP:          clientIP,
+			userAgent:         userAgent,
 			playMethod:        pm,
 			playSessionID:     body.PlaySessionId,
 			startTimeMs:       nowMs,
@@ -509,7 +513,7 @@ func OnPlaybackStopped(c *gin.Context) {
 			if session.seriesName != "" {
 				sn = &session.seriesName
 			}
-			insertPlaybackActivity(c.Request.Context(), st, auth.ID, session.itemID, session.itemType, session.itemName, session.clientName, session.deviceName, session.clientIP, session.playMethod, sn, durationSec)
+			insertPlaybackActivity(c.Request.Context(), st, auth.ID, session.itemID, session.itemType, session.itemName, session.clientName, session.deviceName, session.clientIP, session.userAgent, session.playMethod, sn, durationSec)
 		}
 	}
 

@@ -949,9 +949,11 @@ export interface UserUsageRankingRow {
   last_client_name: string
   last_device_name: string
   last_client_ip: string
+  last_user_agent: string
   top_clients: UserUsageBucket[]
   top_players: UserUsageBucket[]
   top_ips: UserUsageBucket[]
+  top_user_agents: UserUsageBucket[]
 }
 
 export interface UserUsageRankingResponse {
