@@ -33,6 +33,7 @@ import {
   getSystemInfo,
   getUpdateStatus,
   restartServer,
+  rollbackUpdate,
   setUpdateChannel,
   shutdownServer,
   type ItemCounts,
@@ -91,8 +92,10 @@ const scanProgress = computed<ScanProgressItem[]>(() => {
 const showRestart = ref(false)
 const showShutdown = ref(false)
 const showUpdateConfirm = ref(false)
+const showRollbackConfirm = ref(false)
 const checkingUpdate = ref(false)
 const applyingUpdate = ref(false)
+const rollingBackUpdate = ref(false)
 const updateConnectionLost = ref(false)
 const updateChannel = ref<UpdateChannel>('stable')
 const updateStatus = ref<UpdateStatus | null>(null)
@@ -260,6 +263,10 @@ const updateConfirmText = computed(() => {
   }
   return '更新前会自动创建备份，并通过 Docker 拉取新镜像后重建当前容器。过程中服务会短暂中断。'
 })
+const rollbackConfirmText = computed(() => {
+  const target = updateStatus.value?.previousVersion || updateStatus.value?.rollbackTargetVersion || '上一版本'
+  return `将回滚到 ${target} 的程序版本。配置、媒体库和用户数据不会恢复或修改，服务会短暂重启。`
+})
 
 async function copyServerId() {
   const id = fullServerId.value
@@ -351,6 +358,20 @@ async function handleApplyUpdate() {
     showToast(err?.message || '启动更新失败', 'error')
   } finally {
     applyingUpdate.value = false
+  }
+}
+
+async function handleRollbackUpdate() {
+  showRollbackConfirm.value = false
+  rollingBackUpdate.value = true
+  updateConnectionLost.value = false
+  try {
+    updateStatus.value = await rollbackUpdate()
+    showToast('回滚任务已启动，服务会短暂重启', 'success')
+  } catch (err: any) {
+    showToast(err?.message || '启动回滚失败', 'error')
+  } finally {
+    rollingBackUpdate.value = false
   }
 }
 
@@ -507,6 +528,7 @@ onMounted(() => {
               :update-channel-options="updateChannelOptions"
               :checking-update="checkingUpdate"
               :applying-update="applyingUpdate"
+              :rolling-back-update="rollingBackUpdate"
               :deployment-mode="deploymentMode"
               :is-manual-update="isManualUpdate"
               :update-connection-lost="updateConnectionLost"
@@ -514,6 +536,7 @@ onMounted(() => {
               :update-status-text="updateStatusText"
               :update-log-lines="updateLogLines"
               @change-channel="handleChangeUpdateChannel"
+              @rollback-update="showRollbackConfirm = true"
             />
           </div>
         </div>
@@ -523,10 +546,13 @@ onMounted(() => {
         v-model:show-restart="showRestart"
         v-model:show-shutdown="showShutdown"
         v-model:show-update-confirm="showUpdateConfirm"
+        v-model:show-rollback-confirm="showRollbackConfirm"
         :update-confirm-text="updateConfirmText"
+        :rollback-confirm-text="rollbackConfirmText"
         @restart="handleRestart"
         @shutdown="handleShutdown"
         @apply-update="handleApplyUpdate"
+        @rollback-update="handleRollbackUpdate"
       />
     </div>
   </page-shell>

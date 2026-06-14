@@ -14,7 +14,7 @@ export function formatServerId(id: string | undefined): string {
 }
 
 export function isUpdateBusy(status?: string) {
-  return ['checking', 'backing_up', 'pulling', 'recreating', 'restarting'].includes(status || '')
+  return ['checking', 'backing_up', 'pulling', 'recreating', 'rolling_back', 'restarting'].includes(status || '')
 }
 
 export function formatUpdateTime(value?: string) {

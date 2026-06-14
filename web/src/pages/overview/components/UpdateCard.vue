@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { NAlert, NCard, NCollapse, NCollapseItem, NIcon, NProgress, NSelect, NTag } from 'naive-ui'
-import { ArrowForwardOutline } from '@vicons/ionicons5'
+import { computed } from 'vue'
+import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NIcon, NProgress, NSelect, NTag } from 'naive-ui'
+import { ArrowBackOutline, ArrowForwardOutline } from '@vicons/ionicons5'
 import type { UpdateStatus } from '@/api/client'
 import type { UpdateChannel } from '../types'
 import { formatUpdateTime, isUpdateBusy } from '../utils'
 
-defineProps<{
+const props = defineProps<{
   updateStatus: UpdateStatus | null
   serverVersion?: string
   updateChannel: UpdateChannel
   updateChannelOptions: { label: string; value: UpdateChannel }[]
   checkingUpdate: boolean
   applyingUpdate: boolean
+  rollingBackUpdate: boolean
   deploymentMode: string
   isManualUpdate: boolean
   updateConnectionLost: boolean
@@ -22,7 +24,17 @@ defineProps<{
 
 const emit = defineEmits<{
   changeChannel: [value: UpdateChannel]
+  rollbackUpdate: []
 }>()
+
+const rollbackDisabled = computed(() =>
+  props.checkingUpdate ||
+  props.applyingUpdate ||
+  props.rollingBackUpdate ||
+  props.isManualUpdate ||
+  !props.updateStatus?.rollbackAvailable ||
+  isUpdateBusy(props.updateStatus?.status),
+)
 
 function onChangeChannel(value: unknown) {
   if (value === 'stable' || value === 'nightly') emit('changeChannel', value)
@@ -112,5 +124,36 @@ function onChangeChannel(value: unknown) {
         </div>
       </n-collapse-item>
     </n-collapse>
+
+    <div v-if="updateStatus?.rollbackAvailable && !isManualUpdate" class="update-actions">
+      <n-button
+        size="small"
+        secondary
+        type="warning"
+        :loading="rollingBackUpdate"
+        :disabled="rollbackDisabled"
+        @click="emit('rollbackUpdate')"
+      >
+        <template #icon><n-icon :component="ArrowBackOutline" /></template>
+        回滚到上一版本
+      </n-button>
+      <span class="rollback-target">
+        目标版本 {{ updateStatus.previousVersion || updateStatus.rollbackTargetVersion || '-' }}
+      </span>
+    </div>
   </n-card>
 </template>
+
+<style scoped>
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.rollback-target {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+</style>

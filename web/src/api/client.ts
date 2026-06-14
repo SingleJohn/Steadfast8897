@@ -151,6 +151,11 @@ export type UpdateStatus = {
   hasUpdate: boolean
   currentImage?: string
   targetImage?: string
+  previousVersion?: string
+  previousImage?: string
+  rollbackAvailable?: boolean
+  rollbackTargetVersion?: string
+  rollbackTargetImage?: string
   releaseSource?: string
   releaseNotesUrl?: string
   githubReleaseUrl?: string
@@ -178,6 +183,10 @@ export async function applyUpdate(categories: string[] = ['settings', 'users', '
     method: 'POST',
     body: JSON.stringify({ categories }),
   })
+}
+
+export async function rollbackUpdate() {
+  return requestJson<UpdateStatus>('/System/Update/Rollback', { method: 'POST' })
 }
 
 export async function setUpdateChannel(channel: 'stable' | 'nightly') {

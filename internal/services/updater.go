@@ -44,27 +44,32 @@ func UpdateRunnerCommandArg() string {
 }
 
 type UpdateStatus struct {
-	Status            string   `json:"status"`
-	Message           string   `json:"message"`
-	CurrentVersion    string   `json:"currentVersion"`
-	LatestVersion     string   `json:"latestVersion"`
-	TargetVersion     string   `json:"targetVersion"`
-	Channel           string   `json:"channel"`
-	HasUpdate         bool     `json:"hasUpdate"`
-	CurrentImage      string   `json:"currentImage,omitempty"`
-	TargetImage       string   `json:"targetImage,omitempty"`
-	ReleaseSource     string   `json:"releaseSource,omitempty"`
-	ReleaseNotesURL   string   `json:"releaseNotesUrl,omitempty"`
-	GitHubReleaseURL  string   `json:"githubReleaseUrl,omitempty"`
-	HelperContainer   string   `json:"helperContainer,omitempty"`
-	LastCheckedAt     *string  `json:"lastCheckedAt,omitempty"`
-	StartedAt         *string  `json:"startedAt,omitempty"`
-	CompletedAt       *string  `json:"completedAt,omitempty"`
-	Error             *string  `json:"error,omitempty"`
-	Logs              []string `json:"logs,omitempty"`
-	NeedsDockerSocket bool     `json:"needsDockerSocket"`
-	DeploymentMode    string   `json:"deploymentMode"`
-	DownloadURL       string   `json:"downloadUrl,omitempty"`
+	Status                string   `json:"status"`
+	Message               string   `json:"message"`
+	CurrentVersion        string   `json:"currentVersion"`
+	LatestVersion         string   `json:"latestVersion"`
+	TargetVersion         string   `json:"targetVersion"`
+	Channel               string   `json:"channel"`
+	HasUpdate             bool     `json:"hasUpdate"`
+	CurrentImage          string   `json:"currentImage,omitempty"`
+	TargetImage           string   `json:"targetImage,omitempty"`
+	PreviousVersion       string   `json:"previousVersion,omitempty"`
+	PreviousImage         string   `json:"previousImage,omitempty"`
+	RollbackAvailable     bool     `json:"rollbackAvailable"`
+	RollbackTargetVersion string   `json:"rollbackTargetVersion,omitempty"`
+	RollbackTargetImage   string   `json:"rollbackTargetImage,omitempty"`
+	ReleaseSource         string   `json:"releaseSource,omitempty"`
+	ReleaseNotesURL       string   `json:"releaseNotesUrl,omitempty"`
+	GitHubReleaseURL      string   `json:"githubReleaseUrl,omitempty"`
+	HelperContainer       string   `json:"helperContainer,omitempty"`
+	LastCheckedAt         *string  `json:"lastCheckedAt,omitempty"`
+	StartedAt             *string  `json:"startedAt,omitempty"`
+	CompletedAt           *string  `json:"completedAt,omitempty"`
+	Error                 *string  `json:"error,omitempty"`
+	Logs                  []string `json:"logs,omitempty"`
+	NeedsDockerSocket     bool     `json:"needsDockerSocket"`
+	DeploymentMode        string   `json:"deploymentMode"`
+	DownloadURL           string   `json:"downloadUrl,omitempty"`
 }
 
 type UpdateRelease struct {
@@ -137,6 +142,31 @@ func (u *Updater) finalizeRestartStateLocked() {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	u.status.CompletedAt = &now
+	if u.status.RollbackTargetVersion != "" {
+		if u.cfg.Version == u.status.RollbackTargetVersion {
+			u.status.Status = "completed"
+			u.status.Message = "回滚完成"
+			u.status.CurrentVersion = u.cfg.Version
+			u.status.TargetVersion = ""
+			u.status.TargetImage = ""
+			u.status.PreviousVersion = ""
+			u.status.PreviousImage = ""
+			u.status.RollbackTargetVersion = ""
+			u.status.RollbackTargetImage = ""
+			u.status.Error = nil
+			u.status.HasUpdate = false
+			u.status.RollbackAvailable = false
+			u.appendLogLocked(fmt.Sprintf("回滚成功,当前版本 %s", u.cfg.Version))
+		} else {
+			u.status.Status = "failed"
+			u.status.Message = "重启后版本未回滚"
+			msg := fmt.Sprintf("expected %s but running %s", u.status.RollbackTargetVersion, u.cfg.Version)
+			u.status.Error = &msg
+			u.appendLogLocked("回滚失败: " + msg)
+		}
+		u.persistStateLocked()
+		return
+	}
 	if u.status.TargetVersion != "" && u.cfg.Version == u.status.TargetVersion {
 		u.status.Status = "completed"
 		u.status.Message = "更新完成"
@@ -162,6 +192,7 @@ func (u *Updater) GetStatus(ctx context.Context) UpdateStatus {
 	if channel := u.getConfigValue(ctx, updateChannelKey); channel != "" {
 		u.status.Channel = normalizeUpdateChannel(channel)
 	}
+	u.refreshRollbackAvailabilityLocked()
 	u.applyDeploymentLocked()
 	return cloneUpdateStatus(u.status)
 }
@@ -176,6 +207,31 @@ func (u *Updater) applyDeploymentLocked() {
 		u.status.DownloadURL = u.buildManualDownloadURL()
 	} else {
 		u.status.DownloadURL = ""
+	}
+}
+
+// refreshRollbackAvailabilityLocked 根据当前部署模式和已记录的上一版本信息刷新可回滚标记。
+// 调用前需持有 u.mu。
+func (u *Updater) refreshRollbackAvailabilityLocked() {
+	mode := DetectDeploymentMode()
+	switch mode {
+	case DeployDocker:
+		u.status.RollbackAvailable = strings.TrimSpace(u.status.PreviousImage) != ""
+	case DeployBinary:
+		backupPath := u.binaryBackupPath(u.status.PreviousVersion)
+		if backupPath == "" {
+			u.status.RollbackAvailable = false
+		} else if _, err := os.Stat(backupPath); err == nil {
+			u.status.RollbackAvailable = true
+		} else {
+			u.status.RollbackAvailable = false
+		}
+	default:
+		u.status.RollbackAvailable = false
+	}
+	if !u.status.RollbackAvailable {
+		u.status.RollbackTargetVersion = ""
+		u.status.RollbackTargetImage = ""
 	}
 }
 
@@ -350,8 +406,10 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 
 	helperName := fmt.Sprintf("fyms-updater-%d", time.Now().Unix())
 	helperBinds := buildHelperBinds(u.cfg.UpdateDockerSocket, inspect, defaultSharedDataMount)
+	currentImage := rollbackImageRef(inspect)
 	helperEnv := []string{
 		"FYMS_UPDATE_RUNNER=1",
+		"FYMS_UPDATE_ACTION=apply",
 		fmt.Sprintf("FYMS_UPDATE_DOCKER_SOCKET=%s", u.cfg.UpdateDockerSocket),
 		fmt.Sprintf("FYMS_UPDATE_TARGET_CONTAINER=%s", containerID),
 		fmt.Sprintf("FYMS_UPDATE_TARGET_IMAGE=%s", checked.TargetImage),
@@ -360,7 +418,7 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	}
 
 	helperBody := map[string]any{
-		"Image": inspect.Config.Image,
+		"Image": currentImage,
 		"Env":   helperEnv,
 		"Cmd":   []string{updateRunnerCommandArg},
 		"Labels": map[string]string{
@@ -377,6 +435,17 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	if err != nil {
 		return checked, fmt.Errorf("create update helper: %w", err)
 	}
+	u.mu.Lock()
+	u.reloadStateLocked()
+	u.status.CurrentImage = currentImage
+	u.status.PreviousVersion = u.cfg.Version
+	u.status.PreviousImage = currentImage
+	u.status.RollbackAvailable = true
+	u.status.RollbackTargetVersion = ""
+	u.status.RollbackTargetImage = ""
+	u.persistStateLocked()
+	u.mu.Unlock()
+
 	if err := dockerClient.startContainer(ctx, helperID); err != nil {
 		return checked, fmt.Errorf("start update helper: %w", err)
 	}
@@ -394,6 +463,12 @@ func (u *Updater) startApplyDocker(ctx context.Context) (UpdateStatus, error) {
 	u.status.TargetImage = checked.TargetImage
 	u.status.TargetVersion = checked.TargetVersion
 	u.status.CurrentVersion = u.cfg.Version
+	u.status.CurrentImage = currentImage
+	u.status.PreviousVersion = u.cfg.Version
+	u.status.PreviousImage = currentImage
+	u.status.RollbackAvailable = true
+	u.status.RollbackTargetVersion = ""
+	u.status.RollbackTargetImage = ""
 	u.appendLogLocked(fmt.Sprintf("更新助手已启动: %s", helperName))
 	u.persistStateLocked()
 	_ = u.setConfigValue(ctx, lastUpdateAttemptAtKey, now)
@@ -787,7 +862,7 @@ func (u *Updater) setConfigValue(ctx context.Context, key, value string) error {
 
 func isUpdateTaskActive(status string) bool {
 	switch status {
-	case "checking", "pulling", "recreating", "restarting":
+	case "checking", "backing_up", "pulling", "recreating", "rolling_back", "restarting":
 		return true
 	default:
 		return false
@@ -884,6 +959,7 @@ func (dc *dockerClient) ping(ctx context.Context) error {
 type dockerInspect struct {
 	ID              string                `json:"Id"`
 	Name            string                `json:"Name"`
+	Image           string                `json:"Image"`
 	Config          dockerContainerConfig `json:"Config"`
 	HostConfig      map[string]any        `json:"HostConfig"`
 	NetworkSettings dockerNetworkSettings `json:"NetworkSettings"`
@@ -1010,10 +1086,24 @@ func buildHelperBinds(socketPath string, inspect *dockerInspect, sharedDestinati
 	return binds
 }
 
+func rollbackImageRef(inspect *dockerInspect) string {
+	if inspect == nil {
+		return ""
+	}
+	if strings.TrimSpace(inspect.Image) != "" {
+		return strings.TrimSpace(inspect.Image)
+	}
+	return strings.TrimSpace(inspect.Config.Image)
+}
+
 func RunUpdaterRunnerFromEnv() error {
 	socketPath := strings.TrimSpace(os.Getenv("FYMS_UPDATE_DOCKER_SOCKET"))
 	if socketPath == "" {
 		socketPath = "/var/run/docker.sock"
+	}
+	action := strings.TrimSpace(os.Getenv("FYMS_UPDATE_ACTION"))
+	if action == "" {
+		action = "apply"
 	}
 	targetContainer := strings.TrimSpace(os.Getenv("FYMS_UPDATE_TARGET_CONTAINER"))
 	targetImage := strings.TrimSpace(os.Getenv("FYMS_UPDATE_TARGET_IMAGE"))
@@ -1024,6 +1114,14 @@ func RunUpdaterRunnerFromEnv() error {
 	}
 
 	writeRunnerState(statePath, func(st *UpdateStatus) {
+		if action == "rollback" {
+			st.Status = "rolling_back"
+			st.Message = "正在准备回滚镜像"
+			st.RollbackTargetImage = targetImage
+			st.RollbackTargetVersion = targetVersion
+			appendRunnerLog(st, "开始准备回滚镜像 "+targetImage)
+			return
+		}
 		st.Status = "pulling"
 		st.Message = "正在拉取新镜像"
 		st.TargetImage = targetImage
@@ -1037,14 +1135,21 @@ func RunUpdaterRunnerFromEnv() error {
 	dockerClient := newDockerClient(socketPath)
 	defer dockerClient.CloseIdleConnections()
 
-	if err := dockerClient.pullImage(ctx, targetImage); err != nil {
-		writeRunnerFailure(statePath, fmt.Errorf("pull image failed: %w", err))
-		return err
+	if action != "rollback" {
+		if err := dockerClient.pullImage(ctx, targetImage); err != nil {
+			writeRunnerFailure(statePath, fmt.Errorf("pull image failed: %w", err))
+			return err
+		}
 	}
 	writeRunnerState(statePath, func(st *UpdateStatus) {
 		st.Status = "recreating"
-		st.Message = "正在重建容器"
-		appendRunnerLog(st, "镜像拉取完成")
+		if action == "rollback" {
+			st.Message = "正在回滚容器"
+			appendRunnerLog(st, "开始用上一版本镜像重建容器")
+		} else {
+			st.Message = "正在重建容器"
+			appendRunnerLog(st, "镜像拉取完成")
+		}
 	})
 
 	inspect, err := dockerClient.inspectContainer(ctx, targetContainer)
@@ -1063,7 +1168,7 @@ func RunUpdaterRunnerFromEnv() error {
 		return err
 	}
 	writeRunnerState(statePath, func(st *UpdateStatus) {
-		appendRunnerLog(st, "已重命名旧容器为 "+backupName)
+		appendRunnerLog(st, "已重命名当前容器为 "+backupName)
 	})
 
 	if err := dockerClient.stopContainer(ctx, targetContainer, 15); err != nil {
@@ -1109,13 +1214,24 @@ func RunUpdaterRunnerFromEnv() error {
 	_ = dockerClient.removeContainer(ctx, targetContainer, false)
 	writeRunnerState(statePath, func(st *UpdateStatus) {
 		now := time.Now().UTC().Format(time.RFC3339)
-		st.Status = "completed"
-		st.Message = "更新完成"
-		st.CurrentVersion = targetVersion
+		if action == "rollback" {
+			st.Status = "restarting"
+			st.Message = "回滚完成，服务正在重启"
+			st.CurrentVersion = targetVersion
+			st.RollbackTargetVersion = targetVersion
+			st.RollbackTargetImage = targetImage
+			st.TargetVersion = ""
+			st.TargetImage = ""
+			appendRunnerLog(st, "上一版本容器已启动")
+		} else {
+			st.Status = "completed"
+			st.Message = "更新完成"
+			st.CurrentVersion = targetVersion
+			appendRunnerLog(st, "新容器已启动")
+		}
 		st.CompletedAt = &now
 		st.Error = nil
 		st.HasUpdate = false
-		appendRunnerLog(st, "新容器已启动")
 	})
 	return nil
 }

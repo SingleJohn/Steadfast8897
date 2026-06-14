@@ -160,6 +160,7 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.GET("/System/Update/Progress", adminMW, getUpdateStatus)
 	group.POST("/System/Update/Check", adminMW, checkForUpdate)
 	group.POST("/System/Update/Apply", adminMW, applyUpdate)
+	group.POST("/System/Update/Rollback", adminMW, rollbackUpdate)
 	group.POST("/System/Update/Channel", adminMW, setUpdateChannel)
 }
 
@@ -917,6 +918,26 @@ func applyUpdate(c *gin.Context) {
 	status, err := state.Updater.StartApply(ctx)
 	if err != nil {
 		state.Updater.MarkFailure(err)
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": status})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func rollbackUpdate(c *gin.Context) {
+	state := GetState(c)
+	ctx := c.Request.Context()
+	if t := state.TaskCenter.Get(taskcenter.KindUpdate); t != nil {
+		if _, err := t.Start(ctx, taskcenter.StartParams{"action": "rollback"}, taskcenter.TriggerManual); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": state.Updater.GetStatus(ctx)})
+			return
+		}
+		c.JSON(http.StatusOK, state.Updater.GetStatus(ctx))
+		return
+	}
+
+	status, err := state.Updater.StartRollback(ctx)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error(), "status": status})
 		return
 	}

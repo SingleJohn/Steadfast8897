@@ -153,12 +153,21 @@ func (u *Updater) startApplyBinary(ctx context.Context) (UpdateStatus, error) {
 	}
 
 	// 备份当前版本(同版本覆盖,避免下载失败后重复占用磁盘)
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("fyms-%s.bak", u.cfg.Version))
+	backupPath := u.binaryBackupPath(u.cfg.Version)
 	_ = os.Remove(backupPath)
 	if err := copyFile(currentExe, backupPath, 0755); err != nil {
 		return u.markBinaryFailure(ctx, fmt.Errorf("backup current binary: %w", err))
 	}
 	pruneBackups(backupDir, 2)
+
+	u.mu.Lock()
+	u.status.PreviousVersion = u.cfg.Version
+	u.status.PreviousImage = ""
+	u.status.RollbackAvailable = true
+	u.status.RollbackTargetVersion = ""
+	u.status.RollbackTargetImage = ""
+	u.persistStateLocked()
+	u.mu.Unlock()
 
 	// 替换:Unix 上 rename 正在执行的文件 OK,inode 不变直到进程退出。
 	// 用 rename(atomic)优先,失败再尝试 copyFile(跨设备场景)。
@@ -193,6 +202,14 @@ func (u *Updater) startApplyBinary(ctx context.Context) (UpdateStatus, error) {
 func (u *Updater) markBinaryFailure(ctx context.Context, err error) (UpdateStatus, error) {
 	u.MarkFailure(err)
 	return u.GetStatus(ctx), err
+}
+
+func (u *Updater) binaryBackupPath(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return ""
+	}
+	return filepath.Join(u.cfg.DataDir, "update", "backup", fmt.Sprintf("fyms-%s.bak", version))
 }
 
 // copyFile 复制文件到 dst,覆盖已存在。父目录不存在时自动创建。
