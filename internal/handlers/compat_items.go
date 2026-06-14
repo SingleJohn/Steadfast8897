@@ -84,14 +84,29 @@ func getPersons(c *gin.Context, state *AppState) {
 
 	search := strings.TrimSpace(c.Query("SearchTerm"))
 	nameStartsWith := strings.TrimSpace(c.Query("NameStartsWith"))
-	persons, total, err := models.ListPersons(c.Request.Context(), state.DB, search, nameStartsWith, limit, start)
+	filters := parseCSVQuery(c.Query("Filters"))
+	userID := resolveUserID(c)
+	favoriteOnly := hasCSVValue(filters, "IsFavorite")
+	if favoriteOnly {
+		if _, err := uuid.Parse(strings.TrimSpace(userID)); err != nil {
+			c.JSON(http.StatusOK, gin.H{"Items": []gin.H{}, "TotalRecordCount": 0})
+			return
+		}
+	}
+	persons, total, err := models.ListPersons(c.Request.Context(), state.DB, models.PersonListOptions{
+		Search:         search,
+		NameStartsWith: nameStartsWith,
+		UserID:         userID,
+		Filters:        filters,
+		Limit:          limit,
+		Offset:         start,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
 	items := make([]gin.H, 0, len(persons))
-	userID := resolveUserID(c)
 	personIDs := make([]string, 0, len(persons))
 	for i := range persons {
 		personIDs = append(personIDs, persons[i].ID)
@@ -104,12 +119,37 @@ func getPersons(c *gin.Context, state *AppState) {
 	}
 	for i := range persons {
 		var ud *dto.UserDataRow
-		if fav, ok := favoriteMap[persons[i].ID]; ok {
+		if favoriteOnly {
+			ud = models.PersonUserDataRow(true)
+		} else if fav, ok := favoriteMap[persons[i].ID]; ok {
 			ud = models.PersonUserDataRow(fav)
 		}
 		items = append(items, personItemDTO(state, &persons[i], ud))
 	}
 	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": total})
+}
+
+func parseCSVQuery(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func hasCSVValue(values []string, want string) bool {
+	for _, v := range values {
+		if strings.EqualFold(strings.TrimSpace(v), want) {
+			return true
+		}
+	}
+	return false
 }
 
 // getPersonByName 对齐 Emby `GET /Persons/{Name}`（Items-by-Name 单演员详情）。
@@ -309,6 +349,7 @@ func personItemDTO(state *AppState, p *models.Person, userData *dto.UserDataRow)
 	}
 	if p.ImagePath != nil && *p.ImagePath != "" {
 		item["ImageTags"] = gin.H{"Primary": imageTagOr(p, p.ImageTag)}
+		item["PrimaryImageAspectRatio"] = 0.6666666666666666
 	}
 	if p.BackdropPath != nil && *p.BackdropPath != "" {
 		item["BackdropImageTags"] = []string{imageTagOr(p, p.ImageTag)}

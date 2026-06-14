@@ -48,6 +48,11 @@ const personColumns = `id::text, name, image_path, image_locked, tmdb_person_id,
 	premiere_date, production_year,
 	production_locations::text, genres::text, tags::text, taglines::text, provider_ids::text, backdrop_path`
 
+const personColumnsP = `p.id::text, p.name, p.image_path, p.image_locked, p.tmdb_person_id, p.overview,
+	EXTRACT(EPOCH FROM p.updated_at)::bigint::text,
+	p.premiere_date, p.production_year,
+	p.production_locations::text, p.genres::text, p.tags::text, p.taglines::text, p.provider_ids::text, p.backdrop_path`
+
 // scanPerson 扫描 personColumns 一行。jsonb 列以 text 入再 Unmarshal(空值容错)。
 func scanPerson(row pgx.Row) (*Person, error) {
 	var p Person
@@ -357,37 +362,68 @@ func ClearPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID strin
 	return err
 }
 
-// ListPersons 列出人物(供 /Persons)。search=SearchTerm(包含匹配);
-// nameStartsWith=Emby 的 NameStartsWith(前缀匹配,mdc-ng 等按名定位演员用)。两者可叠加。
-func ListPersons(ctx context.Context, pool *pgxpool.Pool, search, nameStartsWith string, limit, offset int64) ([]Person, int64, error) {
+type PersonListOptions struct {
+	Search         string
+	NameStartsWith string
+	UserID         string
+	Filters        []string
+	Limit          int64
+	Offset         int64
+}
+
+func (o PersonListOptions) favoriteOnly() bool {
+	for _, f := range o.Filters {
+		if strings.EqualFold(strings.TrimSpace(f), "IsFavorite") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListPersons 列出人物(供 /Persons)。Search=SearchTerm(包含匹配);
+// NameStartsWith=Emby 的 NameStartsWith(前缀匹配,mdc-ng 等按名定位演员用)。两者可叠加。
+func ListPersons(ctx context.Context, pool *pgxpool.Pool, opts PersonListOptions) ([]Person, int64, error) {
 	var total int64
 	args := []any{}
 	conds := []string{}
-	if search != "" {
-		args = append(args, "%"+search+"%")
-		conds = append(conds, "name ILIKE $"+strconv.Itoa(len(args)))
+	join := ""
+
+	if opts.favoriteOnly() {
+		if strings.TrimSpace(opts.UserID) == "" {
+			return []Person{}, 0, nil
+		}
+		args = append(args, opts.UserID)
+		join = ` JOIN user_person_data upd
+		           ON upd.person_id = p.id
+		          AND upd.user_id = $` + strconv.Itoa(len(args)) + `::uuid
+		          AND upd.is_favorite = TRUE`
 	}
-	if nameStartsWith != "" {
-		args = append(args, nameStartsWith+"%")
-		conds = append(conds, "name ILIKE $"+strconv.Itoa(len(args)))
+	if opts.Search != "" {
+		args = append(args, "%"+opts.Search+"%")
+		conds = append(conds, "p.name ILIKE $"+strconv.Itoa(len(args)))
+	}
+	if opts.NameStartsWith != "" {
+		args = append(args, opts.NameStartsWith+"%")
+		conds = append(conds, "p.name ILIKE $"+strconv.Itoa(len(args)))
 	}
 	where := ""
 	if len(conds) > 0 {
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM persons`+where, args...).Scan(&total); err != nil {
+	from := ` FROM persons p` + join
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*)`+from+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	listSQL := `SELECT ` + personColumns + ` FROM persons` + where + ` ORDER BY name`
+	listSQL := `SELECT ` + personColumnsP + from + where + ` ORDER BY p.name`
 	listArgs := append([]any{}, args...)
 	// limit <= 0 表示不限量（对齐 Emby /Persons 未传 Limit 的语义，返回全部）。
-	if limit > 0 {
+	if opts.Limit > 0 {
 		listSQL += " LIMIT $" + strconv.Itoa(len(listArgs)+1)
-		listArgs = append(listArgs, limit)
+		listArgs = append(listArgs, opts.Limit)
 	}
 	listSQL += " OFFSET $" + strconv.Itoa(len(listArgs)+1)
-	listArgs = append(listArgs, offset)
+	listArgs = append(listArgs, opts.Offset)
 
 	rows, err := pool.Query(ctx, listSQL, listArgs...)
 	if err != nil {
