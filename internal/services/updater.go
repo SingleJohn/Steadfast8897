@@ -37,6 +37,8 @@ const (
 	defaultSharedDataMount  = "/app/data"
 	updateRunnerCommandArg  = "updater-runner"
 	updateStateRelativePath = "update/state.json"
+	updateLookupTimeout     = 30 * time.Second
+	updateStoreTimeout      = 5 * time.Second
 )
 
 func UpdateRunnerCommandArg() string {
@@ -303,7 +305,10 @@ func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
 	u.persistStateLocked()
 	u.mu.Unlock()
 
-	release, err := u.resolveLatestRelease(ctx, channel)
+	lookupCtx, cancel := updateLookupContext()
+	release, err := u.resolveLatestRelease(lookupCtx, channel)
+	cancel()
+	err = normalizeUpdateLookupError(err)
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -312,13 +317,15 @@ func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
 	u.status.Channel = channel
 	now := time.Now().UTC().Format(time.RFC3339)
 	u.status.LastCheckedAt = &now
-	_ = u.setConfigValue(ctx, lastUpdateCheckAtKey, now)
+	storeCtx, storeCancel := updateStoreContext()
+	defer storeCancel()
+	_ = u.setConfigValue(storeCtx, lastUpdateCheckAtKey, now)
 	if err != nil {
 		u.status.Status = "failed"
 		u.status.Message = "检查更新失败"
 		msg := err.Error()
 		u.status.Error = &msg
-		_ = u.setConfigValue(ctx, lastUpdateErrorKey, msg)
+		_ = u.setConfigValue(storeCtx, lastUpdateErrorKey, msg)
 		u.persistStateLocked()
 		return cloneUpdateStatus(u.status), err
 	}
@@ -338,8 +345,8 @@ func (u *Updater) Check(ctx context.Context) (UpdateStatus, error) {
 		u.status.Message = "当前已是最新版本"
 	}
 	u.applyDeploymentLocked()
-	_ = u.setConfigValue(ctx, lastUpdateVersionKey, release.Version)
-	_ = u.setConfigValue(ctx, lastUpdateResultKey, "checked")
+	_ = u.setConfigValue(storeCtx, lastUpdateVersionKey, release.Version)
+	_ = u.setConfigValue(storeCtx, lastUpdateResultKey, "checked")
 	u.persistStateLocked()
 	return cloneUpdateStatus(u.status), nil
 }
@@ -403,13 +410,19 @@ func (u *Updater) StartApplyVersion(ctx context.Context, channel, version string
 	mode := DetectDeploymentMode()
 	switch mode {
 	case DeployDocker:
-		release, err := u.resolveDockerReleaseVersion(ctx, channel, version)
+		lookupCtx, cancel := updateLookupContext()
+		release, err := u.resolveDockerReleaseVersion(lookupCtx, channel, version)
+		cancel()
+		err = normalizeUpdateLookupError(err)
 		if err != nil {
 			return u.GetStatus(ctx), err
 		}
 		return u.startApplyDockerRelease(ctx, release)
 	case DeployBinary:
-		release, err := u.resolveBinaryReleaseVersion(ctx, channel, version)
+		lookupCtx, cancel := updateLookupContext()
+		release, err := u.resolveBinaryReleaseVersion(lookupCtx, channel, version)
+		cancel()
+		err = normalizeUpdateLookupError(err)
 		if err != nil {
 			return u.GetStatus(ctx), err
 		}
@@ -858,6 +871,27 @@ func cloneUpdateStatus(in UpdateStatus) UpdateStatus {
 		out.Logs = append([]string(nil), in.Logs...)
 	}
 	return out
+}
+
+func updateLookupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), updateLookupTimeout)
+}
+
+func updateStoreContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), updateStoreTimeout)
+}
+
+func normalizeUpdateLookupError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("检查更新超时，请稍后重试")
+	}
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("检查更新请求已取消，请稍后重试")
+	}
+	return err
 }
 
 func (u *Updater) appendLogLocked(message string) {

@@ -28,19 +28,19 @@ func (u *Updater) ListVersions(ctx context.Context, channel string) (UpdateVersi
 	}
 	switch mode {
 	case DeployDocker:
-		versions, err := u.listDockerVersions(ctx, channel)
+		versions, err := u.listUpdateVersionsWithTimeout(channel, u.listDockerVersions)
 		if err != nil {
 			return resp, err
 		}
 		resp.Versions = versions
 	case DeployBinary:
-		versions, err := u.listBinaryVersions(ctx, channel)
+		versions, err := u.listUpdateVersionsWithTimeout(channel, u.listBinaryVersions)
 		if err != nil {
 			return resp, err
 		}
 		resp.Versions = versions
 	case DeployManual:
-		versions, err := u.listBinaryVersions(ctx, channel)
+		versions, err := u.listUpdateVersionsWithTimeout(channel, u.listBinaryVersions)
 		if err != nil {
 			return resp, err
 		}
@@ -53,6 +53,13 @@ func (u *Updater) ListVersions(ctx context.Context, channel string) (UpdateVersi
 		return resp, fmt.Errorf("unknown deployment mode")
 	}
 	return resp, nil
+}
+
+func (u *Updater) listUpdateVersionsWithTimeout(channel string, list func(context.Context, string) ([]UpdateVersion, error)) ([]UpdateVersion, error) {
+	lookupCtx, cancel := updateLookupContext()
+	defer cancel()
+	versions, err := list(lookupCtx, channel)
+	return versions, normalizeUpdateLookupError(err)
 }
 
 func (u *Updater) resolveDockerReleaseVersion(ctx context.Context, channel, version string) (UpdateRelease, error) {
