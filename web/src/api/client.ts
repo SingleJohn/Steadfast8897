@@ -21,7 +21,7 @@ function clearAuthAndRedirect() {
 }
 
 export async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { timeoutMs = 12_000, ...init } = options
+  const { timeoutMs = 60_000, ...init } = options
   const headers = new Headers(init.headers)
   const token = getToken()
   if (token) headers.set('X-Emby-Token', token)
@@ -256,7 +256,9 @@ export async function getLatestItems(parentId: string, limit = 16) {
 
 export async function getLatestBatch(libraryIds: string[], limit = 16) {
   const userId = getUserId();
-  return request<Record<string, any[]>>(`/Users/${userId}/Items/LatestBatch?LibraryIds=${libraryIds.join(',')}&Limit=${limit}`);
+  return request<Record<string, any[]>>(`/Users/${userId}/Items/LatestBatch?LibraryIds=${libraryIds.join(',')}&Limit=${limit}`, {
+    timeoutMs: 60_000,
+  });
 }
 
 // Images
@@ -665,7 +667,7 @@ export async function scrapeAllMetadata() {
 export async function searchTmdbForItem(itemId: string, params: { query?: string; year?: number; tmdbId?: number }) {
   return requestJson<any>(`/Items/${itemId}/SearchTmdb`, {
     method: 'POST',
-    timeoutMs: 20_000,
+    timeoutMs: 60_000,
     body: JSON.stringify({
       query: params.query || undefined,
       year: params.year || undefined,
@@ -677,7 +679,7 @@ export async function searchTmdbForItem(itemId: string, params: { query?: string
 export async function scrapeItemByTmdbId(itemId: string, tmdbId: number) {
   return requestJson<any>(`/Items/${itemId}/ScrapeByTmdbId`, {
     method: 'POST',
-    timeoutMs: 30_000,
+    timeoutMs: 60_000,
     body: JSON.stringify({ tmdbId }),
   });
 }

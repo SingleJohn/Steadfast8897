@@ -41,7 +41,8 @@ const hasContent = computed(() => (
   || favoriteItems.value.length > 0
   || latestByLibrary.value.length > 0
 ))
-const showEmpty = computed(() => !loading.value && latestLoaded.value && !hasContent.value)
+const hasLibraryViews = computed(() => libraryViews.value.length > 0)
+const showEmpty = computed(() => !loading.value && latestLoaded.value && !hasContent.value && !hasLibraryViews.value)
 const showHomeShell = computed(() => heroReady.value || hasContent.value || latestLoading.value || libraryViews.value.length > 0)
 
 async function loadLatestSections(libraries: any[]) {
@@ -56,10 +57,12 @@ async function loadLatestSections(libraries: any[]) {
       .filter((section: LibrarySection) => section.items.length > 0)
   } catch {
     latestByLibrary.value = []
+    latestLoaded.value = false
+    return
   } finally {
     latestLoading.value = false
-    latestLoaded.value = true
   }
+  latestLoaded.value = true
 }
 
 async function loadHome() {

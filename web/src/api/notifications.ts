@@ -60,7 +60,7 @@ export async function deleteWebhookSubscription(id: string) {
 export async function testWebhookSubscription(id: string) {
   return requestJson<void>(`/Admin/Notifications/Subscriptions/${encodeURIComponent(id)}/Test`, {
     method: 'POST',
-    timeoutMs: 15_000,
+    timeoutMs: 60_000,
   })
 }
 

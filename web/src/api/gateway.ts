@@ -12,7 +12,7 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
-  const { timeoutMs = 10_000, ...init } = options
+  const { timeoutMs = 60_000, ...init } = options
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
