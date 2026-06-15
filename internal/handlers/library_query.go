@@ -659,7 +659,7 @@ func getLatestItems(c *gin.Context) {
 			sid := state.Config.ServerID
 			items := make([]dto.BaseItemDto, 0, len(rows))
 			for i := range rows {
-				item := dto.FormatItemDto(&rows[i], sid, nil)
+				item := dto.FormatItemDtoList(&rows[i], sid, nil)
 				applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
 				items = append(items, item)
 			}
@@ -669,7 +669,7 @@ func getLatestItems(c *gin.Context) {
 		}
 	}
 
-	items, err := queryLatestItemsForParent(ctx, state, parentID, limit, scope, pathUser)
+	items, err := queryLatestItemsForParent(ctx, state, parentID, limit, scope, pathUser, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -678,8 +678,16 @@ func getLatestItems(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
-func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope, userID string) ([]dto.BaseItemDto, error) {
-	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope, userID string, platformByID map[string]models.PlatformLibrary) ([]dto.BaseItemDto, error) {
+	var platform *models.PlatformLibrary
+	if p, ok := platformByID[parentID]; ok {
+		platform = &p
+	} else if platformByID == nil {
+		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+			platform = p
+		}
+	}
+	if platform != nil {
 		if scope != nil && !scope.AllowAll {
 			return []dto.BaseItemDto{}, nil
 		}
@@ -688,7 +696,7 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 			Limit:            &limit,
 			Recursive:        true,
 		}
-		applyVirtualDimension(opts, p)
+		applyVirtualDimension(opts, platform)
 		applyLibraryScope(opts, scope)
 		sb := "DateCreated"
 		so := "Descending"
@@ -701,7 +709,7 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 		sid := state.Config.ServerID
 		items := make([]dto.BaseItemDto, 0, len(res.Items))
 		for i := range res.Items {
-			items = append(items, dto.FormatItemDto(&res.Items[i], sid, nil))
+			items = append(items, dto.FormatItemDtoList(&res.Items[i], sid, nil))
 		}
 		applyUnplayedItemCounts(ctx, state.DB, userID, items)
 		return items, nil
@@ -717,10 +725,25 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 	sid := state.Config.ServerID
 	items := make([]dto.BaseItemDto, 0, len(rows))
 	for i := range rows {
-		items = append(items, dto.FormatItemDto(&rows[i], sid, nil))
+		items = append(items, dto.FormatItemDtoList(&rows[i], sid, nil))
 	}
 	applyUnplayedItemCounts(ctx, state.DB, userID, items)
 	return items, nil
+}
+
+func loadPlatformVirtualIDMap(ctx context.Context, state *AppState) map[string]models.PlatformLibrary {
+	platformByID := make(map[string]models.PlatformLibrary)
+	if !models.IsPlatformLibrariesEnabled(ctx, state.DB) {
+		return platformByID
+	}
+	platforms, err := models.GetEnabledPlatformsLite(ctx, state.DB)
+	if err != nil || len(platforms) == 0 {
+		return platformByID
+	}
+	for i := range platforms {
+		platformByID[models.PlatformVirtualID(platforms[i].Dimension, platforms[i].MatchValue)] = platforms[i]
+	}
+	return platformByID
 }
 
 func getLatestBatch(c *gin.Context) {
@@ -755,13 +778,14 @@ func getLatestBatch(c *gin.Context) {
 		return
 	}
 	result := make(map[string][]dto.BaseItemDto)
+	platformByID := loadPlatformVirtualIDMap(ctx, state)
 
 	for _, rawID := range strings.Split(libIDsRaw, ",") {
 		libID := strings.TrimSpace(rawID)
 		if libID == "" {
 			continue
 		}
-		items, err := queryLatestItemsForParent(ctx, state, libID, limit, scope, pathUser)
+		items, err := queryLatestItemsForParent(ctx, state, libID, limit, scope, pathUser, platformByID)
 		if err != nil {
 			continue
 		}

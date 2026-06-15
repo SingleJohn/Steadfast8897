@@ -124,7 +124,7 @@ function updateThreshold(value: unknown) {
         <div class="switch-section-compact">
           <div class="switch-copy">
             <div class="switch-title">本地原图直读</div>
-            <div class="hint-text">开启后媒体目录/挂载盘的原图直接读取，不复制到 data/cache（省空间）；关闭则缓存一份原图加速远端挂载。仅影响本地图，URL 源始终缓存。</div>
+            <div class="hint-text">开启后媒体目录/挂载盘原图直接读取；关闭则缓存一份原图到 sources，适合网盘挂载。普通缩放图实时处理，不按客户端尺寸落盘。</div>
           </div>
           <n-switch :value="imageDirectRead" :round="false" @update:value="emit('update:imageDirectRead', $event)" />
         </div>

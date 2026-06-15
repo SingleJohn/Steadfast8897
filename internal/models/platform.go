@@ -97,6 +97,10 @@ func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLib
 	return listPlatforms(ctx, pool, true)
 }
 
+func GetEnabledPlatformsLite(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
+	return listPlatformsLite(ctx, pool, true)
+}
+
 // listPlatformsLite 只取虚拟库行,不算 ItemCount(供高频路径如出图解析用)。
 func listPlatformsLite(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([]PlatformLibrary, error) {
 	sql := `SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,

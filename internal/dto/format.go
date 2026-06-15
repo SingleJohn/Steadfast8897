@@ -31,6 +31,7 @@ type imageAspectRatioCacheEntry struct {
 }
 
 var primaryImageAspectRatioCache sync.Map
+var localImageDirectReadFlag atomic.Bool
 
 // SetStrmItemPathMode 设置 strm item.Path 模式。mode=="resolved" 时返回解析后真实路径,
 // 其它值(含默认空值 / "strm")返回 .strm 文件路径。
@@ -46,6 +47,10 @@ func strmItemPathResolved() bool {
 // 供 handler 层判断是否应把 item 级 Path 覆盖为 MediaSources 的解析路径。
 func StrmItemPathResolved() bool {
 	return strmItemPathResolvedFlag.Load()
+}
+
+func SetLocalImageDirectRead(v bool) {
+	localImageDirectReadFlag.Store(v)
 }
 
 // studioNamespace 用于由 studio name 生成稳定 UUID。Emby/Jellyfin 客户端
@@ -107,7 +112,7 @@ func canonicalProvider(lower string) string {
 	}
 }
 
-// FormatItemDtoList 列表场景：跳过 strm 文件解析（避免大量磁盘 IO）
+// FormatItemDtoList 列表场景:跳过 strm 文件解析和图片尺寸探测,避免列表接口被慢盘/网盘挂载拖慢。
 func FormatItemDtoList(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
 	return formatItemDto(item, serverID, userData, true)
 }
@@ -235,8 +240,10 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if len(imageTags) > 0 {
 		dto.ImageTags = imageTags
 	}
-	if ratio := primaryImageAspectRatio(item.PrimaryImagePath); ratio != nil {
-		dto.PrimaryImageAspectRatio = ratio
+	if !skipStrmResolve {
+		if ratio := primaryImageAspectRatio(item.PrimaryImagePath); ratio != nil {
+			dto.PrimaryImageAspectRatio = ratio
+		}
 	}
 
 	if item.BackdropImageTag != nil {
@@ -335,6 +342,9 @@ func primaryImageAspectRatio(path *string) *float64 {
 	}
 	p := strings.TrimSpace(*path)
 	if p == "" || strings.HasPrefix(strings.ToLower(p), "http") {
+		return nil
+	}
+	if !localImageDirectReadFlag.Load() {
 		return nil
 	}
 	info, err := os.Stat(p)

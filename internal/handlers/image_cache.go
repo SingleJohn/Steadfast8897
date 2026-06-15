@@ -22,8 +22,8 @@ import (
 )
 
 // ImageCache 管理 data/cache/sources/ 与 data/cache/resized/ 两个目录。
-// sources/ 存放从远程挂载盘或 URL materialize 来的原图，
-// resized/ 存放按尺寸/质量/格式生成的缩略图。
+// sources/ 存放从远程挂载盘或 URL materialize 来的原图。
+// resized/ 仅保留给少量生成型图片缓存;普通 item 图片缩放实时输出,不再按客户端尺寸落盘。
 // 两个目录共享同一个 LRU 清理任务,按 mtime 升序删除到 MaxGB 以内。
 type ImageCache struct {
 	sourceDir  string
@@ -74,9 +74,9 @@ func (c *ImageCache) SetCopyLocal(v bool) {
 
 // Materialize 返回可被本地快速读取的路径 + 源指纹。
 // 本地路径在 dataDir 下(例如 data/metadata TMDB 下载的图)直接返回,不做复制;
-// 其它本地/挂载路径在 copyLocal=false(默认)时也直读,copyLocal=true 时复制到 sources/ 缓存。
+// 其它本地/挂载路径在 copyLocal=false(默认)时也直读,copyLocal=true 时复制到 sources/ 缓存原图。
 // URL 源统一下载到 sources/。
-// 源指纹包含 mtime+size(本地)或 URL(远程),可嵌入 resize cache key,源变化后自动失效。
+// 源指纹包含 mtime+size(本地)或 URL(远程),用于需要识别源图版本的调用方。
 func (c *ImageCache) Materialize(source string, isURL bool) (localPath, srcHash string, err error) {
 	if isURL {
 		return c.materializeURL(source)

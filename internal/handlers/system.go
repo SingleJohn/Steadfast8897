@@ -320,9 +320,11 @@ func postConfiguration(c *gin.Context) {
 			needLimiterApply = true
 		case "image_cache_copy_local":
 			// 本地原图是否复制到 cache/sources(false=直读)。实时生效,无需重启。
+			copyLocal := valStr == "true"
 			if state.ImageCache != nil {
-				state.ImageCache.SetCopyLocal(valStr == "true")
+				state.ImageCache.SetCopyLocal(copyLocal)
 			}
+			dto.SetLocalImageDirectRead(!copyLocal)
 		case "strm_item_path_mode":
 			// strm 条目 item.Path 返回 .strm 文件路径('strm')还是解析后真实路径('resolved')。
 			// 实时生效,影响详情/列表/通知;MediaSources(播放)不受影响。

@@ -52,6 +52,7 @@ const tmdbLanguage = ref('zh-CN')
 const tmdbProxy = ref('')
 const scrapeSaveMode = ref('database')
 // 本地/挂载原图直读(不复制到 data/cache/sources)。对应 system_config.image_cache_copy_local 取反。
+// 关闭直读时缓存原图;普通 item 缩放图实时输出,不按客户端尺寸落盘。
 const imageDirectRead = ref(true)
 const autoScrape = ref(false)
 const confidenceThreshold = ref<number>(0.72)

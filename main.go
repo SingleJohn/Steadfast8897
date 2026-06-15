@@ -157,7 +157,9 @@ func main() {
 	{
 		var copyLocalVal *string
 		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'image_cache_copy_local'").Scan(&copyLocalVal)
-		imageCache.SetCopyLocal(copyLocalVal != nil && *copyLocalVal == "true")
+		copyLocal := copyLocalVal != nil && *copyLocalVal == "true"
+		imageCache.SetCopyLocal(copyLocal)
+		dto.SetLocalImageDirectRead(!copyLocal)
 	}
 
 	// 启动时加载 strm item.Path 模式(默认 'strm'=返回 .strm 文件路径,对齐 Emby)。

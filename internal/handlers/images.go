@@ -436,42 +436,41 @@ func serveImage(c *gin.Context, state *AppState) {
 	imageSemaphore <- struct{}{}
 	defer func() { <-imageSemaphore }()
 
-	localPath, srcHash, err := state.ImageCache.Materialize(sourcePath, sourceIsURL)
+	localPath, _, err := state.ImageCache.Materialize(sourcePath, sourceIsURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
 		return
 	}
 
-	ext := ".jpg"
 	encFmt := imaging.JPEG
+	contentType := "image/jpeg"
 	switch outputFormat {
 	case "png":
-		ext = ".png"
 		encFmt = imaging.PNG
+		contentType = "image/png"
 	case "webp":
-		ext = ".jpg"
 		encFmt = imaging.JPEG
+		contentType = "image/jpeg"
 	}
 
-	outPath := localPath
 	if maxW > 0 || maxH > 0 {
-		cacheName := fmt.Sprintf("%s_%s_%s_%dx%d_q%d%s", *uid, imageType, srcHash, maxW, maxH, quality, ext)
-		if tag != "" {
-			cacheName = fmt.Sprintf("%s_%s_%s_%s_%dx%d_q%d%s", *uid, imageType, tag, srcHash, maxW, maxH, quality, ext)
-		}
-		outPath = state.ImageCache.ResizedPath(cacheName)
-		if st, serr := os.Stat(outPath); serr == nil && st.Size() > 0 {
-			state.ImageCache.Touch(outPath)
-		} else if err := resizeImage(localPath, outPath, maxW, maxH, quality, encFmt); err != nil {
+		wrote, err := writeResizedImage(c.Writer, localPath, maxW, maxH, quality, encFmt, func() {
+			c.Header("Cache-Control", "public, max-age=31536000")
+			c.Header("Content-Type", contentType)
+		})
+		if err != nil {
 			slog.Warn("[Image] resize failed, serving original", "path", localPath, "error", err)
-			outPath = localPath
+			c.File(localPath)
+		} else if !wrote {
+			c.Header("Cache-Control", "public, max-age=31536000")
+			c.File(localPath)
 		}
-	} else {
-		state.ImageCache.Touch(localPath)
+		return
 	}
 
+	state.ImageCache.Touch(localPath)
 	c.Header("Cache-Control", "public, max-age=31536000")
-	c.File(outPath)
+	c.File(localPath)
 }
 
 func resizeImage(srcPath, dstPath string, maxW, maxH, quality int, format imaging.Format) error {
@@ -512,6 +511,41 @@ func resizeImage(srcPath, dstPath string, maxW, maxH, quality int, format imagin
 		opts = append(opts, imaging.JPEGQuality(quality))
 	}
 	return imaging.Encode(f, out, format, opts...)
+}
+
+func writeResizedImage(w io.Writer, srcPath string, maxW, maxH, quality int, format imaging.Format, beforeWrite func()) (bool, error) {
+	srcImg, err := imaging.Open(srcPath)
+	if err != nil {
+		return false, err
+	}
+	bounds := srcImg.Bounds()
+	sw, sh := bounds.Dx(), bounds.Dy()
+
+	var out image.Image
+	switch {
+	case maxW > 0 && maxH > 0:
+		out = imaging.Fit(srcImg, maxW, maxH, imaging.Lanczos)
+	case maxW > 0:
+		out = imaging.Resize(srcImg, maxW, 0, imaging.Lanczos)
+	case maxH > 0:
+		out = imaging.Resize(srcImg, 0, maxH, imaging.Lanczos)
+	default:
+		return false, nil
+	}
+
+	ob := out.Bounds()
+	if ob.Dx() >= sw && ob.Dy() >= sh {
+		return false, nil
+	}
+
+	opts := []imaging.EncodeOption{}
+	if format == imaging.JPEG {
+		opts = append(opts, imaging.JPEGQuality(quality))
+	}
+	if beforeWrite != nil {
+		beforeWrite()
+	}
+	return true, imaging.Encode(w, out, format, opts...)
 }
 
 func copyFile(src, dst string) error {
