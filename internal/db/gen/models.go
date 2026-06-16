@@ -18,6 +18,50 @@ type AccessToken struct {
 	CreatedAt  pgtype.Timestamp `json:"created_at"`
 }
 
+type GatewayDailyStat struct {
+	ID            int64              `json:"id"`
+	Day           pgtype.Date        `json:"day"`
+	Tag           string             `json:"tag"`
+	SourceID      string             `json:"source_id"`
+	Requests      int64              `json:"requests"`
+	Redirects302  int64              `json:"redirects302"`
+	Status4xx     int64              `json:"status4xx"`
+	Status5xx     int64              `json:"status5xx"`
+	BytesIn       int64              `json:"bytes_in"`
+	BytesOut      int64              `json:"bytes_out"`
+	LatencyMsSum  int64              `json:"latency_ms_sum"`
+	LatencyMsMax  int64              `json:"latency_ms_max"`
+	LatencyMsMin  int64              `json:"latency_ms_min"`
+	LastUpdatedAt pgtype.Timestamptz `json:"last_updated_at"`
+}
+
+type GatewayRequestLog struct {
+	ID               int64              `json:"id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	Tag              string             `json:"tag"`
+	SourceID         string             `json:"source_id"`
+	ClientIp         string             `json:"client_ip"`
+	Method           string             `json:"method"`
+	Path             string             `json:"path"`
+	Query            string             `json:"query"`
+	Status           int32              `json:"status"`
+	LatencyMs        int64              `json:"latency_ms"`
+	BytesIn          int64              `json:"bytes_in"`
+	BytesOut         int64              `json:"bytes_out"`
+	EmbyUserID       string             `json:"emby_user_id"`
+	EmbyUserName     string             `json:"emby_user_name"`
+	RedirectBackend  string             `json:"redirect_backend"`
+	RedirectSource   string             `json:"redirect_source"`
+	RedirectLocation string             `json:"redirect_location"`
+	RedirectTrace    string             `json:"redirect_trace"`
+	ObjectKey        string             `json:"object_key"`
+	RouteID          string             `json:"route_id"`
+	PoolID           string             `json:"pool_id"`
+	UserAgent        string             `json:"user_agent"`
+	Referer          string             `json:"referer"`
+	Headers          string             `json:"headers"`
+}
+
 type TaskRun struct {
 	ID          int64              `json:"id"`
 	Kind        string             `json:"kind"`

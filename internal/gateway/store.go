@@ -7,16 +7,19 @@ import (
 	"strings"
 	"time"
 
+	dbgen "fyms/internal/db/gen"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	queries *dbgen.Queries
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: pool, queries: dbgen.New(pool)}
 }
 
 func (s *Store) Pool() *pgxpool.Pool {
@@ -24,8 +27,7 @@ func (s *Store) Pool() *pgxpool.Pool {
 }
 
 func (s *Store) LoadConfig(ctx context.Context) (*GatewayConfig, error) {
-	var raw []byte
-	err := s.pool.QueryRow(ctx, `SELECT value FROM gateway_config WHERE key = 'main'`).Scan(&raw)
+	raw, err := s.queries.GetGatewayConfig(ctx)
 	if err != nil {
 		return DefaultGatewayConfig(), nil
 	}
@@ -41,11 +43,7 @@ func (s *Store) SaveConfig(ctx context.Context, cfg *GatewayConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal gateway config: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO gateway_config (key, value, updated_at) VALUES ('main', $1, NOW())
-		ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
-	`, raw)
-	return err
+	return s.queries.UpsertGatewayConfig(ctx, raw)
 }
 
 // Request log operations
@@ -117,53 +115,35 @@ func (s *Store) QueryRequestLogs(ctx context.Context, p LogQueryParams) ([]Reque
 	if p.Limit <= 0 {
 		p.Limit = 50
 	}
-	where := "WHERE 1=1"
-	args := []any{}
-	n := 1
-	if p.Tag != "" {
-		where += fmt.Sprintf(" AND tag = $%d", n)
-		args = append(args, p.Tag)
-		n++
-	}
-	if p.SourceID != "" {
-		where += fmt.Sprintf(" AND source_id = $%d", n)
-		args = append(args, p.SourceID)
-		n++
-	}
-	if p.Status > 0 {
-		where += fmt.Sprintf(" AND status = $%d", n)
-		args = append(args, p.Status)
-		n++
-	}
 
-	var total int64
-	countArgs := make([]any, len(args))
-	copy(countArgs, args)
-	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM gateway_request_logs "+where, countArgs...).Scan(&total)
+	countParams := dbgen.CountGatewayRequestLogsParams{
+		Column1:  p.Tag != "",
+		Tag:      p.Tag,
+		Column3:  p.SourceID != "",
+		SourceID: p.SourceID,
+		Column5:  p.Status > 0,
+		Status:   int32(p.Status),
+	}
+	total, err := s.queries.CountGatewayRequestLogs(ctx, countParams)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	query := fmt.Sprintf("SELECT id,created_at,tag,source_id,client_ip,method,path,query,status,latency_ms,bytes_in,bytes_out,emby_user_id,emby_user_name,redirect_backend,redirect_source,redirect_location,redirect_trace,object_key,route_id,pool_id,user_agent,referer,headers FROM gateway_request_logs %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d", where, n, n+1)
-	args = append(args, p.Limit, p.Offset)
-
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.queries.ListGatewayRequestLogs(ctx, dbgen.ListGatewayRequestLogsParams{
+		Column1:  p.Tag != "",
+		Tag:      p.Tag,
+		Column3:  p.SourceID != "",
+		SourceID: p.SourceID,
+		Column5:  p.Status > 0,
+		Status:   int32(p.Status),
+		Limit:    int32(p.Limit),
+		Offset:   int32(p.Offset),
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-
-	var results []RequestLog
-	for rows.Next() {
-		var l RequestLog
-		err := rows.Scan(&l.ID, &l.CreatedAt, &l.Tag, &l.SourceID, &l.ClientIP, &l.Method, &l.Path, &l.Query,
-			&l.Status, &l.LatencyMs, &l.BytesIn, &l.BytesOut, &l.EmbyUserID, &l.EmbyUserName,
-			&l.RedirectBackend, &l.RedirectSource, &l.RedirectLocation, &l.RedirectTrace,
-			&l.ObjectKey, &l.RouteID, &l.PoolID, &l.UserAgent, &l.Referer, &l.Headers)
-		if err != nil {
-			return nil, 0, err
-		}
-		results = append(results, l)
+	results := make([]RequestLog, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, mapGatewayRequestLog(row))
 	}
 	return results, total, nil
 }
@@ -188,53 +168,37 @@ type DailyStat struct {
 }
 
 func (s *Store) UpsertDailyStat(ctx context.Context, stat DailyStat) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO gateway_daily_stats (day, tag, source_id, requests, redirects302, status4xx, status5xx, bytes_in, bytes_out, latency_ms_sum, latency_ms_max, latency_ms_min, last_updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
-		ON CONFLICT (day, tag, source_id) DO UPDATE SET
-			requests = gateway_daily_stats.requests + EXCLUDED.requests,
-			redirects302 = gateway_daily_stats.redirects302 + EXCLUDED.redirects302,
-			status4xx = gateway_daily_stats.status4xx + EXCLUDED.status4xx,
-			status5xx = gateway_daily_stats.status5xx + EXCLUDED.status5xx,
-			bytes_in = gateway_daily_stats.bytes_in + EXCLUDED.bytes_in,
-			bytes_out = gateway_daily_stats.bytes_out + EXCLUDED.bytes_out,
-			latency_ms_sum = gateway_daily_stats.latency_ms_sum + EXCLUDED.latency_ms_sum,
-			latency_ms_max = GREATEST(gateway_daily_stats.latency_ms_max, EXCLUDED.latency_ms_max),
-			latency_ms_min = LEAST(gateway_daily_stats.latency_ms_min, EXCLUDED.latency_ms_min),
-			last_updated_at = NOW()
-	`, stat.Day, stat.Tag, stat.SourceID, stat.Requests, stat.Redirects302, stat.Status4xx, stat.Status5xx, stat.BytesIn, stat.BytesOut, stat.LatencyMsSum, stat.LatencyMsMax, stat.LatencyMsMin)
-	return err
+	return s.queries.UpsertGatewayDailyStat(ctx, dbgen.UpsertGatewayDailyStatParams{
+		Day:          pgtype.Date{Time: stat.Day, Valid: true},
+		Tag:          stat.Tag,
+		SourceID:     stat.SourceID,
+		Requests:     stat.Requests,
+		Redirects302: stat.Redirects302,
+		Status4xx:    stat.Status4xx,
+		Status5xx:    stat.Status5xx,
+		BytesIn:      stat.BytesIn,
+		BytesOut:     stat.BytesOut,
+		LatencyMsSum: stat.LatencyMsSum,
+		LatencyMsMax: stat.LatencyMsMax,
+		LatencyMsMin: stat.LatencyMsMin,
+	})
 }
 
 func (s *Store) QueryDailyStats(ctx context.Context, sourceID string, days int) ([]DailyStat, error) {
 	if days <= 0 {
 		days = 30
 	}
-	query := `SELECT id,day,tag,source_id,requests,redirects302,status4xx,status5xx,bytes_in,bytes_out,latency_ms_sum,latency_ms_max,latency_ms_min,last_updated_at
-		FROM gateway_daily_stats WHERE day >= NOW() - INTERVAL '1 day' * $1`
-	args := []any{days}
-	if sourceID != "" {
-		query += " AND source_id = $2"
-		args = append(args, sourceID)
-	}
-	query += " ORDER BY day ASC"
-
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.queries.ListGatewayDailyStats(ctx, dbgen.ListGatewayDailyStatsParams{
+		Column1:  int32(days),
+		Column2:  sourceID != "",
+		SourceID: sourceID,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []DailyStat
-	for rows.Next() {
-		var d DailyStat
-		err := rows.Scan(&d.ID, &d.Day, &d.Tag, &d.SourceID, &d.Requests, &d.Redirects302,
-			&d.Status4xx, &d.Status5xx, &d.BytesIn, &d.BytesOut, &d.LatencyMsSum,
-			&d.LatencyMsMax, &d.LatencyMsMin, &d.LastUpdatedAt)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, d)
+	results := make([]DailyStat, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, mapGatewayDailyStat(row))
 	}
 	return results, nil
 }
@@ -257,62 +221,41 @@ func (s *Store) GetRedirectSummary(ctx context.Context, sourceID string, hours i
 	if hours <= 0 {
 		hours = 24
 	}
-	interval := fmt.Sprintf("%d hours", hours)
-
 	summary := &RedirectSummary{ByBackend: map[string]int64{}}
-
-	// Total
-	baseWhere := fmt.Sprintf("WHERE tag = 'proxy' AND status = 302 AND redirect_backend <> '' AND created_at >= NOW() - INTERVAL '%s'", interval)
-	if sourceID != "" {
-		baseWhere += fmt.Sprintf(" AND source_id = '%s'", sourceID)
+	params := dbgen.CountGatewayRedirectsParams{
+		Column1:  int32(hours),
+		Column2:  sourceID != "",
+		SourceID: sourceID,
 	}
 
-	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM gateway_request_logs "+baseWhere).Scan(&summary.Total)
+	var err error
+	summary.Total, err = s.queries.CountGatewayRedirects(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 
-	// By backend
-	rows, err := s.pool.Query(ctx, fmt.Sprintf("SELECT redirect_backend, COUNT(*) FROM gateway_request_logs %s GROUP BY redirect_backend ORDER BY COUNT(*) DESC", baseWhere))
+	byBackend, err := s.queries.CountGatewayRedirectsByBackend(ctx, dbgen.CountGatewayRedirectsByBackendParams(params))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var k string
-		var c int64
-		if err := rows.Scan(&k, &c); err != nil {
-			return nil, err
-		}
-		summary.ByBackend[k] = c
+	for _, row := range byBackend {
+		summary.ByBackend[row.RedirectBackend] = row.Count
 	}
 
-	// Top users
-	rows2, err := s.pool.Query(ctx, fmt.Sprintf("SELECT COALESCE(NULLIF(emby_user_name,''), emby_user_id), COUNT(*) FROM gateway_request_logs %s AND emby_user_id <> '' GROUP BY 1 ORDER BY 2 DESC LIMIT 10", baseWhere))
+	topUsers, err := s.queries.ListGatewayRedirectTopUsers(ctx, dbgen.ListGatewayRedirectTopUsersParams(params))
 	if err != nil {
 		return nil, err
 	}
-	defer rows2.Close()
-	for rows2.Next() {
-		var e TopEntry
-		if err := rows2.Scan(&e.Key, &e.Count); err != nil {
-			return nil, err
-		}
-		summary.TopUsers = append(summary.TopUsers, e)
+	for _, row := range topUsers {
+		summary.TopUsers = append(summary.TopUsers, TopEntry{Key: row.Key, Count: row.Count})
 	}
 
-	// Top IPs
-	rows3, err := s.pool.Query(ctx, fmt.Sprintf("SELECT client_ip, COUNT(*) FROM gateway_request_logs %s GROUP BY client_ip ORDER BY 2 DESC LIMIT 10", baseWhere))
+	topIPs, err := s.queries.ListGatewayRedirectTopIPs(ctx, dbgen.ListGatewayRedirectTopIPsParams(params))
 	if err != nil {
 		return nil, err
 	}
-	defer rows3.Close()
-	for rows3.Next() {
-		var e TopEntry
-		if err := rows3.Scan(&e.Key, &e.Count); err != nil {
-			return nil, err
-		}
-		summary.TopIPs = append(summary.TopIPs, e)
+	for _, row := range topIPs {
+		summary.TopIPs = append(summary.TopIPs, TopEntry{Key: row.Key, Count: row.Count})
 	}
 
 	return summary, nil
@@ -530,20 +473,80 @@ func formatOptionalTime(t *time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+func mapGatewayRequestLog(row dbgen.GatewayRequestLog) RequestLog {
+	return RequestLog{
+		ID:               row.ID,
+		CreatedAt:        timeFromTimestamptz(row.CreatedAt),
+		Tag:              row.Tag,
+		SourceID:         row.SourceID,
+		ClientIP:         row.ClientIp,
+		Method:           row.Method,
+		Path:             row.Path,
+		Query:            row.Query,
+		Status:           int(row.Status),
+		LatencyMs:        row.LatencyMs,
+		BytesIn:          row.BytesIn,
+		BytesOut:         row.BytesOut,
+		EmbyUserID:       row.EmbyUserID,
+		EmbyUserName:     row.EmbyUserName,
+		RedirectBackend:  row.RedirectBackend,
+		RedirectSource:   row.RedirectSource,
+		RedirectLocation: row.RedirectLocation,
+		RedirectTrace:    row.RedirectTrace,
+		ObjectKey:        row.ObjectKey,
+		RouteID:          row.RouteID,
+		PoolID:           row.PoolID,
+		UserAgent:        row.UserAgent,
+		Referer:          row.Referer,
+		Headers:          row.Headers,
+	}
+}
+
+func mapGatewayDailyStat(row dbgen.GatewayDailyStat) DailyStat {
+	return DailyStat{
+		ID:            row.ID,
+		Day:           timeFromDate(row.Day),
+		Tag:           row.Tag,
+		SourceID:      row.SourceID,
+		Requests:      row.Requests,
+		Redirects302:  row.Redirects302,
+		Status4xx:     row.Status4xx,
+		Status5xx:     row.Status5xx,
+		BytesIn:       row.BytesIn,
+		BytesOut:      row.BytesOut,
+		LatencyMsSum:  row.LatencyMsSum,
+		LatencyMsMax:  row.LatencyMsMax,
+		LatencyMsMin:  row.LatencyMsMin,
+		LastUpdatedAt: timeFromTimestamptz(row.LastUpdatedAt),
+	}
+}
+
+func timeFromDate(v pgtype.Date) time.Time {
+	if !v.Valid {
+		return time.Time{}
+	}
+	return v.Time
+}
+
+func timeFromTimestamptz(v pgtype.Timestamptz) time.Time {
+	if !v.Valid {
+		return time.Time{}
+	}
+	return v.Time
+}
+
 // Cleanup old data
 
 func (s *Store) CleanupOldLogs(ctx context.Context, retentionDays int) error {
 	if retentionDays <= 0 {
 		retentionDays = 7
 	}
-	_, err := s.pool.Exec(ctx, fmt.Sprintf("DELETE FROM gateway_request_logs WHERE created_at < NOW() - INTERVAL '%d days'", retentionDays))
-	return err
+	return s.queries.CleanupOldGatewayLogs(ctx, int32(retentionDays))
 }
 
 func (s *Store) CleanupOldStats(ctx context.Context, retentionDays int) error {
 	if retentionDays <= 0 {
 		retentionDays = 90
 	}
-	_, err := s.pool.Exec(ctx, fmt.Sprintf("DELETE FROM gateway_daily_stats WHERE day < NOW() - INTERVAL '%d days'", retentionDays))
-	return err
+	return s.queries.CleanupOldGatewayStats(ctx, int32(retentionDays))
 }
