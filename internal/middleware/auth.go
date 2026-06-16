@@ -12,9 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
@@ -123,6 +123,7 @@ func extractToken(c *gin.Context) (string, AuthInfo) {
 
 func validateToken(ctx context.Context, pool *pgxpool.Pool, cache *services.CacheService, sm *services.SessionManager, token string, authInfo *AuthInfo) *AuthUser {
 	cacheKey := fmt.Sprintf("auth:%s", token)
+	repo := repository.New(pool)
 
 	var cached cachedAuth
 	if cache.GetJSON(ctx, cacheKey, &cached) {
@@ -137,30 +138,16 @@ func validateToken(ctx context.Context, pool *pgxpool.Pool, cache *services.Cach
 		return &AuthUser{ID: cached.ID, Name: cached.Name, IsAdmin: cached.IsAdmin}
 	}
 
-	var tokenRow struct {
-		UserID     uuid.UUID
-		DeviceID   string
-		DeviceName string
-		AppName    string
-		AppVersion string
-	}
-	err := pool.QueryRow(ctx,
-		"SELECT user_id, device_id, device_name, app_name, app_version FROM access_tokens WHERE token = $1",
-		token).Scan(&tokenRow.UserID, &tokenRow.DeviceID, &tokenRow.DeviceName, &tokenRow.AppName, &tokenRow.AppVersion)
-
-	if err == nil {
-		var userName string
-		var isAdmin, isDisabled bool
-		err := pool.QueryRow(ctx,
-			"SELECT name, is_admin, is_disabled FROM users WHERE id = $1",
-			tokenRow.UserID).Scan(&userName, &isAdmin, &isDisabled)
-		if err != nil || isDisabled {
+	tokenRow, err := repo.Sessions.GetAccessToken(ctx, token)
+	if err == nil && tokenRow != nil {
+		user, err := repo.Users.GetUserByID(ctx, tokenRow.UserID)
+		if err != nil || user == nil || user.IsDisabled {
 			return nil
 		}
 
-		userID := tokenRow.UserID.String()
+		userID := user.ID.String()
 		ca := cachedAuth{
-			ID: userID, Name: userName, IsAdmin: isAdmin,
+			ID: userID, Name: user.Name, IsAdmin: user.IsAdmin,
 			DeviceID: &tokenRow.DeviceID, DeviceName: &tokenRow.DeviceName, AppName: &tokenRow.AppName,
 		}
 		cache.SetJSON(ctx, cacheKey, ca, 5*time.Minute)
@@ -169,12 +156,12 @@ func validateToken(ctx context.Context, pool *pgxpool.Pool, cache *services.Cach
 		deviceName := strOr(authInfo.Device, &tokenRow.DeviceName, tokenRow.DeviceName)
 		appName := strOr(authInfo.Client, &tokenRow.AppName, tokenRow.AppName)
 		version := strOr(authInfo.Version, &tokenRow.AppVersion, tokenRow.AppVersion)
-		sm.UpdateSession(userID, userName, deviceID, deviceName, appName, version, "")
+		sm.UpdateSession(userID, user.Name, deviceID, deviceName, appName, version, "")
 
-		return &AuthUser{ID: userID, Name: userName, IsAdmin: isAdmin}
+		return &AuthUser{ID: userID, Name: user.Name, IsAdmin: user.IsAdmin}
 	}
 
-	if err != pgx.ErrNoRows {
+	if err != nil {
 		slog.Error("Error checking access token", "error", err)
 	}
 
@@ -183,18 +170,22 @@ func validateToken(ctx context.Context, pool *pgxpool.Pool, cache *services.Cach
 	if v, ok := cache.Get(ctx, apiCacheKey); ok {
 		apiKeyID = v
 	} else {
-		var kid uuid.UUID
-		err := pool.QueryRow(ctx, "SELECT id FROM api_keys WHERE key = $1", token).Scan(&kid)
+		kid, err := repo.APIKeys.GetIDByKey(ctx, token)
 		if err == nil {
-			apiKeyID = kid.String()
-			cache.Set(ctx, apiCacheKey, apiKeyID, 10*time.Minute)
+			if kid != nil {
+				apiKeyID = kid.String()
+				cache.Set(ctx, apiCacheKey, apiKeyID, 10*time.Minute)
+			}
+		} else {
+			slog.Error("Error checking api key", "error", err)
 		}
 	}
 
 	if apiKeyID != "" {
 		go func() {
-			pool.Exec(context.Background(),
-				"UPDATE api_keys SET last_used_at = NOW() WHERE id = $1::uuid", apiKeyID)
+			if id, err := uuid.Parse(apiKeyID); err == nil {
+				_ = repo.APIKeys.TouchLastUsed(context.Background(), id)
+			}
 		}()
 
 		apiUser := AuthUser{

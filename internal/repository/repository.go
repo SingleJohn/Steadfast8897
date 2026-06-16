@@ -13,6 +13,7 @@ type Repository struct {
 	TaskRuns     *TaskRunRepository
 	ScanIngest   *ScanIngestRepository
 	ItemHelpers  *ItemHelperRepository
+	APIKeys      *APIKeyRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -27,5 +28,6 @@ func New(pool *pgxpool.Pool) *Repository {
 		TaskRuns:     NewTaskRunRepository(pool),
 		ScanIngest:   NewScanIngestRepository(pool),
 		ItemHelpers:  NewItemHelperRepository(pool),
+		APIKeys:      NewAPIKeyRepository(pool),
 	}
 }
