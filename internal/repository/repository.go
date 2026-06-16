@@ -14,6 +14,7 @@ type Repository struct {
 	ScanIngest   *ScanIngestRepository
 	ItemHelpers  *ItemHelperRepository
 	APIKeys      *APIKeyRepository
+	ImageLookup  *ImageLookupRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -29,5 +30,6 @@ func New(pool *pgxpool.Pool) *Repository {
 		ScanIngest:   NewScanIngestRepository(pool),
 		ItemHelpers:  NewItemHelperRepository(pool),
 		APIKeys:      NewAPIKeyRepository(pool),
+		ImageLookup:  NewImageLookupRepository(pool),
 	}
 }

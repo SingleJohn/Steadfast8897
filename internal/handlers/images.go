@@ -228,12 +228,13 @@ func serveImage(c *gin.Context, state *AppState) {
 	var primaryPath, backdropPath *string
 	var itemType string
 	var castImageURL string
-	err = state.DB.QueryRow(ctx,
-		`SELECT primary_image_path, backdrop_image_path, type FROM items WHERE id = $1::uuid`,
-		*uid).Scan(&primaryPath, &backdropPath, &itemType)
-	if err != nil {
-		var libImgPath *string
-		lerr := state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&libImgPath)
+	itemInfo, err := state.Repo.ImageLookup.GetItemImageInfo(ctx, *uid)
+	if err == nil && itemInfo != nil {
+		primaryPath = itemInfo.PrimaryPath
+		backdropPath = itemInfo.BackdropPath
+		itemType = itemInfo.Type
+	} else {
+		libImgPath, lerr := state.Repo.ImageLookup.GetLibraryPrimaryImagePath(ctx, *uid)
 		if lerr != nil || libImgPath == nil || *libImgPath == "" {
 			// 演员图:itemId 可能是全局 persons.id(新)或 cast_members.id(旧/兜底)。
 			// Emby 客户端请求 GET /Items/{personId}/Images/{Primary|Backdrop},personId 不在 items 表。
@@ -247,10 +248,7 @@ func serveImage(c *gin.Context, state *AppState) {
 			} else if img, ok := models.GetPersonImagePath(ctx, state.DB, *uid); ok {
 				castImageURL = img
 			} else {
-				var imgURL *string
-				state.DB.QueryRow(ctx,
-					"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
-					*uid).Scan(&imgURL)
+				imgURL, _ := state.Repo.ImageLookup.GetCastImageURL(ctx, *uid)
 				if imgURL == nil || *imgURL == "" {
 					c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 					return
@@ -307,10 +305,7 @@ func serveImage(c *gin.Context, state *AppState) {
 	}
 
 	if sourcePath == "" && tag != "" {
-		var imgURL *string
-		err = state.DB.QueryRow(ctx,
-			`SELECT image_url FROM cast_members WHERE id = $1::uuid AND item_id = $2::uuid`,
-			tag, *uid).Scan(&imgURL)
+		imgURL, err := state.Repo.ImageLookup.GetCastImageURLByTagAndItem(ctx, tag, *uid)
 		if err == nil && imgURL != nil && *imgURL != "" {
 			sourcePath = *imgURL
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
@@ -319,10 +314,7 @@ func serveImage(c *gin.Context, state *AppState) {
 	}
 
 	if sourcePath == "" && itemType == "Person" {
-		var imgURL *string
-		err = state.DB.QueryRow(ctx,
-			`SELECT image_url FROM cast_members WHERE id = $1::uuid`,
-			*uid).Scan(&imgURL)
+		imgURL, err := state.Repo.ImageLookup.GetCastImageURL(ctx, *uid)
 		if err == nil && imgURL != nil && *imgURL != "" {
 			sourcePath = *imgURL
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
@@ -339,10 +331,7 @@ func serveImage(c *gin.Context, state *AppState) {
 		case "Backdrop", "Banner":
 			// extrafanart 多图:Backdrop/{index} index>=1 走 item_images;index 空/0 用主 backdrop。
 			if idx := queryInt(imageIndex); idx > 0 && imageType == "Backdrop" {
-				var extraPath *string
-				state.DB.QueryRow(ctx,
-					"SELECT path FROM item_images WHERE item_id = $1::uuid AND image_type = 'Backdrop' AND idx = $2",
-					*uid, idx).Scan(&extraPath)
+				extraPath, _ := state.Repo.ImageLookup.GetItemExtraImagePath(ctx, *uid, int32(idx))
 				if extraPath != nil && *extraPath != "" {
 					sourcePath = sanitizeImagePath(*extraPath)
 				}
@@ -361,17 +350,16 @@ func serveImage(c *gin.Context, state *AppState) {
 	// Fallback: if item has no image, try merged secondaries (merged_to_id → this item)
 	if (sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath))) && (itemType == "Movie" || itemType == "Series") {
 		var mergedPrimary, mergedBackdrop *string
-		state.DB.QueryRow(ctx,
-			`SELECT primary_image_path, backdrop_image_path
-			 FROM items WHERE merged_to_id = $1::uuid
-			   AND primary_image_path IS NOT NULL
-			 LIMIT 1`, *uid).Scan(&mergedPrimary, &mergedBackdrop)
+		if paths, err := state.Repo.ImageLookup.GetMergedSecondaryImagePaths(ctx, *uid); err == nil && paths != nil {
+			mergedPrimary = paths.PrimaryPath
+			mergedBackdrop = paths.BackdropPath
+		}
 		if mergedPrimary == nil || *mergedPrimary == "" {
 			// Also check if THIS item is a secondary — use primary's image
-			state.DB.QueryRow(ctx,
-				`SELECT p.primary_image_path, p.backdrop_image_path
-				 FROM items s JOIN items p ON p.id = s.merged_to_id
-				 WHERE s.id = $1::uuid AND p.primary_image_path IS NOT NULL`, *uid).Scan(&mergedPrimary, &mergedBackdrop)
+			if paths, err := state.Repo.ImageLookup.GetMergedPrimaryImagePaths(ctx, *uid); err == nil && paths != nil {
+				mergedPrimary = paths.PrimaryPath
+				mergedBackdrop = paths.BackdropPath
+			}
 		}
 		switch imageType {
 		case "Primary", "Thumb":
@@ -390,14 +378,17 @@ func serveImage(c *gin.Context, state *AppState) {
 	}
 
 	if (sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath))) && (itemType == "Episode" || itemType == "Season") {
-		var seriesID *string
-		state.DB.QueryRow(ctx, "SELECT COALESCE(series_id::text, parent_id::text) FROM items WHERE id = $1::uuid", *uid).Scan(&seriesID)
+		seriesID, _ := state.Repo.ImageLookup.GetEpisodeSeriesImageParentID(ctx, *uid)
 		if seriesID != nil && *seriesID != "" {
 			switch imageType {
 			case "Primary", "Thumb":
-				state.DB.QueryRow(ctx, "SELECT primary_image_path FROM items WHERE id = $1::uuid", *seriesID).Scan(&sourcePath)
+				if path, err := state.Repo.ImageLookup.GetItemPrimaryImagePath(ctx, *seriesID); err == nil && path != nil {
+					sourcePath = *path
+				}
 			case "Backdrop", "Banner":
-				state.DB.QueryRow(ctx, "SELECT backdrop_image_path FROM items WHERE id = $1::uuid", *seriesID).Scan(&sourcePath)
+				if path, err := state.Repo.ImageLookup.GetItemBackdropImagePath(ctx, *seriesID); err == nil && path != nil {
+					sourcePath = *path
+				}
 			}
 			sourcePath = sanitizeImagePath(sourcePath)
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
@@ -408,10 +399,7 @@ func serveImage(c *gin.Context, state *AppState) {
 	// Rust compatibility: if no image found from item, check cast_members by UUID
 	// (handles case where item exists but has no image, and itemId happens to also be a cast_member)
 	if sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath)) {
-		var castURL *string
-		state.DB.QueryRow(ctx,
-			"SELECT image_url FROM cast_members WHERE id = $1::uuid AND image_url IS NOT NULL LIMIT 1",
-			*uid).Scan(&castURL)
+		castURL, _ := state.Repo.ImageLookup.GetCastImageURL(ctx, *uid)
 		if castURL != nil && *castURL != "" {
 			sourcePath = *castURL
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
@@ -420,7 +408,9 @@ func serveImage(c *gin.Context, state *AppState) {
 	}
 
 	if sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath)) {
-		state.DB.QueryRow(ctx, "SELECT primary_image_path FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", *uid).Scan(&sourcePath)
+		if path, err := state.Repo.ImageLookup.GetLibraryPrimaryImagePath(ctx, *uid); err == nil && path != nil {
+			sourcePath = *path
+		}
 		sourcePath = sanitizeImagePath(sourcePath)
 		if sourcePath != "" {
 			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
