@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"fyms/internal/models"
+	"fyms/internal/services"
 )
 
 func getItemDeleteInfo(c *gin.Context) {
@@ -35,8 +37,8 @@ func getItemDeleteInfo(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"CanDelete":               true,
-		"CanDeleteFiles":          false,
-		"WillDeleteFiles":         false,
+		"CanDeleteFiles":          true,
+		"WillDeleteFiles":         true,
 		"NotAllowed":              false,
 		"NotDeletable":            false,
 		"IsBlocked":               false,
@@ -62,15 +64,38 @@ func deleteItemCompat(c *gin.Context) {
 		return
 	}
 
-	ct, err := state.DB.Exec(ctx, "DELETE FROM items WHERE id = $1::uuid", *resolved)
+	plan, err := services.BuildItemDeletePlan(ctx, state.DB, *resolved)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if ct.RowsAffected() == 0 {
+	if plan == nil {
 		c.Status(http.StatusNoContent)
 		return
 	}
+	result, err := services.ExecuteItemDeletePlan(plan)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	deleted, err := services.DeleteItemRecord(ctx, state.DB, *resolved)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if !deleted {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	slog.Info("[DeleteItem] deleted item",
+		"itemId", plan.ItemID,
+		"name", plan.ItemName,
+		"type", plan.ItemType,
+		"files", result.DeletedFiles,
+		"missingFiles", result.MissingFiles,
+		"dirs", result.DeletedDirs,
+		"skippedPaths", result.SkippedPaths)
 
 	invalidateViewsCache(c, state)
 	c.Status(http.StatusNoContent)

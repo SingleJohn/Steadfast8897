@@ -116,3 +116,7 @@ func cleanupEmptyParents(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	return nil
 }
+
+func CleanupEmptyParents(ctx context.Context, pool *pgxpool.Pool) error {
+	return cleanupEmptyParents(ctx, pool)
+}
