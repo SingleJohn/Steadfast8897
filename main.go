@@ -24,6 +24,7 @@ import (
 	"fyms/internal/gateway"
 	"fyms/internal/handlers"
 	"fyms/internal/middleware"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
@@ -96,6 +97,7 @@ func main() {
 	}
 
 	cache := services.NewCacheService(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword)
+	repo := repository.New(pool)
 	services.SetScrapeCache(cache)
 	// Phase 2: 所有 TMDB 调用点共享同一个 rate.Limiter(默认 3 rps, burst 5),
 	// 通过 TmdbClient.tmdbGet 自动 Wait,防止 worker/autoscrape/backfill/手动 Identify 叠加超频。
@@ -117,12 +119,11 @@ func main() {
 	refreshScheduler := services.NewRefreshScheduler(pool, refreshQueue)
 	fileWatcher := services.NewFileWatcher(ingestWorker, refreshScheduler)
 
-	var proxyURL *string
-	pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'tmdb_proxy'").Scan(&proxyURL)
+	proxyURL, hasProxyURL, _ := repo.SystemConfig.GetString(context.Background(), "tmdb_proxy")
 
 	var httpClient *http.Client
-	if proxyURL != nil && *proxyURL != "" {
-		proxyURLParsed, err := url.Parse(*proxyURL)
+	if hasProxyURL && proxyURL != "" {
+		proxyURLParsed, err := url.Parse(proxyURL)
 		if err == nil {
 			httpClient = &http.Client{
 				Timeout: 15 * time.Second,
@@ -130,7 +131,7 @@ func main() {
 					Proxy: http.ProxyURL(proxyURLParsed),
 				},
 			}
-			slog.Info("HTTP client configured with proxy", "proxy", *proxyURL)
+			slog.Info("HTTP client configured with proxy", "proxy", proxyURL)
 		} else {
 			httpClient = &http.Client{Timeout: 15 * time.Second}
 		}
@@ -155,9 +156,7 @@ func main() {
 	// 启动时从 system_config 加载"本地原图直读"开关(默认 false=直读)。
 	// postConfiguration 保存后会调 imageCache.SetCopyLocal 实时生效。
 	{
-		var copyLocalVal *string
-		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'image_cache_copy_local'").Scan(&copyLocalVal)
-		copyLocal := copyLocalVal != nil && *copyLocalVal == "true"
+		copyLocal := repo.SystemConfig.GetBoolOrDefault(context.Background(), "image_cache_copy_local", false)
 		imageCache.SetCopyLocal(copyLocal)
 		dto.SetLocalImageDirectRead(!copyLocal)
 	}
@@ -165,15 +164,15 @@ func main() {
 	// 启动时加载 strm item.Path 模式(默认 'strm'=返回 .strm 文件路径,对齐 Emby)。
 	// postConfiguration 保存后会调 dto.SetStrmItemPathMode 实时生效。
 	{
-		var strmPathMode *string
-		pool.QueryRow(context.Background(), "SELECT value FROM system_config WHERE key = 'strm_item_path_mode'").Scan(&strmPathMode)
-		if strmPathMode != nil {
-			dto.SetStrmItemPathMode(*strmPathMode)
+		strmPathMode, ok, _ := repo.SystemConfig.GetString(context.Background(), "strm_item_path_mode")
+		if ok {
+			dto.SetStrmItemPathMode(strmPathMode)
 		}
 	}
 
 	state := &handlers.AppState{
 		DB:             pool,
+		Repo:           repo,
 		Cache:          cache,
 		Config:         cfg,
 		SessionManager: sessionManager,
@@ -216,10 +215,10 @@ func main() {
 	// 任务链：scan → probe → backfill(image)。默认关闭，DB 里可切换。
 	chainEngine := taskcenter.NewChainEngine(taskRegistry, nil)
 	chainCtx := context.Background()
-	if enabled := services.ReadBoolSystemConfig(chainCtx, pool, "task_chain_enabled", false); enabled {
+	if enabled := repo.SystemConfig.GetBoolOrDefault(chainCtx, "task_chain_enabled", false); enabled {
 		chainEngine.SetEnabled(true)
 	}
-	if raw := services.ReadSystemConfigValue(chainCtx, pool, "task_chain_rules"); raw != "" {
+	if raw := repo.SystemConfig.GetStringOrDefault(chainCtx, "task_chain_rules", ""); raw != "" {
 		if err := chainEngine.LoadRulesJSON(raw); err != nil {
 			slog.Warn("task chain: failed to load persisted rules, using defaults", "error", err)
 		}

@@ -8,6 +8,7 @@ import (
 
 	"fyms/internal/config"
 	"fyms/internal/gateway"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
@@ -16,6 +17,7 @@ import (
 
 type AppState struct {
 	DB             *pgxpool.Pool
+	Repo           *repository.Repository
 	Cache          *services.CacheService
 	Config         *config.AppConfig
 	SessionManager *services.SessionManager
