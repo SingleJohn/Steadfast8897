@@ -127,6 +127,10 @@ func findBdmvMovieRoot(filePath string) string {
 // 真·多版本(同名不同清晰度,如 X.1080p / X.2160p)解析后片名相同 → 返回 false 维持合并;
 // 即便此处误拆,后续 TMDB 识别到相同 tmdb_id 时 MergeMultiVersionItems 仍会自动合并回多版本。
 func dirVideosAreDistinctMovies(videoPaths []string) bool {
+	if catalogs, ok := dirVideoCatalogNumbers(videoPaths); ok {
+		return len(catalogs) >= 2
+	}
+
 	titles := make(map[string]struct{}, len(videoPaths))
 	for _, p := range videoPaths {
 		title := strings.ToLower(strings.TrimSpace(ParseMovieName(filepath.Base(p)).Name))
@@ -139,6 +143,21 @@ func dirVideosAreDistinctMovies(videoPaths []string) bool {
 		}
 	}
 	return false
+}
+
+func dirVideoCatalogNumbers(videoPaths []string) (map[string]struct{}, bool) {
+	if len(videoPaths) == 0 {
+		return nil, false
+	}
+	catalogs := make(map[string]struct{}, len(videoPaths))
+	for _, p := range videoPaths {
+		num := ExtractCatalogNumber(filepath.Base(p))
+		if num == "" {
+			return nil, false
+		}
+		catalogs[num] = struct{}{}
+	}
+	return catalogs, true
 }
 
 // resolveMovieDirTarget 把一个视频文件的「实时事件」解析成应入库的电影单元,
