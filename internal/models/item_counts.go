@@ -87,37 +87,17 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 		return nil, err
 	}
 
-	itemTypes := []string{"Movie"}
-	if libType == "tvshows" {
-		itemTypes = []string{"Series"}
-	} else if libType == "mixed" {
-		itemTypes = []string{"Movie", "Series"}
+	var query string
+	switch libType {
+	case "tvshows":
+		query = latestSeriesItemsQuery
+	case "mixed":
+		query = latestMixedItemsQuery
+	default:
+		query = latestMovieItemsQuery
 	}
 
-	rows, err := pool.Query(ctx,
-		`WITH filtered AS (
-			SELECT *, CASE WHEN type = 'Movie' THEN COALESCE(merged_to_id::text, id::text) ELSE id::text END AS merge_group_key
-			FROM items
-			WHERE library_id = $1::uuid AND type = ANY($2::text[])
-		), ranked AS (
-			SELECT filtered.*,
-				ROW_NUMBER() OVER (
-					PARTITION BY merge_group_key
-					ORDER BY
-						CASE WHEN filtered.merged_to_id IS NULL THEN 0 ELSE 1 END,
-						CASE WHEN filtered.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
-						CASE WHEN filtered.primary_image_path IS NOT NULL AND filtered.primary_image_path <> '' THEN 0 ELSE 1 END,
-						CASE WHEN filtered.overview IS NOT NULL AND filtered.overview <> '' THEN 0 ELSE 1 END,
-						filtered.created_at DESC,
-						filtered.id
-				) AS merge_row_num
-			FROM filtered
-		)
-		SELECT * FROM ranked
-		WHERE merge_row_num = 1
-		ORDER BY created_at DESC
-		LIMIT $3::bigint`,
-		libraryID, itemTypes, limit)
+	rows, err := pool.Query(ctx, query, libraryID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +105,71 @@ func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, l
 	items, _, err := scanItemRows(rows)
 	return items, err
 }
+
+const latestMovieRepresentativeWhere = `
+	i.library_id = $1::uuid
+	AND i.type = 'Movie'
+	AND NOT EXISTS (
+		SELECT 1
+		FROM items better
+		WHERE better.library_id = i.library_id
+			AND better.type = 'Movie'
+			AND COALESCE(better.merged_to_id, better.id) = COALESCE(i.merged_to_id, i.id)
+			AND (
+				CASE WHEN better.merged_to_id IS NULL THEN 0 ELSE 1 END,
+				CASE WHEN better.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
+				CASE WHEN better.primary_image_path IS NOT NULL AND better.primary_image_path <> '' THEN 0 ELSE 1 END,
+				CASE WHEN better.overview IS NOT NULL AND better.overview <> '' THEN 0 ELSE 1 END,
+				TIMESTAMP '9999-12-31' - better.created_at,
+				better.id
+			) < (
+				CASE WHEN i.merged_to_id IS NULL THEN 0 ELSE 1 END,
+				CASE WHEN i.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
+				CASE WHEN i.primary_image_path IS NOT NULL AND i.primary_image_path <> '' THEN 0 ELSE 1 END,
+				CASE WHEN i.overview IS NOT NULL AND i.overview <> '' THEN 0 ELSE 1 END,
+				TIMESTAMP '9999-12-31' - i.created_at,
+				i.id
+			)
+	)`
+
+const latestMovieItemsQuery = `
+	SELECT i.*
+	FROM items i
+	WHERE ` + latestMovieRepresentativeWhere + `
+	ORDER BY i.created_at DESC
+	LIMIT $2::bigint`
+
+const latestSeriesItemsQuery = `
+	SELECT i.*
+	FROM items i
+	WHERE i.library_id = $1::uuid
+		AND i.type = 'Series'
+	ORDER BY i.created_at DESC
+	LIMIT $2::bigint`
+
+const latestMixedItemsQuery = `
+	WITH movie_latest AS (
+		SELECT i.*
+		FROM items i
+		WHERE ` + latestMovieRepresentativeWhere + `
+		ORDER BY i.created_at DESC
+		LIMIT $2::bigint
+	), series_latest AS (
+		SELECT i.*
+		FROM items i
+		WHERE i.library_id = $1::uuid
+			AND i.type = 'Series'
+		ORDER BY i.created_at DESC
+		LIMIT $2::bigint
+	), latest AS (
+		SELECT * FROM movie_latest
+		UNION ALL
+		SELECT * FROM series_latest
+	)
+	SELECT *
+	FROM latest
+	ORDER BY created_at DESC
+	LIMIT $2::bigint`
 
 func GetMediaStreams(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]dto.StreamRow, error) {
 	rows, err := pool.Query(ctx,
