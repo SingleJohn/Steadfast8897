@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // personDBTX 同时被 *pgxpool.Pool 与 pgx.Tx 满足,使 link/propagate
@@ -121,38 +123,21 @@ func PropagateCastImagesToPersons(ctx context.Context, db personDBTX, itemID str
 // GetPersonImagePath 按 person id 取头像路径(image_path 优先;为空时回退到
 // 该 person 任一 cast_members.image_url)。serveImage 用它解析 /Items/{personId}/Images。
 func GetPersonImagePath(ctx context.Context, pool *pgxpool.Pool, personID string) (string, bool) {
-	var img *string
-	err := pool.QueryRow(ctx,
-		`SELECT COALESCE(NULLIF(p.image_path, ''),
-		        (SELECT image_url FROM cast_members
-		          WHERE person_id = p.id AND image_url IS NOT NULL AND image_url <> ''
-		          LIMIT 1))
-		   FROM persons p WHERE p.id = $1::uuid`,
-		personID).Scan(&img)
-	if err != nil || img == nil || *img == "" {
+	img, ok, err := repository.NewItemHelperRepository(pool).GetPersonImagePath(ctx, personID)
+	if err != nil || !ok {
 		return "", false
 	}
-	return *img, true
+	return img, true
 }
 
 // SetPersonImage 写入(并锁定)person 头像。上传接口用,全库同名条目随之生效。
 func SetPersonImage(ctx context.Context, pool *pgxpool.Pool, personID, imagePath string, locked bool) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE persons
-		    SET image_path = $1, image_locked = $2, updated_at = NOW()
-		  WHERE id = $3::uuid`,
-		imagePath, locked, personID)
-	return err
+	return repository.NewItemHelperRepository(pool).SetPersonImage(ctx, personID, imagePath, locked)
 }
 
 // ClearPersonImage 清除 person 头像并解锁。
 func ClearPersonImage(ctx context.Context, pool *pgxpool.Pool, personID string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE persons
-		    SET image_path = NULL, image_locked = false, updated_at = NOW()
-		  WHERE id = $1::uuid`,
-		personID)
-	return err
+	return repository.NewItemHelperRepository(pool).ClearPersonImage(ctx, personID)
 }
 
 // ListPersonsMissingImage 返回还没有头像且未锁定的 person(批量按名补头像用)。
@@ -186,43 +171,13 @@ func ListPersonsMissingImage(ctx context.Context, pool *pgxpool.Pool, limit int)
 // FillPersonImageIfUnlocked 给未锁定且当前无头像的 person 写 image_path(批量补,不锁定)。
 // 返回是否实际写入。
 func FillPersonImageIfUnlocked(ctx context.Context, pool *pgxpool.Pool, personID, imagePath string) (bool, error) {
-	tag, err := pool.Exec(ctx,
-		`UPDATE persons
-		    SET image_path = $1, updated_at = NOW()
-		  WHERE id = $2::uuid
-		    AND image_locked = false
-		    AND (image_path IS NULL OR image_path = '')`,
-		imagePath, personID)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+	return repository.NewItemHelperRepository(pool).FillPersonImageIfUnlocked(ctx, personID, imagePath)
 }
 
 // ListItemsForActorImageBackfill 返回有 tmdb_id 且仍有演员既无 per-item 头像
 // 也无全局头像的 Movie/Series id —— 批量 TMDB 补头像入队用。
 func ListItemsForActorImageBackfill(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT DISTINCT i.id::text
-		   FROM items i
-		   JOIN cast_members cm ON cm.item_id = i.id
-		   LEFT JOIN persons p ON p.id = cm.person_id
-		  WHERE i.type IN ('Movie','Series')
-		    AND i.tmdb_id IS NOT NULL AND i.tmdb_id > 0
-		    AND COALESCE(NULLIF(p.image_path,''), NULLIF(cm.image_url,'')) IS NULL`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return repository.NewItemHelperRepository(pool).ListItemsForActorImageBackfill(ctx)
 }
 
 // ActorImageStats 给前端展示头像覆盖情况。
@@ -236,23 +191,21 @@ type ActorImageStats struct {
 // GetActorImageStats 统计 persons 头像覆盖。
 func GetActorImageStats(ctx context.Context, pool *pgxpool.Pool) (ActorImageStats, error) {
 	var s ActorImageStats
-	err := pool.QueryRow(ctx,
-		`SELECT COUNT(*),
-		        COUNT(*) FILTER (WHERE image_path IS NOT NULL AND image_path <> ''),
-		        COUNT(*) FILTER (WHERE image_locked)
-		   FROM persons`).Scan(&s.Total, &s.WithImage, &s.Locked)
+	stats, err := repository.NewItemHelperRepository(pool).GetActorImageStats(ctx)
 	if err != nil {
 		return s, err
 	}
+	s.Total = stats.Total
+	s.WithImage = stats.WithImage
+	s.Locked = stats.Locked
 	s.Missing = s.Total - s.WithImage
 	return s, nil
 }
 
 // PersonExists 判断某 uuid 是否为 person(serveImage 区分 person/item 用)。
 func PersonExists(ctx context.Context, pool *pgxpool.Pool, id string) bool {
-	var exists bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM persons WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+	exists, err := repository.NewItemHelperRepository(pool).PersonExists(ctx, id)
+	if err != nil {
 		return false
 	}
 	return exists
@@ -337,29 +290,21 @@ func jsonbMapArg(v map[string]string) any {
 
 // GetPersonBackdropPath 取 person 背景图路径(serveImage 处理 Backdrop 用)。
 func GetPersonBackdropPath(ctx context.Context, pool *pgxpool.Pool, personID string) (string, bool) {
-	var img *string
-	if err := pool.QueryRow(ctx,
-		`SELECT backdrop_path FROM persons WHERE id = $1::uuid`, personID).Scan(&img); err != nil ||
-		img == nil || *img == "" {
+	img, ok, err := repository.NewItemHelperRepository(pool).GetPersonBackdropPath(ctx, personID)
+	if err != nil || !ok {
 		return "", false
 	}
-	return *img, true
+	return img, true
 }
 
 // SetPersonBackdrop 写入 person 背景图路径。
 func SetPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID, path string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE persons SET backdrop_path = $1, updated_at = NOW() WHERE id = $2::uuid`,
-		path, personID)
-	return err
+	return repository.NewItemHelperRepository(pool).SetPersonBackdrop(ctx, personID, path)
 }
 
 // ClearPersonBackdrop 清除 person 背景图路径。
 func ClearPersonBackdrop(ctx context.Context, pool *pgxpool.Pool, personID string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE persons SET backdrop_path = NULL, updated_at = NOW() WHERE id = $1::uuid`,
-		personID)
-	return err
+	return repository.NewItemHelperRepository(pool).ClearPersonBackdrop(ctx, personID)
 }
 
 type PersonListOptions struct {

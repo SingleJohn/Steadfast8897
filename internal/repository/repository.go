@@ -12,6 +12,7 @@ type Repository struct {
 	RefreshQueue *RefreshQueueRepository
 	TaskRuns     *TaskRunRepository
 	ScanIngest   *ScanIngestRepository
+	ItemHelpers  *ItemHelperRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -25,5 +26,6 @@ func New(pool *pgxpool.Pool) *Repository {
 		RefreshQueue: NewRefreshQueueRepository(pool),
 		TaskRuns:     NewTaskRunRepository(pool),
 		ScanIngest:   NewScanIngestRepository(pool),
+		ItemHelpers:  NewItemHelperRepository(pool),
 	}
 }

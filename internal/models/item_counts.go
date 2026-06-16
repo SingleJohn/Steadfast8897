@@ -7,13 +7,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/dto"
+	"fyms/internal/repository"
 )
 
 func GetChildCount(ctx context.Context, pool *pgxpool.Pool, parentID string) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid", parentID).Scan(&count)
-	return count, err
+	return repository.NewItemHelperRepository(pool).GetChildCount(ctx, parentID)
 }
 
 func GetLibraryDisplayItemCount(ctx context.Context, pool *pgxpool.Pool, libraryID string) (int64, error) {
@@ -28,14 +26,7 @@ func GetLibraryDisplayItemCount(ctx context.Context, pool *pgxpool.Pool, library
 }
 
 func GetRecursiveItemCount(ctx context.Context, pool *pgxpool.Pool, parentID string) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		`WITH RECURSIVE children AS (
-			SELECT id FROM items WHERE parent_id = $1::uuid
-			UNION ALL
-			SELECT i.id FROM items i JOIN children c ON i.parent_id = c.id
-		) SELECT COUNT(*) FROM children`, parentID).Scan(&count)
-	return count, err
+	return repository.NewItemHelperRepository(pool).GetRecursiveItemCount(ctx, parentID)
 }
 
 func GetUnplayedEpisodeCounts(ctx context.Context, pool *pgxpool.Pool, userID string, itemIDs []string, itemType string) (map[string]int64, error) {
@@ -80,9 +71,7 @@ func GetUnplayedEpisodeCounts(ctx context.Context, pool *pgxpool.Pool, userID st
 }
 
 func GetLatestItems(ctx context.Context, pool *pgxpool.Pool, libraryID string, limit int64) ([]dto.ItemRow, error) {
-	var libType string
-	err := pool.QueryRow(ctx,
-		"SELECT collection_type FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL", libraryID).Scan(&libType)
+	libType, err := repository.NewItemHelperRepository(pool).GetCollectionTypeByLibraryID(ctx, libraryID)
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}

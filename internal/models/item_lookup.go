@@ -5,10 +5,10 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/dto"
+	"fyms/internal/repository"
 )
 
 const singleItemSelect = `SELECT id, name, type, sort_name, NULL::text AS collection_type, overview,
@@ -40,25 +40,15 @@ func ResolveToUUID(ctx context.Context, pool *pgxpool.Pool, id string) (*string,
 		return &id, nil
 	}
 	if embyID, err := strconv.Atoi(id); err == nil {
-		var uid uuid.UUID
-		err := pool.QueryRow(ctx, "SELECT id FROM items WHERE emby_id = $1", embyID).Scan(&uid)
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		s := uid.String()
-		return &s, nil
+		return repository.NewItemHelperRepository(pool).ResolveItemUUIDByEmbyID(ctx, int32(embyID))
 	}
 	return nil, nil
 }
 
 func GetEmbyID(ctx context.Context, pool *pgxpool.Pool, uuidStr string) *int32 {
-	var eid int32
-	err := pool.QueryRow(ctx, "SELECT emby_id FROM items WHERE id = $1::uuid", uuidStr).Scan(&eid)
+	eid, err := repository.NewItemHelperRepository(pool).GetItemEmbyID(ctx, uuidStr)
 	if err != nil {
 		return nil
 	}
-	return &eid
+	return eid
 }
