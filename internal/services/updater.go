@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/config"
+	"fyms/internal/repository"
 )
 
 const (
@@ -950,22 +951,18 @@ func (u *Updater) getConfigValue(ctx context.Context, key string) string {
 	if u.pool == nil {
 		return ""
 	}
-	var val *string
-	if err := u.pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = $1", key).Scan(&val); err != nil || val == nil {
+	val, ok, err := repository.NewSystemConfigRepository(u.pool).GetString(ctx, key)
+	if err != nil || !ok {
 		return ""
 	}
-	return *val
+	return val
 }
 
 func (u *Updater) setConfigValue(ctx context.Context, key, value string) error {
 	if u.pool == nil {
 		return nil
 	}
-	_, err := u.pool.Exec(ctx,
-		`INSERT INTO system_config (key, value) VALUES ($1, $2)
-		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		key, value)
-	return err
+	return repository.NewSystemConfigRepository(u.pool).SetString(ctx, key, value)
 }
 
 func isUpdateTaskActive(status string) bool {

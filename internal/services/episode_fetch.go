@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // scrapeEpisodeMetadata 对已识别 tmdb_id 的 Series,遍历其 Season,从 TMDB 拉每季的
@@ -241,14 +243,11 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 
 // readEpisodeStillFetchEnabled 读 system_config.episode_still_fetch,默认 true。
 func readEpisodeStillFetchEnabled(ctx context.Context, pool *pgxpool.Pool) bool {
-	var val *string
-	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'episode_still_fetch'").Scan(&val); err != nil {
+	val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, "episode_still_fetch")
+	if err != nil || !ok {
 		return true
 	}
-	if val == nil {
-		return true
-	}
-	s := strings.ToLower(strings.TrimSpace(*val))
+	s := strings.ToLower(strings.TrimSpace(val))
 	if s == "" {
 		return true
 	}

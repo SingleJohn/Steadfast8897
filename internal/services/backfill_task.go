@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // BackfillStage 表示一个存量回填子任务。
@@ -32,15 +34,15 @@ var DefaultBackfillStages = []BackfillStage{
 
 // BackfillProgress 是 /Library/Backfill/Progress 返回的结构,保持字段稳定。
 type BackfillProgress struct {
-	Status       string        `json:"status"`        // idle / running / stopping / completed / stopped / error
-	Stage        BackfillStage `json:"stage"`         // 当前 stage(空串代表空闲)
-	Processed    int64         `json:"processed"`     // 当前 stage 已处理
-	Total        int64         `json:"total"`         // 当前 stage 总数
-	LastError    string        `json:"last_error"`    // 最近一次错误信息
-	StartedAt    *time.Time    `json:"started_at,omitempty"`
-	CompletedAt  *time.Time    `json:"completed_at,omitempty"`
-	LastRunAt    *time.Time    `json:"last_run_at,omitempty"` // 上次 completed / stopped 时间
-	Counters     map[string]int64 `json:"counters"`           // 各 stage 命中 / 改写计数
+	Status      string           `json:"status"`     // idle / running / stopping / completed / stopped / error
+	Stage       BackfillStage    `json:"stage"`      // 当前 stage(空串代表空闲)
+	Processed   int64            `json:"processed"`  // 当前 stage 已处理
+	Total       int64            `json:"total"`      // 当前 stage 总数
+	LastError   string           `json:"last_error"` // 最近一次错误信息
+	StartedAt   *time.Time       `json:"started_at,omitempty"`
+	CompletedAt *time.Time       `json:"completed_at,omitempty"`
+	LastRunAt   *time.Time       `json:"last_run_at,omitempty"` // 上次 completed / stopped 时间
+	Counters    map[string]int64 `json:"counters"`              // 各 stage 命中 / 改写计数
 }
 
 // BackfillTask 管理三个子任务的串行执行,提供 Start/Stop/Progress。
@@ -277,11 +279,11 @@ func readBackfillLastRunAt(ctx context.Context, pool *pgxpool.Pool) time.Time {
 }
 
 func readSystemConfigValue(ctx context.Context, pool *pgxpool.Pool, key string) string {
-	var val *string
-	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = $1", key).Scan(&val); err != nil || val == nil {
+	val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, key)
+	if err != nil || !ok {
 		return ""
 	}
-	return *val
+	return val
 }
 
 func readBoolSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, def bool) bool {
@@ -300,9 +302,5 @@ func readBoolSystemConfig(ctx context.Context, pool *pgxpool.Pool, key string, d
 }
 
 func setSystemConfigValue(ctx context.Context, pool *pgxpool.Pool, key, value string) error {
-	_, err := pool.Exec(ctx,
-		`INSERT INTO system_config (key, value) VALUES ($1, $2)
-		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		key, value)
-	return err
+	return repository.NewSystemConfigRepository(pool).SetString(ctx, key, value)
 }

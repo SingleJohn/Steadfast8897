@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // autoScrapeRunning 保证同一 library 同时只有一个 autoScrapeNewItems 扫表入队
@@ -26,9 +28,8 @@ var autoScrapeLastRun sync.Map // libraryID -> time.Time
 const autoScrapeCooldown = 30 * time.Second
 
 func autoScrapeEnabled(ctx context.Context, pool *pgxpool.Pool) bool {
-	var autoEnabled *string
-	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'auto_scrape_enabled'").Scan(&autoEnabled)
-	return autoEnabled != nil && *autoEnabled == "true"
+	autoEnabled, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, "auto_scrape_enabled")
+	return err == nil && ok && autoEnabled == "true"
 }
 
 // enqueueIdentifyIfEligible 把"新建即入队 identify"的资格判断集中到一处,与 autoScrape 的

@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // autoProbeHook 在扫描结束时,如果 probe_on_ingest 开关打开且有未探测的
@@ -37,8 +39,7 @@ func MaybeTriggerAutoProbe(ctx context.Context, pool *pgxpool.Pool) {
 		return
 	}
 
-	var enabled string
-	_ = pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'probe_on_ingest'").Scan(&enabled)
+	enabled, _, _ := repository.NewSystemConfigRepository(pool).GetString(ctx, "probe_on_ingest")
 	if enabled != "true" {
 		return
 	}

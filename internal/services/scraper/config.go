@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 const (
@@ -104,11 +106,11 @@ func LoadRuntimeConfig(ctx context.Context, pool *pgxpool.Pool) RuntimeConfig {
 }
 
 func loadConfigValue(ctx context.Context, pool *pgxpool.Pool, key string) string {
-	var val *string
-	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = $1", key).Scan(&val); err != nil || val == nil {
+	val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, key)
+	if err != nil || !ok {
 		return ""
 	}
-	return strings.TrimSpace(*val)
+	return strings.TrimSpace(val)
 }
 
 func normalizeFieldPriority(raw map[string][]string) map[string][]string {

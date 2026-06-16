@@ -13,17 +13,19 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
-	var rawKey *string
-	err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'tmdb_api_key'").Scan(&rawKey)
-	if err != nil || rawKey == nil || *rawKey == "" {
+	configRepo := repository.NewSystemConfigRepository(pool)
+	rawKey, ok, err := configRepo.GetString(ctx, "tmdb_api_key")
+	if err != nil || !ok || rawKey == "" {
 		return nil
 	}
 
 	var apiKeys []string
-	for _, k := range strings.Split(*rawKey, ",") {
+	for _, k := range strings.Split(rawKey, ",") {
 		k = strings.TrimSpace(k)
 		if k != "" {
 			apiKeys = append(apiKeys, k)
@@ -36,13 +38,11 @@ func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 	slog.Info("[TMDB] Loaded API key(s)", "count", len(apiKeys))
 
 	language := "zh-CN"
-	var langVal *string
-	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'tmdb_language'").Scan(&langVal); err == nil && langVal != nil && *langVal != "" {
-		language = *langVal
+	if langVal, ok, err := configRepo.GetString(ctx, "tmdb_language"); err == nil && ok && langVal != "" {
+		language = langVal
 	}
 
-	var proxyURL *string
-	_ = pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'tmdb_proxy'").Scan(&proxyURL)
+	proxyURL, hasProxy, _ := configRepo.GetString(ctx, "tmdb_proxy")
 
 	transport := &http.Transport{
 		MaxIdleConns:        100,
@@ -50,8 +50,8 @@ func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
-	if proxyURL != nil {
-		rawProxy := strings.TrimSpace(*proxyURL)
+	if hasProxy {
+		rawProxy := strings.TrimSpace(proxyURL)
 		if rawProxy != "" {
 			if u, err := url.Parse(rawProxy); err == nil && u.Scheme != "" && u.Host != "" {
 				slog.Info("[TMDB] Using proxy", "proxy", redactProxyURL(u))

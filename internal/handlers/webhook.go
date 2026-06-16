@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/services"
 )
@@ -22,7 +20,7 @@ func RegisterWebhookRoutes(group *gin.RouterGroup, state *AppState) {
 func cloudDriveWebhookHandler(c *gin.Context) {
 	state := GetState(c)
 	secret := c.GetHeader("x-webhook-secret")
-	expected, err := getWebhookSecret(c.Request.Context(), state.DB)
+	expected, err := getWebhookSecret(c.Request.Context(), state)
 	if err != nil {
 		slog.Error("webhook secret lookup", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -140,17 +138,13 @@ func rawBool(m map[string]json.RawMessage, key string) bool {
 	return false
 }
 
-func getWebhookSecret(ctx context.Context, pool *pgxpool.Pool) (string, error) {
-	var v *string
-	err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'webhook_secret'").Scan(&v)
-	if err == pgx.ErrNoRows {
+func getWebhookSecret(ctx context.Context, state *AppState) (string, error) {
+	if state.Repo == nil || state.Repo.SystemConfig == nil {
 		return "", nil
 	}
-	if err != nil {
+	v, ok, err := state.Repo.SystemConfig.GetString(ctx, "webhook_secret")
+	if err != nil || !ok {
 		return "", err
 	}
-	if v == nil {
-		return "", nil
-	}
-	return *v, nil
+	return v, nil
 }

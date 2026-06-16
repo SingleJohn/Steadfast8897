@@ -14,6 +14,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // FileWatcher 是 ingest 事件流的 fsnotify producer。
@@ -33,9 +35,8 @@ func NewFileWatcher(ingest *IngestWorker, refreshes *RefreshScheduler) *FileWatc
 }
 
 func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *CacheService) {
-	var enabled *string
-	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'file_watcher_enabled'").Scan(&enabled)
-	if enabled != nil && *enabled == "false" {
+	enabled, ok, _ := repository.NewSystemConfigRepository(pool).GetString(ctx, "file_watcher_enabled")
+	if ok && enabled == "false" {
 		slog.Info("[FileWatcher] Disabled by config")
 		return
 	}

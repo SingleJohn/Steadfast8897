@@ -22,11 +22,10 @@ type scrapeSaveTargets struct {
 
 func getScrapeSaveMode(ctx context.Context, pool *pgxpool.Pool) string {
 	mode := "database"
-	var val *string
-	if err := pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'scrape_save_mode'").Scan(&val); err == nil && val != nil {
-		switch strings.TrimSpace(*val) {
+	if val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, "scrape_save_mode"); err == nil && ok {
+		switch strings.TrimSpace(val) {
 		case "database", "media_dir", "both":
-			mode = strings.TrimSpace(*val)
+			mode = strings.TrimSpace(val)
 		}
 	}
 	return mode
