@@ -456,33 +456,8 @@ func buildOrderByForAlias(options *ItemQueryOptions, itemAlias, userAlias string
 			if f == "" {
 				continue
 			}
-			var col string
-			switch f {
-			case "IsFolder":
-				col = "CASE WHEN " + itemAlias + ".type IN ('Folder','Series','Season','CollectionFolder') THEN 0 ELSE 1 END"
-			case "Filename":
-				col = itemAlias + ".file_path"
-			case "SortName":
-				col = itemAlias + ".sort_name"
-			case "DateCreated":
-				col = itemAlias + ".created_at"
-			case "PremiereDate":
-				col = itemAlias + ".premiere_date"
-			case "ProductionYear":
-				col = itemAlias + ".production_year"
-			case "CommunityRating":
-				col = itemAlias + ".community_rating"
-			case "Runtime":
-				col = itemAlias + ".runtime_ticks"
-			case "Random":
-				col = "RANDOM()"
-			case "DatePlayed":
-				col = userAlias + ".last_played_date"
-			case "IndexNumber":
-				col = itemAlias + ".parent_index_number NULLS LAST, " + itemAlias + ".index_number"
-			case "ParentIndexNumber":
-				col = itemAlias + ".parent_index_number"
-			default:
+			col, ok := itemSortExpression(f, itemAlias, userAlias)
+			if !ok {
 				continue
 			}
 			mapped = append(mapped, col+" "+sortDir)
@@ -496,4 +471,35 @@ func buildOrderByForAlias(options *ItemQueryOptions, itemAlias, userAlias string
 
 func buildOrderBy(options *ItemQueryOptions) string {
 	return buildOrderByForAlias(options, "i", "uid")
+}
+
+func itemSortExpression(field, itemAlias, userAlias string) (string, bool) {
+	switch field {
+	case "IsFolder":
+		return "CASE WHEN " + itemAlias + ".type IN ('Folder','Series','Season','CollectionFolder') THEN 0 ELSE 1 END", true
+	case "Filename":
+		return itemAlias + ".file_path", true
+	case "SortName":
+		return itemAlias + ".sort_name", true
+	case "DateCreated":
+		return itemAlias + ".created_at", true
+	case "PremiereDate":
+		return itemAlias + ".premiere_date", true
+	case "ProductionYear":
+		return itemAlias + ".production_year", true
+	case "CommunityRating":
+		return itemAlias + ".community_rating", true
+	case "Runtime":
+		return itemAlias + ".runtime_ticks", true
+	case "Random":
+		return "RANDOM()", true
+	case "DatePlayed":
+		return userAlias + ".last_played_date", true
+	case "IndexNumber":
+		return itemAlias + ".parent_index_number NULLS LAST, " + itemAlias + ".index_number", true
+	case "ParentIndexNumber":
+		return itemAlias + ".parent_index_number", true
+	default:
+		return "", false
+	}
 }

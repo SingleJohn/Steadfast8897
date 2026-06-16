@@ -56,6 +56,13 @@ const (
 // 例:300MIUM-1328 → 300MIUM,IPZZ-857 → IPZZ,326IAV-002 → 326IAV。与 049 迁移的函数索引一致。
 const catalogPrefixExpr = "regexp_replace(upper(catalog_number), '-[0-9]+$', '')"
 
+type platformDimensionSQL struct {
+	MatchCondition string
+	GroupExpr      string
+	DiscoverFrom   string
+	CountExpr      string
+}
+
 type PlatformScanStatus string
 
 const (
@@ -145,15 +152,38 @@ func listPlatforms(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([
 // 用 = ANY($1) 聚合多个值, 解决簡繁/译名拆库。
 // 所有路径统一带 type IN ('Movie','Series') AND merged_to_id IS NULL 由调用方拼。
 func virtualDimensionCondition(dimension string) (string, bool) {
+	spec, ok := platformDimensionSpec(dimension)
+	if !ok {
+		return "", false
+	}
+	return spec.MatchCondition, true
+}
+
+func platformDimensionSpec(dimension string) (platformDimensionSQL, bool) {
 	switch dimension {
 	case PlatformDimStudio:
-		return "studio = ANY($1)", true
+		return platformDimensionSQL{
+			MatchCondition: "studio = ANY($1)",
+			GroupExpr:      "studio",
+			DiscoverFrom:   `FROM items WHERE studio IS NOT NULL AND studio != '' AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
+			CountExpr:      "COUNT(*)",
+		}, true
 	case PlatformDimNumPrefix:
-		return catalogPrefixExpr + " = ANY($1)", true
+		return platformDimensionSQL{
+			MatchCondition: catalogPrefixExpr + " = ANY($1)",
+			GroupExpr:      catalogPrefixExpr,
+			DiscoverFrom:   `FROM items WHERE catalog_number IS NOT NULL AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
+			CountExpr:      "COUNT(*)",
+		}, true
 	case PlatformDimActor:
-		return "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = items.id AND cm.name = ANY($1) AND cm.role = 'Actor')", true
+		return platformDimensionSQL{
+			MatchCondition: "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = items.id AND cm.name = ANY($1) AND cm.role = 'Actor')",
+			GroupExpr:      "cm.name",
+			DiscoverFrom:   `FROM cast_members cm JOIN items i ON i.id = cm.item_id WHERE cm.role = 'Actor' AND cm.name != '' AND i.type IN ('Movie','Series') AND i.merged_to_id IS NULL`,
+			CountExpr:      "COUNT(DISTINCT cm.item_id)",
+		}, true
 	default:
-		return "", false
+		return platformDimensionSQL{}, false
 	}
 }
 
@@ -185,25 +215,9 @@ type DiscoveredValue struct {
 // DiscoverDimensionValues 扫描本地数据,列出某维度的 distinct 值 + 计数(供用户勾选添加)。
 // search 用 ILIKE 过滤,minCount 过滤低频项,按计数倒序。标注是否已加入虚拟库。
 func DiscoverDimensionValues(ctx context.Context, pool *pgxpool.Pool, dimension, search string, minCount int64) ([]DiscoveredValue, error) {
-	var groupExpr, fromWhere string
-	switch dimension {
-	case PlatformDimStudio:
-		groupExpr = "studio"
-		fromWhere = `FROM items WHERE studio IS NOT NULL AND studio != '' AND type IN ('Movie','Series') AND merged_to_id IS NULL`
-	case PlatformDimNumPrefix:
-		groupExpr = catalogPrefixExpr
-		fromWhere = `FROM items WHERE catalog_number IS NOT NULL AND type IN ('Movie','Series') AND merged_to_id IS NULL`
-	case PlatformDimActor:
-		groupExpr = "cm.name"
-		fromWhere = `FROM cast_members cm JOIN items i ON i.id = cm.item_id
-		             WHERE cm.role = 'Actor' AND cm.name != '' AND i.type IN ('Movie','Series') AND i.merged_to_id IS NULL`
-	default:
+	spec, ok := platformDimensionSpec(dimension)
+	if !ok {
 		return nil, fmt.Errorf("unknown dimension: %s", dimension)
-	}
-
-	countExpr := "COUNT(*)"
-	if dimension == PlatformDimActor {
-		countExpr = "COUNT(DISTINCT cm.item_id)"
 	}
 
 	args := []interface{}{}
@@ -212,19 +226,19 @@ func DiscoverDimensionValues(ctx context.Context, pool *pgxpool.Pool, dimension,
 	searchClause := ""
 	search = strings.TrimSpace(search)
 	if search != "" {
-		searchClause = fmt.Sprintf(" AND %s ILIKE $%d", groupExpr, idx)
+		searchClause = fmt.Sprintf(" AND %s ILIKE $%d", spec.GroupExpr, idx)
 		args = append(args, "%"+search+"%")
 		idx++
 	}
 	if minCount > 1 {
-		having = fmt.Sprintf(" HAVING %s >= $%d", countExpr, idx)
+		having = fmt.Sprintf(" HAVING %s >= $%d", spec.CountExpr, idx)
 		args = append(args, minCount)
 		idx++
 	}
 
 	sql := fmt.Sprintf(
 		`SELECT %s AS v, %s AS cnt %s%s GROUP BY %s%s ORDER BY cnt DESC, v ASC LIMIT 2000`,
-		groupExpr, countExpr, fromWhere, searchClause, groupExpr, having)
+		spec.GroupExpr, spec.CountExpr, spec.DiscoverFrom, searchClause, spec.GroupExpr, having)
 
 	rows, err := pool.Query(ctx, sql, args...)
 	if err != nil {

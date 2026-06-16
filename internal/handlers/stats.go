@@ -182,16 +182,7 @@ func getUserUsageRanking(c *gin.Context) {
 	if sortBy == "" {
 		sortBy = "total_plays"
 	}
-	sortCols := map[string]string{
-		"last_seen":      "last_seen",
-		"total_plays":    "total_plays",
-		"total_duration": "total_duration",
-		"client_count":   "client_count",
-		"player_count":   "player_count",
-		"ip_count":       "ip_count",
-		"user_name":      "user_name",
-	}
-	sortCol, ok := sortCols[sortBy]
+	sortCol, ok := statsUsageSortColumn(sortBy)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid sort_by"})
 		return
@@ -473,6 +464,15 @@ func getUserUsageRanking(c *gin.Context) {
 			"ip_count":       summaryIPs,
 		},
 	})
+}
+
+func statsUsageSortColumn(sortBy string) (string, bool) {
+	switch sortBy {
+	case "last_seen", "total_plays", "total_duration", "client_count", "player_count", "ip_count", "user_name":
+		return sortBy, true
+	default:
+		return "", false
+	}
 }
 
 func getDailyActivity(c *gin.Context) {

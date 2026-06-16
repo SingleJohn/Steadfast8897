@@ -365,32 +365,15 @@ func (s *Store) GetIPStatsSummary(ctx context.Context, p IPStatsSummaryParams) (
 		limit = 20
 	}
 
-	whereParts := []string{"WHERE 1=1"}
-	args := make([]any, 0, 6)
-	argPos := 1
-	addCond := func(cond string, value any) {
-		whereParts = append(whereParts, fmt.Sprintf("AND %s $%d", cond, argPos))
-		args = append(args, value)
-		argPos++
-	}
-
-	if tag != "" {
-		addCond("tag =", tag)
-	}
+	filter := newGatewaySQLFilter()
+	filter.add("tag =", tag)
 	if mode == "redirect302" {
-		addCond("status =", 302)
+		filter.add("status =", 302)
 	}
-	if p.SourceID != "" {
-		addCond("source_id =", p.SourceID)
-	}
-	if p.Since != nil {
-		addCond("created_at >=", *p.Since)
-	}
-	if p.Until != nil {
-		addCond("created_at <=", *p.Until)
-	}
-
-	where := strings.Join(whereParts, " ")
+	filter.addIfNotEmpty("source_id =", p.SourceID)
+	filter.addIfTime("created_at >=", p.Since)
+	filter.addIfTime("created_at <=", p.Until)
+	where, args, argPos := filter.build()
 
 	summary := &IPStatsSummary{
 		Scope:         p.Scope,
@@ -533,6 +516,36 @@ func timeFromTimestamptz(v pgtype.Timestamptz) time.Time {
 		return time.Time{}
 	}
 	return v.Time
+}
+
+type gatewaySQLFilter struct {
+	parts []string
+	args  []any
+}
+
+func newGatewaySQLFilter() *gatewaySQLFilter {
+	return &gatewaySQLFilter{parts: []string{"WHERE 1=1"}, args: make([]any, 0, 6)}
+}
+
+func (f *gatewaySQLFilter) add(cond string, value any) {
+	f.args = append(f.args, value)
+	f.parts = append(f.parts, fmt.Sprintf("AND %s $%d", cond, len(f.args)))
+}
+
+func (f *gatewaySQLFilter) addIfNotEmpty(cond, value string) {
+	if value != "" {
+		f.add(cond, value)
+	}
+}
+
+func (f *gatewaySQLFilter) addIfTime(cond string, value *time.Time) {
+	if value != nil {
+		f.add(cond, *value)
+	}
+}
+
+func (f *gatewaySQLFilter) build() (string, []any, int) {
+	return strings.Join(f.parts, " "), f.args, len(f.args) + 1
 }
 
 // Cleanup old data
