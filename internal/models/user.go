@@ -2,15 +2,14 @@ package models
 
 import (
 	"context"
-	"crypto/sha1"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
+
+	"fyms/internal/repository"
 )
 
 type User struct {
@@ -53,21 +52,21 @@ type UserPolicy struct {
 }
 
 type PolicyUpdate struct {
-	IsAdministrator            *bool  `json:"IsAdministrator,omitempty"`
-	EnableAllFolders           *bool  `json:"EnableAllFolders,omitempty"`
-	EnableRemoteAccess         *bool  `json:"EnableRemoteAccess,omitempty"`
-	EnableMediaPlayback        *bool  `json:"EnableMediaPlayback,omitempty"`
-	EnableAudioTranscoding     *bool  `json:"EnableAudioPlaybackTranscoding,omitempty"`
-	EnableVideoTranscoding     *bool  `json:"EnableVideoPlaybackTranscoding,omitempty"`
-	EnablePlaybackRemuxing     *bool  `json:"EnablePlaybackRemuxing,omitempty"`
-	EnableContentDeletion      *bool  `json:"EnableContentDeletion,omitempty"`
-	EnableContentDownloading   *bool  `json:"EnableContentDownloading,omitempty"`
-	EnableSubtitleManagement   *bool  `json:"EnableSubtitleManagement,omitempty"`
-	EnableLiveTvAccess         *bool  `json:"EnableLiveTvAccess,omitempty"`
-	EnableLiveTvManagement     *bool  `json:"EnableLiveTvManagement,omitempty"`
-	EnableUserPreferenceAccess *bool  `json:"EnableUserPreferenceAccess,omitempty"`
-	EnableRemoteControl        *bool  `json:"EnableRemoteControlOfOtherUsers,omitempty"`
-	EnableSharedDeviceControl  *bool  `json:"EnableSharedDeviceControl,omitempty"`
+	IsAdministrator            *bool    `json:"IsAdministrator,omitempty"`
+	EnableAllFolders           *bool    `json:"EnableAllFolders,omitempty"`
+	EnableRemoteAccess         *bool    `json:"EnableRemoteAccess,omitempty"`
+	EnableMediaPlayback        *bool    `json:"EnableMediaPlayback,omitempty"`
+	EnableAudioTranscoding     *bool    `json:"EnableAudioPlaybackTranscoding,omitempty"`
+	EnableVideoTranscoding     *bool    `json:"EnableVideoPlaybackTranscoding,omitempty"`
+	EnablePlaybackRemuxing     *bool    `json:"EnablePlaybackRemuxing,omitempty"`
+	EnableContentDeletion      *bool    `json:"EnableContentDeletion,omitempty"`
+	EnableContentDownloading   *bool    `json:"EnableContentDownloading,omitempty"`
+	EnableSubtitleManagement   *bool    `json:"EnableSubtitleManagement,omitempty"`
+	EnableLiveTvAccess         *bool    `json:"EnableLiveTvAccess,omitempty"`
+	EnableLiveTvManagement     *bool    `json:"EnableLiveTvManagement,omitempty"`
+	EnableUserPreferenceAccess *bool    `json:"EnableUserPreferenceAccess,omitempty"`
+	EnableRemoteControl        *bool    `json:"EnableRemoteControlOfOtherUsers,omitempty"`
+	EnableSharedDeviceControl  *bool    `json:"EnableSharedDeviceControl,omitempty"`
 	RemoteClientBitrateLimit   *int32   `json:"RemoteClientBitrateLimit,omitempty"`
 	SimultaneousStreamLimit    *int32   `json:"SimultaneousStreamLimit,omitempty"`
 	IsHidden                   *bool    `json:"IsHidden,omitempty"`
@@ -111,158 +110,67 @@ func scanUsers(rows pgx.Rows) ([]User, error) {
 }
 
 func FindUserByName(ctx context.Context, pool *pgxpool.Pool, name string) (*User, error) {
-	row := pool.QueryRow(ctx, "SELECT "+userColumns+" FROM users WHERE name = $1", name)
-	u, err := scanUser(row)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	return u, err
+	u, err := repository.NewUserRepository(pool).GetUserByName(ctx, name)
+	return modelUserFromRepo(u), err
 }
 
 func FindUserByID(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (*User, error) {
-	row := pool.QueryRow(ctx, "SELECT "+userColumns+" FROM users WHERE id = $1", id)
-	u, err := scanUser(row)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	return u, err
+	u, err := repository.NewUserRepository(pool).GetUserByID(ctx, id)
+	return modelUserFromRepo(u), err
 }
 
 func GetPublicUsers(ctx context.Context, pool *pgxpool.Pool) ([]User, error) {
-	rows, err := pool.Query(ctx,
-		"SELECT "+userColumns+" FROM users WHERE is_hidden = FALSE AND is_disabled = FALSE ORDER BY name")
-	if err != nil {
-		return nil, err
-	}
-	return scanUsers(rows)
+	users, err := repository.NewUserRepository(pool).ListVisibleUsers(ctx)
+	return modelUsersFromRepo(users), err
 }
 
 func GetAllUsers(ctx context.Context, pool *pgxpool.Pool) ([]User, error) {
-	rows, err := pool.Query(ctx, "SELECT "+userColumns+" FROM users ORDER BY name")
-	if err != nil {
-		return nil, err
-	}
-	return scanUsers(rows)
+	users, err := repository.NewUserRepository(pool).ListUsers(ctx)
+	return modelUsersFromRepo(users), err
 }
 
 func GetUserCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
-	return count, err
+	return repository.NewUserRepository(pool).CountUsers(ctx)
 }
 
 func CreateUser(ctx context.Context, pool *pgxpool.Pool, name, password string, isAdmin bool) (*User, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
-	if err != nil {
-		return nil, fmt.Errorf("bcrypt: %w", err)
-	}
-
-	row := pool.QueryRow(ctx,
-		"INSERT INTO users (name, password_hash, is_admin) VALUES ($1, $2, $3) RETURNING "+userColumns,
-		name, string(hash), isAdmin)
-	u, err := scanUser(row)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = pool.Exec(ctx,
-		"INSERT INTO user_policies (user_id, is_administrator, enable_content_deletion) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-		u.ID, isAdmin, isAdmin)
-	if err != nil {
-		return nil, err
-	}
-
-	return u, nil
+	u, err := repository.NewUserRepository(pool).CreateUser(ctx, name, password, isAdmin)
+	return modelUserFromRepo(u), err
 }
 
 func UpdateUser(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, name *string, isHidden *bool) (*User, error) {
-	if name != nil {
-		_, err := pool.Exec(ctx, "UPDATE users SET name = $1 WHERE id = $2", *name, id)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if isHidden != nil {
-		_, err := pool.Exec(ctx, "UPDATE users SET is_hidden = $1 WHERE id = $2", *isHidden, id)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return FindUserByID(ctx, pool, id)
+	u, err := repository.NewUserRepository(pool).UpdateUser(ctx, id, name, isHidden)
+	return modelUserFromRepo(u), err
 }
 
 func DeleteUser(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {
-	_, err := pool.Exec(ctx, "DELETE FROM users WHERE id = $1", id)
-	return err
+	return repository.NewUserRepository(pool).DeleteUser(ctx, id)
 }
 
 func UpdatePassword(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, newPassword string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), 10)
-	if err != nil {
-		return fmt.Errorf("bcrypt: %w", err)
-	}
-	_, err = pool.Exec(ctx, "UPDATE users SET password_hash = $1 WHERE id = $2", string(hash), id)
-	return err
+	return repository.NewUserRepository(pool).UpdatePassword(ctx, id, newPassword)
 }
 
 func VerifyPassword(ctx context.Context, pool *pgxpool.Pool, user *User, password string) bool {
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil {
-		return true
-	}
-
-	if user.EmbyPasswordHash != nil && *user.EmbyPasswordHash != "" {
-		h := sha1.Sum([]byte(password))
-		result := fmt.Sprintf("%X", h)
-		if result == *user.EmbyPasswordHash {
-			newHash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
-			if err == nil {
-				pool.Exec(ctx,
-					"UPDATE users SET password_hash = $1, emby_password_hash = NULL WHERE id = $2",
-					string(newHash), user.ID)
-				slog.Info("Upgraded Emby password to bcrypt", "user", user.Name)
-			}
-			return true
-		}
-	}
-	return false
+	return repository.NewUserRepository(pool).VerifyPassword(ctx, repoUserFromModel(user), password)
 }
 
 func SetUserDisabled(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, disabled bool) error {
-	_, err := pool.Exec(ctx, "UPDATE users SET is_disabled = $1 WHERE id = $2", disabled, id)
-	return err
+	return repository.NewUserRepository(pool).SetUserDisabled(ctx, id, disabled)
 }
 
 func UpdateLastLogin(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) error {
-	_, err := pool.Exec(ctx,
-		"UPDATE users SET last_login_date = NOW(), last_activity_date = NOW() WHERE id = $1", id)
-	return err
+	return repository.NewUserRepository(pool).UpdateLastLogin(ctx, id)
 }
 
 func GetUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) (*UserPolicy, error) {
-	var p UserPolicy
-	err := pool.QueryRow(ctx, "SELECT * FROM user_policies WHERE user_id = $1", userID).Scan(
-		&p.UserID, &p.IsAdministrator, &p.EnableAllFolders, &p.EnableRemoteAccess,
-		&p.EnableMediaPlayback, &p.EnableAudioTranscoding, &p.EnableVideoTranscoding,
-		&p.EnablePlaybackRemuxing, &p.EnableContentDeletion, &p.EnableContentDownloading,
-		&p.EnableSubtitleManagement, &p.EnableLiveTvAccess, &p.EnableLiveTvManagement,
-		&p.EnableUserPreferenceAccess, &p.EnableRemoteControl, &p.EnableSharedDeviceControl,
-		&p.MaxParentalRating, &p.RemoteClientBitrateLimit, &p.SimultaneousStreamLimit,
-		&p.InvalidLoginAttemptCount, &p.LoginAttemptsBeforeLockout,
-		&p.BlockedMediaFolders, &p.EnabledFolders,
-	)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
+	p, err := repository.NewUserRepository(pool).GetUserPolicy(ctx, userID)
+	return modelUserPolicyFromRepo(p), err
 }
 
 func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, policy *PolicyUpdate) error {
-	_, err := pool.Exec(ctx,
-		"INSERT INTO user_policies (user_id) VALUES ($1) ON CONFLICT DO NOTHING", userID)
-	if err != nil {
+	userRepo := repository.NewUserRepository(pool)
+	if err := userRepo.EnsureUserPolicyDefaults(ctx, userID); err != nil {
 		return err
 	}
 
@@ -332,16 +240,12 @@ func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID,
 	}
 
 	if policy.BlockedMediaFolders != nil {
-		_, err := pool.Exec(ctx, "UPDATE user_policies SET blocked_media_folders = $1 WHERE user_id = $2",
-			policy.BlockedMediaFolders, userID)
-		if err != nil {
+		if err := userRepo.UpdateUserPolicyBlockedFolders(ctx, userID, policy.BlockedMediaFolders); err != nil {
 			return err
 		}
 	}
 	if policy.EnabledFolders != nil {
-		_, err := pool.Exec(ctx, "UPDATE user_policies SET enabled_folders = $1 WHERE user_id = $2",
-			policy.EnabledFolders, userID)
-		if err != nil {
+		if err := userRepo.UpdateUserPolicyEnabledFolders(ctx, userID, policy.EnabledFolders); err != nil {
 			return err
 		}
 	}
@@ -393,31 +297,31 @@ func FormatPolicyResponse(policy *UserPolicy, isAdmin bool) map[string]interface
 			enabledFolders = []string{}
 		}
 		return map[string]interface{}{
-			"IsAdministrator":                  policy.IsAdministrator,
-			"IsDisabled":                       false,
-			"IsHidden":                         false,
-			"EnableAllFolders":                 policy.EnableAllFolders,
-			"BlockedMediaFolders":              blockedFolders,
-			"EnabledFolders":                   enabledFolders,
-			"EnableRemoteAccess":               policy.EnableRemoteAccess,
-			"EnableMediaPlayback":              policy.EnableMediaPlayback,
-			"EnableAudioPlaybackTranscoding":   policy.EnableAudioTranscoding,
-			"EnableVideoPlaybackTranscoding":   policy.EnableVideoTranscoding,
-			"EnablePlaybackRemuxing":           policy.EnablePlaybackRemuxing,
-			"EnableContentDeletion":            policy.EnableContentDeletion,
-			"EnableContentDownloading":         policy.EnableContentDownloading,
-			"EnableSubtitleDownloading":        policy.EnableSubtitleManagement,
-			"EnableSubtitleManagement":         policy.EnableSubtitleManagement,
-			"EnableLiveTvAccess":               policy.EnableLiveTvAccess,
-			"EnableLiveTvManagement":           policy.EnableLiveTvManagement,
-			"EnableUserPreferenceAccess":       policy.EnableUserPreferenceAccess,
-			"EnableRemoteControlOfOtherUsers":  policy.EnableRemoteControl,
-			"EnableSharedDeviceControl":        policy.EnableSharedDeviceControl,
-			"MaxParentalRating":                policy.MaxParentalRating,
-			"RemoteClientBitrateLimit":         policy.RemoteClientBitrateLimit,
-			"SimultaneousStreamLimit":          policy.SimultaneousStreamLimit,
-			"EnableSyncTranscoding":            true,
-			"EnableMediaConversion":            true,
+			"IsAdministrator":                 policy.IsAdministrator,
+			"IsDisabled":                      false,
+			"IsHidden":                        false,
+			"EnableAllFolders":                policy.EnableAllFolders,
+			"BlockedMediaFolders":             blockedFolders,
+			"EnabledFolders":                  enabledFolders,
+			"EnableRemoteAccess":              policy.EnableRemoteAccess,
+			"EnableMediaPlayback":             policy.EnableMediaPlayback,
+			"EnableAudioPlaybackTranscoding":  policy.EnableAudioTranscoding,
+			"EnableVideoPlaybackTranscoding":  policy.EnableVideoTranscoding,
+			"EnablePlaybackRemuxing":          policy.EnablePlaybackRemuxing,
+			"EnableContentDeletion":           policy.EnableContentDeletion,
+			"EnableContentDownloading":        policy.EnableContentDownloading,
+			"EnableSubtitleDownloading":       policy.EnableSubtitleManagement,
+			"EnableSubtitleManagement":        policy.EnableSubtitleManagement,
+			"EnableLiveTvAccess":              policy.EnableLiveTvAccess,
+			"EnableLiveTvManagement":          policy.EnableLiveTvManagement,
+			"EnableUserPreferenceAccess":      policy.EnableUserPreferenceAccess,
+			"EnableRemoteControlOfOtherUsers": policy.EnableRemoteControl,
+			"EnableSharedDeviceControl":       policy.EnableSharedDeviceControl,
+			"MaxParentalRating":               policy.MaxParentalRating,
+			"RemoteClientBitrateLimit":        policy.RemoteClientBitrateLimit,
+			"SimultaneousStreamLimit":         policy.SimultaneousStreamLimit,
+			"EnableSyncTranscoding":           true,
+			"EnableMediaConversion":           true,
 		}
 	}
 
@@ -425,63 +329,111 @@ func FormatPolicyResponse(policy *UserPolicy, isAdmin bool) map[string]interface
 	_ = int32Or
 
 	return map[string]interface{}{
-		"IsAdministrator":                  isAdmin,
-		"IsDisabled":                       false,
-		"IsHidden":                         false,
-		"EnableAllFolders":                 true,
-		"EnableRemoteAccess":               true,
-		"EnableMediaPlayback":              true,
-		"EnableAudioPlaybackTranscoding":   true,
-		"EnableVideoPlaybackTranscoding":   true,
-		"EnablePlaybackRemuxing":           true,
-		"EnableContentDeletion":            isAdmin,
-		"EnableContentDownloading":         true,
-		"EnableSubtitleDownloading":        true,
-		"EnableSubtitleManagement":         true,
-		"EnableLiveTvAccess":               true,
-		"EnableLiveTvManagement":           false,
-		"EnableUserPreferenceAccess":       true,
-		"EnableRemoteControlOfOtherUsers":  false,
-		"EnableSharedDeviceControl":        false,
-		"MaxParentalRating":                nil,
-		"RemoteClientBitrateLimit":         0,
-		"SimultaneousStreamLimit":          0,
-		"EnableSyncTranscoding":            true,
-		"EnableMediaConversion":            true,
+		"IsAdministrator":                 isAdmin,
+		"IsDisabled":                      false,
+		"IsHidden":                        false,
+		"EnableAllFolders":                true,
+		"EnableRemoteAccess":              true,
+		"EnableMediaPlayback":             true,
+		"EnableAudioPlaybackTranscoding":  true,
+		"EnableVideoPlaybackTranscoding":  true,
+		"EnablePlaybackRemuxing":          true,
+		"EnableContentDeletion":           isAdmin,
+		"EnableContentDownloading":        true,
+		"EnableSubtitleDownloading":       true,
+		"EnableSubtitleManagement":        true,
+		"EnableLiveTvAccess":              true,
+		"EnableLiveTvManagement":          false,
+		"EnableUserPreferenceAccess":      true,
+		"EnableRemoteControlOfOtherUsers": false,
+		"EnableSharedDeviceControl":       false,
+		"MaxParentalRating":               nil,
+		"RemoteClientBitrateLimit":        0,
+		"SimultaneousStreamLimit":         0,
+		"EnableSyncTranscoding":           true,
+		"EnableMediaConversion":           true,
 	}
 }
 
 func GetUserLibraryAccess(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := pool.Query(ctx,
-		"SELECT library_id FROM user_library_access WHERE user_id = $1", userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return repository.NewUserRepository(pool).ListUserLibraryAccess(ctx, userID)
 }
 
 func SetUserLibraryAccess(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, libraryIDs []uuid.UUID) error {
-	_, err := pool.Exec(ctx, "DELETE FROM user_library_access WHERE user_id = $1", userID)
-	if err != nil {
-		return err
+	return repository.NewUserRepository(pool).SetUserLibraryAccess(ctx, userID, libraryIDs)
+}
+
+func modelUsersFromRepo(users []repository.User) []User {
+	result := make([]User, 0, len(users))
+	for _, u := range users {
+		result = append(result, *modelUserFromRepo(&u))
 	}
-	for _, libID := range libraryIDs {
-		_, err := pool.Exec(ctx,
-			"INSERT INTO user_library_access (user_id, library_id) VALUES ($1, $2)",
-			userID, libID)
-		if err != nil {
-			return err
-		}
+	return result
+}
+
+func modelUserFromRepo(u *repository.User) *User {
+	if u == nil {
+		return nil
 	}
-	return nil
+	return &User{
+		ID:               u.ID,
+		Name:             u.Name,
+		PasswordHash:     u.PasswordHash,
+		IsAdmin:          u.IsAdmin,
+		IsDisabled:       u.IsDisabled,
+		IsHidden:         u.IsHidden,
+		LastLoginDate:    u.LastLoginDate,
+		LastActivityDate: u.LastActivityDate,
+		CreatedAt:        u.CreatedAt,
+		EmbyPasswordHash: u.EmbyPasswordHash,
+	}
+}
+
+func repoUserFromModel(u *User) *repository.User {
+	if u == nil {
+		return nil
+	}
+	return &repository.User{
+		ID:               u.ID,
+		Name:             u.Name,
+		PasswordHash:     u.PasswordHash,
+		IsAdmin:          u.IsAdmin,
+		IsDisabled:       u.IsDisabled,
+		IsHidden:         u.IsHidden,
+		LastLoginDate:    u.LastLoginDate,
+		LastActivityDate: u.LastActivityDate,
+		CreatedAt:        u.CreatedAt,
+		EmbyPasswordHash: u.EmbyPasswordHash,
+	}
+}
+
+func modelUserPolicyFromRepo(p *repository.UserPolicy) *UserPolicy {
+	if p == nil {
+		return nil
+	}
+	return &UserPolicy{
+		UserID:                     p.UserID,
+		IsAdministrator:            p.IsAdministrator,
+		EnableAllFolders:           p.EnableAllFolders,
+		EnableRemoteAccess:         p.EnableRemoteAccess,
+		EnableMediaPlayback:        p.EnableMediaPlayback,
+		EnableAudioTranscoding:     p.EnableAudioTranscoding,
+		EnableVideoTranscoding:     p.EnableVideoTranscoding,
+		EnablePlaybackRemuxing:     p.EnablePlaybackRemuxing,
+		EnableContentDeletion:      p.EnableContentDeletion,
+		EnableContentDownloading:   p.EnableContentDownloading,
+		EnableSubtitleManagement:   p.EnableSubtitleManagement,
+		EnableLiveTvAccess:         p.EnableLiveTvAccess,
+		EnableLiveTvManagement:     p.EnableLiveTvManagement,
+		EnableUserPreferenceAccess: p.EnableUserPreferenceAccess,
+		EnableRemoteControl:        p.EnableRemoteControl,
+		EnableSharedDeviceControl:  p.EnableSharedDeviceControl,
+		MaxParentalRating:          p.MaxParentalRating,
+		RemoteClientBitrateLimit:   p.RemoteClientBitrateLimit,
+		SimultaneousStreamLimit:    p.SimultaneousStreamLimit,
+		InvalidLoginAttemptCount:   p.InvalidLoginAttemptCount,
+		LoginAttemptsBeforeLockout: p.LoginAttemptsBeforeLockout,
+		BlockedMediaFolders:        p.BlockedMediaFolders,
+		EnabledFolders:             p.EnabledFolders,
+	}
 }

@@ -88,10 +88,10 @@ func updateBackfillConfig(c *gin.Context, state *AppState) {
 	}
 	ctx := c.Request.Context()
 	if req.EnabledOnStartup != nil {
-		_ = services.WriteBoolSystemConfig(ctx, state.DB, "backfill_enabled_on_startup", *req.EnabledOnStartup)
+		_ = state.Repo.SystemConfig.SetBool(ctx, "backfill_enabled_on_startup", *req.EnabledOnStartup)
 	}
 	if req.EpisodeStillFetch != nil {
-		_ = services.WriteBoolSystemConfig(ctx, state.DB, "episode_still_fetch", *req.EpisodeStillFetch)
+		_ = state.Repo.SystemConfig.SetBool(ctx, "episode_still_fetch", *req.EpisodeStillFetch)
 	}
 	getBackfillConfig(c, state)
 }

@@ -24,8 +24,7 @@ func getPlatforms(c *gin.Context, state *AppState) {
 		return
 	}
 
-	var globalEnabled *string
-	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_enabled'").Scan(&globalEnabled)
+	globalEnabled := state.Repo.SystemConfig.GetStringOrDefault(ctx, "platform_libraries_enabled", "")
 
 	items := make([]gin.H, 0, len(platforms))
 	for _, p := range platforms {
@@ -56,7 +55,7 @@ func getPlatforms(c *gin.Context, state *AppState) {
 		items = append(items, entry)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"GlobalEnabled": globalEnabled != nil && *globalEnabled == "true",
+		"GlobalEnabled": globalEnabled == "true",
 		"Platforms":     items,
 	})
 }

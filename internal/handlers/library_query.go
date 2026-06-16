@@ -47,11 +47,10 @@ func getUserViews(c *gin.Context) {
 	sid := state.Config.ServerID
 
 	// Read display settings
-	var platformPosition, showItemCountStr *string
-	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_position'").Scan(&platformPosition)
-	_ = state.DB.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'library_show_item_count'").Scan(&showItemCountStr)
-	platformBefore := platformPosition != nil && *platformPosition == "before"
-	showItemCount := showItemCountStr == nil || *showItemCountStr != "false"
+	platformPosition := state.Repo.SystemConfig.GetStringOrDefault(ctx, "platform_libraries_position", "")
+	showItemCountStr := state.Repo.SystemConfig.GetStringOrDefault(ctx, "library_show_item_count", "")
+	platformBefore := platformPosition == "before"
+	showItemCount := showItemCountStr != "false"
 
 	// Platform virtual libraries
 	var platformEntries []gin.H

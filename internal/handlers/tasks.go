@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"fyms/internal/services"
 	"fyms/internal/services/taskcenter"
 )
 
@@ -49,7 +48,7 @@ func getTaskChain(c *gin.Context, state *AppState) {
 
 // updateTaskChainRequest 是 POST /Tasks/chain 的请求体；字段可选，未提供时不改动。
 type updateTaskChainRequest struct {
-	Enabled *bool                  `json:"enabled"`
+	Enabled *bool                   `json:"enabled"`
 	Rules   *[]taskcenter.ChainRule `json:"rules"`
 }
 
@@ -68,12 +67,12 @@ func updateTaskChain(c *gin.Context, state *AppState) {
 	if req.Rules != nil {
 		state.TaskChain.SetRules(*req.Rules)
 		if js, err := state.TaskChain.RulesJSON(); err == nil {
-			_ = services.WriteSystemConfigValue(ctx, state.DB, "task_chain_rules", js)
+			_ = state.Repo.SystemConfig.SetString(ctx, "task_chain_rules", js)
 		}
 	}
 	if req.Enabled != nil {
 		state.TaskChain.SetEnabled(*req.Enabled)
-		_ = services.WriteBoolSystemConfig(ctx, state.DB, "task_chain_enabled", *req.Enabled)
+		_ = state.Repo.SystemConfig.SetBool(ctx, "task_chain_enabled", *req.Enabled)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

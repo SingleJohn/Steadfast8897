@@ -2,12 +2,12 @@ package models
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type AccessToken struct {
@@ -21,36 +21,29 @@ type AccessToken struct {
 }
 
 func CreateAccessToken(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, deviceID, deviceName, appName, appVersion string) (string, error) {
-	token := strings.ReplaceAll(uuid.New().String(), "-", "")
-	_, err := pool.Exec(ctx,
-		"INSERT INTO access_tokens (token, user_id, device_id, device_name, app_name, app_version) VALUES ($1, $2, $3, $4, $5, $6)",
-		token, userID, deviceID, deviceName, appName, appVersion)
-	if err != nil {
-		return "", err
-	}
-	return token, nil
+	return repository.NewSessionRepository(pool).CreateAccessToken(ctx, userID, deviceID, deviceName, appName, appVersion)
 }
 
 func FindByToken(ctx context.Context, pool *pgxpool.Pool, token string) (*AccessToken, error) {
-	var t AccessToken
-	err := pool.QueryRow(ctx,
-		"SELECT token, user_id, device_id, device_name, app_name, app_version, created_at FROM access_tokens WHERE token = $1",
-		token).Scan(&t.Token, &t.UserID, &t.DeviceID, &t.DeviceName, &t.AppName, &t.AppVersion, &t.CreatedAt)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	t, err := repository.NewSessionRepository(pool).GetAccessToken(ctx, token)
+	if t == nil || err != nil {
 		return nil, err
 	}
-	return &t, nil
+	return &AccessToken{
+		Token:      t.Token,
+		UserID:     t.UserID,
+		DeviceID:   t.DeviceID,
+		DeviceName: t.DeviceName,
+		AppName:    t.AppName,
+		AppVersion: t.AppVersion,
+		CreatedAt:  t.CreatedAt,
+	}, nil
 }
 
 func DeleteToken(ctx context.Context, pool *pgxpool.Pool, token string) error {
-	_, err := pool.Exec(ctx, "DELETE FROM access_tokens WHERE token = $1", token)
-	return err
+	return repository.NewSessionRepository(pool).DeleteAccessToken(ctx, token)
 }
 
 func DeleteUserTokens(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) error {
-	_, err := pool.Exec(ctx, "DELETE FROM access_tokens WHERE user_id = $1", userID)
-	return err
+	return repository.NewSessionRepository(pool).DeleteAccessTokensByUserID(ctx, userID)
 }

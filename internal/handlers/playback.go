@@ -537,7 +537,7 @@ func OnPlaybackStopped(c *gin.Context) {
 	}
 	if item != nil && item.RuntimeTicks != nil && *item.RuntimeTicks > 0 {
 		// 看完判定阈值可在系统设置里配置(playback_played_threshold,默认 90%)。
-		th := services.ReadIntSystemConfig(c.Request.Context(), st.DB, "playback_played_threshold", 90)
+		th := st.Repo.SystemConfig.GetIntOrDefault(c.Request.Context(), "playback_played_threshold", 90)
 		if th < 1 {
 			th = 1
 		}
