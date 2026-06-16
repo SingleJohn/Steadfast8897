@@ -12,17 +12,9 @@
 
 | 路径 | 当前用途 | 后续建议 |
 | --- | --- | --- |
-| `internal/services/auto_scrape.go` | `system_config` 读取、自动刮削候选 item 查询 | 配置读取改走 `SystemConfigRepository`；候选查询后续可收进 scrape/queue repository |
-| `internal/services/tmdb_client.go` | `tmdb_api_key`、语言、代理配置读取 | 改走 `SystemConfigRepository` |
-| `internal/services/probe_hook.go` | `probe_on_ingest` 配置读取 | 改走 `SystemConfigRepository` |
-| `internal/services/file_watcher.go` | `file_watcher_enabled` 配置读取、启动时列出 libraries | 配置读取改走 `SystemConfigRepository`；library 列表复用/补充 `LibraryRepository` |
-| `internal/handlers/webhook.go` | `webhook_secret` 配置读取 | 改走 `SystemConfigRepository` |
-| `internal/services/backfill_task.go` | backfill 配置读写 | 配置读写改走 `SystemConfigRepository` |
-| `internal/services/updater.go` | updater 配置读写 | 配置读写改走 `SystemConfigRepository` |
-| `internal/services/scraper/config.go` | scraper 配置读取 | 改走 `SystemConfigRepository` |
-| `internal/middleware/auth.go` | token、api key 认证查询和 last_used 更新 | 新增 `api_keys.sql` 和 repository，保持 query-param api_key 兼容 |
-| `internal/handlers/compat_apikey.go` | Emby API key 查询、列表、删除 | 迁入 API key repository，保持响应结构不变 |
-| `internal/handlers/images.go` | item/library/person 图片路径固定查询 | 新增固定 sqlc 查询，只迁路径读取，不改变 fallback 链 |
+| `internal/services/auto_scrape.go` | 自动刮削候选 item 查询 | 配置读取已改走 `SystemConfigRepository`；候选查询后续可收进 scrape/queue repository |
+| `internal/services/file_watcher.go` | 启动时列出 libraries | 配置读取已改走 `SystemConfigRepository`；library 列表复用/补充 `LibraryRepository` |
+| `internal/services/episode_fetch.go`、`internal/services/tmdb_storage.go` | episode 元数据批量更新、still 图回写、保存模式辅助 | 配置读取已改走 `SystemConfigRepository`；批量更新后续按 TMDB/episode repository 收口 |
 | `internal/handlers/emby_compat.go` | 系统统计、season/episode 简单查询 | 后续迁到 compat/item helper repository |
 | `internal/handlers/library_misc.go`、`internal/handlers/user_access.go`、`internal/handlers/compat_sessions.go` | 单点 lookup | 后续迁到对应 repository |
 | `internal/models/user.go`、`internal/models/person_userdata.go` | 用户和人物 user data 固定写入 | 后续迁到 users/person repository |

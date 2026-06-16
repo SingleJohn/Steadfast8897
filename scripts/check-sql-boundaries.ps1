@@ -18,9 +18,7 @@ $allowedFiles = @(
     "internal/repository/display_order_repository.go",
     "internal/gateway/store.go",
     "internal/gateway/source_server.go",
-    "internal/middleware/auth.go",
     "internal/handlers/backfill.go",
-    "internal/handlers/compat_apikey.go",
     "internal/handlers/compat_item_enrich.go",
     "internal/handlers/compat_items.go",
     "internal/handlers/compat_media.go",
@@ -28,7 +26,6 @@ $allowedFiles = @(
     "internal/handlers/compat_sessions.go",
     "internal/handlers/compat_show.go",
     "internal/handlers/emby_compat.go",
-    "internal/handlers/images.go",
     "internal/handlers/library_detail.go",
     "internal/handlers/library_manage.go",
     "internal/handlers/library_misc.go",
@@ -41,7 +38,6 @@ $allowedFiles = @(
     "internal/handlers/system.go",
     "internal/handlers/user_access.go",
     "internal/handlers/videos.go",
-    "internal/handlers/webhook.go",
     "internal/models/item_counts.go",
     "internal/models/item_lookup.go",
     "internal/models/item_merge.go",
@@ -58,7 +54,6 @@ $allowedFiles = @(
     "internal/services/backfill_episode_image.go",
     "internal/services/backfill_episode_name.go",
     "internal/services/backfill_media_quality.go",
-    "internal/services/backfill_task.go",
     "internal/services/coverart/fetch.go",
     "internal/services/episode_fetch.go",
     "internal/services/file_watcher.go",
@@ -68,7 +63,6 @@ $allowedFiles = @(
     "internal/services/item_delete_plan.go",
     "internal/services/notify.go",
     "internal/services/notify_sweeper.go",
-    "internal/services/probe_hook.go",
     "internal/services/probe_on_play.go",
     "internal/services/probe_task.go",
     "internal/services/progress_buffer.go",
@@ -82,13 +76,9 @@ $allowedFiles = @(
     "internal/services/scanner_nfo.go",
     "internal/services/scanner_tv.go",
     "internal/services/scrape_config.go",
-    "internal/services/scraper/config.go",
-    "internal/services/tmdb_client.go",
     "internal/services/tmdb_identify.go",
-    "internal/services/tmdb_storage.go",
     "internal/services/tmdb_utils.go",
-    "internal/services/unmatched.go",
-    "internal/services/updater.go"
+    "internal/services/unmatched.go"
 )
 
 $allowed = @{}
