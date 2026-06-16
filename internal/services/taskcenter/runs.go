@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // RunRow 对应 task_runs 表一行。所有时间字段用 UnixMilli，
@@ -49,21 +50,14 @@ func Begin(ctx context.Context, db *pgxpool.Pool, p BeginParams) (int64, error) 
 		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	var parent any
-	if p.ParentID > 0 {
-		parent = p.ParentID
-	}
-	var stage any
-	if p.Stage != "" {
-		stage = p.Stage
-	}
-
-	var id int64
-	err = db.QueryRow(ctx, `
-		INSERT INTO task_runs (kind, stage, parent_id, status, trigger, total, payload)
-		VALUES ($1, $2, $3, 'running', $4, $5, $6)
-		RETURNING id
-	`, string(p.Kind), stage, parent, string(p.Trigger), p.Total, payloadJSON).Scan(&id)
+	id, err := repository.NewTaskRunRepository(db).Begin(ctx, repository.TaskRunCreate{
+		Kind:     string(p.Kind),
+		Stage:    p.Stage,
+		ParentID: p.ParentID,
+		Trigger:  string(p.Trigger),
+		Total:    p.Total,
+		Payload:  payloadJSON,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("insert task_run: %w", err)
 	}
@@ -77,21 +71,14 @@ func BeginQueued(ctx context.Context, db *pgxpool.Pool, p BeginParams) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
-	var parent any
-	if p.ParentID > 0 {
-		parent = p.ParentID
-	}
-	var stage any
-	if p.Stage != "" {
-		stage = p.Stage
-	}
-
-	var id int64
-	err = db.QueryRow(ctx, `
-		INSERT INTO task_runs (kind, stage, parent_id, status, trigger, total, payload)
-		VALUES ($1, $2, $3, 'queued', $4, $5, $6)
-		RETURNING id
-	`, string(p.Kind), stage, parent, string(p.Trigger), p.Total, payloadJSON).Scan(&id)
+	id, err := repository.NewTaskRunRepository(db).BeginQueued(ctx, repository.TaskRunCreate{
+		Kind:     string(p.Kind),
+		Stage:    p.Stage,
+		ParentID: p.ParentID,
+		Trigger:  string(p.Trigger),
+		Total:    p.Total,
+		Payload:  payloadJSON,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("insert queued task_run: %w", err)
 	}
@@ -100,12 +87,7 @@ func BeginQueued(ctx context.Context, db *pgxpool.Pool, p BeginParams) (int64, e
 
 // MarkRunning 将 queued 行推进到 running 并重置开始时间。
 func MarkRunning(ctx context.Context, db *pgxpool.Pool, runID int64) error {
-	_, err := db.Exec(ctx, `
-		UPDATE task_runs
-		SET status = 'running', started_at = NOW()
-		WHERE id = $1 AND status = 'queued'
-	`, runID)
-	return err
+	return repository.NewTaskRunRepository(db).MarkRunning(ctx, runID)
 }
 
 // UpdateProgress 定期回写进度（适配器可选择节流，如每 2 秒或每 100 项一次）。
@@ -115,12 +97,7 @@ func UpdateProgress(ctx context.Context, db *pgxpool.Pool, runID int64, processe
 	if err != nil {
 		return fmt.Errorf("marshal counters: %w", err)
 	}
-	_, err = db.Exec(ctx, `
-		UPDATE task_runs
-		SET processed = $2, success = $3, failed = $4, total = $5, counters = $6
-		WHERE id = $1
-	`, runID, processed, success, failed, total, countersJSON)
-	return err
+	return repository.NewTaskRunRepository(db).UpdateProgress(ctx, runID, processed, success, failed, total, countersJSON)
 }
 
 // End 将 run 标为终止状态（succeeded/failed/cancelled），记录 completed_at 与 duration。
@@ -129,16 +106,7 @@ func End(ctx context.Context, db *pgxpool.Pool, runID int64, status Status, mess
 	if !status.Terminal() {
 		return fmt.Errorf("End called with non-terminal status: %s", status)
 	}
-	_, err := db.Exec(ctx, `
-		UPDATE task_runs
-		SET status       = $2,
-		    message      = NULLIF($3, ''),
-		    error        = NULLIF($4, ''),
-		    completed_at = NOW(),
-		    duration_ms  = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000)
-		WHERE id = $1 AND status IN ('queued','running','stopping')
-	`, runID, string(status), message, errMsg)
-	return err
+	return repository.NewTaskRunRepository(db).End(ctx, runID, string(status), message, errMsg)
 }
 
 // HistoryFilter 用于 /Tasks/history 查询。
@@ -158,120 +126,52 @@ func History(ctx context.Context, db *pgxpool.Pool, f HistoryFilter) ([]RunRow, 
 		limit = 1000
 	}
 
-	q := `SELECT id, kind, stage, parent_id, status, trigger,
-	             total, processed, success, failed, counters,
-	             message, error, payload, started_at, completed_at, duration_ms
-	      FROM task_runs WHERE 1=1`
-	args := []any{}
-	if f.Kind != "" {
-		args = append(args, string(f.Kind))
-		q += fmt.Sprintf(" AND kind = $%d", len(args))
-	}
-	if f.ParentID != nil {
-		if *f.ParentID == 0 {
-			q += " AND parent_id IS NULL"
-		} else {
-			args = append(args, *f.ParentID)
-			q += fmt.Sprintf(" AND parent_id = $%d", len(args))
-		}
-	}
-	args = append(args, limit)
-	q += fmt.Sprintf(" ORDER BY started_at DESC LIMIT $%d", len(args))
-
-	rows, err := db.Query(ctx, q, args...)
+	rows, err := repository.NewTaskRunRepository(db).History(ctx, repository.TaskRunHistoryFilter{
+		Kind:     string(f.Kind),
+		ParentID: f.ParentID,
+		Limit:    limit,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	out := make([]RunRow, 0, limit)
-	for rows.Next() {
-		var (
-			r            RunRow
-			stage        *string
-			parent       *int64
-			message      *string
-			errMsg       *string
-			completedAt  *time.Time
-			durationMs   *int64
-			startedAt    time.Time
-			kindStr      string
-			statusStr    string
-			triggerStr   string
-			countersJSON []byte
-			payloadJSON  []byte
-		)
-		if err := rows.Scan(
-			&r.ID, &kindStr, &stage, &parent, &statusStr, &triggerStr,
-			&r.Total, &r.Processed, &r.Success, &r.Failed, &countersJSON,
-			&message, &errMsg, &payloadJSON, &startedAt, &completedAt, &durationMs,
-		); err != nil {
-			return nil, err
-		}
-		r.Kind = Kind(kindStr)
-		r.Status = Status(statusStr)
-		r.Trigger = Trigger(triggerStr)
-		if stage != nil {
-			r.Stage = *stage
-		}
-		if parent != nil {
-			r.ParentID = *parent
-		}
-		if message != nil {
-			r.Message = *message
-		}
-		if errMsg != nil {
-			r.Error = *errMsg
-		}
-		r.StartedAt = startedAt.UnixMilli()
-		if completedAt != nil {
-			r.CompletedAt = completedAt.UnixMilli()
-		}
-		if durationMs != nil {
-			r.DurationMs = *durationMs
-		}
-		if len(countersJSON) > 0 {
-			_ = json.Unmarshal(countersJSON, &r.Counters)
-		}
-		if len(payloadJSON) > 0 {
-			_ = json.Unmarshal(payloadJSON, &r.Payload)
+	for _, row := range rows {
+		r := RunRow{
+			ID:          row.ID,
+			Kind:        Kind(row.Kind),
+			Stage:       row.Stage,
+			ParentID:    row.ParentID,
+			Status:      Status(row.Status),
+			Trigger:     Trigger(row.Trigger),
+			Total:       row.Total,
+			Processed:   row.Processed,
+			Success:     row.Success,
+			Failed:      row.Failed,
+			Counters:    row.Counters,
+			Message:     row.Message,
+			Error:       row.Error,
+			Payload:     row.Payload,
+			StartedAt:   row.StartedAt,
+			CompletedAt: row.CompletedAt,
+			DurationMs:  row.DurationMs,
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ReconcileOnStartup 服务启动时把上次没关闭的 running/stopping/queued 行
 // 标为 cancelled，避免历史表里一堆"永远在跑"的僵尸记录。
 // 进程崩溃或容器重启会触发此路径。
 func ReconcileOnStartup(ctx context.Context, db *pgxpool.Pool) error {
-	_, err := db.Exec(ctx, `
-		UPDATE task_runs
-		SET status       = 'cancelled',
-		    error        = COALESCE(error, 'interrupted by server restart'),
-		    completed_at = NOW(),
-		    duration_ms  = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000)
-		WHERE status IN ('queued','running','stopping')
-		  AND kind <> 'update'
-	`)
-	return err
+	return repository.NewTaskRunRepository(db).ReconcileOnStartup(ctx)
 }
 
 func ReconcileUpdateOnStartup(ctx context.Context, db *pgxpool.Pool, status Status, message, errMsg string) error {
 	if !status.Terminal() {
 		return fmt.Errorf("ReconcileUpdateOnStartup called with non-terminal status: %s", status)
 	}
-	_, err := db.Exec(ctx, `
-		UPDATE task_runs
-		SET status       = $1,
-		    message      = NULLIF($2, ''),
-		    error        = NULLIF($3, ''),
-		    completed_at = NOW(),
-		    duration_ms  = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - started_at))::BIGINT * 1000)
-		WHERE kind = 'update'
-		  AND status IN ('queued','running','stopping')
-	`, string(status), message, errMsg)
-	return err
+	return repository.NewTaskRunRepository(db).ReconcileUpdateOnStartup(ctx, string(status), message, errMsg)
 }
 
 func marshalJSONB(v any) ([]byte, error) {

@@ -44,6 +44,55 @@ func textValue(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: true}
 }
 
+func nullableText(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+func nullableInt32(v int) pgtype.Int4 {
+	if v == 0 {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(v), Valid: true}
+}
+
+func nullableBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+func intervalFromDuration(d time.Duration) pgtype.Interval {
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
+}
+
+func ptrInt32FromPG(v pgtype.Int4) *int32 {
+	if !v.Valid {
+		return nil
+	}
+	i := v.Int32
+	return &i
+}
+
+func ptrIntFromPG(v pgtype.Int4) *int {
+	if !v.Valid {
+		return nil
+	}
+	i := int(v.Int32)
+	return &i
+}
+
+func ptrTextFromPG(v pgtype.Text) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := v.String
+	return &s
+}
+
 func optionalScrapeConfig(v any) *string {
 	switch raw := v.(type) {
 	case nil:

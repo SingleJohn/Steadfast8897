@@ -8,6 +8,9 @@ type Repository struct {
 	Sessions     *SessionRepository
 	Libraries    *LibraryRepository
 	DisplayOrder *DisplayOrderRepository
+	ScrapeQueue  *ScrapeQueueRepository
+	RefreshQueue *RefreshQueueRepository
+	TaskRuns     *TaskRunRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -17,5 +20,8 @@ func New(pool *pgxpool.Pool) *Repository {
 		Sessions:     NewSessionRepository(pool),
 		Libraries:    NewLibraryRepository(pool),
 		DisplayOrder: NewDisplayOrderRepository(pool),
+		ScrapeQueue:  NewScrapeQueueRepository(pool),
+		RefreshQueue: NewRefreshQueueRepository(pool),
+		TaskRuns:     NewTaskRunRepository(pool),
 	}
 }

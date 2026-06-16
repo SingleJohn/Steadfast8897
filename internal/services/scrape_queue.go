@@ -2,12 +2,12 @@ package services
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // ScrapeTaskType 是 scrape_queue.task_type 的枚举。
@@ -51,36 +51,18 @@ type QueueTask struct {
 
 // ScrapeQueue 是对 scrape_queue 表的薄封装,提供入队 / 认领 / 完成 / 失败重试。
 type ScrapeQueue struct {
-	pool *pgxpool.Pool
+	repo *repository.ScrapeQueueRepository
 }
 
 func NewScrapeQueue(pool *pgxpool.Pool) *ScrapeQueue {
-	return &ScrapeQueue{pool: pool}
+	return &ScrapeQueue{repo: repository.NewScrapeQueueRepository(pool)}
 }
 
 // Enqueue 入队一条任务。UNIQUE(item_id, task_type) 会自动去重:
 // 同 item 同类型已在队列(不论 pending/running/failed)就不重复入队,
 // 但允许降低 priority(如手动 refresh 比 auto identify 优先)。
 func (q *ScrapeQueue) Enqueue(ctx context.Context, itemID string, taskType ScrapeTaskType, priority int16) error {
-	_, err := q.pool.Exec(ctx,
-		`INSERT INTO scrape_queue (item_id, task_type, priority, status, next_run_at)
-		 VALUES ($1::uuid, $2, $3, 'pending', NOW())
-		 ON CONFLICT (item_id, task_type) DO UPDATE SET
-		   priority    = LEAST(scrape_queue.priority, EXCLUDED.priority),
-		   status      = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN 'pending' ELSE scrape_queue.status END,
-		   next_run_at = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NOW() ELSE scrape_queue.next_run_at END,
-		   retry_count = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN 0 ELSE scrape_queue.retry_count END,
-		   last_error  = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE scrape_queue.last_error END,
-		   detail_json = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE scrape_queue.detail_json END,
-		   updated_at  = NOW()`,
-		itemID, string(taskType), priority,
-	)
-	return err
+	return q.repo.Enqueue(ctx, itemID, string(taskType), priority)
 }
 
 // EnqueueBatch 一次入队多条(同 task_type / priority),比循环 Enqueue 少 N 次 round-trip。
@@ -88,62 +70,27 @@ func (q *ScrapeQueue) EnqueueBatch(ctx context.Context, itemIDs []string, taskTy
 	if len(itemIDs) == 0 {
 		return 0, nil
 	}
-	tag, err := q.pool.Exec(ctx,
-		`INSERT INTO scrape_queue (item_id, task_type, priority, status, next_run_at)
-		 SELECT id::uuid, $2, $3, 'pending', NOW() FROM unnest($1::text[]) AS t(id)
-		 ON CONFLICT (item_id, task_type) DO UPDATE SET
-		   priority    = LEAST(scrape_queue.priority, EXCLUDED.priority),
-		   status      = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN 'pending' ELSE scrape_queue.status END,
-		   next_run_at = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NOW() ELSE scrape_queue.next_run_at END,
-		   retry_count = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN 0 ELSE scrape_queue.retry_count END,
-		   last_error  = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE scrape_queue.last_error END,
-		   detail_json = CASE WHEN scrape_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE scrape_queue.detail_json END,
-		   updated_at  = NOW()`,
-		itemIDs, string(taskType), priority,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return q.repo.EnqueueBatch(ctx, itemIDs, string(taskType), priority)
 }
 
 // Claim 批量取出 limit 条待处理任务,原子地标记为 running。
 // 使用 FOR UPDATE SKIP LOCKED 让多个 worker 并发 Claim 不互相阻塞。
 func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error) {
-	rows, err := q.pool.Query(ctx,
-		`WITH claimed AS (
-		    SELECT id FROM scrape_queue
-		    WHERE status = 'pending' AND next_run_at <= NOW()
-		    ORDER BY priority, next_run_at
-		    FOR UPDATE SKIP LOCKED
-		    LIMIT $1
-		 )
-		 UPDATE scrape_queue q
-		    SET status = 'running', updated_at = NOW()
-		 FROM claimed
-		 WHERE q.id = claimed.id
-		 RETURNING q.id, q.item_id::text, q.task_type, q.priority, q.retry_count, q.next_run_at, q.created_at`,
-		limit,
-	)
+	rows, err := q.repo.Claim(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var tasks []QueueTask
-	for rows.Next() {
-		var t QueueTask
-		var tt string
-		if err := rows.Scan(&t.ID, &t.ItemID, &tt, &t.Priority, &t.RetryCount, &t.NextRunAt, &t.CreatedAt); err != nil {
-			continue
-		}
-		t.TaskType = ScrapeTaskType(tt)
-		tasks = append(tasks, t)
+	tasks := make([]QueueTask, 0, len(rows))
+	for _, row := range rows {
+		tasks = append(tasks, QueueTask{
+			ID:         row.ID,
+			ItemID:     row.ItemID,
+			TaskType:   ScrapeTaskType(row.TaskType),
+			Priority:   row.Priority,
+			RetryCount: row.RetryCount,
+			NextRunAt:  row.NextRunAt,
+			CreatedAt:  row.CreatedAt,
+		})
 	}
 	return tasks, nil
 }
@@ -151,13 +98,7 @@ func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error)
 // Done 标记成功完成。保留一段时间供审计,后续由 PruneDone 清理。
 // 同时清空 HTTP 诊断列和结构化 detail_json,避免前端看到过时信息。
 func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
-	_, _ = q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'done', last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
-		        updated_at = NOW()
-		  WHERE id = $1`,
-		id)
+	_ = q.repo.Done(ctx, id)
 }
 
 // FailFatal 标记任务为终态 failed,不走退避重试。
@@ -179,14 +120,13 @@ func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, di
 	if diag != nil && diag.Detail != "" {
 		detailJSON = diag.Detail
 	}
-	_, _ = q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'failed', retry_count = retry_count + 1,
-		        last_error = $2,
-		        request_url = $3, response_status = $4, response_sample = $5, detail_json = $6::jsonb,
-		        updated_at = NOW()
-		  WHERE id = $1`,
-		id, truncateError(errMsg), reqURL, respStatus, respBody, detailJSON)
+	_ = q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
+		Error:          truncateError(errMsg),
+		RequestURL:     stringFromAny(reqURL),
+		ResponseStatus: intFromAny(respStatus),
+		ResponseSample: stringFromAny(respBody),
+		DetailJSON:     bytesFromAny(detailJSON),
+	})
 }
 
 // Fail 标记失败并按指数退避排下次运行。超过 maxRetry 就落成 failed。
@@ -209,26 +149,23 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 	}
 
 	if retryCount+1 >= maxRetry {
-		_, _ = q.pool.Exec(ctx,
-			`UPDATE scrape_queue
-			    SET status = 'failed', retry_count = retry_count + 1,
-			        last_error = $2,
-			        request_url = $3, response_status = $4, response_sample = $5, detail_json = $6::jsonb,
-			        updated_at = NOW()
-			  WHERE id = $1`,
-			id, truncateError(errMsg), reqURL, respStatus, respBody, detailJSON)
+		_ = q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
+			Error:          truncateError(errMsg),
+			RequestURL:     stringFromAny(reqURL),
+			ResponseStatus: intFromAny(respStatus),
+			ResponseSample: stringFromAny(respBody),
+			DetailJSON:     bytesFromAny(detailJSON),
+		})
 		return
 	}
 	backoff := retryBackoff(retryCount + 1)
-	_, _ = q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'pending', retry_count = retry_count + 1,
-		        last_error = $2, next_run_at = NOW() + $3::interval,
-		        request_url = $4, response_status = $5, response_sample = $6, detail_json = $7::jsonb,
-		        updated_at = NOW()
-		  WHERE id = $1`,
-		id, truncateError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())),
-		reqURL, respStatus, respBody, detailJSON)
+	_ = q.repo.FailRetry(ctx, id, backoff, repository.ScrapeQueueFailure{
+		Error:          truncateError(errMsg),
+		RequestURL:     stringFromAny(reqURL),
+		ResponseStatus: intFromAny(respStatus),
+		ResponseSample: stringFromAny(respBody),
+		DetailJSON:     bytesFromAny(detailJSON),
+	})
 }
 
 // RecentTask 给前端队列面板用:最近失败/运行中任务。
@@ -270,100 +207,47 @@ func (q *ScrapeQueue) Recent(ctx context.Context, status string, limit, offset i
 		offset = 0
 	}
 
-	var where string
-	args := []any{limit, offset}
-	switch status {
-	case "failed":
-		where = "sq.status = 'failed'"
-	case "running":
-		where = "sq.status = 'running'"
-	case "pending":
-		where = "sq.status = 'pending'"
-	default:
-		where = "sq.status IN ('failed', 'running')"
-	}
-
-	query := `SELECT sq.id, sq.item_id::text,
-	                COALESCE(i.name, ''), COALESCE(i.type, ''),
-	                COALESCE(i.file_path, ''),
-	                COALESCE(i.series_name, ''),
-	                i.index_number, i.parent_index_number,
-	                sq.task_type, sq.status, sq.priority, sq.retry_count,
-	                COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at
-	           FROM scrape_queue sq
-	           LEFT JOIN items i ON i.id = sq.item_id
-	          WHERE ` + where + `
-	          ORDER BY CASE sq.status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
-	                   sq.updated_at DESC
-	          LIMIT $1 OFFSET $2`
-
-	rows, err := q.pool.Query(ctx, query, args...)
+	repoRows, err := q.repo.Recent(ctx, status, limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []RecentTask
-	for rows.Next() {
-		var t RecentTask
-		var tt string
-		if err := rows.Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
-			&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
-			&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
-			&t.NextRunAt, &t.UpdatedAt); err != nil {
-			continue
-		}
-		t.TaskType = ScrapeTaskType(tt)
-		out = append(out, t)
+	out := make([]RecentTask, 0, len(repoRows))
+	for _, row := range repoRows {
+		out = append(out, RecentTask{
+			ID:                row.ID,
+			ItemID:            row.ItemID,
+			ItemName:          row.ItemName,
+			ItemType:          row.ItemType,
+			FilePath:          row.FilePath,
+			SeriesName:        row.SeriesName,
+			IndexNumber:       row.IndexNumber,
+			ParentIndexNumber: row.ParentIndexNumber,
+			TaskType:          ScrapeTaskType(row.TaskType),
+			Status:            row.Status,
+			Priority:          row.Priority,
+			RetryCount:        row.RetryCount,
+			LastError:         row.LastError,
+			NextRunAt:         row.NextRunAt,
+			UpdatedAt:         row.UpdatedAt,
+		})
 	}
 	return out, nil
 }
 
 // RecentCount 给分页器用,返回指定 status 的总数。status="" 时按 failed+running 合并计。
 func (q *ScrapeQueue) RecentCount(ctx context.Context, status string) (int64, error) {
-	var where string
-	switch status {
-	case "failed", "running", "pending":
-		where = "status = $1"
-	default:
-		where = "status IN ('failed', 'running')"
-	}
-	var n int64
-	if where == "status = $1" {
-		err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM scrape_queue WHERE `+where, status).Scan(&n)
-		return n, err
-	}
-	err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM scrape_queue WHERE `+where).Scan(&n)
-	return n, err
+	return q.repo.RecentCount(ctx, status)
 }
 
 // RetryTask 把单个 failed 任务重置为 pending(立即重试)。
 // 同时清空诊断字段,下次失败时由 worker 重新写入。
 func (q *ScrapeQueue) RetryTask(ctx context.Context, id int64) error {
-	_, err := q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
-		        updated_at = NOW()
-		  WHERE id = $1 AND status = 'failed'`,
-		id)
-	return err
+	return q.repo.RetryTask(ctx, id)
 }
 
 // RetryAllFailed 批量把所有 failed 任务重置为 pending。返回被重置的数量。
 func (q *ScrapeQueue) RetryAllFailed(ctx context.Context) (int64, error) {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL,
-		        request_url = NULL, response_status = NULL, response_sample = NULL, detail_json = NULL,
-		        updated_at = NOW()
-		  WHERE status = 'failed'`)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return q.repo.RetryAllFailed(ctx)
 }
 
 // TaskDetail 是 Recent 单行 + HTTP/结构化诊断字段,详情接口专用。
@@ -378,45 +262,33 @@ type TaskDetail struct {
 
 // GetTaskDetail 按 id 拉一条任务的完整信息(含 response_sample)。
 func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail, error) {
-	var t TaskDetail
-	var tt string
-	var reqURL, respSample *string
-	var detailJSON []byte
-	var respStatus *int
-	err := q.pool.QueryRow(ctx,
-		`SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
-		        COALESCE(i.file_path, ''), COALESCE(i.series_name, ''),
-		        i.index_number, i.parent_index_number,
-		        sq.task_type, sq.status, sq.priority, sq.retry_count,
-		        COALESCE(sq.last_error, ''), sq.next_run_at, sq.updated_at,
-		        sq.request_url, sq.response_status, sq.response_sample, sq.detail_json
-		   FROM scrape_queue sq
-		   LEFT JOIN items i ON i.id = sq.item_id
-		  WHERE sq.id = $1`,
-		id,
-	).Scan(&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
-		&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
-		&tt, &t.Status, &t.Priority, &t.RetryCount, &t.LastError,
-		&t.NextRunAt, &t.UpdatedAt,
-		&reqURL, &respStatus, &respSample, &detailJSON)
+	row, err := q.repo.GetTaskDetail(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	t.TaskType = ScrapeTaskType(tt)
-	if reqURL != nil {
-		t.RequestURL = *reqURL
-	}
-	t.ResponseStatus = respStatus
-	if respSample != nil {
-		t.ResponseSample = *respSample
-	}
-	if len(detailJSON) > 0 {
-		var detail any
-		if err := json.Unmarshal(detailJSON, &detail); err == nil {
-			t.DetailJSON = detail
-		}
-	}
-	return &t, nil
+	return &TaskDetail{
+		RecentTask: RecentTask{
+			ID:                row.ID,
+			ItemID:            row.ItemID,
+			ItemName:          row.ItemName,
+			ItemType:          row.ItemType,
+			FilePath:          row.FilePath,
+			SeriesName:        row.SeriesName,
+			IndexNumber:       row.IndexNumber,
+			ParentIndexNumber: row.ParentIndexNumber,
+			TaskType:          ScrapeTaskType(row.TaskType),
+			Status:            row.Status,
+			Priority:          row.Priority,
+			RetryCount:        row.RetryCount,
+			LastError:         row.LastError,
+			NextRunAt:         row.NextRunAt,
+			UpdatedAt:         row.UpdatedAt,
+		},
+		RequestURL:     row.RequestURL,
+		ResponseStatus: row.ResponseStatus,
+		ResponseSample: row.ResponseSample,
+		DetailJSON:     row.DetailJSON,
+	}, nil
 }
 
 // ReconcileOnStartup 启动时无条件把所有 running 任务重置为 pending。
@@ -425,15 +297,12 @@ func (q *ScrapeQueue) GetTaskDetail(ctx context.Context, id int64) (*TaskDetail,
 // 之前用 `updated_at < NOW() - 10 min` 过滤会漏掉"重启前刚刚 Claim 的任务",
 // 让它们永久卡在 running 状态(前端"运行中"计数虚高,实际永不执行)。
 func (q *ScrapeQueue) ReconcileOnStartup(ctx context.Context) error {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'pending', updated_at = NOW()
-		  WHERE status = 'running'`)
+	count, err := q.repo.ReconcileOnStartup(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		slog.Info("[ScrapeQueue] Reconciled orphan running tasks at startup", "count", tag.RowsAffected())
+	if count > 0 {
+		slog.Info("[ScrapeQueue] Reconciled orphan running tasks at startup", "count", count)
 	}
 	return nil
 }
@@ -442,16 +311,13 @@ func (q *ScrapeQueue) ReconcileOnStartup(ctx context.Context) error {
 // 这种情况只可能来自 goroutine panic / deadlock 导致 task 永远没走到 Done/Fail。
 // 由 ScrapeWorker 每 5 分钟调一次,跟启动清理互补。
 func (q *ScrapeQueue) ReconcileStaleRunning(ctx context.Context) error {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE scrape_queue
-		    SET status = 'pending', updated_at = NOW()
-		  WHERE status = 'running' AND updated_at < NOW() - INTERVAL '10 minutes'`)
+	count, err := q.repo.ReconcileStaleRunning(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
+	if count > 0 {
 		slog.Warn("[ScrapeQueue] Reconciled stale running tasks during runtime",
-			"count", tag.RowsAffected(),
+			"count", count,
 			"hint", "goroutine may have panicked or deadlocked without updating status")
 	}
 	return nil
@@ -459,9 +325,7 @@ func (q *ScrapeQueue) ReconcileStaleRunning(ctx context.Context) error {
 
 // PruneDone 定期删除 done 状态超过 7 天的任务,防止表无限增长。
 func (q *ScrapeQueue) PruneDone(ctx context.Context) error {
-	_, err := q.pool.Exec(ctx,
-		`DELETE FROM scrape_queue WHERE status = 'done' AND updated_at < NOW() - INTERVAL '7 days'`)
-	return err
+	return q.repo.PruneDone(ctx)
 }
 
 // QueueStats 给观测/管理面板用(Phase 4 的队列视图)。
@@ -473,31 +337,11 @@ type QueueStats struct {
 }
 
 func (q *ScrapeQueue) Stats(ctx context.Context) (QueueStats, error) {
-	var s QueueStats
-	rows, err := q.pool.Query(ctx,
-		`SELECT status, COUNT(*) FROM scrape_queue GROUP BY status`)
+	stats, err := q.repo.Stats(ctx)
 	if err != nil {
-		return s, err
+		return QueueStats{}, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var status string
-		var n int64
-		if err := rows.Scan(&status, &n); err != nil {
-			continue
-		}
-		switch status {
-		case "pending":
-			s.Pending = n
-		case "running":
-			s.Running = n
-		case "done":
-			s.Done = n
-		case "failed":
-			s.Failed = n
-		}
-	}
-	return s, nil
+	return QueueStats(stats), nil
 }
 
 // retryBackoff: 2^retry 分钟,上限 32 分钟。
@@ -519,4 +363,25 @@ func truncateError(s string) string {
 		return s[:maxErr] + "...[truncated]"
 	}
 	return s
+}
+
+func stringFromAny(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func intFromAny(v any) int {
+	n, _ := v.(int)
+	return n
+}
+
+func bytesFromAny(v any) []byte {
+	switch raw := v.(type) {
+	case []byte:
+		return raw
+	case string:
+		return []byte(raw)
+	default:
+		return nil
+	}
 }

@@ -2,11 +2,12 @@ package services
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 const (
@@ -28,162 +29,84 @@ type RefreshTask struct {
 }
 
 type RefreshQueue struct {
-	pool *pgxpool.Pool
+	repo *repository.RefreshQueueRepository
 }
 
 func NewRefreshQueue(pool *pgxpool.Pool) *RefreshQueue {
-	return &RefreshQueue{pool: pool}
+	return &RefreshQueue{repo: repository.NewRefreshQueueRepository(pool)}
 }
 
 func (q *RefreshQueue) Enqueue(ctx context.Context, itemID string, scope RefreshScope, source RefreshSource, priority int16, opts RefreshOptions) error {
-	_, err := q.pool.Exec(ctx,
-		`INSERT INTO refresh_queue (item_id, scope, source, priority, options_json, status, next_run_at)
-		 VALUES ($1::uuid, $2, $3, $4, $5::jsonb, 'pending', NOW())
-		 ON CONFLICT (item_id, scope) DO UPDATE SET
-		   source       = EXCLUDED.source,
-		   priority     = LEAST(refresh_queue.priority, EXCLUDED.priority),
-		   options_json = EXCLUDED.options_json,
-		   status       = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN 'pending' ELSE refresh_queue.status END,
-		   retry_count  = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN 0 ELSE refresh_queue.retry_count END,
-		   next_run_at  = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN NOW() ELSE refresh_queue.next_run_at END,
-		   last_error   = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE refresh_queue.last_error END,
-		   updated_at   = NOW()`,
-		itemID, string(scope), string(source), priority, opts.Marshal(),
-	)
-	return err
+	return q.repo.Enqueue(ctx, itemID, string(scope), string(source), priority, []byte(opts.Marshal()))
 }
 
 func (q *RefreshQueue) EnqueueBatch(ctx context.Context, itemIDs []string, scope RefreshScope, source RefreshSource, priority int16, opts RefreshOptions) (int64, error) {
 	if len(itemIDs) == 0 {
 		return 0, nil
 	}
-	tag, err := q.pool.Exec(ctx,
-		`INSERT INTO refresh_queue (item_id, scope, source, priority, options_json, status, next_run_at)
-		 SELECT id::uuid, $2, $3, $4, $5::jsonb, 'pending', NOW()
-		   FROM unnest($1::text[]) AS t(id)
-		 ON CONFLICT (item_id, scope) DO UPDATE SET
-		   source       = EXCLUDED.source,
-		   priority     = LEAST(refresh_queue.priority, EXCLUDED.priority),
-		   options_json = EXCLUDED.options_json,
-		   status       = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN 'pending' ELSE refresh_queue.status END,
-		   retry_count  = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN 0 ELSE refresh_queue.retry_count END,
-		   next_run_at  = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN NOW() ELSE refresh_queue.next_run_at END,
-		   last_error   = CASE WHEN refresh_queue.status IN ('done', 'failed')
-		                      THEN NULL ELSE refresh_queue.last_error END,
-		   updated_at   = NOW()`,
-		itemIDs, string(scope), string(source), priority, opts.Marshal(),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return q.repo.EnqueueBatch(ctx, itemIDs, string(scope), string(source), priority, []byte(opts.Marshal()))
 }
 
 func (q *RefreshQueue) Claim(ctx context.Context, limit int) ([]RefreshTask, error) {
-	rows, err := q.pool.Query(ctx,
-		`WITH claimed AS (
-		    SELECT id FROM refresh_queue
-		     WHERE status = 'pending' AND next_run_at <= NOW()
-		     ORDER BY priority, next_run_at
-		     FOR UPDATE SKIP LOCKED
-		     LIMIT $1
-		 )
-		 UPDATE refresh_queue q
-		    SET status = 'running', updated_at = NOW()
-		   FROM claimed
-		  WHERE q.id = claimed.id
-		 RETURNING q.id, q.item_id::text, q.scope, q.source, q.priority,
-		           q.options_json::text, q.retry_count, q.next_run_at, q.created_at`,
-		limit,
-	)
+	rows, err := q.repo.Claim(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var tasks []RefreshTask
-	for rows.Next() {
-		var t RefreshTask
-		var scope, source, rawOpts string
-		if err := rows.Scan(&t.ID, &t.ItemID, &scope, &source, &t.Priority, &rawOpts, &t.RetryCount, &t.NextRunAt, &t.CreatedAt); err != nil {
-			continue
-		}
-		t.Scope = RefreshScope(scope)
-		t.Source = RefreshSource(source)
-		t.Options = ParseRefreshOptions(rawOpts)
-		tasks = append(tasks, t)
+	tasks := make([]RefreshTask, 0, len(rows))
+	for _, row := range rows {
+		tasks = append(tasks, RefreshTask{
+			ID:         row.ID,
+			ItemID:     row.ItemID,
+			Scope:      RefreshScope(row.Scope),
+			Source:     RefreshSource(row.Source),
+			Priority:   row.Priority,
+			Options:    ParseRefreshOptions(row.OptionsRaw),
+			RetryCount: row.RetryCount,
+			NextRunAt:  row.NextRunAt,
+			CreatedAt:  row.CreatedAt,
+		})
 	}
 	return tasks, nil
 }
 
 func (q *RefreshQueue) Done(ctx context.Context, id int64) {
-	_, _ = q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'done', last_error = NULL, updated_at = NOW()
-		  WHERE id = $1`,
-		id)
+	_ = q.repo.Done(ctx, id)
 }
 
 func (q *RefreshQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string) {
 	if retryCount+1 >= maxRetry {
-		_, _ = q.pool.Exec(ctx,
-			`UPDATE refresh_queue
-			    SET status = 'failed', retry_count = retry_count + 1,
-			        last_error = $2, updated_at = NOW()
-			  WHERE id = $1`,
-			id, truncateRefreshError(errMsg))
+		_ = q.repo.FailFatal(ctx, id, truncateRefreshError(errMsg))
 		return
 	}
 
 	backoff := refreshRetryBackoff(retryCount + 1)
-	_, _ = q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'pending', retry_count = retry_count + 1,
-		        last_error = $2, next_run_at = NOW() + $3::interval,
-		        updated_at = NOW()
-		  WHERE id = $1`,
-		id, truncateRefreshError(errMsg), fmt.Sprintf("%d seconds", int(backoff.Seconds())))
+	_ = q.repo.FailRetry(ctx, id, backoff, truncateRefreshError(errMsg))
 }
 
 func (q *RefreshQueue) ReconcileOnStartup(ctx context.Context) error {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'pending', updated_at = NOW()
-		  WHERE status = 'running'`)
+	count, err := q.repo.ReconcileOnStartup(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		slog.Info("[RefreshQueue] Reconciled orphan running tasks at startup", "count", tag.RowsAffected())
+	if count > 0 {
+		slog.Info("[RefreshQueue] Reconciled orphan running tasks at startup", "count", count)
 	}
 	return nil
 }
 
 func (q *RefreshQueue) ReconcileStaleRunning(ctx context.Context) error {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'pending', updated_at = NOW()
-		  WHERE status = 'running' AND updated_at < NOW() - INTERVAL '10 minutes'`)
+	count, err := q.repo.ReconcileStaleRunning(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		slog.Warn("[RefreshQueue] Reconciled stale running tasks during runtime", "count", tag.RowsAffected())
+	if count > 0 {
+		slog.Warn("[RefreshQueue] Reconciled stale running tasks during runtime", "count", count)
 	}
 	return nil
 }
 
 func (q *RefreshQueue) PruneDone(ctx context.Context) error {
-	_, err := q.pool.Exec(ctx,
-		`DELETE FROM refresh_queue WHERE status = 'done' AND updated_at < NOW() - INTERVAL '7 days'`)
-	return err
+	return q.repo.PruneDone(ctx)
 }
 
 type RefreshRecentTask struct {
@@ -216,75 +139,36 @@ func (q *RefreshQueue) Recent(ctx context.Context, status string, limit, offset 
 		offset = 0
 	}
 
-	var where string
-	switch status {
-	case "failed":
-		where = "rq.status = 'failed'"
-	case "running":
-		where = "rq.status = 'running'"
-	case "pending":
-		where = "rq.status = 'pending'"
-	case "done":
-		where = "rq.status = 'done'"
-	default:
-		where = "rq.status IN ('failed', 'running')"
-	}
-
-	rows, err := q.pool.Query(ctx,
-		`SELECT rq.id, rq.item_id::text,
-		        COALESCE(i.name, ''), COALESCE(i.type, ''),
-		        COALESCE(i.file_path, ''),
-		        COALESCE(i.series_name, ''),
-		        i.index_number, i.parent_index_number,
-		        rq.scope, rq.source, rq.status, rq.priority, rq.retry_count,
-		        COALESCE(rq.last_error, ''), rq.next_run_at, rq.updated_at
-		   FROM refresh_queue rq
-		   LEFT JOIN items i ON i.id = rq.item_id
-		  WHERE `+where+`
-		  ORDER BY CASE rq.status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,
-		           rq.updated_at DESC
-		  LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
+	repoRows, err := q.repo.Recent(ctx, status, limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []RefreshRecentTask
-	for rows.Next() {
-		var t RefreshRecentTask
-		var scope, source string
-		if err := rows.Scan(
-			&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
-			&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
-			&scope, &source, &t.Status, &t.Priority, &t.RetryCount,
-			&t.LastError, &t.NextRunAt, &t.UpdatedAt,
-		); err != nil {
-			continue
-		}
-		t.Scope = RefreshScope(scope)
-		t.Source = RefreshSource(source)
-		out = append(out, t)
+	out := make([]RefreshRecentTask, 0, len(repoRows))
+	for _, row := range repoRows {
+		out = append(out, RefreshRecentTask{
+			ID:                row.ID,
+			ItemID:            row.ItemID,
+			ItemName:          row.ItemName,
+			ItemType:          row.ItemType,
+			FilePath:          row.FilePath,
+			SeriesName:        row.SeriesName,
+			IndexNumber:       row.IndexNumber,
+			ParentIndexNumber: row.ParentIndexNumber,
+			Scope:             RefreshScope(row.Scope),
+			Source:            RefreshSource(row.Source),
+			Status:            row.Status,
+			Priority:          row.Priority,
+			RetryCount:        row.RetryCount,
+			LastError:         row.LastError,
+			NextRunAt:         row.NextRunAt,
+			UpdatedAt:         row.UpdatedAt,
+		})
 	}
 	return out, nil
 }
 
 func (q *RefreshQueue) RecentCount(ctx context.Context, status string) (int64, error) {
-	var where string
-	switch status {
-	case "failed", "running", "pending", "done":
-		where = "status = $1"
-	default:
-		where = "status IN ('failed', 'running')"
-	}
-	var n int64
-	if where == "status = $1" {
-		err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_queue WHERE `+where, status).Scan(&n)
-		return n, err
-	}
-	err := q.pool.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_queue WHERE `+where).Scan(&n)
-	return n, err
+	return q.repo.RecentCount(ctx, status)
 }
 
 type RefreshTaskDetail struct {
@@ -293,85 +177,47 @@ type RefreshTaskDetail struct {
 }
 
 func (q *RefreshQueue) GetTaskDetail(ctx context.Context, id int64) (*RefreshTaskDetail, error) {
-	var t RefreshTaskDetail
-	var scope, source, rawOpts string
-	err := q.pool.QueryRow(ctx,
-		`SELECT rq.id, rq.item_id::text,
-		        COALESCE(i.name, ''), COALESCE(i.type, ''),
-		        COALESCE(i.file_path, ''),
-		        COALESCE(i.series_name, ''),
-		        i.index_number, i.parent_index_number,
-		        rq.scope, rq.source, rq.status, rq.priority, rq.retry_count,
-		        COALESCE(rq.last_error, ''), rq.next_run_at, rq.updated_at,
-		        rq.options_json::text
-		   FROM refresh_queue rq
-		   LEFT JOIN items i ON i.id = rq.item_id
-		  WHERE rq.id = $1`,
-		id,
-	).Scan(
-		&t.ID, &t.ItemID, &t.ItemName, &t.ItemType,
-		&t.FilePath, &t.SeriesName, &t.IndexNumber, &t.ParentIndexNumber,
-		&scope, &source, &t.Status, &t.Priority, &t.RetryCount,
-		&t.LastError, &t.NextRunAt, &t.UpdatedAt,
-		&rawOpts,
-	)
+	row, err := q.repo.GetTaskDetail(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	t.Scope = RefreshScope(scope)
-	t.Source = RefreshSource(source)
-	t.Options = ParseRefreshOptions(rawOpts)
-	return &t, nil
+	return &RefreshTaskDetail{
+		RefreshRecentTask: RefreshRecentTask{
+			ID:                row.ID,
+			ItemID:            row.ItemID,
+			ItemName:          row.ItemName,
+			ItemType:          row.ItemType,
+			FilePath:          row.FilePath,
+			SeriesName:        row.SeriesName,
+			IndexNumber:       row.IndexNumber,
+			ParentIndexNumber: row.ParentIndexNumber,
+			Scope:             RefreshScope(row.Scope),
+			Source:            RefreshSource(row.Source),
+			Status:            row.Status,
+			Priority:          row.Priority,
+			RetryCount:        row.RetryCount,
+			LastError:         row.LastError,
+			NextRunAt:         row.NextRunAt,
+			UpdatedAt:         row.UpdatedAt,
+		},
+		Options: ParseRefreshOptions(row.OptionsRaw),
+	}, nil
 }
 
 func (q *RefreshQueue) RetryTask(ctx context.Context, id int64) error {
-	_, err := q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL, updated_at = NOW()
-		  WHERE id = $1 AND status = 'failed'`,
-		id)
-	return err
+	return q.repo.RetryTask(ctx, id)
 }
 
 func (q *RefreshQueue) RetryAllFailed(ctx context.Context) (int64, error) {
-	tag, err := q.pool.Exec(ctx,
-		`UPDATE refresh_queue
-		    SET status = 'pending', next_run_at = NOW(), retry_count = 0,
-		        last_error = NULL, updated_at = NOW()
-		  WHERE status = 'failed'`)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return q.repo.RetryAllFailed(ctx)
 }
 
 func (q *RefreshQueue) Stats(ctx context.Context) (QueueStats, error) {
-	var s QueueStats
-	rows, err := q.pool.Query(ctx,
-		`SELECT status, COUNT(*) FROM refresh_queue GROUP BY status`)
+	stats, err := q.repo.Stats(ctx)
 	if err != nil {
-		return s, err
+		return QueueStats{}, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var status string
-		var n int64
-		if err := rows.Scan(&status, &n); err != nil {
-			continue
-		}
-		switch status {
-		case "pending":
-			s.Pending = n
-		case "running":
-			s.Running = n
-		case "done":
-			s.Done = n
-		case "failed":
-			s.Failed = n
-		}
-	}
-	return s, nil
+	return QueueStats(stats), nil
 }
 
 func refreshRetryBackoff(retryCount int16) time.Duration {

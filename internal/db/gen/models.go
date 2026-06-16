@@ -18,6 +18,26 @@ type AccessToken struct {
 	CreatedAt  pgtype.Timestamp `json:"created_at"`
 }
 
+type TaskRun struct {
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Stage       pgtype.Text        `json:"stage"`
+	ParentID    pgtype.Int8        `json:"parent_id"`
+	Status      string             `json:"status"`
+	Trigger     string             `json:"trigger"`
+	Total       int64              `json:"total"`
+	Processed   int64              `json:"processed"`
+	Success     int64              `json:"success"`
+	Failed      int64              `json:"failed"`
+	Counters    []byte             `json:"counters"`
+	Message     pgtype.Text        `json:"message"`
+	Error       pgtype.Text        `json:"error"`
+	Payload     []byte             `json:"payload"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+	DurationMs  pgtype.Int8        `json:"duration_ms"`
+}
+
 type User struct {
 	ID               pgtype.UUID      `json:"id"`
 	Name             string           `json:"name"`
