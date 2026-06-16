@@ -698,6 +698,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	defer rows.Close()
 
 	needMediaSources := strings.Contains(fields, "MediaSources") || strings.Contains(fields, "Path")
+	needPrimaryImageAspectRatio := strings.Contains(fields, "PrimaryImageAspectRatio")
 	needGenres := strings.Contains(fields, "Genres")
 	needPeople := strings.Contains(fields, "People")
 
@@ -726,6 +727,9 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		}
 
 		d := dto.FormatItemDtoList(&row, state.Config.ServerID, udPtr)
+		if needPrimaryImageAspectRatio {
+			d = dto.FormatItemDtoListWithPrimaryImageAspectRatio(&row, state.Config.ServerID, udPtr)
+		}
 		result := dtoToMap(d)
 
 		if embyID, ok := m["emby_id"]; ok && embyID != nil {

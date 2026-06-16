@@ -114,14 +114,20 @@ func canonicalProvider(lower string) string {
 
 // FormatItemDtoList 列表场景:跳过 strm 文件解析和图片尺寸探测,避免列表接口被慢盘/网盘挂载拖慢。
 func FormatItemDtoList(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
-	return formatItemDto(item, serverID, userData, true)
+	return formatItemDto(item, serverID, userData, true, false)
+}
+
+// FormatItemDtoListWithPrimaryImageAspectRatio 用于客户端显式请求 PrimaryImageAspectRatio 的列表场景:
+// 仍跳过 strm 文件解析,但允许在后台直读开关开启时探测本地图片比例。
+func FormatItemDtoListWithPrimaryImageAspectRatio(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
+	return formatItemDto(item, serverID, userData, true, true)
 }
 
 func FormatItemDto(item *ItemRow, serverID string, userData *UserDataRow) BaseItemDto {
-	return formatItemDto(item, serverID, userData, false)
+	return formatItemDto(item, serverID, userData, false, true)
 }
 
-func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipStrmResolve bool) BaseItemDto {
+func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipStrmResolve bool, includePrimaryImageAspectRatio bool) BaseItemDto {
 	sortName := item.Name
 	if item.SortName != nil {
 		sortName = *item.SortName
@@ -240,7 +246,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if len(imageTags) > 0 {
 		dto.ImageTags = imageTags
 	}
-	if !skipStrmResolve {
+	if includePrimaryImageAspectRatio {
 		if ratio := primaryImageAspectRatio(item.PrimaryImagePath); ratio != nil {
 			dto.PrimaryImageAspectRatio = ratio
 		}
