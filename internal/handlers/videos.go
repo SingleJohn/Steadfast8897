@@ -19,6 +19,7 @@ import (
 	"fyms/internal/dto"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
@@ -355,14 +356,14 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 		return
 	}
 
-	var policy *models.UserPolicy
+	var policy *repository.UserPolicy
 	if !strings.HasPrefix(authUser.ID, "api-key-") {
 		userUUID, err := uuid.Parse(authUser.ID)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 			return
 		}
-		policy, err = models.GetUserPolicy(ctx, state.DB, userUUID)
+		policy, err = state.Repo.Users.GetUserPolicy(ctx, userUUID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Policy error"})
 			return
@@ -625,7 +626,7 @@ func streamVideo(c *gin.Context, state *AppState) {
 			return
 		}
 		if userUUID, err := uuid.Parse(userID); err == nil {
-			policy, _ := models.GetUserPolicy(ctx, state.DB, userUUID)
+			policy, _ := state.Repo.Users.GetUserPolicy(ctx, userUUID)
 			if policy != nil && !policy.EnableMediaPlayback {
 				c.JSON(http.StatusForbidden, gin.H{"message": "Playback disabled"})
 				return

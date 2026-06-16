@@ -247,7 +247,7 @@ func OnPlaybackStart(c *gin.Context) {
 
 	if !strings.HasPrefix(auth.ID, "api-key-") {
 		if userUUID, err := uuid.Parse(auth.ID); err == nil {
-			if policy, err := models.GetUserPolicy(c.Request.Context(), st.DB, userUUID); err == nil && policy != nil {
+			if policy, err := st.Repo.Users.GetUserPolicy(c.Request.Context(), userUUID); err == nil && policy != nil {
 				if policy.SimultaneousStreamLimit > 0 {
 					count := ActivePlaybackCount(auth.ID)
 					if int32(count) >= policy.SimultaneousStreamLimit {
@@ -797,7 +797,7 @@ func notifyUserName(ctx context.Context, st *AppState, userID string) string {
 	if err != nil {
 		return userID
 	}
-	u, err := models.FindUserByID(ctx, st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(ctx, uid)
 	if err != nil || u == nil || u.Name == "" {
 		return userID
 	}

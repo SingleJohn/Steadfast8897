@@ -9,8 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"fyms/internal/models"
 )
 
 // RegisterEmbyCompatRoutes registers the /emby/ endpoints used by external STRM tools.
@@ -27,7 +25,7 @@ func RegisterEmbyCompatRoutes(group *gin.RouterGroup, state *AppState, adminMW g
 
 func embyGetUsers(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
-	users, err := models.GetAllUsers(ctx, state.DB)
+	users, err := state.Repo.Users.ListUsers(ctx)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return

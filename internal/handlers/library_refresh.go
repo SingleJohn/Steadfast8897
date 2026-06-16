@@ -123,7 +123,7 @@ func getVirtualFolders(c *gin.Context) {
 			return
 		}
 	}
-	libs, err := models.GetAllLibraries(ctx, state.DB)
+	libs, err := state.Repo.Libraries.ListLibraries(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -715,7 +715,7 @@ func refreshSingleLibrary(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil || lib == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return

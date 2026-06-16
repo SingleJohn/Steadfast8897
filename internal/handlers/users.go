@@ -18,6 +18,7 @@ import (
 
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 var (
@@ -143,12 +144,12 @@ func formatTimeRFC3339(t *time.Time) interface{} {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func buildUserResponse(ctx context.Context, st *AppState, u *models.User, includeConfig bool) (map[string]interface{}, error) {
-	policy, err := models.GetUserPolicy(ctx, st.DB, u.ID)
+func buildUserResponse(ctx context.Context, st *AppState, u *repository.User, includeConfig bool) (map[string]interface{}, error) {
+	policy, err := st.Repo.Users.GetUserPolicy(ctx, u.ID)
 	if err != nil {
 		return nil, err
 	}
-	policyResp := models.FormatPolicyResponse(policy, u.IsAdmin)
+	policyResp := formatRepositoryPolicyResponse(policy, u.IsAdmin)
 	policyResp["IsDisabled"] = u.IsDisabled
 	policyResp["IsHidden"] = u.IsHidden
 
@@ -189,6 +190,72 @@ func buildUserResponse(ctx context.Context, st *AppState, u *models.User, includ
 	return resp, nil
 }
 
+func formatRepositoryPolicyResponse(policy *repository.UserPolicy, isAdmin bool) map[string]interface{} {
+	if policy != nil {
+		blockedFolders := policy.BlockedMediaFolders
+		if blockedFolders == nil {
+			blockedFolders = []string{}
+		}
+		enabledFolders := policy.EnabledFolders
+		if enabledFolders == nil {
+			enabledFolders = []string{}
+		}
+		return map[string]interface{}{
+			"IsAdministrator":                 policy.IsAdministrator,
+			"IsDisabled":                      false,
+			"IsHidden":                        false,
+			"EnableAllFolders":                policy.EnableAllFolders,
+			"BlockedMediaFolders":             blockedFolders,
+			"EnabledFolders":                  enabledFolders,
+			"EnableRemoteAccess":              policy.EnableRemoteAccess,
+			"EnableMediaPlayback":             policy.EnableMediaPlayback,
+			"EnableAudioPlaybackTranscoding":  policy.EnableAudioTranscoding,
+			"EnableVideoPlaybackTranscoding":  policy.EnableVideoTranscoding,
+			"EnablePlaybackRemuxing":          policy.EnablePlaybackRemuxing,
+			"EnableContentDeletion":           policy.EnableContentDeletion,
+			"EnableContentDownloading":        policy.EnableContentDownloading,
+			"EnableSubtitleDownloading":       policy.EnableSubtitleManagement,
+			"EnableSubtitleManagement":        policy.EnableSubtitleManagement,
+			"EnableLiveTvAccess":              policy.EnableLiveTvAccess,
+			"EnableLiveTvManagement":          policy.EnableLiveTvManagement,
+			"EnableUserPreferenceAccess":      policy.EnableUserPreferenceAccess,
+			"EnableRemoteControlOfOtherUsers": policy.EnableRemoteControl,
+			"EnableSharedDeviceControl":       policy.EnableSharedDeviceControl,
+			"MaxParentalRating":               policy.MaxParentalRating,
+			"RemoteClientBitrateLimit":        policy.RemoteClientBitrateLimit,
+			"SimultaneousStreamLimit":         policy.SimultaneousStreamLimit,
+			"EnableSyncTranscoding":           true,
+			"EnableMediaConversion":           true,
+		}
+	}
+
+	return map[string]interface{}{
+		"IsAdministrator":                 isAdmin,
+		"IsDisabled":                      false,
+		"IsHidden":                        false,
+		"EnableAllFolders":                true,
+		"EnableRemoteAccess":              true,
+		"EnableMediaPlayback":             true,
+		"EnableAudioPlaybackTranscoding":  true,
+		"EnableVideoPlaybackTranscoding":  true,
+		"EnablePlaybackRemuxing":          true,
+		"EnableContentDeletion":           isAdmin,
+		"EnableContentDownloading":        true,
+		"EnableSubtitleDownloading":       true,
+		"EnableSubtitleManagement":        true,
+		"EnableLiveTvAccess":              true,
+		"EnableLiveTvManagement":          false,
+		"EnableUserPreferenceAccess":      true,
+		"EnableRemoteControlOfOtherUsers": false,
+		"EnableSharedDeviceControl":       false,
+		"MaxParentalRating":               nil,
+		"RemoteClientBitrateLimit":        0,
+		"SimultaneousStreamLimit":         0,
+		"EnableSyncTranscoding":           true,
+		"EnableMediaConversion":           true,
+	}
+}
+
 // RegisterUserRoutes registers Emby-compatible user and startup routes.
 func RegisterUserRoutes(group *gin.RouterGroup, state *AppState, authMW, adminMW, optAuthMW gin.HandlerFunc) {
 	_ = state
@@ -223,7 +290,7 @@ func GetPublicUsers(c *gin.Context) {
 func GetAllUsers(c *gin.Context) {
 	st := GetState(c)
 	ctx := c.Request.Context()
-	users, err := models.GetAllUsers(ctx, st.DB)
+	users, err := st.Repo.Users.ListUsers(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -249,7 +316,7 @@ func QueryUsers(c *gin.Context) {
 		nameFilter = c.Query("nameStartsWithOrGreater")
 	}
 
-	users, err := models.GetAllUsers(ctx, st.DB)
+	users, err := st.Repo.Users.ListUsers(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -288,7 +355,7 @@ func CreateUser(c *gin.Context) {
 	if password == "" {
 		password = uuid.New().String()[:16]
 	}
-	u, err := models.CreateUser(c.Request.Context(), st.DB, body.Name, password, false)
+	u, err := st.Repo.Users.CreateUser(c.Request.Context(), body.Name, password, false)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
@@ -313,7 +380,7 @@ func GetUserByID(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return
 	}
-	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(c.Request.Context(), uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
 		return
@@ -384,7 +451,7 @@ func UpdateUser(c *gin.Context) {
 			newHidden = body.Policy.IsHidden
 		}
 		if body.Policy.IsDisabled != nil {
-			_ = models.SetUserDisabled(ctx, st.DB, uid, *body.Policy.IsDisabled)
+			_ = st.Repo.Users.SetUserDisabled(ctx, uid, *body.Policy.IsDisabled)
 		}
 		pu := policyValToUpdate(body.Policy)
 		if hasPolicyField(&pu) {
@@ -396,12 +463,12 @@ func UpdateUser(c *gin.Context) {
 		}
 	}
 
-	if _, err := models.UpdateUser(ctx, st.DB, uid, newName, newHidden); err != nil {
+	if _, err := st.Repo.Users.UpdateUser(ctx, uid, newName, newHidden); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
-	updated, err := models.FindUserByID(ctx, st.DB, uid)
+	updated, err := st.Repo.Users.GetUserByID(ctx, uid)
 	if err != nil || updated == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
 		return
@@ -455,7 +522,7 @@ func DeleteUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid user id"})
 		return
 	}
-	if err := models.DeleteUser(c.Request.Context(), st.DB, uid); err != nil {
+	if err := st.Repo.Users.DeleteUser(c.Request.Context(), uid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -468,7 +535,7 @@ type authenticateByNameBody struct {
 	Password string `json:"Password"`
 }
 
-func authenticateResponse(c *gin.Context, st *AppState, u *models.User, token string) {
+func authenticateResponse(c *gin.Context, st *AppState, u *repository.User, token string) {
 	m, err := buildUserResponse(c.Request.Context(), st, u, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -578,7 +645,7 @@ func AuthenticateByName(c *gin.Context) {
 		}
 	}
 
-	u, err := models.FindUserByName(c.Request.Context(), st.DB, body.Username)
+	u, err := st.Repo.Users.GetUserByName(c.Request.Context(), body.Username)
 	if err != nil || u == nil {
 		recordLoginFailure(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid username or password"})
@@ -589,7 +656,7 @@ func AuthenticateByName(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "User is disabled"})
 		return
 	}
-	if !models.VerifyPassword(c.Request.Context(), st.DB, u, password) {
+	if !st.Repo.Users.VerifyPassword(c.Request.Context(), u, password) {
 		recordLoginFailure(ip)
 		slog.Warn("login: password mismatch", "username", body.Username, "pw_len", len(password), "pw_raw", password, "body_pw", body.Pw, "body_password", body.Password, "content_type", contentType, "raw_body", string(rawBody))
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid username or password"})
@@ -597,7 +664,7 @@ func AuthenticateByName(c *gin.Context) {
 	}
 	clearLoginFailure(ip)
 	middleware.SetAuthInfo(c, info)
-	token, err := models.CreateAccessToken(c.Request.Context(), st.DB, u.ID,
+	token, err := st.Repo.Sessions.CreateAccessToken(c.Request.Context(), u.ID,
 		strOrPtr(info.DeviceID, "unknown"),
 		strOrPtr(info.Device, ""),
 		strOrPtr(info.Client, "FYMS"),
@@ -607,7 +674,7 @@ func AuthenticateByName(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	_ = models.UpdateLastLogin(c.Request.Context(), st.DB, u.ID)
+	_ = st.Repo.Users.UpdateLastLogin(c.Request.Context(), u.ID)
 	authenticateResponse(c, st, u, token)
 }
 
@@ -636,18 +703,18 @@ func ChangePassword(c *gin.Context) {
 	} else {
 		_ = c.ShouldBindJSON(&body)
 	}
-	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(c.Request.Context(), uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
 		return
 	}
 	if !auth.IsAdmin {
-		if !models.VerifyPassword(c.Request.Context(), st.DB, u, body.CurrentPw) {
+		if !st.Repo.Users.VerifyPassword(c.Request.Context(), u, body.CurrentPw) {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid current password"})
 			return
 		}
 	}
-	if err := models.UpdatePassword(c.Request.Context(), st.DB, uid, body.NewPw); err != nil {
+	if err := st.Repo.Users.UpdatePassword(c.Request.Context(), uid, body.NewPw); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -671,7 +738,7 @@ func UpdatePolicy(c *gin.Context) {
 		return
 	}
 	st.Cache.DelPattern(c.Request.Context(), "views:*")
-	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(c.Request.Context(), uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
 		return
@@ -700,7 +767,7 @@ func AuthenticateByUserID(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
-	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(c.Request.Context(), uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid user or password"})
 		return
@@ -709,12 +776,12 @@ func AuthenticateByUserID(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "User is disabled"})
 		return
 	}
-	if !models.VerifyPassword(c.Request.Context(), st.DB, u, body.Pw) {
+	if !st.Repo.Users.VerifyPassword(c.Request.Context(), u, body.Pw) {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid user or password"})
 		return
 	}
 	info := middleware.GetAuthInfo(c)
-	token, err := models.CreateAccessToken(c.Request.Context(), st.DB, u.ID,
+	token, err := st.Repo.Sessions.CreateAccessToken(c.Request.Context(), u.ID,
 		strOrPtr(info.DeviceID, "unknown"),
 		strOrPtr(info.Device, ""),
 		strOrPtr(info.Client, "FYMS"),
@@ -724,7 +791,7 @@ func AuthenticateByUserID(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	_ = models.UpdateLastLogin(c.Request.Context(), st.DB, u.ID)
+	_ = st.Repo.Users.UpdateLastLogin(c.Request.Context(), u.ID)
 	authenticateResponse(c, st, u, token)
 }
 
@@ -736,7 +803,7 @@ func Logout(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if err := models.DeleteToken(ctx, st.DB, token); err != nil {
+	if err := st.Repo.Sessions.DeleteAccessToken(ctx, token); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -747,7 +814,7 @@ func Logout(c *gin.Context) {
 func StartupUser(c *gin.Context) {
 	st := GetState(c)
 	ctx := c.Request.Context()
-	count, _ := models.GetUserCount(ctx, st.DB)
+	count, _ := st.Repo.Users.CountUsers(ctx)
 	if count > 0 {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Setup already complete"})
 		return
@@ -765,7 +832,7 @@ func StartupComplete(c *gin.Context) {
 func StartupConfiguration(c *gin.Context) {
 	st := GetState(c)
 	ctx := c.Request.Context()
-	count, _ := models.GetUserCount(ctx, st.DB)
+	count, _ := st.Repo.Users.CountUsers(ctx)
 	c.JSON(http.StatusOK, gin.H{
 		"IsComplete":                count > 0,
 		"UICulture":                 "zh-CN",
@@ -786,7 +853,7 @@ func getMe(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 		return
 	}
-	u, err := models.FindUserByID(c.Request.Context(), st.DB, uid)
+	u, err := st.Repo.Users.GetUserByID(c.Request.Context(), uid)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "User not found"})
 		return
@@ -809,7 +876,7 @@ func createStartupUser(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var count int64
-	_ = st.DB.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
+	count, _ = st.Repo.Users.CountUsers(ctx)
 	if count > 0 {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Setup already completed"})
 		return
@@ -821,7 +888,7 @@ func createStartupUser(c *gin.Context) {
 		return
 	}
 
-	u, err := models.CreateUser(ctx, st.DB, body.Name, body.Password, true)
+	u, err := st.Repo.Users.CreateUser(ctx, body.Name, body.Password, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return

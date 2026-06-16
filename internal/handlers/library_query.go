@@ -38,7 +38,7 @@ func getUserViews(c *gin.Context) {
 		return
 	}
 
-	libs, err := models.GetAllLibraries(ctx, state.DB)
+	libs, err := state.Repo.Libraries.ListLibraries(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -185,7 +185,7 @@ func getUserViews(c *gin.Context) {
 
 	// 统一展示顺序:有 library_display_order 记录时,实际库与虚拟库按其交错排序;
 	// 否则回退 platform_libraries_position(before/after)。
-	order, _ := models.GetDisplayOrder(ctx, state.DB)
+	order, _ := state.Repo.DisplayOrder.GetDisplayOrder(ctx)
 	out := make([]gin.H, 0, len(libEntries)+len(platformEntries))
 	if len(order) > 0 {
 		out = append(out, platformEntries...)
@@ -515,7 +515,7 @@ func resolvePhysicalParentForItems(ctx context.Context, state *AppState, scope *
 	}
 
 	if uid, err := uuid.Parse(parentID); err == nil {
-		if lib, lerr := models.GetLibraryByID(ctx, state.DB, uid); lerr != nil {
+		if lib, lerr := state.Repo.Libraries.GetLibraryByID(ctx, uid); lerr != nil {
 			return false, lerr
 		} else if lib != nil {
 			if scope != nil && !scope.allowsLibrary(parentID) {

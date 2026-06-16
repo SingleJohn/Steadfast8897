@@ -496,7 +496,7 @@ func getItemDetail(c *gin.Context) {
 	}
 
 	if uid, err := uuid.Parse(itemID); err == nil {
-		lib, lerr := models.GetLibraryByID(ctx, state.DB, uid)
+		lib, lerr := state.Repo.Libraries.GetLibraryByID(ctx, uid)
 		if lerr == nil && lib != nil {
 			if !scope.allowsLibrary(uid.String()) {
 				c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})

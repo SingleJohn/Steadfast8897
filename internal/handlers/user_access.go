@@ -20,7 +20,7 @@ func loadUserLibraryScope(ctx context.Context, state *AppState, userID string) (
 		return &userLibraryScope{AllowAll: true}, nil
 	}
 
-	policy, err := models.GetUserPolicy(ctx, state.DB, uid)
+	policy, err := state.Repo.Users.GetUserPolicy(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func loadUserLibraryScope(ctx context.Context, state *AppState, userID string) (
 
 	ids := append([]string(nil), policy.EnabledFolders...)
 	if len(ids) == 0 {
-		legacyIDs, err := models.GetUserLibraryAccess(ctx, state.DB, uid)
+		legacyIDs, err := state.Repo.Users.ListUserLibraryAccess(ctx, uid)
 		if err != nil {
 			return nil, err
 		}

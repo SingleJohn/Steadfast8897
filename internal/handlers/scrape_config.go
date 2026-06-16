@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"fyms/internal/models"
 	"fyms/internal/services"
 	"fyms/internal/services/scraper"
 )
@@ -97,7 +96,7 @@ func getLibraryScrapeConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid library id"})
 		return
 	}
-	lib, err := models.GetLibraryByID(ctx, state.DB, libID)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, libID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -141,7 +140,7 @@ func putLibraryScrapeConfig(c *gin.Context) {
 
 	// inherit=true 或 override 全空 → 写 NULL
 	if body.Inherit || body.Override == nil || body.Override.IsEmpty() {
-		if err := models.UpdateLibraryScrapeConfig(ctx, state.DB, libID, nil); err != nil {
+		if err := state.Repo.Libraries.UpdateLibraryScrapeConfig(ctx, libID, nil); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
@@ -156,7 +155,7 @@ func putLibraryScrapeConfig(c *gin.Context) {
 		return
 	}
 	rawStr := string(raw)
-	if err := models.UpdateLibraryScrapeConfig(ctx, state.DB, libID, &rawStr); err != nil {
+	if err := state.Repo.Libraries.UpdateLibraryScrapeConfig(ctx, libID, &rawStr); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}

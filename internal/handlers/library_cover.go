@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services/coverart"
 
 	"github.com/disintegration/imaging"
@@ -30,7 +31,7 @@ func uploadLibraryImage(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil || lib == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
@@ -76,7 +77,7 @@ func uploadLibraryImage(c *gin.Context) {
 	}
 
 	tag := uuid.New().String()
-	if err := models.UpdateLibraryImage(ctx, state.DB, id, fpath, tag); err != nil {
+	if err := state.Repo.Libraries.UpdateLibraryImage(ctx, id, fpath, tag); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -93,7 +94,7 @@ func setLibraryImageFromURL(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil || lib == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
@@ -153,7 +154,7 @@ func setLibraryImageFromURL(c *gin.Context) {
 	}
 
 	tag := uuid.New().String()
-	if err := models.UpdateLibraryImage(ctx, state.DB, id, fpath, tag); err != nil {
+	if err := state.Repo.Libraries.UpdateLibraryImage(ctx, id, fpath, tag); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -170,7 +171,7 @@ func deleteLibraryImage(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if err := models.DeleteLibraryImage(ctx, state.DB, id); err != nil {
+	if err := state.Repo.Libraries.DeleteLibraryImage(ctx, id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -212,7 +213,7 @@ func generateLibraryCover(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil || lib == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
@@ -250,7 +251,7 @@ func generateLibraryCover(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ImageTag": tag, "Style": style})
 }
 
-func renderAndSaveLibraryCover(ctx context.Context, state *AppState, lib *models.Library, gen coverart.Generator, options map[string]any) (string, error) {
+func renderAndSaveLibraryCover(ctx context.Context, state *AppState, lib *repository.Library, gen coverart.Generator, options map[string]any) (string, error) {
 	release, err := coverart.AcquireBusy(lib.ID)
 	if err != nil {
 		return "", err
@@ -297,7 +298,7 @@ func renderAndSaveLibraryCover(ctx context.Context, state *AppState, lib *models
 	}
 
 	tag := uuid.New().String()
-	if err := models.UpdateLibraryImage(ctx, state.DB, lib.ID, fpath, tag); err != nil {
+	if err := state.Repo.Libraries.UpdateLibraryImage(ctx, lib.ID, fpath, tag); err != nil {
 		return "", err
 	}
 	return tag, nil
@@ -459,7 +460,7 @@ func generateAllLibraryCovers(c *gin.Context) {
 		return
 	}
 
-	libs, err := models.GetAllLibraries(ctx, state.DB)
+	libs, err := state.Repo.Libraries.ListLibraries(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return

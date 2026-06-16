@@ -15,7 +15,37 @@ import (
 
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
+
+type libraryResponse struct {
+	ID               uuid.UUID `json:"Id"`
+	Name             string    `json:"Name"`
+	CollectionType   string    `json:"CollectionType"`
+	Paths            []string  `json:"Paths"`
+	CreatedAt        time.Time `json:"CreatedAt"`
+	PrimaryImagePath *string   `json:"PrimaryImagePath,omitempty"`
+	PrimaryImageTag  *string   `json:"PrimaryImageTag,omitempty"`
+	SortOrder        int       `json:"SortOrder"`
+	ScrapeConfig     *string   `json:"ScrapeConfig,omitempty"`
+}
+
+func newLibraryResponse(lib *repository.Library) *libraryResponse {
+	if lib == nil {
+		return nil
+	}
+	return &libraryResponse{
+		ID:               lib.ID,
+		Name:             lib.Name,
+		CollectionType:   lib.CollectionType,
+		Paths:            lib.Paths,
+		CreatedAt:        lib.CreatedAt,
+		PrimaryImagePath: lib.PrimaryImagePath,
+		PrimaryImageTag:  lib.PrimaryImageTag,
+		SortOrder:        lib.SortOrder,
+		ScrapeConfig:     lib.ScrapeConfig,
+	}
+}
 
 type virtualFolderBody struct {
 	Name           string   `json:"Name"`
@@ -38,7 +68,7 @@ func addLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Name and CollectionType required"})
 		return
 	}
-	lib, err := models.CreateLibrary(c.Request.Context(), state.DB, body.Name, body.CollectionType, body.Paths)
+	lib, err := state.Repo.Libraries.CreateLibrary(c.Request.Context(), body.Name, body.CollectionType, body.Paths)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -65,7 +95,7 @@ func deleteLibrary(c *gin.Context) {
 	}
 
 	// 取库名给 cleanup snapshot 展示用;库不存在则当幂等成功处理。
-	lib, err := models.GetLibraryByID(c.Request.Context(), state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -75,7 +105,7 @@ func deleteLibrary(c *gin.Context) {
 		return
 	}
 
-	marked, err := models.MarkLibraryDeleted(c.Request.Context(), state.DB, id)
+	marked, err := state.Repo.Libraries.MarkLibraryDeleted(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -110,13 +140,13 @@ func renameLibrary(c *gin.Context) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
-	lib, err := models.UpdateLibrary(c.Request.Context(), state.DB, id, &name)
+	lib, err := state.Repo.Libraries.UpdateLibrary(c.Request.Context(), id, &name)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	invalidateViewsCache(c, state)
-	c.JSON(http.StatusOK, lib)
+	c.JSON(http.StatusOK, newLibraryResponse(lib))
 }
 
 type libraryPathBody struct {
@@ -140,7 +170,7 @@ func addLibraryPath(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Path required"})
 		return
 	}
-	if err := models.AddLibraryPath(c.Request.Context(), state.DB, id, body.Path); err != nil {
+	if err := state.Repo.Libraries.AddLibraryPath(c.Request.Context(), id, body.Path); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -161,7 +191,7 @@ func removeLibraryPath(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid id"})
 		return
 	}
-	if err := models.RemoveLibraryPath(c.Request.Context(), state.DB, id, path); err != nil {
+	if err := state.Repo.Libraries.RemoveLibraryPath(c.Request.Context(), id, path); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -395,7 +425,7 @@ func getVirtualFolderDetail(c *gin.Context) {
 			return
 		}
 	}
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -453,7 +483,7 @@ func updateLibraryInfo(c *gin.Context) {
 	ctx := c.Request.Context()
 	if body.Name != "" {
 		name := strings.TrimSpace(body.Name)
-		if _, err := models.UpdateLibrary(ctx, state.DB, id, &name); err != nil {
+		if _, err := state.Repo.Libraries.UpdateLibrary(ctx, id, &name); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
@@ -466,12 +496,12 @@ func updateLibraryInfo(c *gin.Context) {
 		}
 	}
 	invalidateViewsCache(c, state)
-	lib, err := models.GetLibraryByID(ctx, state.DB, id)
+	lib, err := state.Repo.Libraries.GetLibraryByID(ctx, id)
 	if err != nil || lib == nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
 	}
-	c.JSON(http.StatusOK, lib)
+	c.JSON(http.StatusOK, newLibraryResponse(lib))
 }
 
 func invalidateViewsCache(c *gin.Context, state *AppState) {
@@ -486,9 +516,15 @@ func updateLibrarySortOrder(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
-	if err := models.BatchUpdateLibrarySortOrder(c.Request.Context(), state.DB, body); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+	for _, o := range body {
+		uid, err := uuid.Parse(o.ID)
+		if err != nil {
+			continue
+		}
+		if err := state.Repo.Libraries.UpdateLibrarySortOrder(c.Request.Context(), uid, o.SortOrder); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
 	}
 	invalidateViewsCache(c, state)
 	c.Status(http.StatusNoContent)
@@ -502,7 +538,14 @@ func updateDisplayOrder(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
-	if err := models.SetDisplayOrder(c.Request.Context(), state.DB, body); err != nil {
+	entries := make([]repository.DisplayOrderEntry, 0, len(body))
+	for _, e := range body {
+		entries = append(entries, repository.DisplayOrderEntry{
+			Kind: strings.TrimSpace(e.Kind),
+			ID:   strings.TrimSpace(e.ID),
+		})
+	}
+	if err := state.Repo.DisplayOrder.SetDisplayOrder(c.Request.Context(), entries); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
