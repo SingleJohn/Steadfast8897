@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 )
 
@@ -90,6 +90,7 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 	if merged == nil {
 		return nil, fmt.Errorf("merged details is nil")
 	}
+	repo := repository.NewScanIngestRepository(pool)
 	saveMode := getScrapeSaveMode(ctx, pool)
 	var studio *string
 	if len(merged.Platforms) > 0 {
@@ -136,10 +137,11 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 	}
 
 	if updateTMDBID && tmdbID > 0 {
-		_, err := pool.Exec(ctx,
-			"UPDATE items SET tmdb_id = $1, imdb_id = COALESCE(NULLIF($2, ''), imdb_id), updated_at = NOW() WHERE id = $3::uuid",
-			int32(tmdbID), derefStr(nfo.ImdbID), itemID)
-		if err != nil {
+		imdbID := ""
+		if nfo.ImdbID != nil {
+			imdbID = *nfo.ImdbID
+		}
+		if err := repo.UpdateItemTMDBAndIMDB(ctx, itemID, tmdbID, imdbID); err != nil {
 			return nil, fmt.Errorf("update ids: %w", err)
 		}
 	}
@@ -164,9 +166,7 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 			}
 		}
 		if dbPosterPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				dbPosterPath, dbPosterTag, itemID)
+			_ = repo.UpdateItemPrimaryImage(ctx, itemID, dbPosterPath, dbPosterTag)
 		}
 	}
 
@@ -190,9 +190,7 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 			}
 		}
 		if dbBackdropPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET backdrop_image_path = $1, backdrop_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				dbBackdropPath, dbBackdropTag, itemID)
+			_ = repo.UpdateItemBackdropImage(ctx, itemID, dbBackdropPath, dbBackdropTag)
 		}
 	}
 
@@ -209,6 +207,7 @@ func applyMergedDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, 
 }
 
 func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, client *TmdbClient, itemType string, itemName string, tmdbID int64, details map[string]interface{}, updateTMDBID bool, source models.PlatformScanSource) (map[string]interface{}, error) {
+	repo := repository.NewScanIngestRepository(pool)
 	saveMode := getScrapeSaveMode(ctx, pool)
 
 	// Extract overview with fallback chain: primary language -> en-US -> Douban
@@ -380,10 +379,7 @@ func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, cl
 	}
 
 	if updateTMDBID {
-		_, err := pool.Exec(ctx,
-			"UPDATE items SET tmdb_id = $1, updated_at = NOW() WHERE id = $2::uuid",
-			int32(tmdbID), itemID)
-		if err != nil {
+		if err := repo.UpdateItemTMDBID(ctx, itemID, tmdbID); err != nil {
 			return nil, fmt.Errorf("update tmdb_id: %w", err)
 		}
 	}
@@ -412,9 +408,7 @@ func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, cl
 			}
 		}
 		if dbPosterPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				dbPosterPath, dbPosterTag, itemID)
+			_ = repo.UpdateItemPrimaryImage(ctx, itemID, dbPosterPath, dbPosterTag)
 		}
 	}
 
@@ -442,9 +436,7 @@ func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, cl
 			}
 		}
 		if dbBackdropPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET backdrop_image_path = $1, backdrop_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				dbBackdropPath, dbBackdropTag, itemID)
+			_ = repo.UpdateItemBackdropImage(ctx, itemID, dbBackdropPath, dbBackdropTag)
 		}
 	}
 
@@ -461,42 +453,24 @@ func applyTMDBDetails(ctx context.Context, pool *pgxpool.Pool, itemID string, cl
 }
 
 func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seriesID string, tmdbID int64, saveMode string) {
-	rows, err := pool.Query(ctx,
-		"SELECT id, index_number FROM items WHERE parent_id = $1::uuid AND type = 'Season' ORDER BY index_number",
-		seriesID)
+	repo := repository.NewScanIngestRepository(pool)
+	seasons, err := repo.ListSeasonIDsAndNumbers(ctx, seriesID)
 	if err != nil {
 		return
 	}
-	defer rows.Close()
-
-	type seasonRow struct {
-		id       uuid.UUID
-		indexNum *int32
-	}
-	var seasons []seasonRow
-	for rows.Next() {
-		var s seasonRow
-		if err := rows.Scan(&s.id, &s.indexNum); err != nil {
-			continue
-		}
-		seasons = append(seasons, s)
-	}
-	rows.Close()
 
 	for _, s := range seasons {
-		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, s.id.String())
+		sid := s.ID.String()
+		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, sid)
 		if err != nil || remoteSeasonNum == nil {
 			num := int32(1)
-			if s.indexNum != nil {
-				num = *s.indexNum
+			if s.IndexNumber != nil {
+				num = *s.IndexNumber
 			}
 			remoteSeasonNum = &num
 		}
 
-		var existingTag *string
-		_ = pool.QueryRow(ctx,
-			"SELECT primary_image_tag FROM items WHERE id = $1",
-			s.id).Scan(&existingTag)
+		existingTag, _ := repo.GetItemPrimaryImageTag(ctx, sid)
 		if existingTag != nil {
 			continue
 		}
@@ -506,7 +480,6 @@ func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbCl
 			continue
 		}
 
-		sid := s.id.String()
 		saveToData := saveMode == "database" || saveMode == "both"
 		saveToMedia := saveMode == "media_dir" || saveMode == "both"
 
@@ -535,9 +508,7 @@ func scrapeSeasonPosters(ctx context.Context, pool *pgxpool.Pool, client *TmdbCl
 		}
 
 		if dbPosterPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3",
-				dbPosterPath, dbPosterTag, s.id)
+			_ = repo.UpdateItemPrimaryImage(ctx, sid, dbPosterPath, dbPosterTag)
 		}
 
 		time.Sleep(200 * time.Millisecond)

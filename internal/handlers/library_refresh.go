@@ -14,11 +14,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 	"fyms/internal/services/taskcenter"
 )
@@ -94,13 +94,13 @@ func refreshSingle(c *gin.Context) {
 		return
 	}
 
-	var lib models.Library
-	err = state.DB.QueryRow(ctx,
-		`SELECT l.id, l.name, l.collection_type, l.paths, l.created_at, l.primary_image_path, l.primary_image_tag
-		 FROM libraries l JOIN items i ON i.library_id = l.id WHERE i.id = $1::uuid AND l.deleted_at IS NULL`,
-		*resolved).Scan(&lib.ID, &lib.Name, &lib.CollectionType, &lib.Paths, &lib.CreatedAt, &lib.PrimaryImagePath, &lib.PrimaryImageTag)
+	lib, err := state.Repo.ScanIngest.GetLibraryByItemID(ctx, *resolved)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if lib == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Library not found"})
 		return
 	}
 
@@ -506,48 +506,7 @@ func loadLibraryRefreshTargetIDs(ctx context.Context, pool *pgxpool.Pool, librar
 		return nil, fmt.Errorf("unsupported batch refresh scope: %s", scope)
 	}
 
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if libraryID != nil {
-		rows, err = pool.Query(ctx,
-			`SELECT id::text
-			   FROM items i
-			   JOIN libraries l ON l.id = i.library_id
-			  WHERE i.library_id = $1::uuid
-			    AND l.deleted_at IS NULL
-			    AND i.merged_to_id IS NULL
-			    AND i.type = ANY($2::text[])
-			  ORDER BY i.created_at ASC`,
-			*libraryID, types,
-		)
-	} else {
-		rows, err = pool.Query(ctx,
-			`SELECT id::text
-			   FROM items i
-			   JOIN libraries l ON l.id = i.library_id
-			  WHERE l.deleted_at IS NULL
-			    AND i.merged_to_id IS NULL
-			    AND i.type = ANY($1::text[])
-			  ORDER BY i.created_at ASC`,
-			types,
-		)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	ids := make([]string, 0)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return repository.NewScanIngestRepository(pool).ListRefreshTargetIDs(ctx, libraryID, types)
 }
 
 func enqueueLibraryRefreshScopes(ctx context.Context, state *AppState, libraryID *uuid.UUID, scopes []services.RefreshScope, opts services.RefreshOptions) (map[string]int, int64, error) {

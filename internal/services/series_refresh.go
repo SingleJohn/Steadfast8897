@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type seriesSubtreeRemotePlan struct {
@@ -107,75 +109,21 @@ func compactStringIDs(ids []string) []string {
 }
 
 func loadSeriesSeasonIDs(ctx context.Context, pool *pgxpool.Pool, seriesID string) ([]string, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT id::text
-		   FROM items
-		  WHERE parent_id = $1::uuid
-		    AND type = 'Season'
-		  ORDER BY index_number ASC NULLS FIRST, created_at ASC`,
-		seriesID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	seasonIDs := make([]string, 0)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		seasonIDs = append(seasonIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return seasonIDs, nil
+	return repository.NewScanIngestRepository(pool).ListSeriesSeasonIDs(ctx, seriesID)
 }
 
 func loadRemoteSeasonNumber(ctx context.Context, pool *pgxpool.Pool, seasonID string) (*int32, error) {
-	var episodeSeasonNum *int32
-	err := pool.QueryRow(ctx,
-		`SELECT parent_index_number
-		   FROM items
-		  WHERE season_id = $1::uuid
-		    AND type = 'Episode'
-		    AND parent_index_number IS NOT NULL
-		  GROUP BY parent_index_number
-		  ORDER BY COUNT(*) DESC, parent_index_number ASC
-		  LIMIT 1`,
-		seasonID,
-	).Scan(&episodeSeasonNum)
+	repo := repository.NewScanIngestRepository(pool)
+	episodeSeasonNum, err := repo.GetDominantEpisodeSeasonNumber(ctx, seasonID)
 	if err == nil && episodeSeasonNum != nil {
 		return episodeSeasonNum, nil
 	}
 
-	var seasonNum *int32
-	err = pool.QueryRow(ctx,
-		`SELECT index_number
-		   FROM items
-		  WHERE id = $1::uuid
-		    AND type = 'Season'`,
-		seasonID,
-	).Scan(&seasonNum)
-	if err != nil {
-		return nil, err
-	}
-	return seasonNum, nil
+	return repo.GetSeasonIndexNumber(ctx, seasonID)
 }
 
 func loadRefreshItemType(ctx context.Context, pool *pgxpool.Pool, itemID string) (string, error) {
-	var itemType string
-	if err := pool.QueryRow(ctx,
-		`SELECT type
-		   FROM items
-		  WHERE id = $1::uuid`,
-		itemID,
-	).Scan(&itemType); err != nil {
-		return "", err
-	}
-	return itemType, nil
+	return repository.NewScanIngestRepository(pool).GetRefreshItemType(ctx, itemID)
 }
 
 func loadSeriesSubtreeTargetIDs(ctx context.Context, pool *pgxpool.Pool, seriesID string) ([]string, []string, error) {
@@ -184,28 +132,8 @@ func loadSeriesSubtreeTargetIDs(ctx context.Context, pool *pgxpool.Pool, seriesI
 		return nil, nil, err
 	}
 
-	episodeRows, err := pool.Query(ctx,
-		`SELECT id::text
-		   FROM items
-		  WHERE series_id = $1::uuid
-		    AND type = 'Episode'
-		  ORDER BY parent_index_number ASC NULLS FIRST, index_number ASC NULLS FIRST, created_at ASC`,
-		seriesID,
-	)
+	episodeIDs, err := repository.NewScanIngestRepository(pool).ListSeriesEpisodeIDs(ctx, seriesID)
 	if err != nil {
-		return nil, nil, err
-	}
-	defer episodeRows.Close()
-
-	episodeIDs := make([]string, 0)
-	for episodeRows.Next() {
-		var id string
-		if err := episodeRows.Scan(&id); err != nil {
-			return nil, nil, err
-		}
-		episodeIDs = append(episodeIDs, id)
-	}
-	if err := episodeRows.Err(); err != nil {
 		return nil, nil, err
 	}
 

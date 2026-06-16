@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type scrapeSaveTargets struct {
@@ -35,8 +37,7 @@ func resolveScrapeSaveTargets(ctx context.Context, pool *pgxpool.Pool, itemID, i
 
 	switch itemType {
 	case "Movie":
-		var filePath *string
-		if err := pool.QueryRow(ctx, "SELECT file_path FROM items WHERE id = $1::uuid", itemID).Scan(&filePath); err == nil && filePath != nil && *filePath != "" {
+		if filePath, err := repository.NewScanIngestRepository(pool).GetItemFilePath(ctx, itemID); err == nil && filePath != nil && *filePath != "" {
 			if !strings.HasPrefix(strings.ToLower(*filePath), "http") {
 				dir := filepath.Dir(*filePath)
 				targets.PosterPath = filepath.Join(dir, "poster.jpg")
@@ -45,11 +46,7 @@ func resolveScrapeSaveTargets(ctx context.Context, pool *pgxpool.Pool, itemID, i
 			}
 		}
 	case "Series":
-		var episodePath *string
-		if err := pool.QueryRow(ctx,
-			"SELECT file_path FROM items WHERE series_id = $1::uuid AND type = 'Episode' AND file_path IS NOT NULL AND file_path NOT LIKE 'http%' ORDER BY created_at ASC LIMIT 1",
-			itemID,
-		).Scan(&episodePath); err == nil && episodePath != nil && *episodePath != "" {
+		if episodePath, err := repository.NewScanIngestRepository(pool).GetFirstSeriesEpisodeFilePath(ctx, itemID); err == nil && episodePath != nil && *episodePath != "" {
 			showDir := filepath.Dir(filepath.Dir(*episodePath))
 			targets.PosterPath = filepath.Join(showDir, "poster.jpg")
 			targets.BackdropPath = filepath.Join(showDir, "fanart.jpg")
@@ -67,11 +64,8 @@ func resolveScrapeSaveTargets(ctx context.Context, pool *pgxpool.Pool, itemID, i
 }
 
 func resolveSeasonPosterMediaPath(ctx context.Context, pool *pgxpool.Pool, seasonID string) string {
-	var episodePath *string
-	if err := pool.QueryRow(ctx,
-		"SELECT file_path FROM items WHERE parent_id = $1::uuid AND type = 'Episode' AND file_path IS NOT NULL ORDER BY created_at ASC LIMIT 1",
-		seasonID,
-	).Scan(&episodePath); err != nil || episodePath == nil || *episodePath == "" {
+	episodePath, err := repository.NewScanIngestRepository(pool).GetFirstSeasonEpisodeFilePath(ctx, seasonID)
+	if err != nil || episodePath == nil || *episodePath == "" {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(*episodePath), "poster.jpg")
@@ -82,11 +76,8 @@ func resolveSeasonPosterMediaPath(ctx context.Context, pool *pgxpool.Pool, seaso
 // 也是 scanner 端 FindEpisodeThumbCached 首要识别的 pattern。
 // file_path 为 http URL 或空时返回空串,调用方回退到 data/metadata。
 func resolveEpisodeThumbMediaPath(ctx context.Context, pool *pgxpool.Pool, episodeID string) string {
-	var filePath *string
-	if err := pool.QueryRow(ctx,
-		"SELECT file_path FROM items WHERE id = $1::uuid AND type = 'Episode'",
-		episodeID,
-	).Scan(&filePath); err != nil || filePath == nil || *filePath == "" {
+	filePath, err := repository.NewScanIngestRepository(pool).GetEpisodeFilePath(ctx, episodeID)
+	if err != nil || filePath == nil || *filePath == "" {
 		return ""
 	}
 	p := *filePath

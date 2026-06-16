@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 const (
@@ -544,37 +545,33 @@ func (w *IngestWorker) findMixedShowRoot(libID, filePath string) string {
 func (w *IngestWorker) processDelete(ctx context.Context, e IngestEvent) error {
 	norm := filepath.Clean(e.Path)
 
+	repo := repository.NewScanIngestRepository(w.pool)
+	var items []repository.DeletedItem
 	var err error
-	var rows pgx.Rows
 	if e.Source == "scan" {
-		rows, err = w.pool.Query(ctx,
-			"DELETE FROM items WHERE file_path = $1 RETURNING id::text, name, type, file_path", norm)
+		items, err = repo.DeleteItemsByExactPath(ctx, norm)
 	} else {
 		prefix := norm + string(filepath.Separator) + "%"
-		rows, err = w.pool.Query(ctx,
-			"DELETE FROM items WHERE file_path = $1 OR file_path LIKE $2 RETURNING id::text, name, type, file_path",
-			norm, prefix)
+		items, err = repo.DeleteItemsByPathPrefix(ctx, norm, prefix)
 	}
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
 	var removed int64
 	var emitted int64
-	for rows.Next() {
+	for _, deleted := range items {
 		removed++
-		var item NotifyDeletedItem
-		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Path); err != nil {
-			return err
+		item := NotifyDeletedItem{
+			ID:   deleted.ID,
+			Name: deleted.Name,
+			Type: deleted.Type,
+			Path: deleted.Path,
 		}
 		if item.Type == "Movie" || item.Type == "Episode" || item.Type == "Series" {
 			EmitLibraryDeleted(item)
 			emitted++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	if removed > 0 {
 		slog.Info("[Ingest] Delete removed items",
@@ -589,11 +586,10 @@ func (w *IngestWorker) processDelete(ctx context.Context, e IngestEvent) error {
 func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 	oldPath := filepath.Clean(e.OldPath)
 	newPath := filepath.Clean(e.Path)
+	repo := repository.NewScanIngestRepository(w.pool)
 
 	if e.IsDir {
-		rows, err := w.pool.Query(ctx,
-			"SELECT id, file_path FROM items WHERE file_path = $1 OR file_path LIKE $2",
-			oldPath, oldPath+string(filepath.Separator)+"%")
+		rows, err := repo.ListItemsByPathPrefix(ctx, oldPath, oldPath+string(filepath.Separator)+"%")
 		if err != nil {
 			return err
 		}
@@ -601,14 +597,10 @@ func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 			id uuid.UUID
 			fp string
 		}
-		var updates []upd
-		for rows.Next() {
-			var u upd
-			if rows.Scan(&u.id, &u.fp) == nil {
-				updates = append(updates, u)
-			}
+		updates := make([]upd, 0, len(rows))
+		for _, row := range rows {
+			updates = append(updates, upd{id: row.ID, fp: row.FilePath})
 		}
-		rows.Close()
 
 		for _, u := range updates {
 			var nfp string
@@ -617,29 +609,22 @@ func (w *IngestWorker) processRename(ctx context.Context, e IngestEvent) error {
 			} else {
 				nfp = newPath + u.fp[len(oldPath):]
 			}
-			w.pool.Exec(ctx, "UPDATE items SET file_path = $1, updated_at = NOW() WHERE id = $2", nfp, u.id)
-			w.pool.Exec(ctx, "UPDATE media_versions SET file_path = $1 WHERE file_path = $2", nfp, u.fp)
+			_ = repo.UpdateItemFilePathByID(ctx, u.id, nfp)
+			_ = repo.UpdateMediaVersionFilePath(ctx, nfp, u.fp)
 		}
-		w.pool.Exec(ctx,
-			`UPDATE external_subtitles
-			    SET file_path = $1 || substring(file_path from $3),
-			        updated_at = NOW()
-			  WHERE file_path = $2 OR file_path LIKE $4`,
-			newPath, oldPath, len(oldPath)+1, oldPath+string(filepath.Separator)+"%")
+		_ = repo.RenameExternalSubtitlePaths(ctx, newPath, oldPath, len(oldPath)+1, oldPath+string(filepath.Separator)+"%")
 		if len(updates) > 0 {
 			slog.Info("[Ingest] Rename updated items", "count", len(updates), "from", oldPath, "to", newPath)
 		}
 		return nil
 	}
 
-	tag, err := w.pool.Exec(ctx,
-		"UPDATE items SET file_path = $1, updated_at = NOW() WHERE file_path = $2",
-		newPath, oldPath)
+	rowsAffected, err := repo.UpdateItemFilePathByOldPath(ctx, newPath, oldPath)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		w.pool.Exec(ctx, "UPDATE media_versions SET file_path = $1 WHERE file_path = $2", newPath, oldPath)
+	if rowsAffected > 0 {
+		_ = repo.UpdateMediaVersionFilePath(ctx, newPath, oldPath)
 		RefreshExternalSubtitlesForVideoPath(ctx, w.pool, newPath)
 		slog.Info("[Ingest] Rename", "from", oldPath, "to", newPath)
 		return nil

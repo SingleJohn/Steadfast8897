@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type externalSubtitleCandidate struct {
@@ -164,32 +166,27 @@ func SyncExternalSubtitles(ctx context.Context, pool *pgxpool.Pool, itemID uuid.
 	paths := make([]string, 0, len(subs))
 	for _, sub := range subs {
 		paths = append(paths, sub.Path)
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO external_subtitles (item_id, media_version_id, file_path, codec, language, title, is_default, is_forced, updated_at)
-			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, NOW())
-			 ON CONFLICT (media_version_id, file_path) DO UPDATE SET
-			 	item_id = EXCLUDED.item_id,
-			 	codec = EXCLUDED.codec,
-			 	language = EXCLUDED.language,
-			 	title = EXCLUDED.title,
-			 	is_default = EXCLUDED.is_default,
-			 	is_forced = EXCLUDED.is_forced,
-			 	updated_at = NOW()`,
-			itemID, mediaVersionID, sub.Path, sub.Codec, derefStr(sub.Language), derefStr(sub.Title), sub.IsDefault, sub.IsForced,
-		); err != nil {
+		if err := repository.NewScanIngestRepository(pool).UpsertExternalSubtitle(ctx, repository.ExternalSubtitleUpsert{
+			ItemID:         itemID,
+			MediaVersionID: mediaVersionID,
+			FilePath:       sub.Path,
+			Codec:          sub.Codec,
+			Language:       sub.Language,
+			Title:          sub.Title,
+			IsDefault:      sub.IsDefault,
+			IsForced:       sub.IsForced,
+		}); err != nil {
 			slog.Warn("[Scan] Failed to upsert external subtitle", "itemId", itemID, "mediaVersion", mediaVersionID, "path", sub.Path, "error", err)
 		}
 	}
 
 	if len(paths) == 0 {
-		if _, err := pool.Exec(ctx, "DELETE FROM external_subtitles WHERE media_version_id = $1::uuid", mediaVersionID); err != nil {
+		if err := repository.NewScanIngestRepository(pool).DeleteExternalSubtitlesForMediaVersion(ctx, mediaVersionID); err != nil {
 			slog.Warn("[Scan] Failed to clear external subtitles", "mediaVersion", mediaVersionID, "error", err)
 		}
 		return
 	}
-	if _, err := pool.Exec(ctx,
-		"DELETE FROM external_subtitles WHERE media_version_id = $1::uuid AND NOT (file_path = ANY($2::text[]))",
-		mediaVersionID, paths); err != nil {
+	if err := repository.NewScanIngestRepository(pool).PruneExternalSubtitlesForMediaVersion(ctx, mediaVersionID, paths); err != nil {
 		slog.Warn("[Scan] Failed to prune external subtitles", "mediaVersion", mediaVersionID, "error", err)
 	}
 }
@@ -219,22 +216,13 @@ func RefreshExternalSubtitlesForSidecar(ctx context.Context, pool *pgxpool.Pool,
 		if !subtitleStemMatchesVideo(subStem, videoStem) {
 			continue
 		}
-		rows, err := pool.Query(ctx,
-			`SELECT item_id, id, file_path
-			   FROM media_versions
-			  WHERE file_path = $1
-			     OR file_path = $2`,
-			entry[1], filepath.Clean(entry[1]))
+		versionsForPath, err := repository.NewScanIngestRepository(pool).ListMediaVersionsByPath(ctx, entry[1], filepath.Clean(entry[1]))
 		if err != nil {
 			continue
 		}
-		for rows.Next() {
-			var v version
-			if rows.Scan(&v.itemID, &v.mvID, &v.path) == nil {
-				versions = append(versions, v)
-			}
+		for _, row := range versionsForPath {
+			versions = append(versions, version{itemID: row.ItemID, mvID: row.ID, path: row.FilePath})
 		}
-		rows.Close()
 	}
 
 	for _, v := range versions {
@@ -249,25 +237,15 @@ func RefreshExternalSubtitlesForVideoPath(ctx context.Context, pool *pgxpool.Poo
 	if !IsVideoExt(filepath.Ext(videoPath)) {
 		return
 	}
-	rows, err := pool.Query(ctx,
-		`SELECT item_id, id, file_path
-		   FROM media_versions
-		  WHERE file_path = $1 OR file_path = $2`,
-		videoPath, filepath.Clean(videoPath))
+	rows, err := repository.NewScanIngestRepository(pool).ListMediaVersionsByPath(ctx, videoPath, filepath.Clean(videoPath))
 	if err != nil {
 		return
 	}
-	defer rows.Close()
 
 	cache := CacheDir(filepath.Dir(videoPath))
 	var count int
-	for rows.Next() {
-		var itemID, mvID uuid.UUID
-		var path string
-		if rows.Scan(&itemID, &mvID, &path) != nil {
-			continue
-		}
-		SyncExternalSubtitles(ctx, pool, itemID, mvID, path, cache)
+	for _, row := range rows {
+		SyncExternalSubtitles(ctx, pool, row.ItemID, row.ID, row.FilePath, cache)
 		count++
 	}
 	if count > 0 {
