@@ -41,15 +41,19 @@ func BackfillAllActorImages(ctx context.Context, pool *pgxpool.Pool) (ActorImage
 		}
 	}
 
-	ids, err := models.ListItemsForActorImageBackfill(ctx, pool)
-	if err != nil {
-		slog.Warn("[ActorImg-BackfillAll] list tmdb items failed", "error", err)
-	} else if len(ids) > 0 {
-		n, qerr := NewScrapeQueue(pool).EnqueueBatch(ctx, ids, ScrapeTaskBackfillActorImg, ScrapePriorityScan)
-		if qerr != nil {
-			slog.Warn("[ActorImg-BackfillAll] enqueue tmdb backfill failed", "error", qerr)
+	if tmdbConfigured(ctx, pool) {
+		ids, err := models.ListItemsForActorImageBackfill(ctx, pool)
+		if err != nil {
+			slog.Warn("[ActorImg-BackfillAll] list tmdb items failed", "error", err)
+		} else if len(ids) > 0 {
+			n, qerr := NewScrapeQueue(pool).EnqueueBatch(ctx, ids, ScrapeTaskBackfillActorImg, ScrapePriorityScan)
+			if qerr != nil {
+				slog.Warn("[ActorImg-BackfillAll] enqueue tmdb backfill failed", "error", qerr)
+			}
+			res.TmdbItemsQueued = n
 		}
-		res.TmdbItemsQueued = n
+	} else {
+		slog.Debug("[ActorImg-BackfillAll] skip tmdb backfill: api key not configured")
 	}
 
 	slog.Info("[ActorImg-BackfillAll] done",

@@ -13,7 +13,13 @@ defineProps<{
   autoApplyEnabled: boolean
   adultContentFilterEnabled: boolean
   imageDirectRead: boolean
-  scrapeSummary: { missing_count: number; items_total: number } | null
+  scrapeSummary: {
+    missing_count: number
+    items_total: number
+    queue_pending: number
+    queue_running: number
+    queue_failed: number
+  } | null
   savingConfig: boolean
   scraping: boolean
 }>()
@@ -68,7 +74,8 @@ function updateThreshold(value: unknown) {
     <template #header-extra>
       <div v-if="scrapeSummary" class="inline-stat">
         <span class="inline-stat-value">{{ scrapeSummary.missing_count }}</span>
-        <span class="inline-stat-name">待刮削<template v-if="scrapeSummary.items_total"> / {{ scrapeSummary.items_total }}</template></span>
+        <span class="inline-stat-name">缺元数据<template v-if="scrapeSummary.items_total"> / {{ scrapeSummary.items_total }}</template></span>
+        <span class="inline-stat-sub">队列 {{ scrapeSummary.queue_pending }} 待处理 · {{ scrapeSummary.queue_running }} 运行 · {{ scrapeSummary.queue_failed }} 失败</span>
       </div>
     </template>
 
@@ -103,7 +110,7 @@ function updateThreshold(value: unknown) {
         <div class="switch-section-compact">
           <div class="switch-copy">
             <div class="switch-title">自动刮削</div>
-            <div class="hint-text">新媒体入库时自动抓取元数据。</div>
+            <div class="hint-text">新媒体入库时自动加入识别队列；不影响手动入队、远程刷新和已存在队列。</div>
           </div>
           <n-switch :value="autoScrape" :round="false" @update:value="emit('update:autoScrape', $event)" />
         </div>

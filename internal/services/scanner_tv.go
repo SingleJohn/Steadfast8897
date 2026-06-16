@@ -575,7 +575,13 @@ func scanOneShow(
 	seriesScraped := seriesTmdbID != nil && *seriesTmdbID > 0
 
 	// 分支 1:已刮削 Series 下新增 Episode → 增量补 name/image,避免新集停在占位符。
-	if seriesScraped && len(newEpisodeSeasonIDs) > 0 {
+	tmdbReady := seriesScraped && tmdbConfigured(ctx, pool)
+	if seriesScraped && !tmdbReady && (len(newEpisodeSeasonIDs) > 0 || nfoData != nil) {
+		slog.Debug("[Scan] Skip series TMDB complement: api key not configured",
+			"series", seriesID, "show", finalShowName)
+	}
+
+	if tmdbReady && len(newEpisodeSeasonIDs) > 0 {
 		seasonIDs := make([]string, 0, len(newEpisodeSeasonIDs))
 		for sid := range newEpisodeSeasonIDs {
 			seasonIDs = append(seasonIDs, sid)
@@ -596,7 +602,7 @@ func scanOneShow(
 	// NFO 不带 cast image_url,也不带分集 still,而 auto_scrape 明确跳过 NFO 源,
 	// 这里是唯一的兜底入口。UNIQUE(item_id,task_type) 会去重,重扫不会放大工作量。
 	// 包含所有现存季(不限 new),下游任务按 "字段为空才覆盖" 语义自检,不会覆盖已有数据。
-	if seriesScraped && nfoData != nil {
+	if tmdbReady && nfoData != nil {
 		allSeasonIDs, err := loadSeriesSeasonIDs(ctx, pool, seriesID)
 		if err != nil {
 			slog.Warn("[Scan] load series seasons for subtree complement failed",

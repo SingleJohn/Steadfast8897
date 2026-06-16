@@ -84,16 +84,26 @@
 }
 
 .metadata-page .inline-stat {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: baseline;
-  gap: 6px;
+  column-gap: 6px;
+  row-gap: 1px;
+  max-width: min(360px, 42vw);
   font-size: 11px;
   color: var(--app-text-muted);
+  text-align: right;
 }
 .metadata-page .inline-stat-value {
   font-size: 18px;
   font-weight: 700;
   color: var(--app-text);
+}
+.metadata-page .inline-stat-sub {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metadata-page .config-form {
@@ -579,4 +589,3 @@
     justify-content: flex-start;
   }
 }
-

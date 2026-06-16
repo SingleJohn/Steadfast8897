@@ -20,6 +20,10 @@ import (
 // UNIQUE(item_id, task_type) 会去重,重复扫不会放大工作量。
 // Movie 没 Episode,所以只入队演员头像;poster/backdrop 通常已在本地目录(poster.jpg/fanart.jpg)。
 func enqueueMovieNfoComplement(ctx context.Context, pool *pgxpool.Pool, itemID string) {
+	if !tmdbConfigured(ctx, pool) {
+		slog.Debug("[Scan] Skip NFO movie TMDB complement: api key not configured", "movie", itemID)
+		return
+	}
 	var tmdbID *int64
 	_ = pool.QueryRow(ctx,
 		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Movie'",

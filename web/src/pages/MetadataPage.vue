@@ -12,6 +12,7 @@ import {
   getBackfillConfig, updateBackfillConfig,
   resetBackfillQuality, resetBackfillEpisodeImage,
   getScrapeDefaults,
+  getScrapeQueueStats,
   getActorImageSummary, backfillAllActorImages,
   type BackfillStage, type FieldPriorityMap, type ActorImageSummary,
 } from '@/api/client'
@@ -118,15 +119,27 @@ async function handleBackfillActorImages() {
 // 任务进度改由 SSE 流驱动
 const { snapshots } = useTaskStream()
 
-// "待刮削 N / 总 M" 提示,点入队按钮后手动刷新
-const scrapeSummary = ref<{ missing_count: number; items_total: number } | null>(null)
+// 缺元数据统计与 scrape_queue 是两套口径:前者来自 items,后者才是真实队列状态。
+const scrapeSummary = ref<{
+  missing_count: number
+  items_total: number
+  queue_pending: number
+  queue_running: number
+  queue_failed: number
+} | null>(null)
 
 async function refreshScrapeSummary() {
   try {
-    const p: any = await getScrapeProgress()
+    const [p, q] = await Promise.all([
+      getScrapeProgress() as Promise<any>,
+      getScrapeQueueStats().catch(() => null),
+    ])
     scrapeSummary.value = {
       missing_count: Number(p?.missing_count ?? 0),
       items_total: Number(p?.items_total ?? 0),
+      queue_pending: Number(q?.pending ?? 0),
+      queue_running: Number(q?.running ?? 0),
+      queue_failed: Number(q?.failed ?? 0),
     }
   } catch {
     scrapeSummary.value = null
