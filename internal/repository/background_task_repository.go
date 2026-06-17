@@ -609,7 +609,7 @@ func (r *BackgroundTaskRepository) UpdateProbeMediaVersion(ctx context.Context, 
 	_, err := r.pool.Exec(ctx,
 		`UPDATE media_versions
 		 SET mediainfo = $1,
-		     runtime_ticks = CASE WHEN $2 > 0 THEN $2 ELSE runtime_ticks END,
+		     runtime_ticks = CASE WHEN $2::bigint > 0 THEN $2::bigint ELSE runtime_ticks END,
 		     bitrate = COALESCE($3, bitrate),
 		     size = COALESCE($4, size),
 		     chapters = $6
