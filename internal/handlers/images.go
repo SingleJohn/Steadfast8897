@@ -418,6 +418,26 @@ func serveImage(c *gin.Context, state *AppState) {
 		}
 	}
 
+	// Emby 式跨类型兜底:请求 Backdrop/Banner 但全程未找到时,回落到本条目自身的 Primary 图
+	// (剧集分集的本地封面 <basename>-thumb.jpg 存在 primary_image_path),再退到所属剧集的 Primary。
+	// Emby 客户端/通知工具在缺 Backdrop 时会自动用 thumb,FYMS 之前只在同类型内回落,导致直接 404。
+	if (sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath))) && (imageType == "Backdrop" || imageType == "Banner") {
+		if primaryPath != nil && *primaryPath != "" {
+			sourcePath = sanitizeImagePath(*primaryPath)
+			sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
+				strings.HasPrefix(strings.ToLower(sourcePath), "https://")
+		}
+		if (sourcePath == "" || (!sourceIsURL && !fileExists(sourcePath))) && (itemType == "Episode" || itemType == "Season") {
+			if seriesID, _ := state.Repo.ImageLookup.GetEpisodeSeriesImageParentID(ctx, *uid); seriesID != nil && *seriesID != "" {
+				if path, err := state.Repo.ImageLookup.GetItemPrimaryImagePath(ctx, *seriesID); err == nil && path != nil && *path != "" {
+					sourcePath = sanitizeImagePath(*path)
+					sourceIsURL = strings.HasPrefix(strings.ToLower(sourcePath), "http://") ||
+						strings.HasPrefix(strings.ToLower(sourcePath), "https://")
+				}
+			}
+		}
+	}
+
 	if sourcePath == "" {
 		c.JSON(http.StatusNotFound, gin.H{"message": "No image"})
 		return
