@@ -64,6 +64,7 @@
 | 路径 | 迁移方式 |
 | --- | --- |
 | `internal/handlers/stats.go` | 统计聚合、排行筛选/排序、近期播放查询改走 `StatsRepository`；handler 仅保留参数解析和响应组装 |
+| `internal/handlers/compat_items.go` | Emby `/Items`、`/Items/Counts`、`/Search/Hints` 查询改走 `CompatItemsRepository`；handler 仅保留参数解析、权限 scope 和 DTO 组装 |
 
 ## migrated_in_phase_11
 
@@ -85,7 +86,7 @@
 | 路径 | 保留原因 | 约束 |
 | --- | --- | --- |
 | `internal/models/item_query.go` | 主 item 查询 builder，包含筛选、排序、随机、统计估算 | 继续作为 item 动态查询集中点 |
-| `internal/handlers/compat_items.go` | Emby `/Items` 查询，参数组合多 | 保持 Emby 语义；新增字段先核对 CTE 投影 |
+| `internal/repository/compat_items_repository.go` | Emby `/Items` 动态查询集中 builder，包含兼容字段投影、代表版本选择、SearchHints | 保持 Emby 语义；新增字段先核对 CTE 投影 |
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库维度、别名、封面与平台重算 | 维度和排序必须走白名单 |
 | `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |

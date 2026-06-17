@@ -14,14 +14,13 @@ import (
 	"fyms/internal/dto"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
 func getItemCounts(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
-	var movie, series, episodes int64
-	where := "type = $1"
-	var allowed []string
+	opts := repository.CompatItemCountOptions{}
 	if auth := middleware.GetAuthUser(c); auth != nil && !auth.IsAdmin && !strings.HasPrefix(auth.ID, "api-key-") {
 		scope, err := loadUserLibraryScope(ctx, state, auth.ID)
 		if err != nil {
@@ -29,26 +28,18 @@ func getItemCounts(c *gin.Context, state *AppState) {
 			return
 		}
 		if !scope.AllowAll {
-			allowed = scope.IDs
-			if len(allowed) == 0 {
-				where += " AND FALSE"
-			} else {
-				where += " AND library_id::text = ANY($2)"
-			}
+			opts.RestrictLibraries = true
+			opts.AllowedLibraryIDs = scope.IDs
 		}
 	}
-	countType := func(itemType string) int64 {
-		var n int64
-		if allowed != nil && len(allowed) > 0 {
-			_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE "+where, itemType, allowed).Scan(&n)
-		} else {
-			_ = state.DB.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE "+where, itemType).Scan(&n)
-		}
-		return n
+	counts, err := repository.NewCompatItemsRepository(state.DB).CountItemTypes(ctx, []string{"Movie", "Series", "Episode"}, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
 	}
-	movie = countType("Movie")
-	series = countType("Series")
-	episodes = countType("Episode")
+	movie := counts["Movie"]
+	series := counts["Series"]
+	episodes := counts["Episode"]
 	c.JSON(http.StatusOK, gin.H{
 		"MovieCount":      movie,
 		"SeriesCount":     series,
@@ -401,6 +392,52 @@ func compatQueryAny(c *gin.Context, keys ...string) string {
 	return ""
 }
 
+func compatItemsIncludeTypes(includeTypes string) []string {
+	if strings.TrimSpace(includeTypes) == "" {
+		return nil
+	}
+	validTypes := map[string]bool{"Movie": true, "Series": true, "Episode": true, "Season": true, "Folder": true}
+	typeMap := map[string]string{"Video": "Movie"}
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range strings.Split(includeTypes, ",") {
+		// 先按 itemTypeCanonical 规范化大小写,Lenna 等客户端会传 "movie" 小写,
+		// 直接精确匹配 i.type='movie' 会查不到记录。
+		t = normalizeItemType(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if mapped, ok := typeMap[t]; ok {
+			t = mapped
+		}
+		if t == "Person" || t == "CollectionFolder" {
+			continue
+		}
+		if !validTypes[t] || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+func compatSearchHintTypes(includeTypes string) []string {
+	if strings.TrimSpace(includeTypes) == "" {
+		return nil
+	}
+	var out []string
+	for _, t := range strings.Split(includeTypes, ",") {
+		// 规范化大小写, 与 parseItemQueryOptions 行为一致, Lenna 等客户端
+		// 传 "movie" 小写时仍能命中 SQL 精确匹配 i.type='Movie'.
+		t = normalizeItemType(strings.TrimSpace(t))
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func itemsSearch(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 
@@ -466,58 +503,13 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		}
 	}
 
-	// Build query with LEFT JOIN user_item_data to avoid N+1
-	userCols := "NULL::bigint AS playback_position_ticks, 0::int AS play_count, FALSE AS is_favorite, FALSE AS played, NULL::timestamp AS last_played_date"
-	userJoin := ""
-	var args []interface{}
-	idx := 1
-	if authUserID != "" {
-		userCols = "uid.playback_position_ticks, uid.play_count, uid.is_favorite, uid.played, uid.last_played_date"
-		userJoin = fmt.Sprintf(" LEFT JOIN user_item_data uid ON i.id = uid.item_id AND uid.user_id = $%d::uuid", idx)
-		args = append(args, authUserID)
-		idx++
-	}
-
-	baseCols := `i.id, i.name, i.type, i.sort_name, NULL::text AS collection_type, i.overview,
-		i.production_year, i.premiere_date, i.community_rating, i.official_rating,
-		i.runtime_ticks, i.index_number, i.parent_index_number, i.parent_id,
-		i.series_id, i.series_name, i.season_id, i.container, i.file_path,
-		i.resolved_path, i.provider_ids, i.primary_image_tag, i.backdrop_image_tag,
-		NULL::bigint AS child_count, NULL::bigint AS recursive_item_count,
-		i.tagline, i.studio, i.created_at, i.emby_id,
-		i.merged_to_id, i.primary_image_path, i.updated_at`
-
-	seriesCols := `, sf.primary_image_tag AS series_primary_image_tag, sf.backdrop_image_tag AS series_backdrop_image_tag, sf.id AS series_fallback_id`
-	seriesJoin := " LEFT JOIN items sf ON sf.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)"
-
-	// Start with no merge filter; platform queries use global primaries while
-	// ordinary user-library queries use a per-library representative selection.
-	sql := fmt.Sprintf("SELECT %s%s, %s FROM items i%s%s WHERE 1=1", baseCols, seriesCols, userCols, userJoin, seriesJoin)
-
-	var whereParts []string
-	useRepresentative := false
-
-	if ids != "" {
-		idList := strings.Split(ids, ",")
-		var placeholders []string
-		for _, id := range idList {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			if useEmbyID {
-				placeholders = append(placeholders, "$"+strconv.Itoa(idx)+"::int")
-			} else {
-				placeholders = append(placeholders, "$"+strconv.Itoa(idx)+"::uuid")
-			}
-			args = append(args, id)
-			idx++
-		}
-		if useEmbyID {
-			whereParts = append(whereParts, "i.emby_id IN ("+strings.Join(placeholders, ",")+")")
-		} else {
-			whereParts = append(whereParts, "i.id IN ("+strings.Join(placeholders, ",")+")")
-		}
+	searchOpts := repository.CompatItemsSearchOptions{
+		AuthUserID: authUserID,
+		IDs:        ids,
+		UseEmbyID:  useEmbyID,
+		SearchTerm: searchTerm,
+		Limit:      limitVal,
+		Offset:     startIndex,
 	}
 	if parentID != "" {
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
@@ -525,177 +517,40 @@ func itemsSearch(c *gin.Context, state *AppState) {
 				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
 				return
 			}
+			parentMode := repository.CompatItemsParentPlatformStudio
 			switch p.Dimension {
 			case models.PlatformDimActor:
-				whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $"+strconv.Itoa(idx)+" AND cm.role = 'Actor')")
+				parentMode = repository.CompatItemsParentPlatformActor
 			case models.PlatformDimNumPrefix:
-				whereParts = append(whereParts, "regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = $"+strconv.Itoa(idx))
-			default:
-				whereParts = append(whereParts, "i.studio = $"+strconv.Itoa(idx))
+				parentMode = repository.CompatItemsParentPlatformNumPrefix
 			}
-			args = append(args, p.MatchValue)
-			idx++
-			// Only filter merged items in platform library queries
-			whereParts = append(whereParts, "i.merged_to_id IS NULL")
-			if includeTypes == "" {
-				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
+			searchOpts.Parent = &repository.CompatItemsParentFilter{
+				Mode:  parentMode,
+				Value: p.MatchValue,
 			}
 		} else {
 			pid, _ := models.ResolveToUUID(ctx, state.DB, parentID)
 			if pid != nil {
-				useRepresentative = true
+				mode := repository.CompatItemsParentLibrary
 				if recursive {
-					whereParts = append(whereParts, "i.library_id = $"+strconv.Itoa(idx)+"::uuid")
-				} else {
-					whereParts = append(whereParts, "i.parent_id = $"+strconv.Itoa(idx)+"::uuid")
+					mode = repository.CompatItemsParentLibraryRecursive
 				}
-				args = append(args, *pid)
-				idx++
+				searchOpts.Parent = &repository.CompatItemsParentFilter{Mode: mode, Value: *pid}
 			}
 		}
 	}
 	if scope != nil && !scope.AllowAll {
-		if len(scope.IDs) == 0 {
-			whereParts = append(whereParts, "FALSE")
-		} else {
-			whereParts = append(whereParts, "i.library_id::text = ANY($"+strconv.Itoa(idx)+")")
-			args = append(args, scope.IDs)
-			idx++
-		}
+		searchOpts.RestrictLibraries = true
+		searchOpts.AllowedLibraryIDs = scope.IDs
 	}
-	if includeTypes != "" {
-		validTypes := map[string]bool{"Movie": true, "Series": true, "Episode": true, "Season": true, "Folder": true}
-		typeMap := map[string]string{"Video": "Movie"}
-		typeList := strings.Split(includeTypes, ",")
-		seen := map[string]bool{}
-		var placeholders []string
-		for _, t := range typeList {
-			// 先按 itemTypeCanonical 规范化大小写,Lenna 等客户端会传 "movie" 小写,
-			// 直接精确匹配 i.type='movie' 会查不到记录。
-			t = normalizeItemType(strings.TrimSpace(t))
-			if t == "" {
-				continue
-			}
-			if mapped, ok := typeMap[t]; ok {
-				t = mapped
-			}
-			if t == "Person" || t == "CollectionFolder" {
-				continue
-			}
-			if !validTypes[t] || seen[t] {
-				continue
-			}
-			seen[t] = true
-			placeholders = append(placeholders, "$"+strconv.Itoa(idx))
-			args = append(args, t)
-			idx++
-		}
-		if len(placeholders) > 0 {
-			whereParts = append(whereParts, "i.type IN ("+strings.Join(placeholders, ",")+")")
-		} else {
-			whereParts = append(whereParts, "i.type IN ('Movie', 'Series', 'Episode')")
-		}
-	}
-	if searchTerm != "" {
-		whereParts = append(whereParts, "i.name ILIKE $"+strconv.Itoa(idx))
-		args = append(args, "%"+searchTerm+"%")
-		idx++
-	}
-	if hasSubtitles != nil {
-		subtitleExists := `(EXISTS (SELECT 1 FROM media_streams ms WHERE ms.item_id = i.id AND LOWER(ms.type) = 'subtitle')
-			OR EXISTS (SELECT 1 FROM external_subtitles es WHERE es.item_id = i.id))`
-		if *hasSubtitles {
-			whereParts = append(whereParts, subtitleExists)
-		} else {
-			whereParts = append(whereParts, "NOT ("+subtitleExists+")")
-		}
-	}
-
-	// AnyProviderIdEquals=tmdb.755898 —— 聚合类客户端按外部站点 ID 跨源匹配。
-	// 大小写不敏感匹配 provider key、精确匹配 id 值;多个之间 OR。whereParts 会同时
-	// 作用于主查询 / count / representative CTE,这里只需追加一项。
-	if s := strings.TrimSpace(compatQueryAny(c, "AnyProviderIdEquals", "anyProviderIdEquals", "anyprovideridequals")); s != "" {
-		var ors []string
-		for _, raw := range strings.FieldsFunc(s, func(r rune) bool { return r == ';' || r == ',' }) {
-			raw = strings.TrimSpace(raw)
-			dot := strings.Index(raw, ".")
-			if dot <= 0 || dot >= len(raw)-1 {
-				continue
-			}
-			provider := strings.ToLower(strings.TrimSpace(raw[:dot]))
-			id := strings.TrimSpace(raw[dot+1:])
-			if provider == "" || id == "" {
-				continue
-			}
-			ors = append(ors, fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM jsonb_each_text(i.provider_ids) pe WHERE LOWER(pe.key) = $%d AND pe.value = $%d)",
-				idx, idx+1))
-			args = append(args, provider, id)
-			idx += 2
-		}
-		if len(ors) > 0 {
-			whereParts = append(whereParts, "i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
-		}
-	}
-
-	if len(whereParts) > 0 {
-		sql += " AND " + strings.Join(whereParts, " AND ")
-	}
-
-	countTarget := "COUNT(*)"
-	if useRepresentative {
-		countTarget = "COUNT(DISTINCT " + modelsMergedRepresentativeExpr("i") + ")"
-	}
-	countSQL := "SELECT " + countTarget + " FROM items i" + userJoin + " WHERE 1=1"
-	if len(whereParts) > 0 {
-		countSQL += " AND " + strings.Join(whereParts, " AND ")
-	}
-	countArgs := make([]interface{}, len(args))
-	copy(countArgs, args)
-	var totalCount int64
-	_ = state.DB.QueryRow(ctx, countSQL, countArgs...).Scan(&totalCount)
-
-	if useRepresentative {
-		sql = fmt.Sprintf(
-			`WITH filtered AS (
-				SELECT %s%s, %s, %s AS merge_group_key
-				FROM items i%s%s
-				WHERE 1=1%s
-			), ranked AS (
-				SELECT filtered.*,
-					ROW_NUMBER() OVER (
-						PARTITION BY merge_group_key
-						ORDER BY
-							CASE WHEN filtered.merged_to_id IS NULL THEN 0 ELSE 1 END,
-							CASE WHEN filtered.primary_image_tag IS NOT NULL THEN 0 ELSE 1 END,
-							CASE WHEN filtered.primary_image_path IS NOT NULL AND filtered.primary_image_path <> '' THEN 0 ELSE 1 END,
-							CASE WHEN filtered.overview IS NOT NULL AND filtered.overview <> '' THEN 0 ELSE 1 END,
-							filtered.updated_at DESC,
-							filtered.id
-					) AS merge_row_num
-				FROM filtered
-			)
-			SELECT * FROM ranked WHERE merge_row_num = 1`,
-			baseCols, seriesCols, userCols, modelsMergedRepresentativeExpr("i"), userJoin, seriesJoin, whereSuffix(whereParts))
-		sql += " ORDER BY ranked.sort_name"
-	} else {
-		sql += " ORDER BY i.sort_name"
-	}
-	sql += " LIMIT $" + strconv.Itoa(idx) + "::bigint"
-	args = append(args, limitVal)
-	idx++
-	if startIndex > 0 {
-		sql += " OFFSET $" + strconv.Itoa(idx) + "::bigint"
-		args = append(args, startIndex)
-		idx++
-	}
-
-	rows, err := state.DB.Query(ctx, sql, args...)
+	searchOpts.IncludeTypes = compatItemsIncludeTypes(includeTypes)
+	searchOpts.HasSubtitles = hasSubtitles
+	searchOpts.AnyProviderIDEquals = strings.TrimSpace(compatQueryAny(c, "AnyProviderIdEquals", "anyProviderIdEquals", "anyprovideridequals"))
+	result, err := repository.NewCompatItemsRepository(state.DB).SearchItems(ctx, searchOpts)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
 
 	needMediaSources := strings.Contains(fields, "MediaSources") || strings.Contains(fields, "Path")
 	needPrimaryImageAspectRatio := strings.Contains(fields, "PrimaryImageAspectRatio")
@@ -703,17 +558,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	needPeople := strings.Contains(fields, "People")
 
 	var items []gin.H
-	for rows.Next() {
-		vals, err := rows.Values()
-		if err != nil {
-			continue
-		}
-		fds := rows.FieldDescriptions()
-		m := make(map[string]interface{})
-		for i, fd := range fds {
-			m[string(fd.Name)] = vals[i]
-		}
-
+	for _, m := range result.Rows {
 		row := models.MapColsToItemRow(m)
 		itemID := row.ID
 		if itemID == "" {
@@ -784,7 +629,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	if items == nil {
 		items = []gin.H{}
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": totalCount})
+	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": result.Total})
 }
 
 func uuidToString(v interface{}) string {
@@ -803,20 +648,6 @@ func uuidToString(v interface{}) string {
 		}
 		return ""
 	}
-}
-
-func modelsMergedRepresentativeExpr(itemAlias string) string {
-	return fmt.Sprintf(
-		"CASE WHEN %s.type = 'Movie' THEN COALESCE(%s.merged_to_id::text, %s.id::text) ELSE %s.id::text END",
-		itemAlias, itemAlias, itemAlias, itemAlias,
-	)
-}
-
-func whereSuffix(whereParts []string) string {
-	if len(whereParts) == 0 {
-		return ""
-	}
-	return " AND " + strings.Join(whereParts, " AND ")
 }
 
 func dtoToMap(d dto.BaseItemDto) gin.H {
@@ -855,126 +686,67 @@ func searchHints(c *gin.Context, state *AppState) {
 
 	includeTypes := compatQueryAny(c, "IncludeItemTypes", "includeItemTypes", "includeitemtypes")
 
-	args := []interface{}{"%" + searchTerm + "%"}
-	idx := 2
-
-	whereExtra := ""
-	if includeTypes != "" {
-		typeList := strings.Split(includeTypes, ",")
-		var placeholders []string
-		for _, t := range typeList {
-			// 规范化大小写, 与 parseItemQueryOptions 行为一致, Lenna 等客户端
-			// 传 "movie" 小写时仍能命中 SQL 精确匹配 i.type='Movie'.
-			t = normalizeItemType(strings.TrimSpace(t))
-			if t == "" {
-				continue
-			}
-			placeholders = append(placeholders, "$"+strconv.Itoa(idx))
-			args = append(args, t)
-			idx++
-		}
-		if len(placeholders) > 0 {
-			whereExtra = " AND i.type IN (" + strings.Join(placeholders, ",") + ")"
-		}
-	} else {
-		whereExtra = " AND i.type IN ('Movie', 'Series', 'Episode')"
-	}
-
-	countSQL := "SELECT COUNT(*) FROM items i WHERE i.name ILIKE $1" + whereExtra
-	var totalCount int64
-	_ = state.DB.QueryRow(ctx, countSQL, args...).Scan(&totalCount)
-
-	sql := `SELECT i.id, i.name, i.type, i.production_year,
-		i.primary_image_tag, i.backdrop_image_tag,
-		i.series_id, i.series_name, i.runtime_ticks,
-		i.index_number, i.parent_index_number, i.community_rating,
-		sf.primary_image_tag AS series_primary_image_tag,
-		sf.backdrop_image_tag AS series_backdrop_image_tag,
-		sf.id AS series_fallback_id
-		FROM items i
-		LEFT JOIN items sf ON sf.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)
-		WHERE i.name ILIKE $1` + whereExtra
-
-	sql += " ORDER BY CASE WHEN i.name ILIKE $" + strconv.Itoa(idx) + " THEN 0 ELSE 1 END, i.type, i.sort_name"
-	args = append(args, searchTerm)
-	idx++
-	sql += " LIMIT $" + strconv.Itoa(idx) + "::bigint"
-	args = append(args, limitVal)
-	idx++
-	if startIndex > 0 {
-		sql += " OFFSET $" + strconv.Itoa(idx) + "::bigint"
-		args = append(args, startIndex)
-		idx++
-	}
-
-	rows, err := state.DB.Query(ctx, sql, args...)
+	result, err := repository.NewCompatItemsRepository(state.DB).SearchHints(ctx, repository.CompatSearchHintsOptions{
+		SearchTerm:   searchTerm,
+		IncludeTypes: compatSearchHintTypes(includeTypes),
+		Limit:        limitVal,
+		Offset:       startIndex,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
 
 	var hints []gin.H
-	for rows.Next() {
-		var id, name, itemType string
-		var prodYear *int32
-		var primaryTag, backdropTag, seriesID, seriesName *string
-		var runtimeTicks *int64
-		var indexNum, parentIndexNum *int32
-		var rating *float64
-		var seriesPrimaryTag, seriesBackdropTag, seriesFallbackID *string
-		if err := rows.Scan(&id, &name, &itemType, &prodYear, &primaryTag, &backdropTag, &seriesID, &seriesName, &runtimeTicks, &indexNum, &parentIndexNum, &rating, &seriesPrimaryTag, &seriesBackdropTag, &seriesFallbackID); err != nil {
-			continue
-		}
-
+	for _, row := range result.Rows {
 		mediaType := "Video"
 		hint := gin.H{
-			"Id":        id,
-			"ItemId":    id,
-			"Name":      name,
-			"Type":      itemType,
+			"Id":        row.ID,
+			"ItemId":    row.ID,
+			"Name":      row.Name,
+			"Type":      row.ItemType,
 			"MediaType": mediaType,
 			"ServerId":  state.Config.ServerID,
 		}
-		if prodYear != nil {
-			hint["ProductionYear"] = *prodYear
+		if row.ProductionYear != nil {
+			hint["ProductionYear"] = *row.ProductionYear
 		}
-		if runtimeTicks != nil {
-			hint["RunTimeTicks"] = *runtimeTicks
+		if row.RuntimeTicks != nil {
+			hint["RunTimeTicks"] = *row.RuntimeTicks
 		}
-		if primaryTag != nil {
-			hint["PrimaryImageTag"] = *primaryTag
-			hint["ThumbImageTag"] = *primaryTag
-		} else if (itemType == "Episode" || itemType == "Season") && seriesPrimaryTag != nil {
-			hint["PrimaryImageTag"] = *seriesPrimaryTag
-			hint["ThumbImageTag"] = *seriesPrimaryTag
-			if seriesFallbackID != nil {
-				hint["PrimaryImageItemId"] = *seriesFallbackID
-				hint["ThumbImageItemId"] = *seriesFallbackID
+		if row.PrimaryImageTag != nil {
+			hint["PrimaryImageTag"] = *row.PrimaryImageTag
+			hint["ThumbImageTag"] = *row.PrimaryImageTag
+		} else if (row.ItemType == "Episode" || row.ItemType == "Season") && row.SeriesPrimaryImageTag != nil {
+			hint["PrimaryImageTag"] = *row.SeriesPrimaryImageTag
+			hint["ThumbImageTag"] = *row.SeriesPrimaryImageTag
+			if row.SeriesFallbackID != nil {
+				hint["PrimaryImageItemId"] = *row.SeriesFallbackID
+				hint["ThumbImageItemId"] = *row.SeriesFallbackID
 			}
 		}
-		if backdropTag != nil {
-			hint["BackdropImageTag"] = *backdropTag
-		} else if (itemType == "Episode" || itemType == "Season") && seriesBackdropTag != nil {
-			hint["BackdropImageTag"] = *seriesBackdropTag
-			if seriesFallbackID != nil {
-				hint["BackdropImageItemId"] = *seriesFallbackID
+		if row.BackdropImageTag != nil {
+			hint["BackdropImageTag"] = *row.BackdropImageTag
+		} else if (row.ItemType == "Episode" || row.ItemType == "Season") && row.SeriesBackdropImageTag != nil {
+			hint["BackdropImageTag"] = *row.SeriesBackdropImageTag
+			if row.SeriesFallbackID != nil {
+				hint["BackdropImageItemId"] = *row.SeriesFallbackID
 			}
 		}
-		if seriesName != nil {
-			hint["Series"] = *seriesName
+		if row.SeriesName != nil {
+			hint["Series"] = *row.SeriesName
 		}
-		if indexNum != nil {
-			hint["IndexNumber"] = *indexNum
+		if row.IndexNumber != nil {
+			hint["IndexNumber"] = *row.IndexNumber
 		}
-		if parentIndexNum != nil {
-			hint["ParentIndexNumber"] = *parentIndexNum
+		if row.ParentIndexNumber != nil {
+			hint["ParentIndexNumber"] = *row.ParentIndexNumber
 		}
-		if rating != nil {
-			hint["CommunityRating"] = *rating
+		if row.CommunityRating != nil {
+			hint["CommunityRating"] = *row.CommunityRating
 		}
 
-		isFolder := itemType == "Series" || itemType == "Season" || itemType == "CollectionFolder" || itemType == "Folder"
+		isFolder := row.ItemType == "Series" || row.ItemType == "Season" || row.ItemType == "CollectionFolder" || row.ItemType == "Folder"
 		hint["IsFolder"] = isFolder
 
 		hints = append(hints, hint)
@@ -982,7 +754,7 @@ func searchHints(c *gin.Context, state *AppState) {
 	if hints == nil {
 		hints = []gin.H{}
 	}
-	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": totalCount})
+	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": result.Total})
 }
 
 // hideMediaSourceSizeForInfuse 暂不隐藏 MediaSource.Size,用于验证 Infuse 在
