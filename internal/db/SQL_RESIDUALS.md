@@ -13,11 +13,21 @@
 | 路径 | 当前用途 | 后续建议 |
 | --- | --- | --- |
 | `internal/services/auto_scrape.go` | 自动刮削候选 item 查询 | 配置读取已改走 `SystemConfigRepository`；候选查询后续可收进 scrape/queue repository |
-| `internal/services/file_watcher.go` | 启动时列出 libraries | 配置读取已改走 `SystemConfigRepository`；library 列表复用/补充 `LibraryRepository` |
 | `internal/services/episode_fetch.go`、`internal/services/tmdb_storage.go` | episode 元数据批量更新、still 图回写、保存模式辅助 | 配置读取已改走 `SystemConfigRepository`；批量更新后续按 TMDB/episode repository 收口 |
 | `internal/handlers/emby_compat.go` | 系统统计、season/episode 简单查询 | 后续迁到 compat/item helper repository |
-| `internal/handlers/library_misc.go`、`internal/handlers/user_access.go`、`internal/handlers/compat_sessions.go` | 单点 lookup | 后续迁到对应 repository |
-| `internal/models/user.go`、`internal/models/person_userdata.go` | 用户和人物 user data 固定写入 | 后续迁到 users/person repository |
+
+## migrated_in_phase_11
+
+这些路径在 Phase 11 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
+
+| 路径 | 迁移方式 |
+| --- | --- |
+| `internal/services/file_watcher.go` | 启动列库改走 `LibraryRepository.ListLibrariesForWatcher` |
+| `internal/handlers/library_misc.go` | merge 诊断计数改走 `ItemHelperRepository.CountMergedVersionPrimaries/Secondaries`；genres/tags 继续经既有 item helper repository 包装 |
+| `internal/handlers/user_access.go` | item library access lookup 改走 `UserRepository.GetItemLibraryIDForAccess` |
+| `internal/handlers/compat_sessions.go` | primary media version container/bitrate lookup 改走 `ItemHelperRepository.GetPrimaryMediaVersionInfo` |
+| `internal/models/person_userdata.go` | person favorite 读写改走 `ItemHelperRepository` 的 user-person-data 方法 |
+| `internal/models/user.go` | policy 字段更新、admin/hidden/disabled 更新改走 `UserRepository` 方法 |
 
 ## allowed_dynamic
 
