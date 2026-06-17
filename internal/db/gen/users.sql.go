@@ -112,6 +112,19 @@ func (q *Queries) EnsureUserPolicyDefaults(ctx context.Context, userID pgtype.UU
 	return err
 }
 
+const getItemLibraryIDForAccess = `-- name: GetItemLibraryIDForAccess :one
+SELECT library_id::text
+FROM items
+WHERE id = $1::uuid
+`
+
+func (q *Queries) GetItemLibraryIDForAccess(ctx context.Context, dollar_1 pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getItemLibraryIDForAccess, dollar_1)
+	var library_id string
+	err := row.Scan(&library_id)
+	return library_id, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, name, password_hash, is_admin, created_at, is_disabled, is_hidden, last_login_date, last_activity_date, emby_password_hash
 FROM users
@@ -326,6 +339,20 @@ func (q *Queries) UpdateLastLogin(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const updateUserAdmin = `-- name: UpdateUserAdmin :exec
+UPDATE users SET is_admin = $1 WHERE id = $2
+`
+
+type UpdateUserAdminParams struct {
+	IsAdmin bool        `json:"is_admin"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateUserAdmin(ctx context.Context, arg UpdateUserAdminParams) error {
+	_, err := q.db.Exec(ctx, updateUserAdmin, arg.IsAdmin, arg.ID)
+	return err
+}
+
 const updateUserHidden = `-- name: UpdateUserHidden :exec
 UPDATE users SET is_hidden = $1 WHERE id = $2
 `
@@ -393,6 +420,73 @@ type UpdateUserPolicyEnabledFoldersParams struct {
 
 func (q *Queries) UpdateUserPolicyEnabledFolders(ctx context.Context, arg UpdateUserPolicyEnabledFoldersParams) error {
 	_, err := q.db.Exec(ctx, updateUserPolicyEnabledFolders, arg.EnabledFolders, arg.UserID)
+	return err
+}
+
+const updateUserPolicyFields = `-- name: UpdateUserPolicyFields :exec
+UPDATE user_policies SET
+  is_administrator = COALESCE($1::boolean, is_administrator),
+  enable_all_folders = COALESCE($2::boolean, enable_all_folders),
+  enable_remote_access = COALESCE($3::boolean, enable_remote_access),
+  enable_media_playback = COALESCE($4::boolean, enable_media_playback),
+  enable_audio_transcoding = COALESCE($5::boolean, enable_audio_transcoding),
+  enable_video_transcoding = COALESCE($6::boolean, enable_video_transcoding),
+  enable_playback_remuxing = COALESCE($7::boolean, enable_playback_remuxing),
+  enable_content_deletion = COALESCE($8::boolean, enable_content_deletion),
+  enable_content_downloading = COALESCE($9::boolean, enable_content_downloading),
+  enable_subtitle_management = COALESCE($10::boolean, enable_subtitle_management),
+  enable_live_tv_access = COALESCE($11::boolean, enable_live_tv_access),
+  enable_live_tv_management = COALESCE($12::boolean, enable_live_tv_management),
+  enable_user_preference_access = COALESCE($13::boolean, enable_user_preference_access),
+  enable_remote_control = COALESCE($14::boolean, enable_remote_control),
+  enable_shared_device_control = COALESCE($15::boolean, enable_shared_device_control),
+  remote_client_bitrate_limit = COALESCE($16::int, remote_client_bitrate_limit),
+  simultaneous_stream_limit = COALESCE($17::int, simultaneous_stream_limit)
+WHERE user_id = $18
+`
+
+type UpdateUserPolicyFieldsParams struct {
+	IsAdministrator            pgtype.Bool `json:"is_administrator"`
+	EnableAllFolders           pgtype.Bool `json:"enable_all_folders"`
+	EnableRemoteAccess         pgtype.Bool `json:"enable_remote_access"`
+	EnableMediaPlayback        pgtype.Bool `json:"enable_media_playback"`
+	EnableAudioTranscoding     pgtype.Bool `json:"enable_audio_transcoding"`
+	EnableVideoTranscoding     pgtype.Bool `json:"enable_video_transcoding"`
+	EnablePlaybackRemuxing     pgtype.Bool `json:"enable_playback_remuxing"`
+	EnableContentDeletion      pgtype.Bool `json:"enable_content_deletion"`
+	EnableContentDownloading   pgtype.Bool `json:"enable_content_downloading"`
+	EnableSubtitleManagement   pgtype.Bool `json:"enable_subtitle_management"`
+	EnableLiveTvAccess         pgtype.Bool `json:"enable_live_tv_access"`
+	EnableLiveTvManagement     pgtype.Bool `json:"enable_live_tv_management"`
+	EnableUserPreferenceAccess pgtype.Bool `json:"enable_user_preference_access"`
+	EnableRemoteControl        pgtype.Bool `json:"enable_remote_control"`
+	EnableSharedDeviceControl  pgtype.Bool `json:"enable_shared_device_control"`
+	RemoteClientBitrateLimit   pgtype.Int4 `json:"remote_client_bitrate_limit"`
+	SimultaneousStreamLimit    pgtype.Int4 `json:"simultaneous_stream_limit"`
+	UserID                     pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) UpdateUserPolicyFields(ctx context.Context, arg UpdateUserPolicyFieldsParams) error {
+	_, err := q.db.Exec(ctx, updateUserPolicyFields,
+		arg.IsAdministrator,
+		arg.EnableAllFolders,
+		arg.EnableRemoteAccess,
+		arg.EnableMediaPlayback,
+		arg.EnableAudioTranscoding,
+		arg.EnableVideoTranscoding,
+		arg.EnablePlaybackRemuxing,
+		arg.EnableContentDeletion,
+		arg.EnableContentDownloading,
+		arg.EnableSubtitleManagement,
+		arg.EnableLiveTvAccess,
+		arg.EnableLiveTvManagement,
+		arg.EnableUserPreferenceAccess,
+		arg.EnableRemoteControl,
+		arg.EnableSharedDeviceControl,
+		arg.RemoteClientBitrateLimit,
+		arg.SimultaneousStreamLimit,
+		arg.UserID,
+	)
 	return err
 }
 

@@ -45,6 +45,26 @@ type UserPolicy struct {
 	EnabledFolders             []string
 }
 
+type UserPolicyFieldUpdate struct {
+	IsAdministrator            *bool
+	EnableAllFolders           *bool
+	EnableRemoteAccess         *bool
+	EnableMediaPlayback        *bool
+	EnableAudioTranscoding     *bool
+	EnableVideoTranscoding     *bool
+	EnablePlaybackRemuxing     *bool
+	EnableContentDeletion      *bool
+	EnableContentDownloading   *bool
+	EnableSubtitleManagement   *bool
+	EnableLiveTvAccess         *bool
+	EnableLiveTvManagement     *bool
+	EnableUserPreferenceAccess *bool
+	EnableRemoteControl        *bool
+	EnableSharedDeviceControl  *bool
+	RemoteClientBitrateLimit   *int32
+	SimultaneousStreamLimit    *int32
+}
+
 type AccessToken struct {
 	Token      string
 	UserID     uuid.UUID
@@ -70,4 +90,9 @@ type Library struct {
 type DisplayOrderEntry struct {
 	Kind string
 	ID   string
+}
+
+type PrimaryMediaVersionInfo struct {
+	Container string
+	Bitrate   *int32
 }

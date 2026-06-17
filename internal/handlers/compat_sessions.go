@@ -97,14 +97,10 @@ func formatEmbySessionInfo(ctx context.Context, s services.ActiveSession, state 
 			item["MediaStreams"] = ms
 		}
 
-		var container string
-		var bitrate *int32
-		err = state.DB.QueryRow(ctx,
-			"SELECT container, bitrate FROM media_versions WHERE item_id = $1::uuid AND is_primary = true LIMIT 1",
-			np.ItemID).Scan(&container, &bitrate)
-		if err == nil {
-			item["Container"] = container
-			item["Bitrate"] = bitrate
+		info, err := state.Repo.ItemHelpers.GetPrimaryMediaVersionInfo(ctx, np.ItemID)
+		if err == nil && info != nil {
+			item["Container"] = info.Container
+			item["Bitrate"] = info.Bitrate
 		}
 
 		h["NowPlayingItem"] = item

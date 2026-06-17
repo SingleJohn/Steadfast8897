@@ -123,6 +123,32 @@ func (r *ItemHelperRepository) ListAllGenresWithCounts(ctx context.Context) ([]I
 	return out, nil
 }
 
+func (r *ItemHelperRepository) CountMergedVersionPrimaries(ctx context.Context) (int64, error) {
+	return r.queries.CountMergedVersionPrimaries(ctx)
+}
+
+func (r *ItemHelperRepository) CountMergedVersionSecondaries(ctx context.Context) (int64, error) {
+	return r.queries.CountMergedVersionSecondaries(ctx)
+}
+
+func (r *ItemHelperRepository) GetPrimaryMediaVersionInfo(ctx context.Context, itemID string) (*PrimaryMediaVersionInfo, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := r.queries.GetPrimaryMediaVersionInfo(ctx, toPGUUID(uid))
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &PrimaryMediaVersionInfo{
+		Container: textOrEmpty(row.Container),
+		Bitrate:   ptrInt32FromPG(row.Bitrate),
+	}, nil
+}
+
 func (r *ItemHelperRepository) ListExternalSubtitlesForMediaVersion(ctx context.Context, mediaVersionID string) ([]dto.ExternalSubtitleRow, error) {
 	uid, err := uuid.Parse(mediaVersionID)
 	if err != nil {
@@ -185,6 +211,66 @@ func (r *ItemHelperRepository) UpsertUserItemData(ctx context.Context, userID, i
 		PlayCount:  optionalInt32(playCount),
 		IsFavorite: optionalBool(isFavorite),
 		Played:     optionalBool(played),
+	})
+}
+
+func (r *ItemHelperRepository) GetUserPersonData(ctx context.Context, userID, personID string) (*dto.UserDataRow, error) {
+	uid, pid, err := parseTwoUUIDs(userID, personID)
+	if err != nil {
+		return nil, err
+	}
+	isFavorite, err := r.queries.GetUserPersonData(ctx, dbgen.GetUserPersonDataParams{
+		Column1: toPGUUID(uid),
+		Column2: toPGUUID(pid),
+	})
+	if err == pgx.ErrNoRows {
+		return &dto.UserDataRow{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return personUserDataRow(isFavorite), nil
+}
+
+func (r *ItemHelperRepository) GetUserPersonFavoriteMap(ctx context.Context, userID string, personIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(personIDs))
+	if userID == "" || len(personIDs) == 0 {
+		return out, nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, err
+	}
+	pgPersonIDs := make([]pgtype.UUID, 0, len(personIDs))
+	for _, id := range personIDs {
+		pid, err := uuid.Parse(id)
+		if err != nil {
+			return nil, err
+		}
+		pgPersonIDs = append(pgPersonIDs, toPGUUID(pid))
+	}
+	rows, err := r.queries.ListUserPersonFavorites(ctx, dbgen.ListUserPersonFavoritesParams{
+		Column1: toPGUUID(uid),
+		Column2: pgPersonIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.PersonID] = row.IsFavorite
+	}
+	return out, nil
+}
+
+func (r *ItemHelperRepository) UpsertUserPersonFavorite(ctx context.Context, userID, personID string, favorite bool) error {
+	uid, pid, err := parseTwoUUIDs(userID, personID)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpsertUserPersonFavorite(ctx, dbgen.UpsertUserPersonFavoriteParams{
+		Column1:    toPGUUID(uid),
+		Column2:    toPGUUID(pid),
+		IsFavorite: favorite,
 	})
 }
 
@@ -383,6 +469,18 @@ func optionalBool(v *bool) pgtype.Bool {
 		return pgtype.Bool{}
 	}
 	return pgtype.Bool{Bool: *v, Valid: true}
+}
+
+func personUserDataRow(isFavorite bool) *dto.UserDataRow {
+	pos := int64(0)
+	playCount := int32(0)
+	played := false
+	return &dto.UserDataRow{
+		PlaybackPositionTicks: &pos,
+		PlayCount:             &playCount,
+		IsFavorite:            &isFavorite,
+		Played:                &played,
+	}
 }
 
 func stringPtrFromAny(v interface{}) *string {

@@ -46,6 +46,23 @@ LEFT JOIN item_genres ig ON g.id = ig.genre_id
 GROUP BY g.id, g.name
 ORDER BY g.name;
 
+-- name: CountMergedVersionPrimaries :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE merged_to_id IS NULL
+  AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = items.id);
+
+-- name: CountMergedVersionSecondaries :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE merged_to_id IS NOT NULL;
+
+-- name: GetPrimaryMediaVersionInfo :one
+SELECT container, bitrate
+FROM media_versions
+WHERE item_id = $1::uuid AND is_primary = true
+LIMIT 1;
+
 -- name: ListExternalSubtitlesForMediaVersion :many
 SELECT id::text, item_id::text, media_version_id::text, file_path, codec, language, title, is_default, is_forced
 FROM external_subtitles
@@ -76,6 +93,24 @@ ON CONFLICT (user_id, item_id) DO UPDATE SET
 INSERT INTO user_item_data (user_id, item_id, is_hidden_from_resume)
 VALUES ($1::uuid, $2::uuid, $3)
 ON CONFLICT (user_id, item_id) DO UPDATE SET is_hidden_from_resume = $3;
+
+-- name: GetUserPersonData :one
+SELECT is_favorite
+FROM user_person_data
+WHERE user_id = $1::uuid AND person_id = $2::uuid;
+
+-- name: ListUserPersonFavorites :many
+SELECT person_id::text, is_favorite
+FROM user_person_data
+WHERE user_id = $1::uuid
+  AND person_id = ANY($2::uuid[]);
+
+-- name: UpsertUserPersonFavorite :exec
+INSERT INTO user_person_data (user_id, person_id, is_favorite)
+VALUES ($1::uuid, $2::uuid, $3)
+ON CONFLICT (user_id, person_id) DO UPDATE SET
+  is_favorite = EXCLUDED.is_favorite,
+  updated_at = NOW();
 
 -- name: GetChildCount :one
 SELECT COUNT(*)::bigint

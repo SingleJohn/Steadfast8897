@@ -33,6 +33,33 @@ func (q *Queries) ClearPersonImage(ctx context.Context, dollar_1 pgtype.UUID) er
 	return err
 }
 
+const countMergedVersionPrimaries = `-- name: CountMergedVersionPrimaries :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE merged_to_id IS NULL
+  AND EXISTS (SELECT 1 FROM items s WHERE s.merged_to_id = items.id)
+`
+
+func (q *Queries) CountMergedVersionPrimaries(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countMergedVersionPrimaries)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countMergedVersionSecondaries = `-- name: CountMergedVersionSecondaries :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE merged_to_id IS NOT NULL
+`
+
+func (q *Queries) CountMergedVersionSecondaries(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countMergedVersionSecondaries)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const fillPersonImageIfUnlocked = `-- name: FillPersonImageIfUnlocked :execrows
 UPDATE persons
 SET image_path = $1, updated_at = NOW()
@@ -142,6 +169,25 @@ func (q *Queries) GetPersonImagePath(ctx context.Context, dollar_1 pgtype.UUID) 
 	return coalesce, err
 }
 
+const getPrimaryMediaVersionInfo = `-- name: GetPrimaryMediaVersionInfo :one
+SELECT container, bitrate
+FROM media_versions
+WHERE item_id = $1::uuid AND is_primary = true
+LIMIT 1
+`
+
+type GetPrimaryMediaVersionInfoRow struct {
+	Container pgtype.Text `json:"container"`
+	Bitrate   pgtype.Int4 `json:"bitrate"`
+}
+
+func (q *Queries) GetPrimaryMediaVersionInfo(ctx context.Context, dollar_1 pgtype.UUID) (GetPrimaryMediaVersionInfoRow, error) {
+	row := q.db.QueryRow(ctx, getPrimaryMediaVersionInfo, dollar_1)
+	var i GetPrimaryMediaVersionInfoRow
+	err := row.Scan(&i.Container, &i.Bitrate)
+	return i, err
+}
+
 const getRecursiveItemCount = `-- name: GetRecursiveItemCount :one
 WITH RECURSIVE children AS (
   SELECT id FROM items WHERE parent_id = $1::uuid
@@ -188,6 +234,24 @@ func (q *Queries) GetUserItemData(ctx context.Context, arg GetUserItemDataParams
 		&i.LastPlayedDate,
 	)
 	return i, err
+}
+
+const getUserPersonData = `-- name: GetUserPersonData :one
+SELECT is_favorite
+FROM user_person_data
+WHERE user_id = $1::uuid AND person_id = $2::uuid
+`
+
+type GetUserPersonDataParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Column2 pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) GetUserPersonData(ctx context.Context, arg GetUserPersonDataParams) (bool, error) {
+	row := q.db.QueryRow(ctx, getUserPersonData, arg.Column1, arg.Column2)
+	var is_favorite bool
+	err := row.Scan(&is_favorite)
+	return is_favorite, err
 }
 
 const listAllGenresWithCounts = `-- name: ListAllGenresWithCounts :many
@@ -480,6 +544,43 @@ func (q *Queries) ListItemsForActorImageBackfill(ctx context.Context) ([]string,
 	return items, nil
 }
 
+const listUserPersonFavorites = `-- name: ListUserPersonFavorites :many
+SELECT person_id::text, is_favorite
+FROM user_person_data
+WHERE user_id = $1::uuid
+  AND person_id = ANY($2::uuid[])
+`
+
+type ListUserPersonFavoritesParams struct {
+	Column1 pgtype.UUID   `json:"column_1"`
+	Column2 []pgtype.UUID `json:"column_2"`
+}
+
+type ListUserPersonFavoritesRow struct {
+	PersonID   string `json:"person_id"`
+	IsFavorite bool   `json:"is_favorite"`
+}
+
+func (q *Queries) ListUserPersonFavorites(ctx context.Context, arg ListUserPersonFavoritesParams) ([]ListUserPersonFavoritesRow, error) {
+	rows, err := q.db.Query(ctx, listUserPersonFavorites, arg.Column1, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUserPersonFavoritesRow
+	for rows.Next() {
+		var i ListUserPersonFavoritesRow
+		if err := rows.Scan(&i.PersonID, &i.IsFavorite); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const personExists = `-- name: PersonExists :one
 SELECT EXISTS(SELECT 1 FROM persons WHERE id = $1::uuid)
 `
@@ -588,5 +689,24 @@ func (q *Queries) UpsertUserItemData(ctx context.Context, arg UpsertUserItemData
 		arg.IsFavorite,
 		arg.Played,
 	)
+	return err
+}
+
+const upsertUserPersonFavorite = `-- name: UpsertUserPersonFavorite :exec
+INSERT INTO user_person_data (user_id, person_id, is_favorite)
+VALUES ($1::uuid, $2::uuid, $3)
+ON CONFLICT (user_id, person_id) DO UPDATE SET
+  is_favorite = EXCLUDED.is_favorite,
+  updated_at = NOW()
+`
+
+type UpsertUserPersonFavoriteParams struct {
+	Column1    pgtype.UUID `json:"column_1"`
+	Column2    pgtype.UUID `json:"column_2"`
+	IsFavorite bool        `json:"is_favorite"`
+}
+
+func (q *Queries) UpsertUserPersonFavorite(ctx context.Context, arg UpsertUserPersonFavoriteParams) error {
+	_, err := q.db.Exec(ctx, upsertUserPersonFavorite, arg.Column1, arg.Column2, arg.IsFavorite)
 	return err
 }

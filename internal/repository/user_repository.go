@@ -150,6 +150,13 @@ func (r *UserRepository) SetUserDisabled(ctx context.Context, id uuid.UUID, disa
 	})
 }
 
+func (r *UserRepository) UpdateUserAdmin(ctx context.Context, id uuid.UUID, isAdmin bool) error {
+	return r.queries.UpdateUserAdmin(ctx, dbgen.UpdateUserAdminParams{
+		IsAdmin: isAdmin,
+		ID:      toPGUUID(id),
+	})
+}
+
 func (r *UserRepository) UpdateLastLogin(ctx context.Context, id uuid.UUID) error {
 	return r.queries.UpdateLastLogin(ctx, toPGUUID(id))
 }
@@ -181,6 +188,37 @@ func (r *UserRepository) UpdateUserPolicyEnabledFolders(ctx context.Context, use
 		EnabledFolders: folders,
 		UserID:         toPGUUID(userID),
 	})
+}
+
+func (r *UserRepository) UpdateUserPolicyFields(ctx context.Context, userID uuid.UUID, update UserPolicyFieldUpdate) error {
+	return r.queries.UpdateUserPolicyFields(ctx, dbgen.UpdateUserPolicyFieldsParams{
+		IsAdministrator:            optionalBool(update.IsAdministrator),
+		EnableAllFolders:           optionalBool(update.EnableAllFolders),
+		EnableRemoteAccess:         optionalBool(update.EnableRemoteAccess),
+		EnableMediaPlayback:        optionalBool(update.EnableMediaPlayback),
+		EnableAudioTranscoding:     optionalBool(update.EnableAudioTranscoding),
+		EnableVideoTranscoding:     optionalBool(update.EnableVideoTranscoding),
+		EnablePlaybackRemuxing:     optionalBool(update.EnablePlaybackRemuxing),
+		EnableContentDeletion:      optionalBool(update.EnableContentDeletion),
+		EnableContentDownloading:   optionalBool(update.EnableContentDownloading),
+		EnableSubtitleManagement:   optionalBool(update.EnableSubtitleManagement),
+		EnableLiveTvAccess:         optionalBool(update.EnableLiveTvAccess),
+		EnableLiveTvManagement:     optionalBool(update.EnableLiveTvManagement),
+		EnableUserPreferenceAccess: optionalBool(update.EnableUserPreferenceAccess),
+		EnableRemoteControl:        optionalBool(update.EnableRemoteControl),
+		EnableSharedDeviceControl:  optionalBool(update.EnableSharedDeviceControl),
+		RemoteClientBitrateLimit:   optionalInt32(update.RemoteClientBitrateLimit),
+		SimultaneousStreamLimit:    optionalInt32(update.SimultaneousStreamLimit),
+		UserID:                     toPGUUID(userID),
+	})
+}
+
+func (r *UserRepository) GetItemLibraryIDForAccess(ctx context.Context, itemID string) (string, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return "", err
+	}
+	return r.queries.GetItemLibraryIDForAccess(ctx, toPGUUID(uid))
 }
 
 func (r *UserRepository) ListUserLibraryAccess(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {

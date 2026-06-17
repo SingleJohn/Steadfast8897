@@ -2,7 +2,6 @@ package models
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -174,69 +173,26 @@ func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID,
 		return err
 	}
 
-	type fieldUpdate struct {
-		column string
-		value  interface{}
-	}
-	var updates []fieldUpdate
-
-	if policy.IsAdministrator != nil {
-		updates = append(updates, fieldUpdate{"is_administrator", *policy.IsAdministrator})
-	}
-	if policy.EnableAllFolders != nil {
-		updates = append(updates, fieldUpdate{"enable_all_folders", *policy.EnableAllFolders})
-	}
-	if policy.EnableRemoteAccess != nil {
-		updates = append(updates, fieldUpdate{"enable_remote_access", *policy.EnableRemoteAccess})
-	}
-	if policy.EnableMediaPlayback != nil {
-		updates = append(updates, fieldUpdate{"enable_media_playback", *policy.EnableMediaPlayback})
-	}
-	if policy.EnableAudioTranscoding != nil {
-		updates = append(updates, fieldUpdate{"enable_audio_transcoding", *policy.EnableAudioTranscoding})
-	}
-	if policy.EnableVideoTranscoding != nil {
-		updates = append(updates, fieldUpdate{"enable_video_transcoding", *policy.EnableVideoTranscoding})
-	}
-	if policy.EnablePlaybackRemuxing != nil {
-		updates = append(updates, fieldUpdate{"enable_playback_remuxing", *policy.EnablePlaybackRemuxing})
-	}
-	if policy.EnableContentDeletion != nil {
-		updates = append(updates, fieldUpdate{"enable_content_deletion", *policy.EnableContentDeletion})
-	}
-	if policy.EnableContentDownloading != nil {
-		updates = append(updates, fieldUpdate{"enable_content_downloading", *policy.EnableContentDownloading})
-	}
-	if policy.EnableSubtitleManagement != nil {
-		updates = append(updates, fieldUpdate{"enable_subtitle_management", *policy.EnableSubtitleManagement})
-	}
-	if policy.EnableLiveTvAccess != nil {
-		updates = append(updates, fieldUpdate{"enable_live_tv_access", *policy.EnableLiveTvAccess})
-	}
-	if policy.EnableLiveTvManagement != nil {
-		updates = append(updates, fieldUpdate{"enable_live_tv_management", *policy.EnableLiveTvManagement})
-	}
-	if policy.EnableUserPreferenceAccess != nil {
-		updates = append(updates, fieldUpdate{"enable_user_preference_access", *policy.EnableUserPreferenceAccess})
-	}
-	if policy.EnableRemoteControl != nil {
-		updates = append(updates, fieldUpdate{"enable_remote_control", *policy.EnableRemoteControl})
-	}
-	if policy.EnableSharedDeviceControl != nil {
-		updates = append(updates, fieldUpdate{"enable_shared_device_control", *policy.EnableSharedDeviceControl})
-	}
-	if policy.RemoteClientBitrateLimit != nil {
-		updates = append(updates, fieldUpdate{"remote_client_bitrate_limit", *policy.RemoteClientBitrateLimit})
-	}
-	if policy.SimultaneousStreamLimit != nil {
-		updates = append(updates, fieldUpdate{"simultaneous_stream_limit", *policy.SimultaneousStreamLimit})
-	}
-
-	for _, u := range updates {
-		sql := fmt.Sprintf("UPDATE user_policies SET %s = $1 WHERE user_id = $2", u.column)
-		if _, err := pool.Exec(ctx, sql, u.value, userID); err != nil {
-			return err
-		}
+	if err := userRepo.UpdateUserPolicyFields(ctx, userID, repository.UserPolicyFieldUpdate{
+		IsAdministrator:            policy.IsAdministrator,
+		EnableAllFolders:           policy.EnableAllFolders,
+		EnableRemoteAccess:         policy.EnableRemoteAccess,
+		EnableMediaPlayback:        policy.EnableMediaPlayback,
+		EnableAudioTranscoding:     policy.EnableAudioTranscoding,
+		EnableVideoTranscoding:     policy.EnableVideoTranscoding,
+		EnablePlaybackRemuxing:     policy.EnablePlaybackRemuxing,
+		EnableContentDeletion:      policy.EnableContentDeletion,
+		EnableContentDownloading:   policy.EnableContentDownloading,
+		EnableSubtitleManagement:   policy.EnableSubtitleManagement,
+		EnableLiveTvAccess:         policy.EnableLiveTvAccess,
+		EnableLiveTvManagement:     policy.EnableLiveTvManagement,
+		EnableUserPreferenceAccess: policy.EnableUserPreferenceAccess,
+		EnableRemoteControl:        policy.EnableRemoteControl,
+		EnableSharedDeviceControl:  policy.EnableSharedDeviceControl,
+		RemoteClientBitrateLimit:   policy.RemoteClientBitrateLimit,
+		SimultaneousStreamLimit:    policy.SimultaneousStreamLimit,
+	}); err != nil {
+		return err
 	}
 
 	if policy.BlockedMediaFolders != nil {
@@ -251,9 +207,7 @@ func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID,
 	}
 
 	if policy.IsAdministrator != nil {
-		_, err := pool.Exec(ctx, "UPDATE users SET is_admin = $1 WHERE id = $2",
-			*policy.IsAdministrator, userID)
-		if err != nil {
+		if err := userRepo.UpdateUserAdmin(ctx, userID, *policy.IsAdministrator); err != nil {
 			return err
 		}
 	}
@@ -264,10 +218,10 @@ func UpsertUserPolicy(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID,
 		} else if policy.IsHiddenRemotely != nil {
 			hidden = *policy.IsHiddenRemotely
 		}
-		pool.Exec(ctx, "UPDATE users SET is_hidden = $1 WHERE id = $2", hidden, userID)
+		_, _ = userRepo.UpdateUser(ctx, userID, nil, &hidden)
 	}
 	if policy.IsDisabled != nil {
-		pool.Exec(ctx, "UPDATE users SET is_disabled = $1 WHERE id = $2", *policy.IsDisabled, userID)
+		_ = userRepo.SetUserDisabled(ctx, userID, *policy.IsDisabled)
 	}
 
 	return nil

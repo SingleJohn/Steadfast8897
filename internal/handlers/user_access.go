@@ -76,9 +76,7 @@ func userCanAccessItem(ctx context.Context, state *AppState, userID string, item
 		return err == nil, err
 	}
 
-	var libraryID string
-	err = state.DB.QueryRow(ctx,
-		"SELECT library_id::text FROM items WHERE id = $1::uuid", itemID).Scan(&libraryID)
+	libraryID, err := state.Repo.Users.GetItemLibraryIDForAccess(ctx, itemID)
 	if err != nil {
 		return false, err
 	}
