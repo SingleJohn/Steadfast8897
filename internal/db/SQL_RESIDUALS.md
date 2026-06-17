@@ -67,6 +67,7 @@
 | `internal/handlers/compat_items.go` | Emby `/Items`、`/Items/Counts`、`/Search/Hints` 查询改走 `CompatItemsRepository`；handler 仅保留参数解析、权限 scope 和 DTO 组装 |
 | `internal/models/item_query.go` | 主 `/Items` 查询 SQL builder/执行改走 `ItemQueryRepository`；models 层保留兼容签名和 DTO 映射 |
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库 CRUD、维度发现、计数、平台扫描状态和 filename 规则回写改走 `PlatformRepository`；models/handler 只保留类型适配和编排 |
+| `internal/models/person.go`、`internal/models/person_admin.go` | 演员详情、列表、metadata 回写、管理分页、删除清理改走 `PersonRepository`；models 层保留 Emby/person DTO 类型与事务接口 |
 
 ## migrated_in_phase_11
 
@@ -90,7 +91,7 @@
 | `internal/repository/item_query_repository.go` | 主 item 动态查询 builder，包含筛选、排序、随机、统计估算、代表版本选择 | SortBy/过滤字段继续白名单化，models 层不得新增直接 SQL |
 | `internal/repository/compat_items_repository.go` | Emby `/Items` 动态查询集中 builder，包含兼容字段投影、代表版本选择、SearchHints | 保持 Emby 语义；新增字段先核对 CTE 投影 |
 | `internal/repository/platform_repository.go` | 虚拟库维度、别名、封面、平台扫描状态与 filename 规则回写集中 builder | 维度、filename 规则、动态条件必须走显式白名单 |
-| `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
+| `internal/repository/person_repository.go` | 演员搜索、清理、metadata 回写、管理筛选和事务删除集中 builder | 过滤和排序继续白名单化；删除/垃圾清理必须在 repository 事务内 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
 | `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路仍含 item 创建、查重、动态 NFO update、episode canonical merge 等高耦合路径 | 不为清零 SQL 破坏扫描/ingest 语义；继续按固定 helper 和集中 builder 迁移 |
