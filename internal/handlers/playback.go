@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -164,7 +163,7 @@ func insertPlaybackActivity(ctx context.Context, st *AppState, userID, itemID, i
 		SeriesName:  seriesName,
 		UserAgent:   userAgent,
 	}); err != nil {
-		log.Printf("[Play] Failed to insert playback activity: %v", err)
+		slog.Error("[Play] Failed to insert playback activity", "log_target", "playback", "error", err)
 	}
 }
 
@@ -333,7 +332,7 @@ func OnPlaybackStart(c *gin.Context) {
 		}
 	}
 
-	log.Printf("[Play] User '%s' started playing '%s' (%s)", auth.Name, itemName, clientName)
+	slog.Info("[Play] started", "log_target", "playback", "user", auth.Name, "item", itemName, "client", clientName)
 
 	nowMs := time.Now().UnixMilli()
 	activePlaybacksMu.Lock()
@@ -523,7 +522,7 @@ func OnPlaybackStopped(c *gin.Context) {
 		nowMs := time.Now().UnixMilli()
 		durationSec := (nowMs - session.startTimeMs) / 1000
 		if durationSec > 5 {
-			log.Printf("[Play] User '%s' stopped '%s' after %ds", auth.Name, session.itemName, durationSec)
+			slog.Info("[Play] stopped", "log_target", "playback", "user", auth.Name, "item", session.itemName, "duration_sec", durationSec)
 			var sn *string
 			if session.seriesName != "" {
 				sn = &session.seriesName

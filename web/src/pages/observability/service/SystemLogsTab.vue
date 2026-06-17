@@ -6,6 +6,20 @@ import { getSystemLogs } from '@/api/client'
 import { useVisibleInterval } from '@/composables/useVisibleInterval'
 
 const LOG_LEVELS = ['ALL', 'INFO', 'WARN', 'ERROR'] as const
+const LOG_TARGET_OPTIONS = [
+  { label: '全部模块', value: 'ALL' },
+  { label: 'HTTP', value: 'http' },
+  { label: '扫描', value: 'scan' },
+  { label: '入库', value: 'ingest' },
+  { label: '刮削', value: 'scrape' },
+  { label: 'TMDB', value: 'tmdb' },
+  { label: '网关', value: 'gateway' },
+  { label: '数据库', value: 'database' },
+  { label: '播放', value: 'playback' },
+  { label: '任务', value: 'tasks' },
+  { label: '指标', value: 'metrics' },
+  { label: '系统', value: 'system' },
+] as const
 const LOG_COLORS: Record<string, string> = {
   ERROR: '#ef4444',
   WARN: '#f59e0b',
@@ -25,6 +39,7 @@ const logRetentionOptions = [3, 7, 14, 30].map((d) => ({
 
 const logEntries = ref<any[]>([])
 const logLevel = ref<string>('ALL')
+const logTarget = ref<string>('ALL')
 const logAutoRefresh = ref(true)
 const logRetentionDays = ref('7')
 const logContainerRef = ref<HTMLElement | null>(null)
@@ -38,9 +53,10 @@ async function fetchLogs() {
   }
   logRefreshing = true
   const level = logLevel.value
+  const target = logTarget.value
   try {
-    const res = await getSystemLogs(level, 500)
-    if (level !== logLevel.value) return
+    const res = await getSystemLogs(level, 500, target)
+    if (level !== logLevel.value || target !== logTarget.value) return
     logEntries.value = (res as any)?.entries || []
     await nextTick()
     const el = logContainerRef.value
@@ -57,6 +73,10 @@ async function fetchLogs() {
 }
 
 watch(logLevel, () => {
+  void fetchLogs()
+})
+
+watch(logTarget, () => {
   void fetchLogs()
 })
 
@@ -93,6 +113,15 @@ onMounted(() => {
           >
             {{ l }}
           </button>
+        </div>
+        <div class="logs-toolbar__target">
+          <span class="logs-toolbar__label">模块</span>
+          <n-select
+            v-model:value="logTarget"
+            :options="LOG_TARGET_OPTIONS"
+            size="small"
+            style="width: 120px"
+          />
         </div>
       </div>
 
@@ -206,6 +235,12 @@ onMounted(() => {
 }
 
 .logs-toolbar__retention {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.logs-toolbar__target {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -359,6 +394,10 @@ onMounted(() => {
 
   .logs-toolbar__retention {
     display: none;
+  }
+
+  .logs-toolbar__target {
+    width: 100%;
   }
 }
 </style>

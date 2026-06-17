@@ -395,7 +395,8 @@ func getLogs(c *gin.Context) {
 			limit = n
 		}
 	}
-	entries := state.LogBuffer.Get(level, limit)
+	target := strings.ToLower(strings.TrimSpace(c.Query("target")))
+	entries := state.LogBuffer.GetFiltered(level, target, limit)
 	c.JSON(http.StatusOK, gin.H{
 		"entries": entries,
 		"total":   len(entries),

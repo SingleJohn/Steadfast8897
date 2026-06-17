@@ -5,7 +5,6 @@ import (
 	"embed"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -55,20 +54,20 @@ func main() {
 
 	logBuffer := services.NewLogBuffer(2000)
 
-	os.MkdirAll("data/logs", 0755)
-
-	// 日志同时写到 stdout 和 data/logs/fyms-YYYY-MM-DD.log
-	logFileName := fmt.Sprintf("data/logs/fyms-%s.log", time.Now().Format("2006-01-02"))
-	logFile, logFileErr := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	var logWriter io.Writer = os.Stdout
-	if logFileErr == nil {
-		logWriter = io.MultiWriter(os.Stdout, logFile)
+	consoleLevel := services.LogLevelFromEnv("FYMS_CONSOLE_LOG_LEVEL", slog.LevelInfo)
+	fileLevel := services.LogLevelFromEnv("FYMS_FILE_LOG_LEVEL", slog.LevelInfo)
+	logHandler, logErr := services.NewRoutedLogHandler("data/logs", consoleLevel, fileLevel)
+	if logErr != nil {
+		logHandler = services.NewFallbackLogHandler(consoleLevel)
 	}
-	textHandler := slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})
-	bufHandler := services.NewBufferHandler(textHandler, logBuffer)
+	defer logHandler.Close()
+	bufHandler := services.NewBufferHandler(logHandler, logBuffer)
 	slog.SetDefault(slog.New(bufHandler))
 
 	go cleanupOldLogs("data/logs", 7)
+	if logErr != nil {
+		slog.Warn("file logging disabled, using stdout only", "log_target", "system", "error", logErr)
+	}
 
 	slog.Info("FYMS starting", "port", cfg.Port)
 
@@ -283,7 +282,7 @@ func main() {
 
 	// Gateway (302 redirect engine)
 	gwStore := gateway.NewStore(pool)
-	gwRuntime := gateway.NewRuntime(gwStore, slog.Default(), cfg.Port)
+	gwRuntime := gateway.NewRuntime(gwStore, slog.With("log_target", "gateway"), cfg.Port)
 
 	gwCfg, err := gwStore.LoadConfig(ctx)
 	if err != nil {
@@ -439,12 +438,13 @@ func requestLogger() gin.HandlerFunc {
 				q = "?" + query
 			}
 			msg := fmt.Sprintf("%s %s%s → %d (%dms) ip=%s", method, path, q, status, elapsed, ip)
+			logger := slog.With("log_target", "http")
 			if status >= 500 {
-				slog.Error(msg)
+				logger.Error(msg)
 			} else if status >= 400 {
-				slog.Warn(msg)
+				logger.Warn(msg)
 			} else {
-				slog.Info(msg)
+				logger.Info(msg)
 			}
 		}
 	}

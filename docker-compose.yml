@@ -22,6 +22,7 @@ services:
       # ---------- 其他配置 ----------
       - PORT=8961             # 服务监听端口
       - SERVER_NAME=FYMS      # 显示在播放器中的服务器名称
+      - FYMS_CONSOLE_LOG_LEVEL=warn  # Docker logs 只输出 warn/error；完整日志看 ./data/logs
       - FYMS_UPDATE_DOCKER_SOCKET=/var/run/docker.sock
       # - FYMS_CONTAINER_ID=fyms                     # 一般不用手动设置；需覆盖时可指定当前容器 ID/名称
       # - DB_POOL_MAX=400     # 数据库连接池上限（默认400，一般不用改）

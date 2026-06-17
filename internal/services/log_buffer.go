@@ -53,6 +53,10 @@ func (lb *LogBuffer) PushMsg(level, target, message string) {
 }
 
 func (lb *LogBuffer) Get(level string, limit int) []LogEntry {
+	return lb.GetFiltered(level, "", limit)
+}
+
+func (lb *LogBuffer) GetFiltered(level, target string, limit int) []LogEntry {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
@@ -60,7 +64,7 @@ func (lb *LogBuffer) Get(level string, limit int) []LogEntry {
 	for i := lb.count - 1; i >= 0 && len(filtered) < limit; i-- {
 		idx := (lb.start + i) % lb.maxSize
 		e := lb.entries[idx]
-		if level == "" || level == "ALL" || e.Level == level {
+		if matchesLogFilter(e, level, target) {
 			filtered = append(filtered, e)
 		}
 	}
@@ -69,6 +73,12 @@ func (lb *LogBuffer) Get(level string, limit int) []LogEntry {
 		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
 	return filtered
+}
+
+func matchesLogFilter(e LogEntry, level, target string) bool {
+	levelOK := level == "" || level == "ALL" || e.Level == level
+	targetOK := target == "" || target == "ALL" || e.Target == target
+	return levelOK && targetOK
 }
 
 // BufferHandler is a slog.Handler that captures all log events into LogBuffer
@@ -101,17 +111,20 @@ func (h *BufferHandler) Handle(ctx context.Context, r slog.Record) error {
 		levelStr = "DEBUG"
 	}
 
-	target := h.group
-	if target == "" {
-		target = "fyms"
-	}
+	target := ResolveLogTarget(h.group, h.attrs, r)
 
 	msg := r.Message
 	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "log_target" || a.Key == "module" || a.Key == "component" {
+			return true
+		}
 		msg += fmt.Sprintf(" %s=%v", a.Key, a.Value)
 		return true
 	})
 	for _, a := range h.attrs {
+		if a.Key == "log_target" || a.Key == "module" || a.Key == "component" {
+			continue
+		}
 		msg += fmt.Sprintf(" %s=%v", a.Key, a.Value)
 	}
 

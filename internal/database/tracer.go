@@ -58,6 +58,7 @@ func (t *SlowSQLTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx
 	}
 
 	attrs := []any{
+		"log_target", "database",
 		"sql", trace.sql,
 		"elapsed_ms", elapsed.Milliseconds(),
 	}

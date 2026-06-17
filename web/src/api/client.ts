@@ -1067,9 +1067,10 @@ export async function deleteApiKey(id: string) {
 }
 
 // Logs
-export async function getSystemLogs(level?: string, limit = 500) {
+export async function getSystemLogs(level?: string, limit = 500, target?: string) {
   const params = new URLSearchParams();
   if (level && level !== 'ALL') params.set('level', level);
+  if (target && target !== 'ALL') params.set('target', target);
   params.set('limit', String(limit));
   return request<any>(`/System/Logs?${params}`);
 }
