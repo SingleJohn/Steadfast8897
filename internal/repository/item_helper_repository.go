@@ -30,6 +30,19 @@ type ActorImageStats struct {
 	Locked    int64
 }
 
+type SeasonIndexRow struct {
+	ID          string
+	IndexNumber *int32
+}
+
+type EpisodeMetadataRow struct {
+	ID               string
+	IndexNumber      *int32
+	Name             *string
+	Overview         *string
+	PrimaryImagePath *string
+}
+
 func NewItemHelperRepository(pool *pgxpool.Pool) *ItemHelperRepository {
 	return &ItemHelperRepository{queries: dbgen.New(pool)}
 }
@@ -373,6 +386,144 @@ func (r *ItemHelperRepository) GetActorImageStats(ctx context.Context) (ActorIma
 	return ActorImageStats{Total: row.Total, WithImage: row.WithImage, Locked: row.Locked}, err
 }
 
+func (r *ItemHelperRepository) CountItemsByType(ctx context.Context, itemType string) (int64, error) {
+	return r.queries.CountItemsByType(ctx, itemType)
+}
+
+func (r *ItemHelperRepository) ListSeasonsForSeries(ctx context.Context, seriesID string) ([]SeasonIndexRow, error) {
+	uid, err := uuid.Parse(seriesID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.queries.ListSeasonsForSeries(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SeasonIndexRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, SeasonIndexRow{ID: row.ID, IndexNumber: ptrInt32FromPG(row.IndexNumber)})
+	}
+	return out, nil
+}
+
+func (r *ItemHelperRepository) ListEpisodeIndexesForSeason(ctx context.Context, seasonID string) ([]int32, error) {
+	uid, err := uuid.Parse(seasonID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.queries.ListEpisodeIndexesForSeason(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int32, 0, len(rows))
+	for _, v := range rows {
+		if v.Valid && v.Int32 > 0 {
+			out = append(out, v.Int32)
+		}
+	}
+	return out, nil
+}
+
+func (r *ItemHelperRepository) CountItemsByTypeAndTmdbProvider(ctx context.Context, itemType, tmdbID string) (int64, error) {
+	return r.queries.CountItemsByTypeAndTmdbProvider(ctx, dbgen.CountItemsByTypeAndTmdbProviderParams{
+		ItemType: itemType,
+		TmdbID:   tmdbID,
+	})
+}
+
+func (r *ItemHelperRepository) CountItemsByTypeNameYear(ctx context.Context, itemType, name string, year int) (int64, error) {
+	return r.queries.CountItemsByTypeNameYear(ctx, dbgen.CountItemsByTypeNameYearParams{
+		ItemType: itemType,
+		Name:     name,
+		Year:     int32(year),
+	})
+}
+
+func (r *ItemHelperRepository) CountItemsByTypeName(ctx context.Context, itemType, name string) (int64, error) {
+	return r.queries.CountItemsByTypeName(ctx, dbgen.CountItemsByTypeNameParams{
+		ItemType: itemType,
+		Name:     name,
+	})
+}
+
+func (r *ItemHelperRepository) FindSeriesIDByTmdbProvider(ctx context.Context, tmdbID string) (*string, error) {
+	return itemHelperStringPtrOrNil(r.queries.FindSeriesIDByTmdbProvider(ctx, tmdbID))
+}
+
+func (r *ItemHelperRepository) FindSeriesIDByNameYear(ctx context.Context, name string, year int) (*string, error) {
+	return itemHelperStringPtrOrNil(r.queries.FindSeriesIDByNameYear(ctx, dbgen.FindSeriesIDByNameYearParams{
+		Name: name,
+		Year: int32(year),
+	}))
+}
+
+func (r *ItemHelperRepository) FindSeriesIDByName(ctx context.Context, name string) (*string, error) {
+	return itemHelperStringPtrOrNil(r.queries.FindSeriesIDByName(ctx, name))
+}
+
+func (r *ItemHelperRepository) ListSeasonRowsForEpisodeMetadata(ctx context.Context, seriesID string) ([]SeasonIndexRow, error) {
+	uid, err := uuid.Parse(seriesID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.queries.ListSeasonRowsForEpisodeMetadata(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SeasonIndexRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, SeasonIndexRow{ID: row.ID, IndexNumber: ptrInt32FromPG(row.IndexNumber)})
+	}
+	return out, nil
+}
+
+func (r *ItemHelperRepository) ListEpisodeRowsForMetadataUpdate(ctx context.Context, seasonID string) ([]EpisodeMetadataRow, error) {
+	uid, err := uuid.Parse(seasonID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.queries.ListEpisodeRowsForMetadataUpdate(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EpisodeMetadataRow, 0, len(rows))
+	for _, row := range rows {
+		name := row.Name
+		out = append(out, EpisodeMetadataRow{
+			ID:               row.ID,
+			IndexNumber:      ptrInt32FromPG(row.IndexNumber),
+			Name:             &name,
+			Overview:         ptrTextFromPG(row.Overview),
+			PrimaryImagePath: ptrTextFromPG(row.PrimaryImagePath),
+		})
+	}
+	return out, nil
+}
+
+func (r *ItemHelperRepository) BatchUpdateEpisodeMetadata(ctx context.Context, ids []string, names, overviews []*string) error {
+	pgIDs, err := parseUUIDSlice(ids)
+	if err != nil {
+		return err
+	}
+	return r.queries.BatchUpdateEpisodeMetadata(ctx, dbgen.BatchUpdateEpisodeMetadataParams{
+		Ids:       pgIDs,
+		Names:     stringPointerSliceToNullableStrings(names),
+		Overviews: stringPointerSliceToNullableStrings(overviews),
+	})
+}
+
+func (r *ItemHelperRepository) UpdateEpisodeStillImage(ctx context.Context, episodeID, imagePath string, imageTag *string) error {
+	uid, err := uuid.Parse(episodeID)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateEpisodeStillImage(ctx, dbgen.UpdateEpisodeStillImageParams{
+		PrimaryImagePath: textValue(imagePath),
+		PrimaryImageTag:  optionalText(imageTag),
+		Column3:          toPGUUID(uid),
+	})
+}
+
 func (r *ItemHelperRepository) PersonExists(ctx context.Context, id string) (bool, error) {
 	uid, err := uuid.Parse(id)
 	if err != nil {
@@ -448,6 +599,40 @@ func parseTwoUUIDs(a, b string) (uuid.UUID, uuid.UUID, error) {
 		return uuid.Nil, uuid.Nil, err
 	}
 	return ua, ub, nil
+}
+
+func parseUUIDSlice(ids []string) ([]pgtype.UUID, error) {
+	out := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		uid, err := uuid.Parse(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, toPGUUID(uid))
+	}
+	return out, nil
+}
+
+func stringPointerSliceToNullableStrings(values []*string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == nil {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, *v)
+	}
+	return out
+}
+
+func itemHelperStringPtrOrNil(value string, err error) (*string, error) {
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
 }
 
 func optionalInt64(v *int64) pgtype.Int8 {

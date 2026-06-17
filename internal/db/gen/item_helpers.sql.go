@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const batchUpdateEpisodeMetadata = `-- name: BatchUpdateEpisodeMetadata :exec
+WITH input AS (
+    SELECT unnest($1::uuid[]) AS id,
+           unnest($2::text[]) AS new_name,
+           unnest($3::text[]) AS new_overview
+)
+UPDATE items SET
+    name = COALESCE(NULLIF(input.new_name, ''), items.name),
+    overview = COALESCE(NULLIF(input.new_overview, ''), items.overview),
+    updated_at = NOW()
+FROM input
+WHERE items.id = input.id
+`
+
+type BatchUpdateEpisodeMetadataParams struct {
+	Ids       []pgtype.UUID `json:"ids"`
+	Names     []string      `json:"names"`
+	Overviews []string      `json:"overviews"`
+}
+
+func (q *Queries) BatchUpdateEpisodeMetadata(ctx context.Context, arg BatchUpdateEpisodeMetadataParams) error {
+	_, err := q.db.Exec(ctx, batchUpdateEpisodeMetadata, arg.Ids, arg.Names, arg.Overviews)
+	return err
+}
+
 const clearPersonBackdrop = `-- name: ClearPersonBackdrop :exec
 UPDATE persons
 SET backdrop_path = NULL, updated_at = NOW()
@@ -31,6 +56,76 @@ WHERE id = $1::uuid
 func (q *Queries) ClearPersonImage(ctx context.Context, dollar_1 pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, clearPersonImage, dollar_1)
 	return err
+}
+
+const countItemsByType = `-- name: CountItemsByType :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = $1
+`
+
+func (q *Queries) CountItemsByType(ctx context.Context, type_ string) (int64, error) {
+	row := q.db.QueryRow(ctx, countItemsByType, type_)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countItemsByTypeAndTmdbProvider = `-- name: CountItemsByTypeAndTmdbProvider :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = $1 AND provider_ids->>'Tmdb' = $2::text
+`
+
+type CountItemsByTypeAndTmdbProviderParams struct {
+	ItemType string `json:"item_type"`
+	TmdbID   string `json:"tmdb_id"`
+}
+
+func (q *Queries) CountItemsByTypeAndTmdbProvider(ctx context.Context, arg CountItemsByTypeAndTmdbProviderParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countItemsByTypeAndTmdbProvider, arg.ItemType, arg.TmdbID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countItemsByTypeName = `-- name: CountItemsByTypeName :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = $1 AND name ILIKE $2
+`
+
+type CountItemsByTypeNameParams struct {
+	ItemType string `json:"item_type"`
+	Name     string `json:"name"`
+}
+
+func (q *Queries) CountItemsByTypeName(ctx context.Context, arg CountItemsByTypeNameParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countItemsByTypeName, arg.ItemType, arg.Name)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countItemsByTypeNameYear = `-- name: CountItemsByTypeNameYear :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = $1
+  AND name ILIKE $2
+  AND EXTRACT(YEAR FROM premiere_date)::int = $3::int
+`
+
+type CountItemsByTypeNameYearParams struct {
+	ItemType string `json:"item_type"`
+	Name     string `json:"name"`
+	Year     int32  `json:"year"`
+}
+
+func (q *Queries) CountItemsByTypeNameYear(ctx context.Context, arg CountItemsByTypeNameYearParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countItemsByTypeNameYear, arg.ItemType, arg.Name, arg.Year)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const countMergedVersionPrimaries = `-- name: CountMergedVersionPrimaries :one
@@ -79,6 +174,55 @@ func (q *Queries) FillPersonImageIfUnlocked(ctx context.Context, arg FillPersonI
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const findSeriesIDByName = `-- name: FindSeriesIDByName :one
+SELECT id::text
+FROM items
+WHERE type = 'Series' AND name ILIKE $1
+LIMIT 1
+`
+
+func (q *Queries) FindSeriesIDByName(ctx context.Context, name string) (string, error) {
+	row := q.db.QueryRow(ctx, findSeriesIDByName, name)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+const findSeriesIDByNameYear = `-- name: FindSeriesIDByNameYear :one
+SELECT id::text
+FROM items
+WHERE type = 'Series'
+  AND name ILIKE $1
+  AND EXTRACT(YEAR FROM premiere_date)::int = $2::int
+LIMIT 1
+`
+
+type FindSeriesIDByNameYearParams struct {
+	Name string `json:"name"`
+	Year int32  `json:"year"`
+}
+
+func (q *Queries) FindSeriesIDByNameYear(ctx context.Context, arg FindSeriesIDByNameYearParams) (string, error) {
+	row := q.db.QueryRow(ctx, findSeriesIDByNameYear, arg.Name, arg.Year)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+const findSeriesIDByTmdbProvider = `-- name: FindSeriesIDByTmdbProvider :one
+SELECT id::text
+FROM items
+WHERE type = 'Series' AND provider_ids->>'Tmdb' = $1::text
+LIMIT 1
+`
+
+func (q *Queries) FindSeriesIDByTmdbProvider(ctx context.Context, tmdbID string) (string, error) {
+	row := q.db.QueryRow(ctx, findSeriesIDByTmdbProvider, tmdbID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getActorImageStats = `-- name: GetActorImageStats :one
@@ -322,6 +466,75 @@ func (q *Queries) ListAllTagsWithCounts(ctx context.Context) ([]ListAllTagsWithC
 	return items, nil
 }
 
+const listEpisodeIndexesForSeason = `-- name: ListEpisodeIndexesForSeason :many
+SELECT index_number
+FROM items
+WHERE parent_id = $1::uuid
+  AND type = 'Episode'
+  AND index_number IS NOT NULL
+ORDER BY index_number
+`
+
+func (q *Queries) ListEpisodeIndexesForSeason(ctx context.Context, dollar_1 pgtype.UUID) ([]pgtype.Int4, error) {
+	rows, err := q.db.Query(ctx, listEpisodeIndexesForSeason, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.Int4
+	for rows.Next() {
+		var index_number pgtype.Int4
+		if err := rows.Scan(&index_number); err != nil {
+			return nil, err
+		}
+		items = append(items, index_number)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEpisodeRowsForMetadataUpdate = `-- name: ListEpisodeRowsForMetadataUpdate :many
+SELECT id::text, index_number, name, overview, primary_image_path
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Episode'
+`
+
+type ListEpisodeRowsForMetadataUpdateRow struct {
+	ID               string      `json:"id"`
+	IndexNumber      pgtype.Int4 `json:"index_number"`
+	Name             string      `json:"name"`
+	Overview         pgtype.Text `json:"overview"`
+	PrimaryImagePath pgtype.Text `json:"primary_image_path"`
+}
+
+func (q *Queries) ListEpisodeRowsForMetadataUpdate(ctx context.Context, dollar_1 pgtype.UUID) ([]ListEpisodeRowsForMetadataUpdateRow, error) {
+	rows, err := q.db.Query(ctx, listEpisodeRowsForMetadataUpdate, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEpisodeRowsForMetadataUpdateRow
+	for rows.Next() {
+		var i ListEpisodeRowsForMetadataUpdateRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IndexNumber,
+			&i.Name,
+			&i.Overview,
+			&i.PrimaryImagePath,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExternalSubtitlesForMediaVersion = `-- name: ListExternalSubtitlesForMediaVersion :many
 SELECT id::text, item_id::text, media_version_id::text, file_path, codec, language, title, is_default, is_forced
 FROM external_subtitles
@@ -544,6 +757,70 @@ func (q *Queries) ListItemsForActorImageBackfill(ctx context.Context) ([]string,
 	return items, nil
 }
 
+const listSeasonRowsForEpisodeMetadata = `-- name: ListSeasonRowsForEpisodeMetadata :many
+SELECT id::text, index_number
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Season'
+ORDER BY index_number
+`
+
+type ListSeasonRowsForEpisodeMetadataRow struct {
+	ID          string      `json:"id"`
+	IndexNumber pgtype.Int4 `json:"index_number"`
+}
+
+func (q *Queries) ListSeasonRowsForEpisodeMetadata(ctx context.Context, dollar_1 pgtype.UUID) ([]ListSeasonRowsForEpisodeMetadataRow, error) {
+	rows, err := q.db.Query(ctx, listSeasonRowsForEpisodeMetadata, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSeasonRowsForEpisodeMetadataRow
+	for rows.Next() {
+		var i ListSeasonRowsForEpisodeMetadataRow
+		if err := rows.Scan(&i.ID, &i.IndexNumber); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSeasonsForSeries = `-- name: ListSeasonsForSeries :many
+SELECT id::text, index_number
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Season'
+ORDER BY index_number
+`
+
+type ListSeasonsForSeriesRow struct {
+	ID          string      `json:"id"`
+	IndexNumber pgtype.Int4 `json:"index_number"`
+}
+
+func (q *Queries) ListSeasonsForSeries(ctx context.Context, dollar_1 pgtype.UUID) ([]ListSeasonsForSeriesRow, error) {
+	rows, err := q.db.Query(ctx, listSeasonsForSeries, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSeasonsForSeriesRow
+	for rows.Next() {
+		var i ListSeasonsForSeriesRow
+		if err := rows.Scan(&i.ID, &i.IndexNumber); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserPersonFavorites = `-- name: ListUserPersonFavorites :many
 SELECT person_id::text, is_favorite
 FROM user_person_data
@@ -652,6 +929,25 @@ type SetPersonImageParams struct {
 
 func (q *Queries) SetPersonImage(ctx context.Context, arg SetPersonImageParams) error {
 	_, err := q.db.Exec(ctx, setPersonImage, arg.ImagePath, arg.ImageLocked, arg.Column3)
+	return err
+}
+
+const updateEpisodeStillImage = `-- name: UpdateEpisodeStillImage :exec
+UPDATE items
+SET primary_image_path = $1,
+    primary_image_tag = $2,
+    updated_at = NOW()
+WHERE id = $3::uuid
+`
+
+type UpdateEpisodeStillImageParams struct {
+	PrimaryImagePath pgtype.Text `json:"primary_image_path"`
+	PrimaryImageTag  pgtype.Text `json:"primary_image_tag"`
+	Column3          pgtype.UUID `json:"column_3"`
+}
+
+func (q *Queries) UpdateEpisodeStillImage(ctx context.Context, arg UpdateEpisodeStillImageParams) error {
+	_, err := q.db.Exec(ctx, updateEpisodeStillImage, arg.PrimaryImagePath, arg.PrimaryImageTag, arg.Column3)
 	return err
 }
 

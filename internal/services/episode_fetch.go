@@ -25,41 +25,26 @@ func scrapeEpisodeMetadata(ctx context.Context, pool *pgxpool.Pool, client *Tmdb
 	if client == nil || tmdbID <= 0 {
 		return
 	}
-	rows, err := pool.Query(ctx,
-		"SELECT id::text, index_number FROM items WHERE parent_id = $1::uuid AND type = 'Season' ORDER BY index_number",
-		seriesItemID)
+	seasons, err := repository.NewItemHelperRepository(pool).ListSeasonRowsForEpisodeMetadata(ctx, seriesItemID)
 	if err != nil {
 		return
 	}
-	type seasonRow struct {
-		id       string
-		indexNum *int32
-	}
-	var seasons []seasonRow
-	for rows.Next() {
-		var s seasonRow
-		if err := rows.Scan(&s.id, &s.indexNum); err != nil {
-			continue
-		}
-		seasons = append(seasons, s)
-	}
-	rows.Close()
 
 	// stillEnabled / saveMode 在整个 Series 刮削里只读一次,避免每季重复查 system_config。
 	stillEnabled := readEpisodeStillFetchEnabled(ctx, pool)
 	saveMode := getScrapeSaveMode(ctx, pool)
 
 	for _, s := range seasons {
-		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, s.id)
+		remoteSeasonNum, err := loadRemoteSeasonNumber(ctx, pool, s.ID)
 		if err != nil || remoteSeasonNum == nil {
 			num := int32(1)
-			if s.indexNum != nil {
-				num = *s.indexNum
+			if s.IndexNumber != nil {
+				num = *s.IndexNumber
 			}
 			remoteSeasonNum = &num
 		}
-		if err := updateSeasonEpisodes(ctx, pool, client, s.id, tmdbID, *remoteSeasonNum, stillEnabled, saveMode); err != nil {
-			slog.Debug("[TMDB] episode fetch failed", "season_id", s.id, "tmdb_id", tmdbID, "season", *remoteSeasonNum, "error", err)
+		if err := updateSeasonEpisodes(ctx, pool, client, s.ID, tmdbID, *remoteSeasonNum, stillEnabled, saveMode); err != nil {
+			slog.Debug("[TMDB] episode fetch failed", "season_id", s.ID, "tmdb_id", tmdbID, "season", *remoteSeasonNum, "error", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -110,9 +95,7 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	}
 
 	// 拉出本季所有 Episode items。
-	epRows, err := pool.Query(ctx,
-		"SELECT id::text, index_number, name, overview, primary_image_path FROM items WHERE parent_id = $1::uuid AND type = 'Episode'",
-		seasonItemID)
+	episodes, err := repository.NewItemHelperRepository(pool).ListEpisodeRowsForMetadataUpdate(ctx, seasonItemID)
 	if err != nil {
 		return err
 	}
@@ -131,23 +114,17 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 	)
 	// 诊断:跳过 still 下载的三种原因分别计数
 	var stillsTmdbEmpty, stillsAlreadyHas, stillsDisabled int
-	for epRows.Next() {
-		var id string
-		var indexNum *int32
-		var currentName, currentOverview, currentImagePath *string
-		if err := epRows.Scan(&id, &indexNum, &currentName, &currentOverview, &currentImagePath); err != nil {
+	for _, ep := range episodes {
+		if ep.IndexNumber == nil {
 			continue
 		}
-		if indexNum == nil {
-			continue
-		}
-		meta, ok := metas[*indexNum]
+		meta, ok := metas[*ep.IndexNumber]
 		if !ok {
 			continue
 		}
 
-		shouldUpdateName := isEpisodePlaceholderName(currentName) && meta.name != ""
-		shouldUpdateOverview := strings.TrimSpace(deref(currentOverview)) == "" && meta.overview != ""
+		shouldUpdateName := isEpisodePlaceholderName(ep.Name) && meta.name != ""
+		shouldUpdateOverview := strings.TrimSpace(deref(ep.Overview)) == "" && meta.overview != ""
 		if shouldUpdateName || shouldUpdateOverview {
 			var nn, no *string
 			if shouldUpdateName {
@@ -158,7 +135,7 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 				o := meta.overview
 				no = &o
 			}
-			updIDs = append(updIDs, id)
+			updIDs = append(updIDs, ep.ID)
 			updNames = append(updNames, nn)
 			updOverviews = append(updOverviews, no)
 		}
@@ -167,26 +144,17 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 			stillsDisabled++
 		} else if meta.stillPath == "" {
 			stillsTmdbEmpty++
-		} else if strings.TrimSpace(deref(currentImagePath)) != "" {
+		} else if strings.TrimSpace(deref(ep.PrimaryImagePath)) != "" {
 			stillsAlreadyHas++
 		} else {
-			stillTargets = append(stillTargets, stillTarget{id: id, stillPath: meta.stillPath})
+			stillTargets = append(stillTargets, stillTarget{id: ep.ID, stillPath: meta.stillPath})
 		}
 	}
-	epRows.Close()
 
 	// 一次 UPDATE 收尾所有 name/overview 变更,用 COALESCE 保留未指定字段的原值。
 	if len(updIDs) > 0 {
-		_, uerr := pool.Exec(ctx, `
-			UPDATE items SET
-				name = COALESCE(v.new_name, items.name),
-				overview = COALESCE(v.new_overview, items.overview),
-				updated_at = NOW()
-			FROM unnest($1::uuid[], $2::text[], $3::text[]) AS v(id, new_name, new_overview)
-			WHERE items.id = v.id`,
-			updIDs, updNames, updOverviews)
-		if uerr != nil {
-			slog.Warn("[TMDB] batch update episodes failed", "season_id", seasonItemID, "error", uerr)
+		if err := repository.NewItemHelperRepository(pool).BatchUpdateEpisodeMetadata(ctx, updIDs, updNames, updOverviews); err != nil {
+			slog.Warn("[TMDB] batch update episodes failed", "season_id", seasonItemID, "error", err)
 		}
 	}
 
@@ -218,9 +186,7 @@ func updateSeasonEpisodes(ctx context.Context, pool *pgxpool.Pool, client *TmdbC
 			}
 		}
 		if dbPath != "" {
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-				dbPath, dbTag, t.id)
+			_ = repository.NewItemHelperRepository(pool).UpdateEpisodeStillImage(ctx, t.id, dbPath, dbTag)
 			stillOK++
 		} else {
 			stillFail++

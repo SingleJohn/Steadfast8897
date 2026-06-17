@@ -69,6 +69,13 @@ type ScrapeQueueFailure struct {
 	DetailJSON     []byte
 }
 
+type AutoScrapeCandidate struct {
+	ItemType       string
+	Overview       string
+	PlatformSource string
+	HasExternalIDs bool
+}
+
 func NewScrapeQueueRepository(pool *pgxpool.Pool) *ScrapeQueueRepository {
 	return &ScrapeQueueRepository{queries: dbgen.New(pool)}
 }
@@ -94,6 +101,35 @@ func (r *ScrapeQueueRepository) EnqueueBatch(ctx context.Context, itemIDs []stri
 		TaskType: taskType,
 		Priority: priority,
 	})
+}
+
+func (r *ScrapeQueueRepository) GetAutoScrapeCandidate(ctx context.Context, itemID string) (*AutoScrapeCandidate, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := r.queries.GetAutoScrapeCandidate(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	return &AutoScrapeCandidate{
+		ItemType:       row.Type,
+		Overview:       row.Overview,
+		PlatformSource: row.PlatformScanSource,
+		HasExternalIDs: row.HasExternalIds,
+	}, nil
+}
+
+func (r *ScrapeQueueRepository) ListAutoScrapeCandidatesByLibrary(ctx context.Context, libraryID string) ([]string, error) {
+	uid, err := uuid.Parse(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	return r.queries.ListAutoScrapeCandidatesByLibrary(ctx, toPGUUID(uid))
+}
+
+func (r *ScrapeQueueRepository) ListMissingScrapeIdentifyCandidates(ctx context.Context) ([]string, error) {
+	return r.queries.ListMissingScrapeIdentifyCandidates(ctx)
 }
 
 func (r *ScrapeQueueRepository) Claim(ctx context.Context, limit int) ([]ScrapeQueueTask, error) {

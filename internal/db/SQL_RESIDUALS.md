@@ -8,13 +8,18 @@
 
 ## must_migrate
 
-这些路径仍有普通业务 SQL，应按风险和改动面继续迁移。低风险项优先迁移，复杂主链路先保持行为不变。
+当前为空。普通业务 SQL 已不应直接留在 handler/service/model/gateway 业务文件中。
 
-| 路径 | 当前用途 | 后续建议 |
-| --- | --- | --- |
-| `internal/services/auto_scrape.go` | 自动刮削候选 item 查询 | 配置读取已改走 `SystemConfigRepository`；候选查询后续可收进 scrape/queue repository |
-| `internal/services/episode_fetch.go`、`internal/services/tmdb_storage.go` | episode 元数据批量更新、still 图回写、保存模式辅助 | 配置读取已改走 `SystemConfigRepository`；批量更新后续按 TMDB/episode repository 收口 |
-| `internal/handlers/emby_compat.go` | 系统统计、season/episode 简单查询 | 后续迁到 compat/item helper repository |
+## migrated_in_phase_12
+
+这些路径在 Phase 12 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
+
+| 路径 | 迁移方式 |
+| --- | --- |
+| `internal/services/auto_scrape.go` | 自动刮削单 item 资格检查、按库候选列表、全局缺失 identify 候选改走 `ScrapeQueueRepository` + `scrape_queue.sql` |
+| `internal/services/episode_fetch.go` | Series season 列表、episode metadata 扫描、批量 name/overview 更新、still 回写改走 `ItemHelperRepository` + `item_helpers.sql` |
+| `internal/services/tmdb_storage.go` | 保持无直接业务 SQL；保存模式辅助继续复用既有 repository |
+| `internal/handlers/emby_compat.go` | media stats、season episode check、library check、Series 查找改走 `ItemHelperRepository` / `UserRepository` |
 
 ## migrated_in_phase_11
 
@@ -44,7 +49,7 @@
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
 | `internal/services/scanner_*.go`、`internal/services/ingest_match.go`、`internal/services/incremental_scan.go` | 扫描、rename/delete、NFO、mixed/tv/movie ingest 主链路 | 不为清零 SQL 破坏扫描/ingest 语义；优先迁固定 helper |
-| `internal/services/backfill_*.go`、`internal/services/episode_fetch.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
+| `internal/services/backfill_*.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
 | `internal/handlers/library_detail.go`、`internal/handlers/videos.go`、`internal/handlers/compat_media.go` | 详情、播放、MediaSources fallback/多版本兼容 | 保持播放和 Emby 兼容语义优先 |
 
 ## allowed_infra

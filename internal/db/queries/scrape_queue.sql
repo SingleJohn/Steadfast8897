@@ -147,3 +147,36 @@ DELETE FROM scrape_queue WHERE status = 'done' AND updated_at < NOW() - INTERVAL
 
 -- name: CountScrapeQueueTasksByStatusGroup :many
 SELECT status, COUNT(*) FROM scrape_queue GROUP BY status;
+
+-- name: GetAutoScrapeCandidate :one
+SELECT type,
+       COALESCE(overview, '') AS overview,
+       COALESCE(platform_scan_source, '') AS platform_scan_source,
+       EXISTS (
+           SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+       ) AS has_external_ids
+  FROM items
+ WHERE id = $1::uuid
+   AND type IN ('Movie', 'Series');
+
+-- name: ListAutoScrapeCandidatesByLibrary :many
+SELECT id::text
+  FROM items
+ WHERE library_id = $1::uuid
+   AND type IN ('Movie', 'Series')
+   AND (overview IS NULL OR overview = '')
+   AND NOT EXISTS (
+       SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+   )
+   AND platform_scan_source IS DISTINCT FROM 'nfo'
+ ORDER BY created_at DESC;
+
+-- name: ListMissingScrapeIdentifyCandidates :many
+SELECT id::text
+  FROM items
+ WHERE type IN ('Movie', 'Series')
+   AND (overview IS NULL OR overview = '')
+   AND NOT EXISTS (
+       SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+   )
+   AND platform_scan_source IS DISTINCT FROM 'nfo';

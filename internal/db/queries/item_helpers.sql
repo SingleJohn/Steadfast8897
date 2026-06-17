@@ -197,3 +197,90 @@ WHERE id = $2::uuid;
 UPDATE persons
 SET backdrop_path = NULL, updated_at = NOW()
 WHERE id = $1::uuid;
+
+-- name: CountItemsByType :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = $1;
+
+-- name: ListSeasonsForSeries :many
+SELECT id::text, index_number
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Season'
+ORDER BY index_number;
+
+-- name: ListEpisodeIndexesForSeason :many
+SELECT index_number
+FROM items
+WHERE parent_id = $1::uuid
+  AND type = 'Episode'
+  AND index_number IS NOT NULL
+ORDER BY index_number;
+
+-- name: CountItemsByTypeAndTmdbProvider :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = sqlc.arg(item_type) AND provider_ids->>'Tmdb' = sqlc.arg(tmdb_id)::text;
+
+-- name: CountItemsByTypeNameYear :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = sqlc.arg(item_type)
+  AND name ILIKE sqlc.arg(name)
+  AND EXTRACT(YEAR FROM premiere_date)::int = sqlc.arg(year)::int;
+
+-- name: CountItemsByTypeName :one
+SELECT COUNT(*)::bigint
+FROM items
+WHERE type = sqlc.arg(item_type) AND name ILIKE sqlc.arg(name);
+
+-- name: FindSeriesIDByTmdbProvider :one
+SELECT id::text
+FROM items
+WHERE type = 'Series' AND provider_ids->>'Tmdb' = sqlc.arg(tmdb_id)::text
+LIMIT 1;
+
+-- name: FindSeriesIDByNameYear :one
+SELECT id::text
+FROM items
+WHERE type = 'Series'
+  AND name ILIKE sqlc.arg(name)
+  AND EXTRACT(YEAR FROM premiere_date)::int = sqlc.arg(year)::int
+LIMIT 1;
+
+-- name: FindSeriesIDByName :one
+SELECT id::text
+FROM items
+WHERE type = 'Series' AND name ILIKE $1
+LIMIT 1;
+
+-- name: ListSeasonRowsForEpisodeMetadata :many
+SELECT id::text, index_number
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Season'
+ORDER BY index_number;
+
+-- name: ListEpisodeRowsForMetadataUpdate :many
+SELECT id::text, index_number, name, overview, primary_image_path
+FROM items
+WHERE parent_id = $1::uuid AND type = 'Episode';
+
+-- name: BatchUpdateEpisodeMetadata :exec
+WITH input AS (
+    SELECT unnest(sqlc.arg(ids)::uuid[]) AS id,
+           unnest(sqlc.arg(names)::text[]) AS new_name,
+           unnest(sqlc.arg(overviews)::text[]) AS new_overview
+)
+UPDATE items SET
+    name = COALESCE(NULLIF(input.new_name, ''), items.name),
+    overview = COALESCE(NULLIF(input.new_overview, ''), items.overview),
+    updated_at = NOW()
+FROM input
+WHERE items.id = input.id;
+
+-- name: UpdateEpisodeStillImage :exec
+UPDATE items
+SET primary_image_path = $1,
+    primary_image_tag = $2,
+    updated_at = NOW()
+WHERE id = $3::uuid;

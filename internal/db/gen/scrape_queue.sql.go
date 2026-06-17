@@ -115,6 +115,37 @@ func (q *Queries) CountScrapeQueueTasksByStatusGroup(ctx context.Context) ([]Cou
 	return items, nil
 }
 
+const getAutoScrapeCandidate = `-- name: GetAutoScrapeCandidate :one
+SELECT type,
+       COALESCE(overview, '') AS overview,
+       COALESCE(platform_scan_source, '') AS platform_scan_source,
+       EXISTS (
+           SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+       ) AS has_external_ids
+  FROM items
+ WHERE id = $1::uuid
+   AND type IN ('Movie', 'Series')
+`
+
+type GetAutoScrapeCandidateRow struct {
+	Type               string `json:"type"`
+	Overview           string `json:"overview"`
+	PlatformScanSource string `json:"platform_scan_source"`
+	HasExternalIds     bool   `json:"has_external_ids"`
+}
+
+func (q *Queries) GetAutoScrapeCandidate(ctx context.Context, dollar_1 pgtype.UUID) (GetAutoScrapeCandidateRow, error) {
+	row := q.db.QueryRow(ctx, getAutoScrapeCandidate, dollar_1)
+	var i GetAutoScrapeCandidateRow
+	err := row.Scan(
+		&i.Type,
+		&i.Overview,
+		&i.PlatformScanSource,
+		&i.HasExternalIds,
+	)
+	return i, err
+}
+
 const getScrapeQueueTaskDetail = `-- name: GetScrapeQueueTaskDetail :one
 SELECT sq.id, sq.item_id::text, COALESCE(i.name, ''), COALESCE(i.type, ''),
        COALESCE(i.file_path, ''), COALESCE(i.series_name, ''),
@@ -174,6 +205,70 @@ func (q *Queries) GetScrapeQueueTaskDetail(ctx context.Context, id int64) (GetSc
 		&i.DetailJson,
 	)
 	return i, err
+}
+
+const listAutoScrapeCandidatesByLibrary = `-- name: ListAutoScrapeCandidatesByLibrary :many
+SELECT id::text
+  FROM items
+ WHERE library_id = $1::uuid
+   AND type IN ('Movie', 'Series')
+   AND (overview IS NULL OR overview = '')
+   AND NOT EXISTS (
+       SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+   )
+   AND platform_scan_source IS DISTINCT FROM 'nfo'
+ ORDER BY created_at DESC
+`
+
+func (q *Queries) ListAutoScrapeCandidatesByLibrary(ctx context.Context, dollar_1 pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAutoScrapeCandidatesByLibrary, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMissingScrapeIdentifyCandidates = `-- name: ListMissingScrapeIdentifyCandidates :many
+SELECT id::text
+  FROM items
+ WHERE type IN ('Movie', 'Series')
+   AND (overview IS NULL OR overview = '')
+   AND NOT EXISTS (
+       SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
+   )
+   AND platform_scan_source IS DISTINCT FROM 'nfo'
+`
+
+func (q *Queries) ListMissingScrapeIdentifyCandidates(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listMissingScrapeIdentifyCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRecentScrapeQueueActiveTasks = `-- name: ListRecentScrapeQueueActiveTasks :many

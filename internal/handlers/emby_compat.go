@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // RegisterEmbyCompatRoutes registers the /emby/ endpoints used by external STRM tools.
@@ -42,13 +41,12 @@ func embyGetUsers(c *gin.Context, state *AppState) {
 
 func embyMediaStats(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
-	pool := state.DB
 
 	var movieCount, tvCount, episodeCount, userCount int64
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Movie'").Scan(&movieCount)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Series'").Scan(&tvCount)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type = 'Episode'").Scan(&episodeCount)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM users").Scan(&userCount)
+	movieCount, _ = state.Repo.ItemHelpers.CountItemsByType(ctx, "Movie")
+	tvCount, _ = state.Repo.ItemHelpers.CountItemsByType(ctx, "Series")
+	episodeCount, _ = state.Repo.ItemHelpers.CountItemsByType(ctx, "Episode")
+	userCount, _ = state.Repo.Users.CountUsers(ctx)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -73,48 +71,32 @@ func embySeasonEpisodesCheck(c *gin.Context, state *AppState) {
 	}
 
 	ctx := c.Request.Context()
-	pool := state.DB
 
-	seriesID := findSeriesID(ctx, pool, body.Name, body.Year, body.TmdbID)
+	seriesID := findSeriesID(ctx, state, body.Name, body.Year, body.TmdbID)
 	if seriesID == "" {
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{}})
 		return
 	}
 
-	seasonRows, err := pool.Query(ctx,
-		"SELECT id, index_number FROM items WHERE parent_id = $1::uuid AND type = 'Season' ORDER BY index_number", seriesID)
+	seasons, err := state.Repo.ItemHelpers.ListSeasonsForSeries(ctx, seriesID)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{}})
 		return
 	}
-	defer seasonRows.Close()
 
 	result := gin.H{}
-	for seasonRows.Next() {
-		var seasonID string
-		var seasonNum int32
-		if err := seasonRows.Scan(&seasonID, &seasonNum); err != nil {
+	for _, season := range seasons {
+		if season.IndexNumber == nil {
 			continue
 		}
 
-		epRows, err := pool.Query(ctx,
-			"SELECT index_number FROM items WHERE parent_id = $1::uuid AND type = 'Episode' AND index_number IS NOT NULL ORDER BY index_number",
-			seasonID)
+		eps, err := state.Repo.ItemHelpers.ListEpisodeIndexesForSeason(ctx, season.ID)
 		if err != nil {
 			continue
 		}
 
-		var eps []int32
-		for epRows.Next() {
-			var ep int32
-			if epRows.Scan(&ep) == nil && ep > 0 {
-				eps = append(eps, ep)
-			}
-		}
-		epRows.Close()
-
 		if len(eps) > 0 {
-			result[strconv.Itoa(int(seasonNum))] = eps
+			result[strconv.Itoa(int(*season.IndexNumber))] = eps
 		}
 	}
 
@@ -136,7 +118,6 @@ func embyLibraryCheck(c *gin.Context, state *AppState) {
 	}
 
 	ctx := c.Request.Context()
-	pool := state.DB
 	result := gin.H{}
 
 	for _, item := range body.Items {
@@ -158,22 +139,16 @@ func embyLibraryCheck(c *gin.Context, state *AppState) {
 
 		if item.TmdbID != nil && *item.TmdbID > 0 {
 			var count int64
-			_ = pool.QueryRow(ctx,
-				"SELECT COUNT(*) FROM items WHERE type = $1 AND provider_ids->>'Tmdb' = $2",
-				dbType, strconv.FormatInt(*item.TmdbID, 10)).Scan(&count)
+			count, _ = state.Repo.ItemHelpers.CountItemsByTypeAndTmdbProvider(ctx, dbType, strconv.FormatInt(*item.TmdbID, 10))
 			found = count > 0
 		}
 
 		if !found {
 			var count int64
 			if item.Year != nil && *item.Year > 0 {
-				_ = pool.QueryRow(ctx,
-					"SELECT COUNT(*) FROM items WHERE type = $1 AND name ILIKE $2 AND EXTRACT(YEAR FROM premiere_date) = $3",
-					dbType, item.Name, *item.Year).Scan(&count)
+				count, _ = state.Repo.ItemHelpers.CountItemsByTypeNameYear(ctx, dbType, item.Name, *item.Year)
 			} else {
-				_ = pool.QueryRow(ctx,
-					"SELECT COUNT(*) FROM items WHERE type = $1 AND name ILIKE $2",
-					dbType, item.Name).Scan(&count)
+				count, _ = state.Repo.ItemHelpers.CountItemsByTypeName(ctx, dbType, item.Name)
 			}
 			found = count > 0
 		}
@@ -210,32 +185,24 @@ func embyGapScanResult(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": r})
 }
 
-func findSeriesID(ctx context.Context, pool *pgxpool.Pool, name string, year *int, tmdbID *int64) string {
-	var id string
-
+func findSeriesID(ctx context.Context, state *AppState, name string, year *int, tmdbID *int64) string {
 	// 1. Try TMDB ID
 	if tmdbID != nil && *tmdbID > 0 {
-		if pool.QueryRow(ctx,
-			"SELECT id FROM items WHERE type = 'Series' AND provider_ids->>'Tmdb' = $1 LIMIT 1",
-			strconv.FormatInt(*tmdbID, 10)).Scan(&id) == nil && id != "" {
-			return id
+		if id, err := state.Repo.ItemHelpers.FindSeriesIDByTmdbProvider(ctx, strconv.FormatInt(*tmdbID, 10)); err == nil && id != nil && *id != "" {
+			return *id
 		}
 	}
 
 	// 2. Try name + year
 	if year != nil && *year > 0 {
-		if pool.QueryRow(ctx,
-			"SELECT id FROM items WHERE type = 'Series' AND name ILIKE $1 AND EXTRACT(YEAR FROM premiere_date) = $2 LIMIT 1",
-			name, *year).Scan(&id) == nil && id != "" {
-			return id
+		if id, err := state.Repo.ItemHelpers.FindSeriesIDByNameYear(ctx, name, *year); err == nil && id != nil && *id != "" {
+			return *id
 		}
 	}
 
 	// 3. Try name only
-	if pool.QueryRow(ctx,
-		"SELECT id FROM items WHERE type = 'Series' AND name ILIKE $1 LIMIT 1",
-		name).Scan(&id) == nil && id != "" {
-		return id
+	if id, err := state.Repo.ItemHelpers.FindSeriesIDByName(ctx, name); err == nil && id != nil && *id != "" {
+		return *id
 	}
 
 	// 4. Try without year suffix: "三体 (2023)" -> "三体"
@@ -243,10 +210,8 @@ func findSeriesID(ctx context.Context, pool *pgxpool.Pool, name string, year *in
 	if idx := strings.LastIndex(cleanName, "("); idx > 0 {
 		cleanName = strings.TrimSpace(cleanName[:idx])
 		if cleanName != name {
-			if pool.QueryRow(ctx,
-				"SELECT id FROM items WHERE type = 'Series' AND name ILIKE $1 LIMIT 1",
-				cleanName).Scan(&id) == nil && id != "" {
-				return id
+			if id, err := state.Repo.ItemHelpers.FindSeriesIDByName(ctx, cleanName); err == nil && id != nil && *id != "" {
+				return *id
 			}
 		}
 	}

@@ -43,26 +43,13 @@ func enqueueIdentifyIfEligible(ctx context.Context, pool *pgxpool.Pool, itemID s
 		return false
 	}
 
-	var itemType, overview, platformSource string
-	var hasExternalIDs bool
-	err := pool.QueryRow(ctx,
-		`SELECT type,
-		        COALESCE(overview, ''),
-		        COALESCE(platform_scan_source, ''),
-		        EXISTS (
-		            SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
-		        )
-		   FROM items
-		  WHERE id = $1::uuid
-		    AND type IN ('Movie', 'Series')`,
-		itemID,
-	).Scan(&itemType, &overview, &platformSource, &hasExternalIDs)
+	candidate, err := repository.NewScrapeQueueRepository(pool).GetAutoScrapeCandidate(ctx, itemID)
 	if err != nil {
 		slog.Warn("[AutoScrape] Check item eligibility failed",
 			"item", itemID, "source", source, "error", err)
 		return false
 	}
-	if strings.TrimSpace(overview) != "" || hasExternalIDs || platformSource == "nfo" {
+	if strings.TrimSpace(candidate.Overview) != "" || candidate.HasExternalIDs || candidate.PlatformSource == "nfo" {
 		return false
 	}
 
@@ -73,7 +60,7 @@ func enqueueIdentifyIfEligible(ctx context.Context, pool *pgxpool.Pool, itemID s
 	}
 
 	slog.Info("[AutoScrape] Enqueued identify task",
-		"item", itemID, "type", itemType, "source", source, "priority", priority)
+		"item", itemID, "type", candidate.ItemType, "source", source, "priority", priority)
 	return true
 }
 
@@ -112,31 +99,11 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 	//   - item_external_ids 有任何记录(tmdb/imdb/douban/bangumi/...)→ 身份已定
 	//   - platform_scan_source='nfo'            → NFO 已带 studio,人工托管
 	// 这两种都跳过,避免浪费 provider 配额。
-	rows, err := pool.Query(ctx,
-		`SELECT id::text FROM items
-		  WHERE library_id = $1::uuid
-		    AND type IN ('Movie', 'Series')
-		    AND (overview IS NULL OR overview = '')
-		    AND NOT EXISTS (
-		        SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
-		    )
-		    AND platform_scan_source IS DISTINCT FROM 'nfo'
-		  ORDER BY created_at DESC`,
-		libraryID)
+	ids, err := repository.NewScrapeQueueRepository(pool).ListAutoScrapeCandidatesByLibrary(ctx, libraryID)
 	if err != nil {
 		slog.Warn("[AutoScrape] Query failed", "library", libraryID, "error", err)
 		return
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-
 	if len(ids) == 0 {
 		return
 	}
@@ -156,26 +123,10 @@ func autoScrapeNewItems(ctx context.Context, pool *pgxpool.Pool, libraryID strin
 // 与 autoScrapeNewItems 的过滤条件一致,但不受 library 边界和 auto_scrape_enabled 限制。
 // 返回入队数量(ON CONFLICT 时 tag.RowsAffected 仍计入已存在行的 priority 更新)。
 func EnqueueMissingScrapeIdentify(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT id::text FROM items
-		  WHERE type IN ('Movie', 'Series')
-		    AND (overview IS NULL OR overview = '')
-		    AND NOT EXISTS (
-		        SELECT 1 FROM item_external_ids e WHERE e.item_id = items.id
-		    )
-		    AND platform_scan_source IS DISTINCT FROM 'nfo'`)
+	ids, err := repository.NewScrapeQueueRepository(pool).ListMissingScrapeIdentifyCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
 	if len(ids) == 0 {
 		return 0, nil
 	}
