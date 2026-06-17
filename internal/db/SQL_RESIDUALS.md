@@ -65,6 +65,7 @@
 | --- | --- |
 | `internal/handlers/stats.go` | 统计聚合、排行筛选/排序、近期播放查询改走 `StatsRepository`；handler 仅保留参数解析和响应组装 |
 | `internal/handlers/compat_items.go` | Emby `/Items`、`/Items/Counts`、`/Search/Hints` 查询改走 `CompatItemsRepository`；handler 仅保留参数解析、权限 scope 和 DTO 组装 |
+| `internal/models/item_query.go` | 主 `/Items` 查询 SQL builder/执行改走 `ItemQueryRepository`；models 层保留兼容签名和 DTO 映射 |
 
 ## migrated_in_phase_11
 
@@ -85,7 +86,7 @@
 
 | 路径 | 保留原因 | 约束 |
 | --- | --- | --- |
-| `internal/models/item_query.go` | 主 item 查询 builder，包含筛选、排序、随机、统计估算 | 继续作为 item 动态查询集中点 |
+| `internal/repository/item_query_repository.go` | 主 item 动态查询 builder，包含筛选、排序、随机、统计估算、代表版本选择 | SortBy/过滤字段继续白名单化，models 层不得新增直接 SQL |
 | `internal/repository/compat_items_repository.go` | Emby `/Items` 动态查询集中 builder，包含兼容字段投影、代表版本选择、SearchHints | 保持 Emby 语义；新增字段先核对 CTE 投影 |
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库维度、别名、封面与平台重算 | 维度和排序必须走白名单 |
 | `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
@@ -104,7 +105,7 @@
 | `internal/handlers/system.go` | 备份/恢复、动态表导出导入、truncate 白名单、系统日志/指标查询 | 只能使用表名 allowlist；不迁移备份恢复动态 SQL |
 | `internal/gateway/store.go` | `CopyFrom` 批量写 gateway 日志 | `CopyFrom` 属于批量写入例外 |
 | `internal/services/scanner_nfo.go` | `CopyFrom` 批量导入 cast members | `CopyFrom` 属于批量写入例外；动态 `UPDATE items SET ...` 后续应收敛为 NFO repository builder |
-| `internal/models/item_query.go` | `pg_class.reltuples` 估算计数 | PG 系统统计例外 |
+| `internal/repository/item_query_repository.go` | `pg_class.reltuples` / `pg_stat_user_tables` 估算计数 | PG 系统统计例外，仅用于 `/Items` 大分页和随机查询快速计数 |
 | `internal/services/progress_buffer.go` | 播放进度缓冲落库 | 可后续迁移，但当前属于内部缓冲写入边界 |
 | `internal/handlers/compat_query.go` | Emby 兼容的只读 SQLite 风格查询入口 | 仅保留兼容白名单/转换后的查询，不允许任意写入 |
 
