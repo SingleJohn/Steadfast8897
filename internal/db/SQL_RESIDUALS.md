@@ -57,6 +57,14 @@
 | `internal/services/probe_on_play.go`、`internal/services/probe_task.go` | probe 目标查询、mediainfo/章节回写、统计计数、path mapping 读取改走 `BackgroundTaskRepository` / `SystemConfigRepository` |
 | `internal/services/notify.go`、`internal/services/notify_sweeper.go` | 通知 item payload 查询、订阅查询、投递状态更新、library.new sweeper 候选查询改走 `NotifyRepository` |
 
+## migrated_in_phase_16
+
+这些路径在 Phase 16 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
+
+| 路径 | 迁移方式 |
+| --- | --- |
+| `internal/handlers/stats.go` | 统计聚合、排行筛选/排序、近期播放查询改走 `StatsRepository`；handler 仅保留参数解析和响应组装 |
+
 ## migrated_in_phase_11
 
 这些路径在 Phase 11 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
@@ -80,7 +88,6 @@
 | `internal/handlers/compat_items.go` | Emby `/Items` 查询，参数组合多 | 保持 Emby 语义；新增字段先核对 CTE 投影 |
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库维度、别名、封面与平台重算 | 维度和排序必须走白名单 |
 | `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
-| `internal/handlers/stats.go` | 统计页多条件聚合和排序 | 排序字段必须走白名单 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
 | `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路仍含 item 创建、查重、动态 NFO update、episode canonical merge 等高耦合路径 | 不为清零 SQL 破坏扫描/ingest 语义；继续按固定 helper 和集中 builder 迁移 |
