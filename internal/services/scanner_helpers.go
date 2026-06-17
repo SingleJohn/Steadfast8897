@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"fyms/internal/services/scraper"
 )
@@ -178,4 +179,16 @@ func fileMtimeOrNil(path string) interface{} {
 		return nil
 	}
 	return info.ModTime().UTC()
+}
+
+func fileMtimePtr(path string) *time.Time {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	t := info.ModTime().UTC()
+	return &t
 }

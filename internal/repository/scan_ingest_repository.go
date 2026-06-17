@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -466,6 +467,76 @@ func (r *ScanIngestRepository) ListMediaVersionBackfillCandidates(ctx context.Co
 	return out, nil
 }
 
+func (r *ScanIngestRepository) InsertMixedFolder(ctx context.Context, libraryID string, parentID *string, name, sortName, folderPath string, createdAt *time.Time) (*string, error) {
+	libID, err := uuid.Parse(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	var created any
+	if createdAt != nil {
+		created = pgtype.Timestamp{Time: *createdAt, Valid: true}
+	}
+	id, err := r.queries.InsertMixedFolder(ctx, dbgen.InsertMixedFolderParams{
+		Column1:  toPGUUID(libID),
+		Column2:  optionalUUIDString(parentID),
+		Name:     name,
+		SortName: textValue(sortName),
+		FilePath: textValue(folderPath),
+		Column6:  created,
+	})
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
+}
+
+func (r *ScanIngestRepository) FindMixedFolderByPath(ctx context.Context, libraryID, folderPath string) (*string, error) {
+	libID, err := uuid.Parse(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	id, err := r.queries.FindMixedFolderByPath(ctx, dbgen.FindMixedFolderByPathParams{
+		Column1:  toPGUUID(libID),
+		FilePath: textValue(folderPath),
+	})
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
+}
+
+func (r *ScanIngestRepository) UpdateMixedFolder(ctx context.Context, folderID string, parentID *string, name, sortName string) error {
+	uid, err := uuid.Parse(folderID)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateMixedFolder(ctx, dbgen.UpdateMixedFolderParams{
+		Column1:  optionalUUIDString(parentID),
+		Name:     name,
+		SortName: textValue(sortName),
+		Column4:  toPGUUID(uid),
+	})
+}
+
+func (r *ScanIngestRepository) SetMixedItemParent(ctx context.Context, libraryID, itemType, filePath string, parentID *string) error {
+	libID, err := uuid.Parse(libraryID)
+	if err != nil {
+		return err
+	}
+	return r.queries.SetMixedItemParent(ctx, dbgen.SetMixedItemParentParams{
+		Column1:  optionalUUIDString(parentID),
+		Column2:  toPGUUID(libID),
+		Type:     itemType,
+		FilePath: textValue(filePath),
+	})
+}
+
 func (r *ScanIngestRepository) getTextByID(ctx context.Context, id string, fn func(context.Context, pgtype.UUID) (pgtype.Text, error)) (*string, error) {
 	uid, err := uuid.Parse(id)
 	if err != nil {
@@ -493,4 +564,15 @@ func derefRepositoryString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func optionalUUIDString(id *string) pgtype.UUID {
+	if id == nil || *id == "" {
+		return pgtype.UUID{}
+	}
+	uid, err := uuid.Parse(*id)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return toPGUUID(uid)
 }

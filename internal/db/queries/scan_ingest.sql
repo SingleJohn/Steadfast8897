@@ -253,3 +253,29 @@ WHERE i.type IN ('Movie', 'Episode')
   AND i.file_path IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM media_versions mv WHERE mv.item_id = i.id)
 ORDER BY i.created_at DESC;
+
+-- name: InsertMixedFolder :one
+INSERT INTO items (library_id, parent_id, type, name, sort_name, file_path, created_at)
+VALUES ($1::uuid, $2::uuid, 'Folder', $3, $4, $5, COALESCE($6, NOW()))
+ON CONFLICT DO NOTHING
+RETURNING id::text;
+
+-- name: FindMixedFolderByPath :one
+SELECT id::text
+FROM items
+WHERE library_id = $1::uuid AND type = 'Folder' AND file_path = $2
+LIMIT 1;
+
+-- name: UpdateMixedFolder :exec
+UPDATE items
+SET parent_id = $1::uuid,
+    name = $2,
+    sort_name = $3,
+    updated_at = NOW()
+WHERE id = $4::uuid;
+
+-- name: SetMixedItemParent :exec
+UPDATE items
+SET parent_id = $1::uuid,
+    updated_at = NOW()
+WHERE library_id = $2::uuid AND type = $3 AND file_path = $4;

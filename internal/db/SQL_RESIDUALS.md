@@ -42,6 +42,7 @@
 | `internal/services/ingest_match.go` | library path index 刷新改走 `LibraryRepository.ListLibrariesForIngestMatch` |
 | `internal/services/scanner_cleanup.go` | prune 候选、catalog number backfill、media_versions backfill 改走 `ScanIngestRepository` / `PlaybackRepository` |
 | `internal/services/scanner_dir.go` | local trailer、extra backdrops、artwork sync 改走 `ScanIngestRepository` |
+| `internal/services/scanner_mixed.go` | mixed folder upsert/lookup、parent 绑定改走 `ScanIngestRepository` |
 
 ## migrated_in_phase_11
 
@@ -70,7 +71,7 @@
 | `internal/services/notify.go`、`internal/services/notify_sweeper.go` | 通知订阅筛选和过期清理 | 后续可按 notifier repository 收口 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
-| `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_mixed.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、mixed/tv/movie ingest 主链路 | 不为清零 SQL 破坏扫描/ingest 语义；优先迁固定 helper |
+| `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路 | 不为清零 SQL 破坏扫描/ingest 语义；优先迁固定 helper |
 | `internal/services/backfill_*.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
 
 ## allowed_infra

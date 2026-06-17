@@ -54,7 +54,6 @@ $allowedFiles = @(
     "internal/services/redirect_bitrate.go",
     "internal/services/refresh_scheduler.go",
     "internal/services/refresh_worker.go",
-    "internal/services/scanner_mixed.go",
     "internal/services/scanner_movie.go",
     "internal/services/scanner_nfo.go",
     "internal/services/scanner_tv.go",

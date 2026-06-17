@@ -156,6 +156,25 @@ func (q *Queries) FillCatalogNumberIfEmpty(ctx context.Context, arg FillCatalogN
 	return result.RowsAffected(), nil
 }
 
+const findMixedFolderByPath = `-- name: FindMixedFolderByPath :one
+SELECT id::text
+FROM items
+WHERE library_id = $1::uuid AND type = 'Folder' AND file_path = $2
+LIMIT 1
+`
+
+type FindMixedFolderByPathParams struct {
+	Column1  pgtype.UUID `json:"column_1"`
+	FilePath pgtype.Text `json:"file_path"`
+}
+
+func (q *Queries) FindMixedFolderByPath(ctx context.Context, arg FindMixedFolderByPathParams) (string, error) {
+	row := q.db.QueryRow(ctx, findMixedFolderByPath, arg.Column1, arg.FilePath)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getDominantEpisodeSeasonNumber = `-- name: GetDominantEpisodeSeasonNumber :one
 SELECT parent_index_number
 FROM items
@@ -313,6 +332,36 @@ func (q *Queries) GetSeasonParentIndexNumber(ctx context.Context, dollar_1 pgtyp
 	var parent_index_number pgtype.Int4
 	err := row.Scan(&parent_index_number)
 	return parent_index_number, err
+}
+
+const insertMixedFolder = `-- name: InsertMixedFolder :one
+INSERT INTO items (library_id, parent_id, type, name, sort_name, file_path, created_at)
+VALUES ($1::uuid, $2::uuid, 'Folder', $3, $4, $5, COALESCE($6, NOW()))
+ON CONFLICT DO NOTHING
+RETURNING id::text
+`
+
+type InsertMixedFolderParams struct {
+	Column1  pgtype.UUID `json:"column_1"`
+	Column2  pgtype.UUID `json:"column_2"`
+	Name     string      `json:"name"`
+	SortName pgtype.Text `json:"sort_name"`
+	FilePath pgtype.Text `json:"file_path"`
+	Column6  interface{} `json:"column_6"`
+}
+
+func (q *Queries) InsertMixedFolder(ctx context.Context, arg InsertMixedFolderParams) (string, error) {
+	row := q.db.QueryRow(ctx, insertMixedFolder,
+		arg.Column1,
+		arg.Column2,
+		arg.Name,
+		arg.SortName,
+		arg.FilePath,
+		arg.Column6,
+	)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const listCatalogNumberBackfillCandidates = `-- name: ListCatalogNumberBackfillCandidates :many
@@ -731,6 +780,30 @@ func (q *Queries) SetLocalTrailerPath(ctx context.Context, arg SetLocalTrailerPa
 	return err
 }
 
+const setMixedItemParent = `-- name: SetMixedItemParent :exec
+UPDATE items
+SET parent_id = $1::uuid,
+    updated_at = NOW()
+WHERE library_id = $2::uuid AND type = $3 AND file_path = $4
+`
+
+type SetMixedItemParentParams struct {
+	Column1  pgtype.UUID `json:"column_1"`
+	Column2  pgtype.UUID `json:"column_2"`
+	Type     string      `json:"type"`
+	FilePath pgtype.Text `json:"file_path"`
+}
+
+func (q *Queries) SetMixedItemParent(ctx context.Context, arg SetMixedItemParentParams) error {
+	_, err := q.db.Exec(ctx, setMixedItemParent,
+		arg.Column1,
+		arg.Column2,
+		arg.Type,
+		arg.FilePath,
+	)
+	return err
+}
+
 const syncItemArtwork = `-- name: SyncItemArtwork :exec
 UPDATE items
 SET primary_image_path = CASE
@@ -887,6 +960,32 @@ type UpdateMediaVersionFilePathParams struct {
 
 func (q *Queries) UpdateMediaVersionFilePath(ctx context.Context, arg UpdateMediaVersionFilePathParams) error {
 	_, err := q.db.Exec(ctx, updateMediaVersionFilePath, arg.FilePath, arg.FilePath_2)
+	return err
+}
+
+const updateMixedFolder = `-- name: UpdateMixedFolder :exec
+UPDATE items
+SET parent_id = $1::uuid,
+    name = $2,
+    sort_name = $3,
+    updated_at = NOW()
+WHERE id = $4::uuid
+`
+
+type UpdateMixedFolderParams struct {
+	Column1  pgtype.UUID `json:"column_1"`
+	Name     string      `json:"name"`
+	SortName pgtype.Text `json:"sort_name"`
+	Column4  pgtype.UUID `json:"column_4"`
+}
+
+func (q *Queries) UpdateMixedFolder(ctx context.Context, arg UpdateMixedFolderParams) error {
+	_, err := q.db.Exec(ctx, updateMixedFolder,
+		arg.Column1,
+		arg.Name,
+		arg.SortName,
+		arg.Column4,
+	)
 	return err
 }
 

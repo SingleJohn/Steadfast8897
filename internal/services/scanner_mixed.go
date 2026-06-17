@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 const (
@@ -285,50 +287,21 @@ func splitPathParts(rel string) []string {
 func ensureMixedFolder(ctx context.Context, pool *pgxpool.Pool, libraryID string, parentID *string, folderPath string) string {
 	name := filepath.Base(folderPath)
 	sortName := strings.ToLower(name)
-	parentArg := nullableParentID(parentID)
-	var id string
-	err := pool.QueryRow(ctx,
-		`INSERT INTO items (library_id, parent_id, type, name, sort_name, file_path, created_at)
-		 VALUES ($1::uuid, $2::uuid, 'Folder', $3, $4, $5, COALESCE($6, NOW()))
-		 ON CONFLICT DO NOTHING
-		 RETURNING id::text`,
-		libraryID, parentArg, name, sortName, filepath.Clean(folderPath), fileMtimeOrNil(folderPath),
-	).Scan(&id)
-	if err == nil {
-		return id
+	cleanPath := filepath.Clean(folderPath)
+	repo := repository.NewScanIngestRepository(pool)
+	if id, err := repo.InsertMixedFolder(ctx, libraryID, parentID, name, sortName, cleanPath, fileMtimePtr(folderPath)); err == nil && id != nil {
+		return *id
 	}
-	err = pool.QueryRow(ctx,
-		`SELECT id::text FROM items
-		  WHERE library_id = $1::uuid AND type = 'Folder' AND file_path = $2
-		  LIMIT 1`,
-		libraryID, filepath.Clean(folderPath),
-	).Scan(&id)
-	if err != nil {
+	id, err := repo.FindMixedFolderByPath(ctx, libraryID, cleanPath)
+	if err != nil || id == nil {
 		return ""
 	}
-	_, _ = pool.Exec(ctx,
-		`UPDATE items
-		    SET parent_id = $1::uuid, name = $2, sort_name = $3, updated_at = NOW()
-		  WHERE id = $4::uuid`,
-		parentArg, name, sortName, id,
-	)
-	return id
+	_ = repo.UpdateMixedFolder(ctx, *id, parentID, name, sortName)
+	return *id
 }
 
 func setMixedItemParent(ctx context.Context, pool *pgxpool.Pool, libraryID, itemType, filePath string, parentID *string) {
-	_, _ = pool.Exec(ctx,
-		`UPDATE items
-		    SET parent_id = $1::uuid, updated_at = NOW()
-		  WHERE library_id = $2::uuid AND type = $3 AND file_path = $4`,
-		nullableParentID(parentID), libraryID, itemType, filepath.Clean(filePath),
-	)
-}
-
-func nullableParentID(parentID *string) interface{} {
-	if parentID == nil || strings.TrimSpace(*parentID) == "" {
-		return nil
-	}
-	return *parentID
+	_ = repository.NewScanIngestRepository(pool).SetMixedItemParent(ctx, libraryID, itemType, filepath.Clean(filePath), parentID)
 }
 
 func scanMixedMovie(ctx context.Context, pool *pgxpool.Pool, libraryID string, roots []string, movie movieEntry) {
