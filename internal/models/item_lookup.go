@@ -11,17 +11,13 @@ import (
 	"fyms/internal/repository"
 )
 
-const singleItemSelect = `SELECT id, name, type, sort_name, NULL::text AS collection_type, overview,
-	production_year, premiere_date, community_rating, official_rating,
-	runtime_ticks, index_number, parent_index_number, parent_id,
-	series_id, series_name, season_id, container, file_path,
-	resolved_path, provider_ids, primary_image_path, primary_image_tag, backdrop_image_tag,
-	NULL::bigint AS child_count, NULL::bigint AS recursive_item_count
-	FROM items`
-
 func GetItemByID(ctx context.Context, pool *pgxpool.Pool, id string) (*dto.ItemRow, error) {
-	row := pool.QueryRow(ctx, singleItemSelect+" WHERE id = $1::uuid", id)
-	return scanItemRow(row)
+	row, err := repository.NewItemReadRepository(pool).GetItemByID(ctx, id)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	item := MapColsToItemRow(row)
+	return &item, nil
 }
 
 func GetItemByAnyID(ctx context.Context, pool *pgxpool.Pool, id string) (*dto.ItemRow, error) {
@@ -29,8 +25,12 @@ func GetItemByAnyID(ctx context.Context, pool *pgxpool.Pool, id string) (*dto.It
 		return GetItemByID(ctx, pool, id)
 	}
 	if embyID, err := strconv.Atoi(id); err == nil {
-		row := pool.QueryRow(ctx, singleItemSelect+" WHERE emby_id = $1", embyID)
-		return scanItemRow(row)
+		row, err := repository.NewItemReadRepository(pool).GetItemByEmbyID(ctx, embyID)
+		if err != nil || row == nil {
+			return nil, err
+		}
+		item := MapColsToItemRow(row)
+		return &item, nil
 	}
 	return nil, nil
 }

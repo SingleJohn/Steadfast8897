@@ -15,6 +15,7 @@ import (
 )
 
 type ItemHelperRepository struct {
+	pool    *pgxpool.Pool
 	queries *dbgen.Queries
 }
 
@@ -44,7 +45,7 @@ type EpisodeMetadataRow struct {
 }
 
 func NewItemHelperRepository(pool *pgxpool.Pool) *ItemHelperRepository {
-	return &ItemHelperRepository{queries: dbgen.New(pool)}
+	return &ItemHelperRepository{pool: pool, queries: dbgen.New(pool)}
 }
 
 func (r *ItemHelperRepository) ListItemGenres(ctx context.Context, itemID string) ([][2]string, error) {
@@ -424,6 +425,31 @@ func (r *ItemHelperRepository) ListEpisodeIndexesForSeason(ctx context.Context, 
 	return out, nil
 }
 
+func (r *ItemHelperRepository) ListSeasonNames(ctx context.Context, seasonIDs []string) (map[string]string, error) {
+	names := make(map[string]string, len(seasonIDs))
+	if len(seasonIDs) == 0 {
+		return names, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT id::text, name
+		   FROM items
+		  WHERE id::text = ANY($1::text[])
+		    AND type = 'Season'`,
+		seasonIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		names[id] = name
+	}
+	return names, rows.Err()
+}
+
 func (r *ItemHelperRepository) CountItemsByTypeAndTmdbProvider(ctx context.Context, itemType, tmdbID string) (int64, error) {
 	return r.queries.CountItemsByTypeAndTmdbProvider(ctx, dbgen.CountItemsByTypeAndTmdbProviderParams{
 		ItemType: itemType,
@@ -522,6 +548,44 @@ func (r *ItemHelperRepository) UpdateEpisodeStillImage(ctx context.Context, epis
 		PrimaryImageTag:  optionalText(imageTag),
 		Column3:          toPGUUID(uid),
 	})
+}
+
+func (r *ItemHelperRepository) UpdateItemPrimaryImage(ctx context.Context, itemID, imagePath, imageTag string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateItemPrimaryImage(ctx, dbgen.UpdateItemPrimaryImageParams{
+		PrimaryImagePath: textValue(imagePath),
+		PrimaryImageTag:  textValue(imageTag),
+		Column3:          toPGUUID(uid),
+	})
+}
+
+func (r *ItemHelperRepository) UpdateItemBackdropImage(ctx context.Context, itemID, imagePath, imageTag string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateItemBackdropImage(ctx, dbgen.UpdateItemBackdropImageParams{
+		BackdropImagePath: textValue(imagePath),
+		BackdropImageTag:  textValue(imageTag),
+		Column3:           toPGUUID(uid),
+	})
+}
+
+func (r *ItemHelperRepository) ClearItemPrimaryImage(ctx context.Context, itemID string) error {
+	_, err := r.pool.Exec(ctx,
+		"UPDATE items SET primary_image_path = NULL, primary_image_tag = NULL, updated_at = NOW() WHERE id = $1::uuid",
+		itemID)
+	return err
+}
+
+func (r *ItemHelperRepository) ClearItemBackdropImage(ctx context.Context, itemID string) error {
+	_, err := r.pool.Exec(ctx,
+		"UPDATE items SET backdrop_image_path = NULL, backdrop_image_tag = NULL, updated_at = NOW() WHERE id = $1::uuid",
+		itemID)
+	return err
 }
 
 func (r *ItemHelperRepository) PersonExists(ctx context.Context, id string) (bool, error) {

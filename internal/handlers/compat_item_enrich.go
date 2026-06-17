@@ -10,6 +10,7 @@ import (
 
 	"fyms/internal/dto"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 func applyUnplayedItemCounts(ctx context.Context, db *pgxpool.Pool, userID string, items []dto.BaseItemDto) {
@@ -62,21 +63,9 @@ func applySeasonNames(ctx context.Context, db *pgxpool.Pool, items []dto.BaseIte
 		return
 	}
 
-	rows, err := db.Query(ctx,
-		`SELECT id::text, name FROM items WHERE id::text = ANY($1::text[]) AND type = 'Season'`,
-		seasonIDs)
+	names, err := repository.NewItemHelperRepository(db).ListSeasonNames(ctx, seasonIDs)
 	if err != nil {
 		return
-	}
-	defer rows.Close()
-
-	names := make(map[string]string, len(seasonIDs))
-	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return
-		}
-		names[id] = name
 	}
 
 	for i := range items {

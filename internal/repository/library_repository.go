@@ -12,6 +12,7 @@ import (
 )
 
 type LibraryRepository struct {
+	pool    *pgxpool.Pool
 	queries *dbgen.Queries
 }
 
@@ -28,7 +29,7 @@ type IngestMatchLibrary struct {
 }
 
 func NewLibraryRepository(pool *pgxpool.Pool) *LibraryRepository {
-	return &LibraryRepository{queries: dbgen.New(pool)}
+	return &LibraryRepository{pool: pool, queries: dbgen.New(pool)}
 }
 
 func (r *LibraryRepository) ListLibraries(ctx context.Context) ([]Library, error) {
@@ -107,6 +108,11 @@ func (r *LibraryRepository) UpdateLibrary(ctx context.Context, id uuid.UUID, nam
 		}
 	}
 	return r.GetLibraryByID(ctx, id)
+}
+
+func (r *LibraryRepository) UpdateLibraryCollectionType(ctx context.Context, id uuid.UUID, collectionType string) error {
+	_, err := r.pool.Exec(ctx, "UPDATE libraries SET collection_type = $1 WHERE id = $2", collectionType, id)
+	return err
 }
 
 func (r *LibraryRepository) UpdateLibrarySortOrder(ctx context.Context, id uuid.UUID, sortOrder int) error {

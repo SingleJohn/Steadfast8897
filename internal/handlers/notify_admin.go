@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
@@ -49,29 +50,14 @@ func RegisterNotifyAdminRoutes(group *gin.RouterGroup, state *AppState, adminMW 
 }
 
 func listWebhookSubscriptions(c *gin.Context, st *AppState) {
-	rows, err := st.DB.Query(c.Request.Context(),
-		`SELECT id::text, name, url, events, enabled, group_items,
-		        last_status, last_error, last_sent_at, created_at, updated_at
-		   FROM webhook_subscriptions
-		  ORDER BY created_at ASC`)
+	subs, err := repository.NewNotifyRepository(st.DB).ListSubscriptions(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
-
-	var out []webhookSubscriptionOutput
-	for rows.Next() {
-		sub, err := scanWebhookSubscription(rows)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
-		out = append(out, sub)
-	}
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
+	out := make([]webhookSubscriptionOutput, 0, len(subs))
+	for _, sub := range subs {
+		out = append(out, webhookSubscriptionOutputFromRepo(sub))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -81,20 +67,12 @@ func createWebhookSubscription(c *gin.Context, st *AppState) {
 	if !ok {
 		return
 	}
-	var out webhookSubscriptionOutput
-	err := st.DB.QueryRow(c.Request.Context(),
-		`INSERT INTO webhook_subscriptions (name, url, events, enabled, group_items)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id::text, name, url, events, enabled, group_items,
-		           last_status, last_error, last_sent_at, created_at, updated_at`,
-		input.Name, input.URL, input.Events, input.enabled, input.GroupItems,
-	).Scan(&out.ID, &out.Name, &out.URL, &out.Events, &out.Enabled, &out.GroupItems,
-		&out.LastStatus, &out.LastError, &out.LastSentAt, &out.CreatedAt, &out.UpdatedAt)
+	sub, err := repository.NewNotifyRepository(st.DB).CreateSubscription(c.Request.Context(), input.Name, input.URL, input.Events, input.enabled, input.GroupItems)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, out)
+	c.JSON(http.StatusCreated, webhookSubscriptionOutputFromRepo(sub))
 }
 
 func updateWebhookSubscription(c *gin.Context, st *AppState) {
@@ -102,21 +80,7 @@ func updateWebhookSubscription(c *gin.Context, st *AppState) {
 	if !ok {
 		return
 	}
-	var out webhookSubscriptionOutput
-	err := st.DB.QueryRow(c.Request.Context(),
-		`UPDATE webhook_subscriptions
-		    SET name = $2,
-		        url = $3,
-		        events = $4,
-		        enabled = $5,
-		        group_items = $6,
-		        updated_at = NOW()
-		  WHERE id = $1::uuid
-		  RETURNING id::text, name, url, events, enabled, group_items,
-		            last_status, last_error, last_sent_at, created_at, updated_at`,
-		c.Param("id"), input.Name, input.URL, input.Events, input.enabled, input.GroupItems,
-	).Scan(&out.ID, &out.Name, &out.URL, &out.Events, &out.Enabled, &out.GroupItems,
-		&out.LastStatus, &out.LastError, &out.LastSentAt, &out.CreatedAt, &out.UpdatedAt)
+	sub, err := repository.NewNotifyRepository(st.DB).UpdateSubscription(c.Request.Context(), c.Param("id"), input.Name, input.URL, input.Events, input.enabled, input.GroupItems)
 	if err == pgx.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Subscription not found"})
 		return
@@ -125,19 +89,16 @@ func updateWebhookSubscription(c *gin.Context, st *AppState) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, out)
+	c.JSON(http.StatusOK, webhookSubscriptionOutputFromRepo(sub))
 }
 
 func deleteWebhookSubscription(c *gin.Context, st *AppState) {
-	tag, err := st.DB.Exec(c.Request.Context(),
-		"DELETE FROM webhook_subscriptions WHERE id = $1::uuid",
-		c.Param("id"),
-	)
+	ok, err := repository.NewNotifyRepository(st.DB).DeleteSubscription(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Subscription not found"})
 		return
 	}
@@ -260,11 +221,20 @@ func normalizeNotifyEvents(events []string) ([]string, error) {
 	return out, nil
 }
 
-func scanWebhookSubscription(rows pgx.Rows) (webhookSubscriptionOutput, error) {
-	var out webhookSubscriptionOutput
-	err := rows.Scan(&out.ID, &out.Name, &out.URL, &out.Events, &out.Enabled, &out.GroupItems,
-		&out.LastStatus, &out.LastError, &out.LastSentAt, &out.CreatedAt, &out.UpdatedAt)
-	return out, err
+func webhookSubscriptionOutputFromRepo(sub repository.WebhookSubscription) webhookSubscriptionOutput {
+	return webhookSubscriptionOutput{
+		ID:         sub.ID,
+		Name:       sub.Name,
+		URL:        sub.URL,
+		Events:     sub.Events,
+		Enabled:    sub.Enabled,
+		GroupItems: sub.GroupItems,
+		LastStatus: sub.LastStatus,
+		LastError:  sub.LastError,
+		LastSentAt: sub.LastSentAt,
+		CreatedAt:  sub.CreatedAt,
+		UpdatedAt:  sub.UpdatedAt,
+	}
 }
 
 func sampleNotifyItem() gin.H {

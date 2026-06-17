@@ -349,20 +349,11 @@ func saveItemImage(ctx context.Context, state *AppState, itemUUID, imageType, ex
 
 	switch strings.ToLower(imageType) {
 	case "primary", "thumb":
-		_, err := state.DB.Exec(ctx,
-			"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-			fpath, tag, itemUUID)
-		return err
+		return state.Repo.ItemHelpers.UpdateItemPrimaryImage(ctx, itemUUID, fpath, tag)
 	case "backdrop", "backdrops":
-		_, err := state.DB.Exec(ctx,
-			"UPDATE items SET backdrop_image_path = $1, backdrop_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-			fpath, tag, itemUUID)
-		return err
+		return state.Repo.ItemHelpers.UpdateItemBackdropImage(ctx, itemUUID, fpath, tag)
 	default:
-		_, err := state.DB.Exec(ctx,
-			"UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW() WHERE id = $3::uuid",
-			fpath, tag, itemUUID)
-		return err
+		return state.Repo.ItemHelpers.UpdateItemPrimaryImage(ctx, itemUUID, fpath, tag)
 	}
 }
 
@@ -386,17 +377,11 @@ func deleteImage(c *gin.Context) {
 
 	switch strings.ToLower(imageType) {
 	case "primary", "thumb":
-		_, err = state.DB.Exec(ctx,
-			"UPDATE items SET primary_image_path = NULL, primary_image_tag = NULL, updated_at = NOW() WHERE id = $1::uuid",
-			*resolved)
+		err = state.Repo.ItemHelpers.ClearItemPrimaryImage(ctx, *resolved)
 	case "backdrop", "backdrops":
-		_, err = state.DB.Exec(ctx,
-			"UPDATE items SET backdrop_image_path = NULL, backdrop_image_tag = NULL, updated_at = NOW() WHERE id = $1::uuid",
-			*resolved)
+		err = state.Repo.ItemHelpers.ClearItemBackdropImage(ctx, *resolved)
 	default:
-		_, err = state.DB.Exec(ctx,
-			"UPDATE items SET primary_image_path = NULL, primary_image_tag = NULL, updated_at = NOW() WHERE id = $1::uuid",
-			*resolved)
+		err = state.Repo.ItemHelpers.ClearItemPrimaryImage(ctx, *resolved)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -489,8 +474,7 @@ func updateLibraryInfo(c *gin.Context) {
 		}
 	}
 	if body.CollectionType != "" {
-		_, err := state.DB.Exec(ctx, "UPDATE libraries SET collection_type = $1 WHERE id = $2", body.CollectionType, id)
-		if err != nil {
+		if err := state.Repo.Libraries.UpdateLibraryCollectionType(ctx, id, body.CollectionType); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}

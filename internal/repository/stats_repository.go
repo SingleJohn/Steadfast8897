@@ -14,6 +14,20 @@ type StatsRepository struct {
 	pool *pgxpool.Pool
 }
 
+type PlaybackActivityCreate struct {
+	UserID      string
+	ItemID      string
+	ItemType    string
+	ItemName    string
+	PlayMethod  string
+	ClientName  string
+	DeviceName  string
+	DurationSec int64
+	ClientIP    string
+	SeriesName  *string
+	UserAgent   string
+}
+
 type StatsUserActivityRow struct {
 	UserID        string
 	UserName      *string
@@ -101,6 +115,15 @@ type StatsUsageSummary struct {
 
 func NewStatsRepository(pool *pgxpool.Pool) *StatsRepository {
 	return &StatsRepository{pool: pool}
+}
+
+func (r *StatsRepository) InsertPlaybackActivity(ctx context.Context, row PlaybackActivityCreate) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name, user_agent)
+		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		row.UserID, row.ItemID, &row.ItemType, &row.ItemName, row.PlayMethod, row.ClientName, row.DeviceName, int(row.DurationSec), row.ClientIP, row.SeriesName, row.UserAgent,
+	)
+	return err
 }
 
 func (r *StatsRepository) UserActivity(ctx context.Context, days int) ([]StatsUserActivityRow, error) {

@@ -8,9 +8,10 @@ import (
 	"sort"
 	"strings"
 
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,22 +22,19 @@ func LoadLibraryScrapeOverride(ctx context.Context, pool *pgxpool.Pool, libraryI
 	if strings.TrimSpace(libraryID) == "" {
 		return nil, nil
 	}
-	var raw *string
-	err := pool.QueryRow(ctx,
-		"SELECT scrape_config::text FROM libraries WHERE id = $1::uuid AND deleted_at IS NULL",
-		libraryID,
-	).Scan(&raw)
-	if err == pgx.ErrNoRows {
+	libID, err := uuid.Parse(libraryID)
+	if err != nil {
 		return nil, nil
 	}
+	lib, err := repository.NewLibraryRepository(pool).GetLibraryByID(ctx, libID)
 	if err != nil {
 		return nil, fmt.Errorf("load library scrape_config: %w", err)
 	}
-	if raw == nil || strings.TrimSpace(*raw) == "" {
+	if lib == nil || lib.ScrapeConfig == nil || strings.TrimSpace(*lib.ScrapeConfig) == "" {
 		return nil, nil
 	}
 	var ov scraper.ConfigOverride
-	if err := json.Unmarshal([]byte(*raw), &ov); err != nil {
+	if err := json.Unmarshal([]byte(*lib.ScrapeConfig), &ov); err != nil {
 		return nil, fmt.Errorf("parse scrape_config JSON: %w", err)
 	}
 	if ov.IsEmpty() {

@@ -19,25 +19,18 @@ $allowedFiles = @(
     "internal/repository/background_task_repository.go",
     "internal/repository/notify_repository.go",
     "internal/repository/stats_repository.go",
+    "internal/repository/library_repository.go",
+    "internal/repository/item_helper_repository.go",
+    "internal/repository/item_read_repository.go",
     "internal/repository/compat_items_repository.go",
     "internal/repository/item_query_repository.go",
     "internal/repository/platform_repository.go",
     "internal/repository/person_repository.go",
     "internal/gateway/store.go",
     "internal/gateway/source_server.go",
-    "internal/handlers/backfill.go",
-    "internal/handlers/compat_item_enrich.go",
     "internal/handlers/compat_query.go",
-    "internal/handlers/library_manage.go",
-    "internal/handlers/library_query.go",
-    "internal/handlers/library_refresh.go",
-    "internal/handlers/library_scrape.go",
-    "internal/handlers/playback.go",
     "internal/handlers/system.go",
-    "internal/models/item_counts.go",
-    "internal/models/item_lookup.go",
     "internal/models/item_merge.go",
-    "internal/models/item_nextup.go",
     "internal/models/library.go",
     "internal/services/coverart/fetch.go",
     "internal/services/gap_scan.go",
@@ -48,8 +41,7 @@ $allowedFiles = @(
     "internal/services/refresh_worker.go",
     "internal/services/scanner_movie.go",
     "internal/services/scanner_nfo.go",
-    "internal/services/scanner_tv.go",
-    "internal/services/scrape_config.go"
+    "internal/services/scanner_tv.go"
 )
 
 $allowed = @{}

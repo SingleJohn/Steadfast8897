@@ -103,7 +103,7 @@ func applyIdentifyCandidate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
+	_ = state.Repo.Background.DeleteIdentifyCandidates(ctx, itemID)
 	c.JSON(http.StatusOK, gin.H{
 		"ok":       true,
 		"provider": provider,
@@ -170,7 +170,7 @@ func batchApplyIdentifyCandidates(c *gin.Context) {
 			results = append(results, res)
 			continue
 		}
-		_, _ = state.DB.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", pair.ItemID)
+		_ = state.Repo.Background.DeleteIdentifyCandidates(ctx, pair.ItemID)
 		cancel()
 		res.OK = true
 		res.Provider = provider

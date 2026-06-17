@@ -121,8 +121,7 @@ func getUserViews(c *gin.Context) {
 		var childCount int64
 		childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, idStr)
 		var recursiveCount int64
-		state.DB.QueryRow(ctx,
-			"SELECT COUNT(*) FROM items WHERE library_id = $1", lib.ID).Scan(&recursiveCount)
+		recursiveCount, _ = state.Repo.Playback.CountItemsByLibrary(ctx, lib.ID)
 
 		imageTags := gin.H{}
 		if lib.PrimaryImageTag != nil {

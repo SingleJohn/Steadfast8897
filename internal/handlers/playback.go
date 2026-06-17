@@ -17,6 +17,7 @@ import (
 	"fyms/internal/dto"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
@@ -150,12 +151,19 @@ func insertPlaybackActivity(ctx context.Context, st *AppState, userID, itemID, i
 	if playMethod == "" {
 		playMethod = "DirectPlay"
 	}
-	_, err := st.DB.Exec(ctx,
-		`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name, user_agent)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		userID, itemID, &itemType, &itemName, playMethod, clientName, deviceName, int(durationSec), clientIP, seriesName, userAgent,
-	)
-	if err != nil {
+	if err := repository.NewStatsRepository(st.DB).InsertPlaybackActivity(ctx, repository.PlaybackActivityCreate{
+		UserID:      userID,
+		ItemID:      itemID,
+		ItemType:    itemType,
+		ItemName:    itemName,
+		PlayMethod:  playMethod,
+		ClientName:  clientName,
+		DeviceName:  deviceName,
+		DurationSec: durationSec,
+		ClientIP:    clientIP,
+		SeriesName:  seriesName,
+		UserAgent:   userAgent,
+	}); err != nil {
 		log.Printf("[Play] Failed to insert playback activity: %v", err)
 	}
 }
@@ -180,12 +188,19 @@ func FlushStalePlaybacks(pool *pgxpool.Pool, sm *services.SessionManager) {
 				if pm == "" {
 					pm = "DirectPlay"
 				}
-				_, err := pool.Exec(context.Background(),
-					`INSERT INTO playback_activity (user_id, item_id, item_type, item_name, play_method, client_name, device_name, play_duration, client_ip, series_name, user_agent)
-					 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-					userID, pb.itemID, &pb.itemType, &pb.itemName, pm, pb.clientName, pb.deviceName, int(durationSec), pb.clientIP, sn, pb.userAgent,
-				)
-				if err != nil {
+				if err := repository.NewStatsRepository(pool).InsertPlaybackActivity(context.Background(), repository.PlaybackActivityCreate{
+					UserID:      userID,
+					ItemID:      pb.itemID,
+					ItemType:    pb.itemType,
+					ItemName:    pb.itemName,
+					PlayMethod:  pm,
+					ClientName:  pb.clientName,
+					DeviceName:  pb.deviceName,
+					DurationSec: durationSec,
+					ClientIP:    pb.clientIP,
+					SeriesName:  sn,
+					UserAgent:   pb.userAgent,
+				}); err != nil {
 					slog.Debug("stale playback flush insert failed", "error", err)
 				}
 				if len(parts) > 1 {

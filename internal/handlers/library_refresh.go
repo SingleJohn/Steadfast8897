@@ -140,9 +140,7 @@ func getVirtualFolders(c *gin.Context) {
 		}
 
 		var itemCount int64
-		_ = state.DB.QueryRow(ctx,
-			"SELECT COUNT(*) FROM items WHERE library_id = $1::uuid AND type IN ('Movie','Series','Episode')",
-			idStr).Scan(&itemCount)
+		itemCount, _ = state.Repo.Playback.CountItemsByLibrary(ctx, lib.ID)
 
 		entry := gin.H{
 			"Name":               lib.Name,

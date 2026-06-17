@@ -98,11 +98,7 @@ func updateBackfillConfig(c *gin.Context, state *AppState) {
 
 // resetBackfillQuality 清空 media_versions 的画质列,便于全量重算(幂等判定条件会再次命中)。
 func resetBackfillQuality(c *gin.Context, state *AppState) {
-	_, err := state.DB.Exec(c.Request.Context(),
-		`UPDATE media_versions
-		 SET resolution = NULL, hdr_format = NULL, video_codec = NULL,
-		     audio_codec = NULL, source = NULL, quality_label = NULL`)
-	if err != nil {
+	if err := state.Repo.Background.ResetMediaVersionQuality(c.Request.Context()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -111,15 +107,10 @@ func resetBackfillQuality(c *gin.Context, state *AppState) {
 
 // resetBackfillEpisodeImage 只清理由 TMDB still 下载写入的 Episode 封面,不碰本地兜底命中的路径。
 func resetBackfillEpisodeImage(c *gin.Context, state *AppState) {
-	ctx := c.Request.Context()
-	res, err := state.DB.Exec(ctx,
-		`UPDATE items
-		 SET primary_image_path = NULL, primary_image_tag = NULL
-		 WHERE type = 'Episode'
-		   AND primary_image_path LIKE 'data/metadata/%/still.jpg'`)
+	rows, err := state.Repo.Background.ResetEpisodeStillImages(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "episode still fields reset", "rows": res.RowsAffected()})
+	c.JSON(http.StatusOK, gin.H{"message": "episode still fields reset", "rows": rows})
 }

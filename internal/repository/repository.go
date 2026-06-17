@@ -16,6 +16,8 @@ type Repository struct {
 	APIKeys      *APIKeyRepository
 	ImageLookup  *ImageLookupRepository
 	Playback     *PlaybackRepository
+	Background   *BackgroundTaskRepository
+	Notify       *NotifyRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -33,5 +35,7 @@ func New(pool *pgxpool.Pool) *Repository {
 		APIKeys:      NewAPIKeyRepository(pool),
 		ImageLookup:  NewImageLookupRepository(pool),
 		Playback:     NewPlaybackRepository(pool),
+		Background:   NewBackgroundTaskRepository(pool),
+		Notify:       NewNotifyRepository(pool),
 	}
 }

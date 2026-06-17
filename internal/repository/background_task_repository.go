@@ -228,6 +228,31 @@ func (r *BackgroundTaskRepository) ReplaceIdentifyCandidates(ctx context.Context
 	return nil
 }
 
+func (r *BackgroundTaskRepository) DeleteIdentifyCandidates(ctx context.Context, itemID string) error {
+	_, err := r.pool.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID)
+	return err
+}
+
+func (r *BackgroundTaskRepository) ResetMediaVersionQuality(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE media_versions
+		 SET resolution = NULL, hdr_format = NULL, video_codec = NULL,
+		     audio_codec = NULL, source = NULL, quality_label = NULL`)
+	return err
+}
+
+func (r *BackgroundTaskRepository) ResetEpisodeStillImages(ctx context.Context) (int64, error) {
+	res, err := r.pool.Exec(ctx,
+		`UPDATE items
+		 SET primary_image_path = NULL, primary_image_tag = NULL
+		 WHERE type = 'Episode'
+		   AND primary_image_path LIKE 'data/metadata/%/still.jpg'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected(), nil
+}
+
 type IdentifyCandidateUpsert struct {
 	Provider   string
 	ExternalID string

@@ -16,12 +16,74 @@ type NotifyRepository struct {
 }
 
 type WebhookSubscription struct {
-	ID  string
-	URL string
+	ID         string
+	Name       string
+	URL        string
+	Events     []string
+	Enabled    bool
+	GroupItems bool
+	LastStatus *int32
+	LastError  *string
+	LastSentAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 func NewNotifyRepository(pool *pgxpool.Pool) *NotifyRepository {
 	return &NotifyRepository{pool: pool}
+}
+
+func (r *NotifyRepository) ListSubscriptions(ctx context.Context) ([]WebhookSubscription, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id::text, name, url, events, enabled, group_items,
+		        last_status, last_error, last_sent_at, created_at, updated_at
+		   FROM webhook_subscriptions
+		  ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanWebhookSubscriptionRows(rows)
+}
+
+func (r *NotifyRepository) CreateSubscription(ctx context.Context, name, url string, events []string, enabled, groupItems bool) (WebhookSubscription, error) {
+	var sub WebhookSubscription
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO webhook_subscriptions (name, url, events, enabled, group_items)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id::text, name, url, events, enabled, group_items,
+		           last_status, last_error, last_sent_at, created_at, updated_at`,
+		name, url, events, enabled, groupItems,
+	).Scan(&sub.ID, &sub.Name, &sub.URL, &sub.Events, &sub.Enabled, &sub.GroupItems,
+		&sub.LastStatus, &sub.LastError, &sub.LastSentAt, &sub.CreatedAt, &sub.UpdatedAt)
+	return sub, err
+}
+
+func (r *NotifyRepository) UpdateSubscription(ctx context.Context, id, name, url string, events []string, enabled, groupItems bool) (WebhookSubscription, error) {
+	var sub WebhookSubscription
+	err := r.pool.QueryRow(ctx,
+		`UPDATE webhook_subscriptions
+		    SET name = $2,
+		        url = $3,
+		        events = $4,
+		        enabled = $5,
+		        group_items = $6,
+		        updated_at = NOW()
+		  WHERE id = $1::uuid
+		  RETURNING id::text, name, url, events, enabled, group_items,
+		            last_status, last_error, last_sent_at, created_at, updated_at`,
+		id, name, url, events, enabled, groupItems,
+	).Scan(&sub.ID, &sub.Name, &sub.URL, &sub.Events, &sub.Enabled, &sub.GroupItems,
+		&sub.LastStatus, &sub.LastError, &sub.LastSentAt, &sub.CreatedAt, &sub.UpdatedAt)
+	return sub, err
+}
+
+func (r *NotifyRepository) DeleteSubscription(ctx context.Context, id string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, "DELETE FROM webhook_subscriptions WHERE id = $1::uuid", id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *NotifyRepository) LoadItemColumns(ctx context.Context, itemID string) (map[string]any, error) {
@@ -189,6 +251,19 @@ func scanWebhookSubscriptions(rows pgx.Rows) ([]WebhookSubscription, error) {
 		if sub.URL != "" {
 			subs = append(subs, sub)
 		}
+	}
+	return subs, rows.Err()
+}
+
+func scanWebhookSubscriptionRows(rows pgx.Rows) ([]WebhookSubscription, error) {
+	var subs []WebhookSubscription
+	for rows.Next() {
+		var sub WebhookSubscription
+		if err := rows.Scan(&sub.ID, &sub.Name, &sub.URL, &sub.Events, &sub.Enabled, &sub.GroupItems,
+			&sub.LastStatus, &sub.LastError, &sub.LastSentAt, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
 	}
 	return subs, rows.Err()
 }
