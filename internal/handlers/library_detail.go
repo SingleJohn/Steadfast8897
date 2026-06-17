@@ -18,6 +18,7 @@ import (
 
 	"fyms/internal/dto"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 func applyListMediaSourceDisplay(c *gin.Context, ctx context.Context, state *AppState, row *dto.ItemRow, item *dto.BaseItemDto) {
@@ -121,15 +122,12 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	}
 
 	// 详情侧补 original_title / 预告片(RemoteTrailers),列表场景不带以减负。
-	var origTitle, trailerURL *string
-	if err := pool.QueryRow(ctx,
-		"SELECT original_title, trailer_url FROM items WHERE id = $1::uuid", item.ID,
-	).Scan(&origTitle, &trailerURL); err == nil {
-		if origTitle != nil && *origTitle != "" {
-			base.OriginalTitle = origTitle
+	if extras, err := repository.NewPlaybackRepository(pool).GetItemDetailExtras(ctx, item.ID); err == nil && extras != nil {
+		if extras.OriginalTitle != nil && *extras.OriginalTitle != "" {
+			base.OriginalTitle = extras.OriginalTitle
 		}
-		if trailerURL != nil && *trailerURL != "" {
-			base.RemoteTrailers = []dto.MediaUrl{{Url: *trailerURL, Name: item.Name}}
+		if extras.TrailerURL != nil && *extras.TrailerURL != "" {
+			base.RemoteTrailers = []dto.MediaUrl{{Url: *extras.TrailerURL, Name: item.Name}}
 		}
 	}
 
@@ -144,7 +142,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		base.People = cast
 	}
 
-	streams, err := models.GetMediaStreams(ctx, pool, item.ID)
+	streams, err := repository.NewPlaybackRepository(pool).ListMediaStreamsForItem(ctx, item.ID)
 	if err != nil {
 		return base, err
 	}
@@ -154,39 +152,17 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	}
 	base.MediaStreams = streamDtos
 
-	mvRows, err := pool.Query(ctx,
-		`SELECT id::text, name, file_path, COALESCE(container, ''), is_primary, runtime_ticks, bitrate, size, mediainfo,
-		        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
-		 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
-		item.ID)
+	versions, err := repository.NewPlaybackRepository(pool).ListMediaVersionsForItem(ctx, item.ID)
 	if err != nil {
 		return base, err
 	}
-	defer mvRows.Close()
 
 	sources := make([]dto.MediaSourceInfo, 0)
-	mvIdx := 0
-	for mvRows.Next() {
-		var idStr, name, fpath, container string
-		var isPrimary bool
-		var rt *int64
-		var br *int32
-		var sz *int64
-		var mediaInfoJSON, chaptersJSON []byte
-		var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
-		if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
-			&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel, &chaptersJSON); err != nil {
-			return base, err
-		}
-		bitrate := (*int64)(nil)
-		if br != nil {
-			v := int64(*br)
-			bitrate = &v
-		}
+	for mvIdx, mv := range versions {
 		versionStreams := streamDtos
-		if len(mediaInfoJSON) > 0 {
+		if len(mv.MediaInfo) > 0 {
 			var mi map[string]json.RawMessage
-			if json.Unmarshal(mediaInfoJSON, &mi) == nil {
+			if json.Unmarshal(mv.MediaInfo, &mi) == nil {
 				if msRaw, ok := mi["MediaStreams"]; ok {
 					var miStreams []dto.MediaStreamInfo
 					if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
@@ -198,41 +174,38 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		if len(versionStreams) == 0 && mvIdx == 0 {
 			versionStreams = streamDtos
 		}
-		displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
-		versionStreams = appendExternalSubtitleStreams(ctx, pool, item.ID, idStr, versionStreams)
+		container := strVal(mv.Container)
+		displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(mv.FilePath, container)
+		versionStreams = appendExternalSubtitleStreams(ctx, pool, item.ID, mv.ID, versionStreams)
 		ms := dto.MediaSourceInfo{
-			ID:                    idStr,
+			ID:                    mv.ID,
 			Path:                  displayPath,
 			Protocol:              displayProtocol,
 			Type:                  "Default",
 			Container:             displayContainer,
-			Name:                  name,
+			Name:                  mv.Name,
 			IsRemote:              displayRemote,
-			RunTimeTicks:          rt,
+			RunTimeTicks:          mv.RuntimeTicks,
 			SupportsDirectPlay:    true,
 			SupportsDirectStream:  true,
 			SupportsTranscoding:   false,
 			MediaStreams:          versionStreams,
-			Bitrate:               bitrate,
-			Size:                  sz,
+			Bitrate:               mv.Bitrate,
+			Size:                  mv.Size,
 			ReadAtNativeFramerate: false,
-			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, displayContainer, idStr),
-			ETag:                  idStr,
+			DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", item.ID, displayContainer, mv.ID),
+			ETag:                  mv.ID,
 			Formats:               []string{},
-			FymsResolution:        resolution,
-			FymsHdrFormat:         hdrFormat,
-			FymsVideoCodec:        videoCodec,
-			FymsAudioCodec:        audioCodec,
-			FymsSource:            source,
-			FymsQualityLabel:      qualityLabel,
-			Chapters:              parseChaptersJSON(chaptersJSON),
+			FymsResolution:        mv.Resolution,
+			FymsHdrFormat:         mv.HDRFormat,
+			FymsVideoCodec:        mv.VideoCodec,
+			FymsAudioCodec:        mv.AudioCodec,
+			FymsSource:            mv.Source,
+			FymsQualityLabel:      mv.QualityLabel,
+			Chapters:              parseChaptersJSON(mv.ChaptersJSON),
 		}
 		applyMediaSourceCompatDefaults(&ms, item.ID)
 		sources = append(sources, ms)
-		mvIdx++
-	}
-	if err := mvRows.Err(); err != nil {
-		return base, err
 	}
 	if len(sources) == 0 && (len(streamDtos) > 0 || strOrPath(item) != "") {
 		ms := dto.MediaSourceInfo{
@@ -277,23 +250,10 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 // collectMergedMediaSources finds items merged into itemID (via merged_to_id)
 // and returns their media_versions as additional MediaSourceInfo entries.
 func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
-	sibRows, err := pool.Query(ctx,
-		`SELECT s.id::text, l.name AS lib_name
-		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, itemID)
+	repo := repository.NewPlaybackRepository(pool)
+	siblings, err := repo.ListMergedSiblingItems(ctx, itemID)
 	if err != nil {
 		return nil
-	}
-	defer sibRows.Close()
-
-	type siblingInfo struct{ ID, LibName string }
-	var siblings []siblingInfo
-	for sibRows.Next() {
-		var si siblingInfo
-		if err := sibRows.Scan(&si.ID, &si.LibName); err != nil {
-			continue
-		}
-		siblings = append(siblings, si)
 	}
 	if len(siblings) == 0 {
 		return nil
@@ -301,35 +261,15 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
-		mvRows, err := pool.Query(ctx,
-			`SELECT id::text, name, file_path, COALESCE(container,''), is_primary, runtime_ticks, bitrate, size, mediainfo,
-			        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
-			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at`,
-			sib.ID)
+		versions, err := repo.ListMediaVersionsForItem(ctx, sib.ID)
 		if err != nil {
 			continue
 		}
-		for mvRows.Next() {
-			var idStr, name, fpath, container string
-			var isPrimary bool
-			var rt *int64
-			var br *int32
-			var sz *int64
-			var mediaInfoJSON, chaptersJSON []byte
-			var resolution, hdrFormat, videoCodec, audioCodec, source, qualityLabel *string
-			if err := mvRows.Scan(&idStr, &name, &fpath, &container, &isPrimary, &rt, &br, &sz, &mediaInfoJSON,
-				&resolution, &hdrFormat, &videoCodec, &audioCodec, &source, &qualityLabel, &chaptersJSON); err != nil {
-				continue
-			}
-			bitrate := (*int64)(nil)
-			if br != nil {
-				v := int64(*br)
-				bitrate = &v
-			}
+		for _, mv := range versions {
 			versionStreams := fallbackStreams
-			if len(mediaInfoJSON) > 0 {
+			if len(mv.MediaInfo) > 0 {
 				var mi map[string]json.RawMessage
-				if json.Unmarshal(mediaInfoJSON, &mi) == nil {
+				if json.Unmarshal(mv.MediaInfo, &mi) == nil {
 					if msRaw, ok := mi["MediaStreams"]; ok {
 						var miStreams []dto.MediaStreamInfo
 						if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
@@ -338,40 +278,40 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 					}
 				}
 			}
-			versionStreams = appendExternalSubtitleStreams(ctx, pool, itemID, idStr, versionStreams)
-			srcName := sib.LibName + " - " + name
-			displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(fpath, container)
+			versionStreams = appendExternalSubtitleStreams(ctx, pool, itemID, mv.ID, versionStreams)
+			srcName := sib.LibName + " - " + mv.Name
+			container := strVal(mv.Container)
+			displayPath, displayContainer, displayProtocol, displayRemote := mediaSourceDisplayInfo(mv.FilePath, container)
 			ms := dto.MediaSourceInfo{
-				ID:                    idStr,
+				ID:                    mv.ID,
 				Path:                  displayPath,
 				Protocol:              displayProtocol,
 				Type:                  "Default",
 				Container:             displayContainer,
 				Name:                  srcName,
 				IsRemote:              displayRemote,
-				RunTimeTicks:          rt,
+				RunTimeTicks:          mv.RuntimeTicks,
 				SupportsDirectPlay:    true,
 				SupportsDirectStream:  true,
 				SupportsTranscoding:   false,
 				MediaStreams:          versionStreams,
-				Bitrate:               bitrate,
-				Size:                  sz,
+				Bitrate:               mv.Bitrate,
+				Size:                  mv.Size,
 				ReadAtNativeFramerate: false,
-				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, displayContainer, idStr),
-				ETag:                  idStr,
+				DirectStreamURL:       fmt.Sprintf("/Videos/%s/stream.%s?MediaSourceId=%s&Static=true", itemID, displayContainer, mv.ID),
+				ETag:                  mv.ID,
 				Formats:               []string{},
-				FymsResolution:        resolution,
-				FymsHdrFormat:         hdrFormat,
-				FymsVideoCodec:        videoCodec,
-				FymsAudioCodec:        audioCodec,
-				FymsSource:            source,
-				FymsQualityLabel:      qualityLabel,
-				Chapters:              parseChaptersJSON(chaptersJSON),
+				FymsResolution:        mv.Resolution,
+				FymsHdrFormat:         mv.HDRFormat,
+				FymsVideoCodec:        mv.VideoCodec,
+				FymsAudioCodec:        mv.AudioCodec,
+				FymsSource:            mv.Source,
+				FymsQualityLabel:      mv.QualityLabel,
+				Chapters:              parseChaptersJSON(mv.ChaptersJSON),
 			}
 			applyMediaSourceCompatDefaults(&ms, itemID)
 			merged = append(merged, ms)
 		}
-		mvRows.Close()
 	}
 	return merged
 }
@@ -505,8 +445,7 @@ func getItemDetail(c *gin.Context) {
 			var childCount int64
 			childCount, _ = models.GetLibraryDisplayItemCount(ctx, state.DB, uid.String())
 			var recursiveCount int64
-			state.DB.QueryRow(ctx,
-				"SELECT COUNT(*) FROM items WHERE library_id = $1", uid).Scan(&recursiveCount)
+			recursiveCount, _ = state.Repo.Playback.CountItemsByLibrary(ctx, uid)
 
 			imageTags := gin.H{}
 			if lib.PrimaryImageTag != nil {
@@ -564,8 +503,7 @@ func getItemDetail(c *gin.Context) {
 
 	// If this is a merged secondary, transparently serve the primary's data
 	// so the client gets the primary's metadata + aggregated MediaSources.
-	var mergedToID *string
-	state.DB.QueryRow(ctx, "SELECT merged_to_id::text FROM items WHERE id = $1::uuid", item.ID).Scan(&mergedToID)
+	mergedToID, _ := state.Repo.Playback.GetMergedPrimaryID(ctx, item.ID)
 	if mergedToID != nil && *mergedToID != "" {
 		primary, perr := models.GetItemByAnyID(ctx, state.DB, *mergedToID)
 		if perr == nil && primary != nil {
@@ -589,8 +527,7 @@ func getItemDetail(c *gin.Context) {
 	}
 
 	// 本地预告片(trailers/ 目录)→ 追加一条绝对地址 RemoteTrailers,Infuse 可"播放预告片"。
-	var localTrailer *string
-	state.DB.QueryRow(ctx, "SELECT local_trailer_path FROM items WHERE id = $1::uuid", item.ID).Scan(&localTrailer)
+	localTrailer, _ := state.Repo.Playback.GetLocalTrailerPath(ctx, item.ID)
 	if localTrailer != nil && *localTrailer != "" {
 		scheme := "http"
 		if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
@@ -632,11 +569,7 @@ func getItemDetail(c *gin.Context) {
 
 		// Top-level MediaStreams: if DB had no streams, try mediainfo fallback (matching Rust)
 		if base.MediaStreams == nil || len(base.MediaStreams) == 0 {
-			var miRaw []byte
-			err := state.DB.QueryRow(ctx,
-				`SELECT mediainfo->'MediaStreams' FROM media_versions
-				 WHERE item_id = $1::uuid AND mediainfo IS NOT NULL
-				 ORDER BY is_primary DESC LIMIT 1`, item.ID).Scan(&miRaw)
+			miRaw, err := state.Repo.Playback.GetPrimaryMediaStreamsJSON(ctx, item.ID)
 			if err == nil && len(miRaw) > 0 {
 				var miStreams []dto.MediaStreamInfo
 				if json.Unmarshal(miRaw, &miStreams) == nil && len(miStreams) > 0 {
@@ -666,14 +599,13 @@ func getSimilarItems(c *gin.Context) {
 		return
 	}
 
-	var libID string
-	err = state.DB.QueryRow(ctx, "SELECT library_id::text FROM items WHERE id = $1::uuid", *resolved).Scan(&libID)
-	if err != nil {
+	libID, err := state.Repo.Playback.GetItemLibraryID(ctx, *resolved)
+	if err != nil || libID == nil {
 		if models.PersonExists(ctx, state.DB, *resolved) {
 			c.JSON(http.StatusOK, gin.H{"Items": []dto.BaseItemDto{}, "TotalRecordCount": 0})
 			return
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == nil || errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 			return
 		}
@@ -681,26 +613,11 @@ func getSimilarItems(c *gin.Context) {
 		return
 	}
 
-	idRows, err := state.DB.Query(ctx,
-		`SELECT id::text FROM items WHERE library_id = $1::uuid AND id <> $2::uuid
-		 AND type IN ('Movie', 'Series', 'Episode', 'Video')
-		 ORDER BY RANDOM() LIMIT $3::bigint`,
-		libID, *resolved, limit)
+	ids, err := state.Repo.Playback.ListSimilarItemIDsByLibrary(ctx, *libID, *resolved, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	var ids []string
-	for idRows.Next() {
-		var id string
-		if err := idRows.Scan(&id); err != nil {
-			idRows.Close()
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
-		ids = append(ids, id)
-	}
-	idRows.Close()
 
 	var items []dto.ItemRow
 	for _, id := range ids {

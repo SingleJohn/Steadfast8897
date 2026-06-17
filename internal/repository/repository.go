@@ -15,6 +15,7 @@ type Repository struct {
 	ItemHelpers  *ItemHelperRepository
 	APIKeys      *APIKeyRepository
 	ImageLookup  *ImageLookupRepository
+	Playback     *PlaybackRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -31,5 +32,6 @@ func New(pool *pgxpool.Pool) *Repository {
 		ItemHelpers:  NewItemHelperRepository(pool),
 		APIKeys:      NewAPIKeyRepository(pool),
 		ImageLookup:  NewImageLookupRepository(pool),
+		Playback:     NewPlaybackRepository(pool),
 	}
 }

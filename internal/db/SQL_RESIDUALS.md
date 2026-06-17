@@ -21,6 +21,17 @@
 | `internal/services/tmdb_storage.go` | 保持无直接业务 SQL；保存模式辅助继续复用既有 repository |
 | `internal/handlers/emby_compat.go` | media stats、season episode check、library check、Series 查找改走 `ItemHelperRepository` / `UserRepository` |
 
+## migrated_in_phase_13
+
+这些路径在 Phase 13 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
+
+| 路径 | 迁移方式 |
+| --- | --- |
+| `internal/handlers/videos.go` | MediaVersions lookup/upsert、merged primary、stream/trailer/subtitle lookup、token lookup 改走 `PlaybackRepository` / `SessionRepository` |
+| `internal/handlers/library_detail.go` | 详情 extras、MediaSources、merged sources、library count、trailer、similar lookup 改走 `PlaybackRepository` |
+| `internal/handlers/compat_media.go` | Item/merged MediaSources 查询复用 `PlaybackRepository` |
+| `internal/handlers/compat_show.go` | season/episode id 列表、season number、episode count/pagination 改走 `PlaybackRepository` |
+
 ## migrated_in_phase_11
 
 这些路径在 Phase 11 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
@@ -41,7 +52,7 @@
 | 路径 | 保留原因 | 约束 |
 | --- | --- | --- |
 | `internal/models/item_query.go` | 主 item 查询 builder，包含筛选、排序、随机、统计估算 | 继续作为 item 动态查询集中点 |
-| `internal/handlers/compat_items.go`、`internal/handlers/compat_show.go` | Emby `/Items`、剧集兼容查询，参数组合多 | 保持 Emby 语义；新增字段先核对 CTE 投影 |
+| `internal/handlers/compat_items.go` | Emby `/Items` 查询，参数组合多 | 保持 Emby 语义；新增字段先核对 CTE 投影 |
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库维度、别名、封面与平台重算 | 维度和排序必须走白名单 |
 | `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
 | `internal/handlers/stats.go` | 统计页多条件聚合和排序 | 排序字段必须走白名单 |
@@ -50,7 +61,6 @@
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
 | `internal/services/scanner_*.go`、`internal/services/ingest_match.go`、`internal/services/incremental_scan.go` | 扫描、rename/delete、NFO、mixed/tv/movie ingest 主链路 | 不为清零 SQL 破坏扫描/ingest 语义；优先迁固定 helper |
 | `internal/services/backfill_*.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
-| `internal/handlers/library_detail.go`、`internal/handlers/videos.go`、`internal/handlers/compat_media.go` | 详情、播放、MediaSources fallback/多版本兼容 | 保持播放和 Emby 兼容语义优先 |
 
 ## allowed_infra
 

@@ -45,22 +45,14 @@ func getSeasons(c *gin.Context, state *AppState) {
 		}
 	}
 
-	rows, err := state.DB.Query(ctx,
-		`SELECT id FROM items WHERE parent_id = $1::uuid AND type = 'Season' ORDER BY index_number NULLS LAST, sort_name ASC`,
-		*suid)
+	seasonIDs, err := state.Repo.Playback.ListSeasonIDsForCompat(ctx, *suid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
 
 	var items []dto.BaseItemDto
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
+	for _, id := range seasonIDs {
 		row, err := models.GetItemByID(ctx, state.DB, id)
 		if err != nil || row == nil {
 			continue
@@ -97,10 +89,6 @@ func getSeasons(c *gin.Context, state *AppState) {
 		}
 		items = append(items, d)
 	}
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
 	applyUnplayedItemCounts(ctx, state.DB, userID, items)
 	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, int64(len(items)))})
 }
@@ -127,11 +115,9 @@ func getEpisodes(c *gin.Context, state *AppState) {
 			return
 		}
 		var parentSeriesID string
-		if err := state.DB.QueryRow(ctx,
-			`SELECT parent_id::text FROM items WHERE id = $1::uuid AND type = 'Season'`,
-			*sid,
-		).Scan(&parentSeriesID); err == nil && parentSeriesID != "" {
+		if parent, err := state.Repo.Playback.GetSeasonParentSeriesID(ctx, *sid); err == nil && parent != nil && *parent != "" {
 			resolvedSeasonID = *sid
+			parentSeriesID = *parent
 			suid = &parentSeriesID
 		}
 	}
@@ -171,53 +157,41 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		}
 	}
 
-	var countSQL, itemSQL string
 	var bindID string
+	var bySeason bool
 	if resolvedSeasonID != "" {
 		bindID = resolvedSeasonID
-		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
-		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
+		bySeason = true
 	} else if seasonNumQuery != "" {
 		seasonNum, perr := strconv.ParseInt(seasonNumQuery, 10, 32)
 		if perr != nil || seasonNum < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid Season"})
 			return
 		}
-		var seasonIDByNumber string
-		if err := state.DB.QueryRow(ctx,
-			`SELECT id::text FROM items
-			  WHERE parent_id = $1::uuid AND type = 'Season' AND index_number = $2
-			  LIMIT 1`,
-			*suid, int32(seasonNum),
-		).Scan(&seasonIDByNumber); err != nil {
+		seasonIDByNumber, err := state.Repo.Playback.FindSeasonIDByNumber(ctx, *suid, int32(seasonNum))
+		if err != nil || seasonIDByNumber == nil {
 			c.JSON(http.StatusOK, gin.H{"Items": []dto.BaseItemDto{}, "TotalRecordCount": 0})
 			return
 		}
-		bindID = seasonIDByNumber
-		countSQL = "SELECT COUNT(*) FROM items WHERE parent_id = $1::uuid AND type = 'Episode'"
-		itemSQL = `SELECT i.id FROM items i WHERE i.parent_id = $1::uuid AND i.type = 'Episode' ORDER BY i.index_number NULLS LAST, i.sort_name ASC, i.id ASC`
+		bindID = *seasonIDByNumber
+		bySeason = true
 	} else {
 		bindID = *suid
-		countSQL = "SELECT COUNT(*) FROM items WHERE series_id = $1::uuid AND type = 'Episode'"
-		itemSQL = `SELECT i.id FROM items i WHERE i.series_id = $1::uuid AND i.type = 'Episode' ORDER BY i.parent_index_number NULLS LAST, i.index_number NULLS LAST, i.id ASC`
 	}
 
 	var totalCount int64
-	_ = state.DB.QueryRow(ctx, countSQL, bindID).Scan(&totalCount)
-
-	if limit > 0 {
-		itemSQL += " LIMIT " + strconv.FormatInt(limit, 10)
+	var episodeIDs []string
+	if bySeason {
+		totalCount, _ = state.Repo.Playback.CountEpisodesBySeason(ctx, bindID)
+		episodeIDs, err = state.Repo.Playback.ListEpisodeIDsBySeason(ctx, bindID, limit, startIndex)
+	} else {
+		totalCount, _ = state.Repo.Playback.CountEpisodesBySeries(ctx, bindID)
+		episodeIDs, err = state.Repo.Playback.ListEpisodeIDsBySeries(ctx, bindID, limit, startIndex)
 	}
-	if startIndex > 0 {
-		itemSQL += " OFFSET " + strconv.FormatInt(startIndex, 10)
-	}
-
-	rows, qerr := state.DB.Query(ctx, itemSQL, bindID)
-	if qerr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": qerr.Error()})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
 
 	seriesRow, _ := models.GetItemByID(ctx, state.DB, *suid)
 	var seriesImageTag, seriesBackdropTag, seriesNameVal *string
@@ -228,12 +202,7 @@ func getEpisodes(c *gin.Context, state *AppState) {
 	}
 
 	var items []dto.BaseItemDto
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-			return
-		}
+	for _, id := range episodeIDs {
 		row, err := models.GetItemByID(ctx, state.DB, id)
 		if err != nil || row == nil {
 			continue
@@ -285,10 +254,6 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		}
 
 		items = append(items, d)
-	}
-	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
 	}
 	applySeasonNames(ctx, state.DB, items)
 	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, totalCount)})

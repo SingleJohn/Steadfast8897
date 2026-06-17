@@ -14,7 +14,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"fyms/internal/dto"
 	"fyms/internal/middleware"
@@ -64,30 +63,33 @@ type mediaVersionRow struct {
 }
 
 func loadMediaVersions(ctx context.Context, state *AppState, itemID string) ([]mediaVersionRow, error) {
-	rows, err := state.DB.Query(ctx,
-		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
-		        resolution, hdr_format, video_codec, audio_codec, source, quality_label
-		 FROM media_versions WHERE item_id = $1::uuid
-		 ORDER BY is_primary DESC, created_at ASC`,
-		itemID)
+	versions, err := state.Repo.Playback.ListMediaVersionsForItem(ctx, itemID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var versions []mediaVersionRow
-	for rows.Next() {
-		var v mediaVersionRow
-		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo,
-			&v.Resolution, &v.HDRFormat, &v.VideoCodec, &v.AudioCodec, &v.Source, &v.QualityLabel); err != nil {
-			return nil, err
-		}
-		versions = append(versions, v)
+	out := make([]mediaVersionRow, 0, len(versions))
+	for _, v := range versions {
+		out = append(out, mediaVersionRow{
+			ID:           v.UUID,
+			Name:         v.Name,
+			FilePath:     v.FilePath,
+			Container:    v.Container,
+			IsPrimary:    v.IsPrimary,
+			RuntimeTicks: v.RuntimeTicks,
+			Bitrate:      v.Bitrate,
+			Size:         v.Size,
+			MediaInfo:    v.MediaInfo,
+			Resolution:   v.Resolution,
+			HDRFormat:    v.HDRFormat,
+			VideoCodec:   v.VideoCodec,
+			AudioCodec:   v.AudioCodec,
+			Source:       v.Source,
+			QualityLabel: v.QualityLabel,
+			ChaptersJSON: v.ChaptersJSON,
+		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return versions, nil
+	return out, nil
 }
 
 func playbackJSONInt64(m map[string]interface{}, key string) *int64 {
@@ -107,6 +109,13 @@ func playbackJSONInt64(m map[string]interface{}, key string) *int64 {
 		return &i
 	}
 	return nil
+}
+
+func nonEmptyStringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func mediaSourceIDFromQuery(c *gin.Context) string {
@@ -281,29 +290,24 @@ func backfillMovieDirectoryMediaVersions(ctx context.Context, state *AppState, i
 
 		q, qLabel := services.ComputeMediaVersionQuality(filepath.Base(filePath), mi)
 
-		var mvID uuid.UUID
-		if err := state.DB.QueryRow(ctx,
-			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
-			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-			 ON CONFLICT (item_id, file_path) DO UPDATE SET
-			 	name = EXCLUDED.name,
-			 	container = EXCLUDED.container,
-			 	is_primary = EXCLUDED.is_primary,
-			 	mediainfo = COALESCE(EXCLUDED.mediainfo, media_versions.mediainfo),
-			 	runtime_ticks = COALESCE(EXCLUDED.runtime_ticks, media_versions.runtime_ticks),
-			 	bitrate = COALESCE(EXCLUDED.bitrate, media_versions.bitrate),
-			 	size = COALESCE(EXCLUDED.size, media_versions.size),
-			 	resolution = COALESCE(EXCLUDED.resolution, media_versions.resolution),
-			 	hdr_format = COALESCE(EXCLUDED.hdr_format, media_versions.hdr_format),
-			 	video_codec = COALESCE(EXCLUDED.video_codec, media_versions.video_codec),
-			 	audio_codec = COALESCE(EXCLUDED.audio_codec, media_versions.audio_codec),
-			 	source = COALESCE(EXCLUDED.source, media_versions.source),
-			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)
-			 RETURNING id`,
-			itemID, versionName, filePath, container, i == 0, mediaInfoValue, runtimeTicks, bitrate, size,
-			services.NullableStr(q.Resolution), services.NullableStr(q.HDRFormat), services.NullableStr(q.VideoCodec),
-			services.NullableStr(q.AudioCodec), services.NullableStr(q.Source), services.NullableStr(qLabel),
-		).Scan(&mvID); err != nil {
+		mvID, err := state.Repo.Playback.UpsertMediaVersion(ctx, repository.MediaVersionUpsert{
+			ItemID:       itemID,
+			Name:         versionName,
+			FilePath:     filePath,
+			Container:    container,
+			IsPrimary:    i == 0,
+			MediaInfo:    mediaInfoValue,
+			RuntimeTicks: runtimeTicks,
+			Bitrate:      bitrate,
+			Size:         size,
+			Resolution:   nonEmptyStringPtr(q.Resolution),
+			HDRFormat:    nonEmptyStringPtr(q.HDRFormat),
+			VideoCodec:   nonEmptyStringPtr(q.VideoCodec),
+			AudioCodec:   nonEmptyStringPtr(q.AudioCodec),
+			Source:       nonEmptyStringPtr(q.Source),
+			QualityLabel: nonEmptyStringPtr(qLabel),
+		})
+		if err != nil {
 			slog.Warn("playback backfill insert failed", "itemId", itemID, "filePath", filePath, "error", err)
 			return nil, err
 		}
@@ -333,8 +337,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 	}
 
 	// If this is a merged secondary, redirect to the primary item
-	var mergedToID *string
-	state.DB.QueryRow(ctx, "SELECT merged_to_id::text FROM items WHERE id = $1::uuid", *uid).Scan(&mergedToID)
+	mergedToID, _ := state.Repo.Playback.GetMergedPrimaryID(ctx, *uid)
 	if mergedToID != nil && *mergedToID != "" {
 		primary, perr := models.GetItemByID(ctx, state.DB, *mergedToID)
 		if perr == nil && primary != nil {
@@ -543,13 +546,11 @@ func resolveStreamUser(ctx context.Context, state *AppState, c *gin.Context) str
 		}
 		return ""
 	}
-	var userID string
-	err := state.DB.QueryRow(ctx,
-		"SELECT user_id::text FROM access_tokens WHERE token = $1", token).Scan(&userID)
-	if err != nil {
+	tok, err := state.Repo.Sessions.GetAccessToken(ctx, token)
+	if err != nil || tok == nil {
 		return ""
 	}
-	return userID
+	return tok.UserID.String()
 }
 
 type resolvedPath struct {
@@ -644,11 +645,8 @@ func streamVideo(c *gin.Context, state *AppState) {
 	var filePath string
 	if msid != "" {
 		// Match Rust: query by id only, without item_id constraint
-		var fp string
-		err := state.DB.QueryRow(ctx,
-			`SELECT file_path FROM media_versions WHERE id = $1::uuid`,
-			msid).Scan(&fp)
-		if err == pgx.ErrNoRows {
+		fp, err := state.Repo.Playback.GetMediaVersionFilePath(ctx, msid)
+		if err == nil && fp == nil {
 			slog.Warn("[Stream] media_versions not found", "msid", msid, "itemId", itemID)
 			c.JSON(http.StatusNotFound, gin.H{"message": "Media source not found"})
 			return
@@ -658,13 +656,11 @@ func streamVideo(c *gin.Context, state *AppState) {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
-		filePath = fp
-		slog.Info("[Stream] resolved media_version", "msid", msid, "path", fp)
+		filePath = *fp
+		slog.Info("[Stream] resolved media_version", "msid", msid, "path", filePath)
 	} else {
-		err := state.DB.QueryRow(ctx,
-			`SELECT file_path FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC LIMIT 1`,
-			*uid).Scan(&filePath)
-		if err == pgx.ErrNoRows {
+		fp, err := state.Repo.Playback.GetPrimaryMediaVersionFilePath(ctx, *uid)
+		if err == nil && fp == nil {
 			var row *dto.ItemRow
 			row, err = models.GetItemByID(ctx, state.DB, *uid)
 			if err != nil || row == nil || row.FilePath == nil || *row.FilePath == "" {
@@ -677,6 +673,8 @@ func streamVideo(c *gin.Context, state *AppState) {
 			slog.Error("[Stream] DB error", "itemId", itemID, "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
+		} else {
+			filePath = *fp
 		}
 	}
 
@@ -782,10 +780,8 @@ func streamTrailer(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid item id"})
 		return
 	}
-	var trailerPath *string
-	if err := state.DB.QueryRow(ctx,
-		"SELECT local_trailer_path FROM items WHERE id = $1::uuid", *uid).Scan(&trailerPath); err != nil ||
-		trailerPath == nil || *trailerPath == "" {
+	trailerPath, err := state.Repo.Playback.GetLocalTrailerPath(ctx, *uid)
+	if err != nil || trailerPath == nil || *trailerPath == "" {
 		c.JSON(http.StatusNotFound, gin.H{"message": "No local trailer"})
 		return
 	}
@@ -837,21 +833,15 @@ func streamSubtitle(c *gin.Context, state *AppState) {
 }
 
 func loadEmbeddedStreamsForMediaVersion(ctx context.Context, state *AppState, mediaSourceID string) ([]dto.MediaStreamInfo, error) {
-	var itemID string
-	var mediaInfo []byte
-	err := state.DB.QueryRow(ctx,
-		`SELECT item_id::text, mediainfo
-		   FROM media_versions
-		  WHERE id = $1::uuid`,
-		mediaSourceID).Scan(&itemID, &mediaInfo)
+	info, err := state.Repo.Playback.GetMediaVersionItemAndInfo(ctx, mediaSourceID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return []dto.MediaStreamInfo{}, nil
-		}
 		return nil, err
 	}
+	if info == nil {
+		return []dto.MediaStreamInfo{}, nil
+	}
 
-	streamRows, err := models.GetMediaStreams(ctx, state.DB, itemID)
+	streamRows, err := state.Repo.Playback.ListMediaStreamsForItem(ctx, info.ItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -859,9 +849,9 @@ func loadEmbeddedStreamsForMediaVersion(ctx context.Context, state *AppState, me
 	for i := range streamRows {
 		streams = append(streams, dto.FormatMediaStreamDto(&streamRows[i]))
 	}
-	if len(mediaInfo) > 0 {
+	if len(info.MediaInfo) > 0 {
 		var mi map[string]json.RawMessage
-		if json.Unmarshal(mediaInfo, &mi) == nil {
+		if json.Unmarshal(info.MediaInfo, &mi) == nil {
 			if msRaw, ok := mi["MediaStreams"]; ok {
 				var miStreams []dto.MediaStreamInfo
 				if json.Unmarshal(msRaw, &miStreams) == nil && len(miStreams) > 0 {
@@ -885,23 +875,9 @@ func serveSubtitleFile(c *gin.Context, filePath string) {
 // collectMergedPlaybackSources finds media_versions from items that have been
 // merged into the given primary item and returns them as additional MediaSources.
 func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
-	sibRows, err := state.DB.Query(ctx,
-		`SELECT s.id::text, l.name AS lib_name
-		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, primaryID)
+	siblings, err := state.Repo.Playback.ListMergedSiblingItems(ctx, primaryID)
 	if err != nil {
 		return nil
-	}
-	defer sibRows.Close()
-
-	type sibInfo struct{ ID, LibName string }
-	var siblings []sibInfo
-	for sibRows.Next() {
-		var si sibInfo
-		if err := sibRows.Scan(&si.ID, &si.LibName); err != nil {
-			continue
-		}
-		siblings = append(siblings, si)
 	}
 	if len(siblings) == 0 {
 		return nil
@@ -909,17 +885,11 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
-		mvRows, err := state.DB.Query(ctx,
-			`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo
-			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC`, sib.ID)
+		versions, err := loadMediaVersions(ctx, state, sib.ID)
 		if err != nil {
 			continue
 		}
-		for mvRows.Next() {
-			var mv mediaVersionRow
-			if err := mvRows.Scan(&mv.ID, &mv.Name, &mv.FilePath, &mv.Container, &mv.IsPrimary, &mv.RuntimeTicks, &mv.Bitrate, &mv.Size, &mv.MediaInfo); err != nil {
-				continue
-			}
+		for _, mv := range versions {
 			msid := mv.ID.String()
 			actualPath := mv.FilePath
 			actualContainer := ""
@@ -992,7 +962,6 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 			applyMediaSourceCompatDefaults(&src, primaryID)
 			merged = append(merged, src)
 		}
-		mvRows.Close()
 	}
 	return merged
 }

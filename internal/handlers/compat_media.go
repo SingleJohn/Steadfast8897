@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"fyms/internal/dto"
-	"fyms/internal/models"
 )
 
 func hideMediaSourceSizeForInfuse(c *gin.Context, sources []dto.MediaSourceInfo) {
@@ -59,24 +58,9 @@ func applyMediaSourceCompatDefaults(src *dto.MediaSourceInfo, itemID string) {
 }
 
 func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) []dto.MediaSourceInfo {
-	rows, err := state.DB.Query(ctx,
-		`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
-		        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
-		 FROM media_versions WHERE item_id = $1::uuid
-		 ORDER BY is_primary DESC, created_at ASC`, itemID)
+	versions, err := loadMediaVersions(ctx, state, itemID)
 	if err != nil {
 		return nil
-	}
-	defer rows.Close()
-
-	var versions []mediaVersionRow
-	for rows.Next() {
-		var v mediaVersionRow
-		if err := rows.Scan(&v.ID, &v.Name, &v.FilePath, &v.Container, &v.IsPrimary, &v.RuntimeTicks, &v.Bitrate, &v.Size, &v.MediaInfo,
-			&v.Resolution, &v.HDRFormat, &v.VideoCodec, &v.AudioCodec, &v.Source, &v.QualityLabel, &v.ChaptersJSON); err != nil {
-			continue
-		}
-		versions = append(versions, v)
 	}
 
 	if len(versions) == 0 && item.FilePath != nil && *item.FilePath != "" {
@@ -90,7 +74,7 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 		})
 	}
 
-	streamRows, _ := models.GetMediaStreams(ctx, state.DB, itemID)
+	streamRows, _ := state.Repo.Playback.ListMediaStreamsForItem(ctx, itemID)
 	baseStreams := make([]dto.MediaStreamInfo, 0, len(streamRows))
 	for i := range streamRows {
 		baseStreams = append(baseStreams, dto.FormatMediaStreamDto(&streamRows[i]))
@@ -190,23 +174,9 @@ func buildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 // collectMergedVersionSources finds items merged into itemID (via merged_to_id)
 // and returns their media_versions as additional MediaSourceInfo entries.
 func collectMergedVersionSources(ctx context.Context, state *AppState, itemID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
-	sibRows, err := state.DB.Query(ctx,
-		`SELECT s.id::text, l.name AS lib_name
-		 FROM items s JOIN libraries l ON s.library_id = l.id
-		 WHERE s.merged_to_id = $1::uuid AND l.deleted_at IS NULL`, itemID)
+	siblings, err := state.Repo.Playback.ListMergedSiblingItems(ctx, itemID)
 	if err != nil {
 		return nil
-	}
-	defer sibRows.Close()
-
-	type sibInfo struct{ ID, LibName string }
-	var siblings []sibInfo
-	for sibRows.Next() {
-		var si sibInfo
-		if err := sibRows.Scan(&si.ID, &si.LibName); err != nil {
-			continue
-		}
-		siblings = append(siblings, si)
 	}
 	if len(siblings) == 0 {
 		return nil
@@ -214,19 +184,11 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
-		mvRows, err := state.DB.Query(ctx,
-			`SELECT id, name, file_path, container, is_primary, runtime_ticks, bitrate, size, mediainfo,
-			        resolution, hdr_format, video_codec, audio_codec, source, quality_label, chapters
-			 FROM media_versions WHERE item_id = $1::uuid ORDER BY is_primary DESC, created_at ASC`, sib.ID)
+		versions, err := loadMediaVersions(ctx, state, sib.ID)
 		if err != nil {
 			continue
 		}
-		for mvRows.Next() {
-			var mv mediaVersionRow
-			if err := mvRows.Scan(&mv.ID, &mv.Name, &mv.FilePath, &mv.Container, &mv.IsPrimary, &mv.RuntimeTicks, &mv.Bitrate, &mv.Size, &mv.MediaInfo,
-				&mv.Resolution, &mv.HDRFormat, &mv.VideoCodec, &mv.AudioCodec, &mv.Source, &mv.QualityLabel, &mv.ChaptersJSON); err != nil {
-				continue
-			}
+		for _, mv := range versions {
 			msid := mv.ID.String()
 			actualPath := mv.FilePath
 			actualContainer := ""
@@ -296,7 +258,6 @@ func collectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 			applyMediaSourceCompatDefaults(&src, itemID)
 			merged = append(merged, src)
 		}
-		mvRows.Close()
 	}
 	return merged
 }
