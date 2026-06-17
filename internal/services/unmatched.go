@@ -2,13 +2,13 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,51 +37,27 @@ type UnmatchedItem struct {
 // 有 identify 任务待重试(next_run_at > NOW)的 item。按重试时间/扫描时间降序。
 // itemTypeFilter 为空则不过滤类型,否则要求大小写完全匹配(Movie/Series)。
 func ListUnmatchedItems(ctx context.Context, pool *pgxpool.Pool, itemTypeFilter string, limit int) ([]UnmatchedItem, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-
-	var args []any
-	where := `WHERE (i.platform_scan_status = 'unidentified' OR (sq.next_run_at IS NOT NULL AND sq.next_run_at > NOW()))`
-	if strings.TrimSpace(itemTypeFilter) != "" {
-		args = append(args, itemTypeFilter)
-		where += fmt.Sprintf(" AND i.type = $%d", len(args))
-	}
-	args = append(args, limit)
-	limitPlaceholder := fmt.Sprintf("$%d", len(args))
-
-	query := fmt.Sprintf(`
-		SELECT i.id::text, i.name, i.type, i.production_year, i.file_path, i.tmdb_id,
-		       COALESCE(i.platform_scan_status, ''), i.platform_scan_error,
-		       i.platform_scanned_at, sq.next_run_at
-		  FROM items i
-		  LEFT JOIN scrape_queue sq
-		    ON sq.item_id = i.id
-		   AND sq.task_type = 'identify'
-		   AND sq.status IN ('pending', 'running', 'failed')
-		  %s
-		  ORDER BY COALESCE(sq.next_run_at, i.platform_scanned_at) DESC NULLS LAST
-		  LIMIT %s`, where, limitPlaceholder)
-
-	rows, err := pool.Query(ctx, query, args...)
+	rows, err := repository.NewBackgroundTaskRepository(pool).ListUnmatchedItems(ctx, itemTypeFilter, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var items []UnmatchedItem
-	ids := make([]string, 0)
-	for rows.Next() {
-		var it UnmatchedItem
-		if err := rows.Scan(&it.ID, &it.Name, &it.Type, &it.ProductionYear, &it.FilePath, &it.TmdbID,
-			&it.ScanStatus, &it.ScanError, &it.ScannedAt, &it.NextRetryAt); err != nil {
-			return nil, err
-		}
-		items = append(items, it)
-		ids = append(ids, it.ID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	items := make([]UnmatchedItem, 0, len(rows))
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, UnmatchedItem{
+			ID:             row.ID,
+			Name:           row.Name,
+			Type:           row.Type,
+			ProductionYear: row.ProductionYear,
+			FilePath:       row.FilePath,
+			TmdbID:         row.TmdbID,
+			ScanStatus:     row.ScanStatus,
+			ScanError:      row.ScanError,
+			ScannedAt:      row.ScannedAt,
+			NextRetryAt:    row.NextRetryAt,
+		})
+		ids = append(ids, row.ID)
 	}
 	if len(items) == 0 {
 		return items, nil
@@ -100,38 +76,7 @@ func ListUnmatchedItems(ctx context.Context, pool *pgxpool.Pool, itemTypeFilter 
 
 // listIdentifyCandidatesBatch 为多个 item 一次查出各自 topN 候选。用窗口函数避免 N+1 查询。
 func listIdentifyCandidatesBatch(ctx context.Context, pool *pgxpool.Pool, itemIDs []string, topN int) (map[string][]identifyCandidateRecord, error) {
-	if len(itemIDs) == 0 || topN <= 0 {
-		return map[string][]identifyCandidateRecord{}, nil
-	}
-	rows, err := pool.Query(ctx, `
-		SELECT id::text, item_id::text, provider, external_id, COALESCE(title, ''),
-		       year, COALESCE(poster_url, ''), COALESCE(score, 0), payload, created_at
-		  FROM (
-		      SELECT *,
-		             ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY score DESC, created_at DESC) AS rn
-		        FROM identify_candidates
-		       WHERE item_id = ANY($1::uuid[])
-		  ) t
-		 WHERE rn <= $2`, itemIDs, topN)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[string][]identifyCandidateRecord, len(itemIDs))
-	for rows.Next() {
-		var rec identifyCandidateRecord
-		var payload []byte
-		if err := rows.Scan(&rec.ID, &rec.ItemID, &rec.Provider, &rec.ExternalID, &rec.Title,
-			&rec.Year, &rec.PosterURL, &rec.Score, &payload, &rec.CreatedAt); err != nil {
-			return nil, err
-		}
-		if len(payload) > 0 {
-			_ = json.Unmarshal(payload, &rec.Payload)
-		}
-		out[rec.ItemID] = append(out[rec.ItemID], rec)
-	}
-	return out, rows.Err()
+	return repository.NewBackgroundTaskRepository(pool).ListIdentifyCandidatesBatch(ctx, itemIDs, topN)
 }
 
 // ResolveIdentifyCandidate 把一条候选反解为 "采纳时应使用的 (provider, externalID)"。
@@ -301,8 +246,8 @@ func fetchCandidateDetails(ctx context.Context, pool *pgxpool.Pool, cand *identi
 }
 
 func loadItemMediaType(ctx context.Context, pool *pgxpool.Pool, itemID string) (scraper.MediaType, error) {
-	var itemType string
-	if err := pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType); err != nil {
+	itemType, err := repository.NewBackgroundTaskRepository(pool).GetItemMediaType(ctx, itemID)
+	if err != nil {
 		return "", err
 	}
 	switch itemType {
@@ -319,8 +264,8 @@ func loadItemMediaType(ctx context.Context, pool *pgxpool.Pool, itemID string) (
 // 按 item.type 分流到 SearchMovieMulti/SearchTVMulti;命中失败返回 0。
 // 只在 imdb 映射失败后调用,避免无谓消耗 TMDB 配额。
 func searchTMDBByTitle(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, itemID, title string, year *int32) int64 {
-	var itemType string
-	if err := pool.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&itemType); err != nil {
+	itemType, itemErr := repository.NewBackgroundTaskRepository(pool).GetItemMediaType(ctx, itemID)
+	if itemErr != nil {
 		return 0
 	}
 	var results []map[string]any

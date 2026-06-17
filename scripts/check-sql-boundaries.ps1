@@ -16,6 +16,8 @@ $allowedFiles = @(
     "main.go",
     "internal/database/database.go",
     "internal/repository/display_order_repository.go",
+    "internal/repository/background_task_repository.go",
+    "internal/repository/notify_repository.go",
     "internal/gateway/store.go",
     "internal/gateway/source_server.go",
     "internal/handlers/backfill.go",
@@ -39,17 +41,9 @@ $allowedFiles = @(
     "internal/models/person.go",
     "internal/models/person_admin.go",
     "internal/models/platform.go",
-    "internal/services/backfill_actor_images.go",
-    "internal/services/backfill_episode_image.go",
-    "internal/services/backfill_episode_name.go",
-    "internal/services/backfill_media_quality.go",
     "internal/services/coverart/fetch.go",
     "internal/services/gap_scan.go",
     "internal/services/item_delete_plan.go",
-    "internal/services/notify.go",
-    "internal/services/notify_sweeper.go",
-    "internal/services/probe_on_play.go",
-    "internal/services/probe_task.go",
     "internal/services/progress_buffer.go",
     "internal/services/redirect_bitrate.go",
     "internal/services/refresh_scheduler.go",
@@ -57,10 +51,7 @@ $allowedFiles = @(
     "internal/services/scanner_movie.go",
     "internal/services/scanner_nfo.go",
     "internal/services/scanner_tv.go",
-    "internal/services/scrape_config.go",
-    "internal/services/tmdb_identify.go",
-    "internal/services/tmdb_utils.go",
-    "internal/services/unmatched.go"
+    "internal/services/scrape_config.go"
 )
 
 $allowed = @{}

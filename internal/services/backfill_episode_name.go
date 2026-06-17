@@ -6,6 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // 脏特征正则 —— 用于 "当前标题很可能是文件名污染" 的判定。
@@ -31,6 +33,7 @@ const dirtyEpisodeNameWhere = `
 // runEpisodeNameBackfill(Phase 2 改造版):
 //  1. 清洗脏标题(纯 DB 操作,保持原逻辑)
 //  2. 聚合 DISTINCT series_id → EnqueueBatch 到 scrape_queue,worker 异步调 TMDB。
+//
 // Progress 语义:Total=清洗计数 + 入队 series 数,Processed=已入队。
 func (t *BackfillTask) runEpisodeNameBackfill(ctx context.Context, pool *pgxpool.Pool) error {
 	// Step 1:清洗脏标题为占位符。
@@ -75,10 +78,9 @@ func (t *BackfillTask) runEpisodeNameBackfill(ctx context.Context, pool *pgxpool
 // cleanDirtyEpisodeNames 批量把脏标题改为 "Episode N" / "Special N" 占位符,
 // 返回受影响的 series_id 集合。
 func cleanDirtyEpisodeNames(ctx context.Context, pool *pgxpool.Pool, t *BackfillTask) (map[string]struct{}, int64, error) {
-	var total int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items e WHERE `+dirtyEpisodeNameWhere,
-	).Scan(&total); err != nil {
+	repo := repository.NewBackgroundTaskRepository(pool)
+	total, err := repo.CountDirtyEpisodeNames(ctx)
+	if err != nil {
 		return nil, 0, err
 	}
 	if total == 0 {
@@ -93,33 +95,10 @@ func cleanDirtyEpisodeNames(ctx context.Context, pool *pgxpool.Pool, t *Backfill
 		if t.shouldStop() {
 			return seriesIDs, processed, nil
 		}
-		rows, err := pool.Query(ctx,
-			`SELECT e.id::text, e.index_number, se.index_number, e.series_id::text
-			 FROM items e
-			 LEFT JOIN items se ON se.id = e.season_id
-			 WHERE `+dirtyEpisodeNameWhere+`
-			   AND e.id::text > $1
-			 ORDER BY e.id
-			 LIMIT $2`,
-			lastID, batchSize)
+		batch, err := repo.ListDirtyEpisodeNameBatch(ctx, lastID, batchSize)
 		if err != nil {
 			return nil, processed, err
 		}
-		type row struct {
-			id        string
-			epNum     int32
-			seasonNum *int32
-			seriesID  *string
-		}
-		var batch []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.id, &r.epNum, &r.seasonNum, &r.seriesID); err != nil {
-				continue
-			}
-			batch = append(batch, r)
-		}
-		rows.Close()
 		if len(batch) == 0 {
 			break
 		}
@@ -127,18 +106,16 @@ func cleanDirtyEpisodeNames(ctx context.Context, pool *pgxpool.Pool, t *Backfill
 			if t.shouldStop() {
 				return seriesIDs, processed, nil
 			}
-			newName := fmt.Sprintf("Episode %d", r.epNum)
-			if r.seasonNum != nil && *r.seasonNum == 0 {
-				newName = fmt.Sprintf("Special %d", r.epNum)
+			newName := fmt.Sprintf("Episode %d", r.EpNum)
+			if r.SeasonNum != nil && *r.SeasonNum == 0 {
+				newName = fmt.Sprintf("Special %d", r.EpNum)
 			}
-			_, _ = pool.Exec(ctx,
-				"UPDATE items SET name = $1, updated_at = NOW() WHERE id = $2::uuid",
-				newName, r.id)
-			if r.seriesID != nil && *r.seriesID != "" {
-				seriesIDs[*r.seriesID] = struct{}{}
+			_ = repo.RenameEpisode(ctx, r.ID, newName)
+			if r.SeriesID != nil && *r.SeriesID != "" {
+				seriesIDs[*r.SeriesID] = struct{}{}
 			}
 			processed++
-			lastID = r.id
+			lastID = r.ID
 		}
 	}
 	return seriesIDs, processed, nil
@@ -147,11 +124,8 @@ func cleanDirtyEpisodeNames(ctx context.Context, pool *pgxpool.Pool, t *Backfill
 // processBackfillEpisodeNameTask 由 ScrapeWorker 调用:用 series 的 tmdb_id 调 TMDB
 // 拉 season.episodes 覆盖占位符标题。没有 tmdb_id 的直接 done(等识别完成后再次入队即可)。
 func processBackfillEpisodeNameTask(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seriesID string) error {
-	var tmdbID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Series'",
-		seriesID,
-	).Scan(&tmdbID); err != nil {
+	tmdbID, err := repository.NewScanIngestRepository(pool).GetItemTMDBIDByType(ctx, seriesID, "Series")
+	if err != nil {
 		return err
 	}
 	if tmdbID == nil || *tmdbID <= 0 {

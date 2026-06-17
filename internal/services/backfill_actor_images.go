@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 // processBackfillActorImagesTask 给 Series / Movie 补演员头像 URL。
@@ -24,50 +25,41 @@ import (
 // 只更新 image_url IS NULL 或空串的行,不覆盖用户已手动设置的头像。
 // TMDB 接口单次调用即可(已带 append_to_response=credits),无 N+1 请求。
 func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, itemID string) error {
-	var itemType string
-	var tmdbID *int64
-	err := pool.QueryRow(ctx,
-		"SELECT type, tmdb_id FROM items WHERE id = $1::uuid",
-		itemID,
-	).Scan(&itemType, &tmdbID)
+	repo := repository.NewBackgroundTaskRepository(pool)
+	meta, err := repo.GetCastImageBackfillMeta(ctx, itemID)
 	if err != nil {
 		return err
 	}
-	if tmdbID == nil || *tmdbID <= 0 {
+	if meta.TmdbID == nil || *meta.TmdbID <= 0 {
 		// 没有 tmdb_id 就没地方补,静默完成
 		return nil
 	}
 
 	// 先看有没有需要补的 —— 全表都填齐了就直接跳过,省一次 TMDB 调用。
-	var missing int
-	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM cast_members
-		  WHERE item_id = $1::uuid
-		    AND (image_url IS NULL OR image_url = '')`,
-		itemID,
-	).Scan(&missing); err != nil {
+	missing, err := repo.CountMissingCastImages(ctx, itemID)
+	if err != nil {
 		return err
 	}
 	if missing == 0 {
 		slog.Debug("[Backfill-ActorImg] all cast have image_url, skip",
-			"item_id", itemID, "type", itemType)
+			"item_id", itemID, "type", meta.ItemType)
 		return nil
 	}
 
 	var details map[string]interface{}
-	switch itemType {
+	switch meta.ItemType {
 	case "Movie":
-		details, err = client.GetMovieDetails(ctx, *tmdbID)
+		details, err = client.GetMovieDetails(ctx, *meta.TmdbID)
 	case "Series":
-		details, err = client.GetTVDetails(ctx, *tmdbID)
+		details, err = client.GetTVDetails(ctx, *meta.TmdbID)
 	default:
-		return fmt.Errorf("cannot backfill actors for type: %s", itemType)
+		return fmt.Errorf("cannot backfill actors for type: %s", meta.ItemType)
 	}
 	if err != nil {
 		return err
 	}
 	if details == nil {
-		return fmt.Errorf("tmdb details empty for %s tmdb_id=%d", itemType, *tmdbID)
+		return fmt.Errorf("tmdb details empty for %s tmdb_id=%d", meta.ItemType, *meta.TmdbID)
 	}
 
 	credits, _ := details["credits"].(map[string]interface{})
@@ -108,29 +100,10 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 		}
 	}
 
-	rows, err := pool.Query(ctx,
-		`SELECT id::text, name, tmdb_id, person_id::text
-		   FROM cast_members
-		  WHERE item_id = $1::uuid
-		    AND (image_url IS NULL OR image_url = '')`,
-		itemID)
+	targets, err := repo.ListMissingCastImageTargets(ctx, itemID)
 	if err != nil {
 		return err
 	}
-	type castRow struct {
-		id       string
-		name     string
-		tmdbID   *int32
-		personID *string
-	}
-	var targets []castRow
-	for rows.Next() {
-		var r castRow
-		if err := rows.Scan(&r.id, &r.name, &r.tmdbID, &r.personID); err == nil {
-			targets = append(targets, r)
-		}
-	}
-	rows.Close()
 
 	// 按名头像源(本地头像库/外部源)用于 TMDB 未命中的演员(尤其番号/JAV)。
 	aicfg := LoadActorImageConfig(ctx, pool)
@@ -139,32 +112,29 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 	var updated, byNameFill, unmatched int
 	for _, r := range targets {
 		var url string
-		if r.tmdbID != nil {
-			if e, ok := byID[*r.tmdbID]; ok {
+		if r.TmdbID != nil {
+			if e, ok := byID[*r.TmdbID]; ok {
 				url = e.imageURL
 			}
 		}
 		if url == "" {
-			if e, ok := byName[strings.ToLower(strings.TrimSpace(r.name))]; ok {
+			if e, ok := byName[strings.ToLower(strings.TrimSpace(r.Name))]; ok {
 				url = e.imageURL
 			}
 		}
 		if url != "" {
-			if _, err := pool.Exec(ctx,
-				`UPDATE cast_members SET image_url = $1
-				  WHERE id = $2::uuid AND (image_url IS NULL OR image_url = '')`,
-				url, r.id); err != nil {
+			if err := repo.FillCastImageIfEmpty(ctx, r.ID, url); err != nil {
 				slog.Warn("[Backfill-ActorImg] update cast_member failed",
-					"cast_id", r.id, "error", err)
+					"cast_id", r.ID, "error", err)
 				continue
 			}
 			updated++
 			continue
 		}
 		// TMDB 没命中 → 试按名源,直接补到全局 persons(全库同名生效)。
-		if nameSourceOn && r.personID != nil {
-			if avatar := resolveActorAvatarByName(aicfg, r.name); avatar != "" {
-				if ok, err := models.FillPersonImageIfUnlocked(ctx, pool, *r.personID, avatar); err == nil && ok {
+		if nameSourceOn && r.PersonID != nil {
+			if avatar := resolveActorAvatarByName(aicfg, r.Name); avatar != "" {
+				if ok, err := models.FillPersonImageIfUnlocked(ctx, pool, *r.PersonID, avatar); err == nil && ok {
 					byNameFill++
 					continue
 				}
@@ -179,7 +149,7 @@ func processBackfillActorImagesTask(ctx context.Context, pool *pgxpool.Pool, cli
 	}
 
 	slog.Info("[Backfill-ActorImg] done",
-		"item_id", itemID, "type", itemType, "tmdb_id", *tmdbID,
+		"item_id", itemID, "type", meta.ItemType, "tmdb_id", *meta.TmdbID,
 		"targets", len(targets), "updated", updated, "by_name_fill", byNameFill,
 		"unmatched", unmatched, "tmdb_cast_with_profile", len(byID))
 	return nil

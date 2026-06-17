@@ -8,31 +8,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 )
 
-type externalIDRecord struct {
-	Provider string
-	Value    string
-}
+type externalIDRecord = repository.ExternalIDRecord
 
-type identifyCandidateRecord struct {
-	ID         string                 `json:"id"`
-	ItemID     string                 `json:"item_id"`
-	Provider   string                 `json:"provider"`
-	ExternalID string                 `json:"external_id"`
-	Title      string                 `json:"title"`
-	Year       *int32                 `json:"year,omitempty"`
-	PosterURL  string                 `json:"poster_url"`
-	Score      float64                `json:"score"`
-	Payload    map[string]interface{} `json:"payload,omitempty"`
-	CreatedAt  time.Time              `json:"created_at"`
-}
+type identifyCandidateRecord = repository.IdentifyCandidateRow
 
 type identifyFailureDetail struct {
 	Stage                  string                           `json:"stage"`
@@ -90,63 +75,17 @@ type identifyFailureCandidateRecord struct {
 	Certifications []string          `json:"certifications,omitempty"`
 }
 
-type scrapeItemMeta struct {
-	ItemType    string
-	Name        string
-	Year        *int32
-	TmdbID      *int32
-	ImdbID      *string
-	FilePath    *string
-	LibraryID   string // 用于 per-library 刮削配置
-	ExternalIDs map[string]string
-}
+type scrapeItemMeta = repository.ScrapeItemMeta
 
 func loadScrapeItemMeta(ctx context.Context, pool *pgxpool.Pool, itemID string) (*scrapeItemMeta, error) {
-	meta := &scrapeItemMeta{ExternalIDs: map[string]string{}}
-	var providerIDsRaw []byte
-	err := pool.QueryRow(ctx,
-		"SELECT type, name, production_year, tmdb_id, imdb_id, file_path, library_id::text, provider_ids FROM items WHERE id = $1::uuid", itemID,
-	).Scan(&meta.ItemType, &meta.Name, &meta.Year, &meta.TmdbID, &meta.ImdbID, &meta.FilePath, &meta.LibraryID, &providerIDsRaw)
-	if err == pgx.ErrNoRows {
-		return nil, fmt.Errorf("item not found")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query item: %w", err)
-	}
-	mergeProviderIDs(meta.ExternalIDs, providerIDsRaw)
-
-	rows, err := pool.Query(ctx,
-		"SELECT provider, external_id FROM item_external_ids WHERE item_id = $1::uuid",
-		itemID)
-	if err != nil {
-		return nil, fmt.Errorf("query item external ids: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var provider, externalID string
-		if err := rows.Scan(&provider, &externalID); err != nil {
-			return nil, fmt.Errorf("scan item external ids: %w", err)
-		}
-		provider = strings.ToLower(strings.TrimSpace(provider))
-		externalID = strings.TrimSpace(externalID)
-		if provider != "" && externalID != "" {
-			meta.ExternalIDs[provider] = externalID
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate item external ids: %w", err)
-	}
-	return meta, nil
+	return repository.NewBackgroundTaskRepository(pool).LoadScrapeItemMeta(ctx, itemID)
 }
 
 // tmdbSetIdentifyAttempted 记录"尝试识别过一次"(不区分成功/失败)。
 // Phase 5 前这里还会同时设置 identify_cooldown_until 做整块冷却,现在冷却语义
 // 由 scrape_queue.next_run_at + 指数退避接管,attempted_at 仅作诊断/审计。
 func tmdbSetIdentifyAttempted(ctx context.Context, pool *pgxpool.Pool, itemID string) {
-	_, err := pool.Exec(ctx,
-		"UPDATE items SET identify_attempted_at = NOW() WHERE id = $1::uuid",
-		itemID)
-	if err != nil {
+	if err := repository.NewBackgroundTaskRepository(pool).MarkIdentifyAttempted(ctx, itemID); err != nil {
 		slog.Debug("[TMDB] set identify_attempted_at failed", "item_id", itemID, "error", err)
 	}
 }
@@ -366,48 +305,13 @@ func upsertExternalIDs(ctx context.Context, pool *pgxpool.Pool, itemID string, i
 	if pool == nil || len(ids) == 0 {
 		return
 	}
-	seen := make(map[string]struct{}, len(ids))
-	providerMap := make(map[string]string, len(ids))
-	for _, rec := range ids {
-		provider := strings.ToLower(strings.TrimSpace(rec.Provider))
-		value := strings.TrimSpace(rec.Value)
-		if provider == "" || value == "" {
-			continue
-		}
-		if _, ok := seen[provider]; ok {
-			continue
-		}
-		seen[provider] = struct{}{}
-		providerMap[provider] = value
-		_, err := pool.Exec(ctx,
-			`INSERT INTO item_external_ids (item_id, provider, external_id, updated_at)
-			 VALUES ($1::uuid, $2, $3, NOW())
-			 ON CONFLICT (item_id, provider)
-			 DO UPDATE SET external_id = EXCLUDED.external_id,
-			               updated_at = EXCLUDED.updated_at`,
-			itemID, provider, value)
-		if err != nil {
-			slog.Warn("[Scraper] upsert item_external_ids failed", "item_id", itemID, "provider", provider, "error", err)
-			continue
-		}
-	}
-	if len(providerMap) == 0 {
-		return
-	}
-	if raw, err := json.Marshal(providerMap); err == nil {
-		_, err = pool.Exec(ctx,
-			"UPDATE items SET provider_ids = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
-			string(raw), itemID)
-		if err != nil {
-			slog.Warn("[Scraper] update provider_ids failed", "item_id", itemID, "error", err)
-		}
+	if err := repository.NewBackgroundTaskRepository(pool).UpsertExternalIDs(ctx, itemID, ids); err != nil {
+		slog.Warn("[Scraper] upsert item_external_ids failed", "item_id", itemID, "error", err)
 	}
 }
 
 func replaceIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID string, candidates []scraper.ScoredCandidate) error {
-	if _, err := pool.Exec(ctx, "DELETE FROM identify_candidates WHERE item_id = $1::uuid", itemID); err != nil {
-		return err
-	}
+	rows := make([]repository.IdentifyCandidateUpsert, 0, len(candidates))
 	for _, cand := range candidates {
 		payload, _ := json.Marshal(map[string]interface{}{
 			"provider":       cand.Provider,
@@ -425,49 +329,21 @@ func replaceIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID s
 		if cand.Year != nil {
 			year = *cand.Year
 		}
-		_, err := pool.Exec(ctx,
-			`INSERT INTO identify_candidates (item_id, provider, external_id, title, year, poster_url, score, payload)
-			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-			itemID,
-			cand.Provider,
-			cand.ProviderID,
-			cand.Title,
-			year,
-			strings.TrimSpace(cand.PosterURL),
-			float32(cand.Score),
-			string(payload),
-		)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, repository.IdentifyCandidateUpsert{
+			Provider:   cand.Provider,
+			ExternalID: cand.ProviderID,
+			Title:      cand.Title,
+			Year:       year,
+			PosterURL:  strings.TrimSpace(cand.PosterURL),
+			Score:      cand.Score,
+			Payload:    string(payload),
+		})
 	}
-	return nil
+	return repository.NewBackgroundTaskRepository(pool).ReplaceIdentifyCandidates(ctx, itemID, rows)
 }
 
 func ListIdentifyCandidates(ctx context.Context, pool *pgxpool.Pool, itemID string) ([]identifyCandidateRecord, error) {
-	rows, err := pool.Query(ctx,
-		`SELECT id::text, item_id::text, provider, external_id, COALESCE(title, ''), year, COALESCE(poster_url, ''), COALESCE(score, 0), payload, created_at
-		   FROM identify_candidates
-		  WHERE item_id = $1::uuid
-		  ORDER BY score DESC, created_at DESC`,
-		itemID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []identifyCandidateRecord
-	for rows.Next() {
-		var rec identifyCandidateRecord
-		var payload []byte
-		if err := rows.Scan(&rec.ID, &rec.ItemID, &rec.Provider, &rec.ExternalID, &rec.Title, &rec.Year, &rec.PosterURL, &rec.Score, &payload, &rec.CreatedAt); err != nil {
-			return nil, err
-		}
-		if len(payload) > 0 {
-			_ = json.Unmarshal(payload, &rec.Payload)
-		}
-		out = append(out, rec)
-	}
-	return out, rows.Err()
+	return repository.NewBackgroundTaskRepository(pool).ListIdentifyCandidates(ctx, itemID)
 }
 
 func buildIdentifyFailureDetail(

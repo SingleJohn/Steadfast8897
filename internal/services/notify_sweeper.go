@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"fyms/internal/repository"
 )
 
 const (
@@ -64,50 +66,18 @@ func (d *NotifyDispatcher) SweepLibraryNew(ctx context.Context, libraryID string
 		return 0, nil
 	}
 
-	sql := `SELECT i.id::text
-	          FROM items i
-	         WHERE i.library_new_notified_at IS NULL
-	           AND i.type IN ('Movie', 'Episode', 'Series')
-	           AND i.updated_at < NOW() - $1::interval
-	           AND (
-	                NOT EXISTS (
-	                    SELECT 1 FROM scrape_queue q
-	                     WHERE q.item_id = i.id
-	                       AND q.status IN ('pending', 'running')
-	                )
-	                OR i.updated_at < NOW() - $2::interval
-	           )`
-	args := []any{
-		intervalLiteral(libraryNewGracePeriod),
-		intervalLiteral(libraryNewMaxWait),
-	}
-	if libraryID != "" {
-		sql += " AND i.library_id = $3::uuid"
-		args = append(args, libraryID)
-	}
-	sql += " ORDER BY i.updated_at ASC LIMIT " + itoa(libraryNewSweepLimit)
-
-	rows, err := d.pool.Query(ctx, sql, args...)
+	itemIDs, err := repository.NewNotifyRepository(d.pool).ListLibraryNewSweepCandidateIDs(ctx, libraryID, libraryNewGracePeriod, libraryNewMaxWait, libraryNewSweepLimit)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 
 	enqueued := 0
-	for rows.Next() {
-		var itemID string
-		if err := rows.Scan(&itemID); err != nil {
-			return enqueued, err
-		}
+	for _, itemID := range itemIDs {
 		if d.Submit(NotifyEvent{Event: NotifyEventLibraryNew, ItemID: itemID}) {
 			enqueued++
 		}
 	}
-	return enqueued, rows.Err()
-}
-
-func intervalLiteral(d time.Duration) string {
-	return itoa(int(d.Seconds())) + " seconds"
+	return enqueued, nil
 }
 
 func itoa(v int) string {

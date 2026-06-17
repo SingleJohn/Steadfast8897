@@ -46,6 +46,17 @@
 | `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go` | movie/episode `media_versions` upsert 改走 `PlaybackRepository.UpsertMediaVersion`；TMDB 补全资格查找改走 `ScanIngestRepository` |
 | `internal/services/scanner_nfo.go` | provider_ids、genres/tags、cast image 查询/清理、平台错误标记改走 `ScanIngestRepository`；事务与 `CopyFrom` 保持原边界 |
 
+## migrated_in_phase_15
+
+这些路径在 Phase 15 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
+
+| 路径 | 迁移方式 |
+| --- | --- |
+| `internal/services/backfill_actor_images.go`、`internal/services/backfill_episode_image.go`、`internal/services/backfill_episode_name.go`、`internal/services/backfill_media_quality.go` | backfill 候选查询、计数、回写改走 `BackgroundTaskRepository` |
+| `internal/services/tmdb_identify.go`、`internal/services/tmdb_utils.go`、`internal/services/unmatched.go` | scrape item meta、external ids、identify candidates、unmatched 列表/候选 batch、统计计数改走 `BackgroundTaskRepository` |
+| `internal/services/probe_on_play.go`、`internal/services/probe_task.go` | probe 目标查询、mediainfo/章节回写、统计计数、path mapping 读取改走 `BackgroundTaskRepository` / `SystemConfigRepository` |
+| `internal/services/notify.go`、`internal/services/notify_sweeper.go` | 通知 item payload 查询、订阅查询、投递状态更新、library.new sweeper 候选查询改走 `NotifyRepository` |
+
 ## migrated_in_phase_11
 
 这些路径在 Phase 11 已迁出直接 SQL，并已从边界脚本 allowlist 移除。
@@ -70,11 +81,9 @@
 | `internal/models/platform.go`、`internal/handlers/library_platform.go` | 虚拟库维度、别名、封面与平台重算 | 维度和排序必须走白名单 |
 | `internal/models/person.go`、`internal/models/person_admin.go` | 演员搜索、清理和管理筛选 | 过滤和排序继续白名单化 |
 | `internal/handlers/stats.go` | 统计页多条件聚合和排序 | 排序字段必须走白名单 |
-| `internal/services/notify.go`、`internal/services/notify_sweeper.go` | 通知订阅筛选和过期清理 | 后续可按 notifier repository 收口 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
 | `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路仍含 item 创建、查重、动态 NFO update、episode canonical merge 等高耦合路径 | 不为清零 SQL 破坏扫描/ingest 语义；继续按固定 helper 和集中 builder 迁移 |
-| `internal/services/backfill_*.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
 
 ## allowed_infra
 

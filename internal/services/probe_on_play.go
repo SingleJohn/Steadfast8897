@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // probingMVs 记录正在探测中的 media_version id,用于多端并发播放时去重,
@@ -34,21 +36,16 @@ func ProbeOnPlay(pool *pgxpool.Pool, itemID, mediaSourceID string) {
 
 	// 选当前播放、且缺 MediaStreams 或尚未采集过章节的那条 media_version;
 	// 优先匹配本次播放的 mediaSourceID。
-	var mvID, mvItemID, filePath, name string
-	err := pool.QueryRow(ctx,
-		`SELECT id::text, item_id::text, file_path, COALESCE(name, '')
-		 FROM media_versions
-		 WHERE item_id = $1::uuid
-		   AND (mediainfo IS NULL OR NOT (mediainfo ? 'MediaStreams') OR chapters IS NULL)
-		 ORDER BY (id::text = $2) DESC, is_primary DESC, created_at ASC
-		 LIMIT 1`,
-		itemID, mediaSourceID,
-	).Scan(&mvID, &mvItemID, &filePath, &name)
+	target, err := repository.NewBackgroundTaskRepository(pool).GetProbeOnPlayTarget(ctx, itemID, mediaSourceID)
 	if err != nil {
 		// 无缺失行 / itemID 非 uuid 等情况都安静跳过。
 		slog.Debug("[ProbeOnPlay] no probe target", "item", itemID, "err", err)
 		return
 	}
+	if target == nil {
+		return
+	}
+	mvID := target.MediaVersionID.String()
 
 	// 在途去重:同一 media_version 多端并发播放只探一次。
 	if _, loaded := probingMVs.LoadOrStore(mvID, struct{}{}); loaded {
@@ -57,8 +54,8 @@ func ProbeOnPlay(pool *pgxpool.Pool, itemID, mediaSourceID string) {
 	defer probingMVs.Delete(mvID)
 
 	mappings := getProbePathMappings(ctx, pool)
-	if err := probeOneItem(ctx, pool, mvID, mvItemID, filePath, name, mappings); err != nil {
-		slog.Warn("[ProbeOnPlay] probe failed", "item", itemID, "mv", mvID, "path", filePath, "err", err)
+	if err := probeOneItem(ctx, pool, mvID, target.ItemID.String(), target.FilePath, target.Name, mappings); err != nil {
+		slog.Warn("[ProbeOnPlay] probe failed", "item", itemID, "mv", mvID, "path", target.FilePath, "err", err)
 		return
 	}
 	slog.Info("[ProbeOnPlay] mediainfo backfilled", "item", itemID, "mv", mvID)

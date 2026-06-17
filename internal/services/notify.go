@@ -13,13 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/config"
 	"fyms/internal/dto"
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 const (
@@ -106,10 +105,7 @@ type notifyEnvelope struct {
 	PlaybackInfo *NotifyPlaybackInfo `json:"PlaybackInfo,omitempty"`
 }
 
-type webhookSubscription struct {
-	ID  string
-	URL string
-}
+type webhookSubscription = repository.WebhookSubscription
 
 func NewNotifyDispatcher(pool *pgxpool.Pool, cfg *config.AppConfig, client *http.Client) *NotifyDispatcher {
 	if client == nil {
@@ -374,106 +370,28 @@ func deletedItemPayload(item *NotifyDeletedItem) map[string]any {
 }
 
 func (d *NotifyDispatcher) loadItem(ctx context.Context, itemID string) (*dto.ItemRow, error) {
-	if _, err := uuid.Parse(itemID); err != nil {
-		return nil, nil
-	}
-	rows, err := d.pool.Query(ctx,
-		`SELECT i.*,
-		        NULL::bigint AS playback_position_ticks,
-		        0::int AS play_count,
-		        FALSE AS is_favorite,
-		        FALSE AS played,
-		        NULL::timestamp AS last_played_date,
-		        series_fallback.primary_image_tag AS series_primary_image_tag,
-		        series_fallback.backdrop_image_tag AS series_backdrop_image_tag,
-		        series_fallback.id AS series_fallback_id
-		   FROM items i
-		   LEFT JOIN items series_fallback
-		          ON series_fallback.id = COALESCE(i.series_id, CASE WHEN i.type = 'Season' THEN i.parent_id END)
-		  WHERE i.id = $1::uuid
-		  LIMIT 1`,
-		itemID,
-	)
-	if err != nil {
+	cols, err := repository.NewNotifyRepository(d.pool).LoadItemColumns(ctx, itemID)
+	if err != nil || cols == nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return nil, rows.Err()
-	}
-	vals, err := rows.Values()
-	if err != nil {
-		return nil, err
-	}
-	fields := rows.FieldDescriptions()
-	colMap := make(map[string]any, len(fields))
-	for i, fd := range fields {
-		colMap[string(fd.Name)] = vals[i]
-	}
-	item := models.MapColsToItemRow(colMap)
-	return &item, rows.Err()
+	item := models.MapColsToItemRow(cols)
+	return &item, nil
 }
 
 func (d *NotifyDispatcher) claimLibraryNew(ctx context.Context, itemID string) (bool, error) {
-	if itemID == "" {
-		return false, nil
-	}
-	var id string
-	err := d.pool.QueryRow(ctx,
-		`UPDATE items
-		    SET library_new_notified_at = NOW()
-		  WHERE id = $1::uuid
-		    AND library_new_notified_at IS NULL
-		    AND type IN ('Movie', 'Episode', 'Series')
-		  RETURNING id::text`,
-		itemID,
-	).Scan(&id)
-	if err == pgx.ErrNoRows {
-		return false, nil
-	}
-	return err == nil, err
+	return repository.NewNotifyRepository(d.pool).ClaimLibraryNew(ctx, itemID)
 }
 
 func (d *NotifyDispatcher) loadSubscriptions(ctx context.Context, event string) ([]webhookSubscription, error) {
-	rows, err := d.pool.Query(ctx,
-		`SELECT id::text, url
-		   FROM webhook_subscriptions
-		  WHERE enabled = TRUE
-		    AND $1 = ANY(events)
-		  ORDER BY created_at ASC`,
-		event,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var subs []webhookSubscription
-	for rows.Next() {
-		var sub webhookSubscription
-		if err := rows.Scan(&sub.ID, &sub.URL); err != nil {
-			return nil, err
-		}
-		sub.URL = strings.TrimSpace(sub.URL)
-		if sub.URL != "" {
-			subs = append(subs, sub)
-		}
-	}
-	return subs, rows.Err()
+	return repository.NewNotifyRepository(d.pool).ListSubscriptionsForEvent(ctx, event)
 }
 
 func (d *NotifyDispatcher) SendTestToSubscription(ctx context.Context, subID string) error {
 	if d == nil {
 		return fmt.Errorf("notifier is not configured")
 	}
-	var sub webhookSubscription
-	if err := d.pool.QueryRow(ctx,
-		`SELECT id::text, url
-		   FROM webhook_subscriptions
-		  WHERE id = $1::uuid`,
-		subID,
-	).Scan(&sub.ID, &sub.URL); err != nil {
+	sub, err := repository.NewNotifyRepository(d.pool).GetSubscription(ctx, subID)
+	if err != nil {
 		return err
 	}
 	env, err := d.buildEnvelope(ctx, NotifyEvent{
@@ -549,31 +467,11 @@ func (d *NotifyDispatcher) deliverOnce(ctx context.Context, url string, body []b
 }
 
 func (d *NotifyDispatcher) updateDeliverySuccess(ctx context.Context, subID string, status int) {
-	_, _ = d.pool.Exec(ctx,
-		`UPDATE webhook_subscriptions
-		    SET last_status = $2,
-		        last_error = NULL,
-		        last_sent_at = NOW(),
-		        updated_at = NOW()
-		  WHERE id = $1::uuid`,
-		subID, status,
-	)
+	_ = repository.NewNotifyRepository(d.pool).UpdateDeliverySuccess(ctx, subID, status)
 }
 
 func (d *NotifyDispatcher) updateDeliveryFailure(ctx context.Context, subID string, status int, errText string) {
-	var statusVal any
-	if status > 0 {
-		statusVal = status
-	}
-	_, _ = d.pool.Exec(ctx,
-		`UPDATE webhook_subscriptions
-		    SET last_status = $2,
-		        last_error = $3,
-		        last_sent_at = NOW(),
-		        updated_at = NOW()
-		  WHERE id = $1::uuid`,
-		subID, statusVal, truncateNotifyError(errText),
-	)
+	_ = repository.NewNotifyRepository(d.pool).UpdateDeliveryFailure(ctx, subID, status, truncateNotifyError(errText))
 }
 
 func truncateNotifyError(s string) string {

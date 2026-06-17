@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // runEpisodeImageBackfill(Phase 2 改造版):
@@ -16,38 +18,11 @@ import (
 //
 // Progress 语义:Total=本地兜底候选数 + 入队 season 数,Processed=已处理 + 已入队。
 func (t *BackfillTask) runEpisodeImageBackfill(ctx context.Context, pool *pgxpool.Pool) error {
-	type candidate struct {
-		id       string
-		epNum    int32
-		filePath string
-		seasonID string
-	}
-
-	rows, err := pool.Query(ctx,
-		`SELECT e.id::text,
-		        e.index_number,
-		        COALESCE(e.file_path, ''),
-		        e.season_id::text
-		 FROM items e
-		 JOIN items se ON se.id = e.season_id
-		 JOIN items sr ON sr.id = se.parent_id AND sr.type = 'Series'
-		 WHERE e.type = 'Episode'
-		   AND e.primary_image_path IS NULL
-		   AND e.index_number IS NOT NULL
-		   AND sr.tmdb_id IS NOT NULL AND sr.tmdb_id > 0
-		 ORDER BY e.season_id, e.index_number`)
+	repo := repository.NewBackgroundTaskRepository(pool)
+	all, err := repo.ListEpisodeImageBackfillCandidates(ctx)
 	if err != nil {
 		return err
 	}
-	var all []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.epNum, &c.filePath, &c.seasonID); err != nil {
-			continue
-		}
-		all = append(all, c)
-	}
-	rows.Close()
 
 	total := int64(len(all))
 	t.setStageTotal(total)
@@ -64,26 +39,23 @@ func (t *BackfillTask) runEpisodeImageBackfill(ctx context.Context, pool *pgxpoo
 		if t.shouldStop() {
 			return nil
 		}
-		if c.filePath != "" {
-			dir := filepath.Dir(c.filePath)
+		if c.FilePath != "" {
+			dir := filepath.Dir(c.FilePath)
 			cache, ok := dirCache[dir]
 			if !ok {
 				cache = CacheDir(dir)
 				dirCache[dir] = cache
 			}
-			if tp := FindEpisodeThumbCached(cache, filepath.Base(c.filePath)); tp != nil {
+			if tp := FindEpisodeThumbCached(cache, filepath.Base(c.FilePath)); tp != nil {
 				tag := GenerateImageTag(*tp)
-				if _, err := pool.Exec(ctx,
-					`UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW()
-					  WHERE id = $3::uuid AND primary_image_path IS NULL`,
-					*tp, tag, c.id); err == nil {
+				if err := repo.SetEpisodeStillIfEmpty(ctx, c.ID, *tp, tag); err == nil {
 					processed++
 					t.advanceProgress(total, processed, "image_local_hit", 1)
 					continue
 				}
 			}
 		}
-		seasonsToEnqueue[c.seasonID] = struct{}{}
+		seasonsToEnqueue[c.SeasonID] = struct{}{}
 	}
 
 	// Step 2:剩余按 season 入队;TMDB 关了也入队(worker 会判断后跳过)。
@@ -117,14 +89,8 @@ func (t *BackfillTask) runEpisodeImageBackfill(ctx context.Context, pool *pgxpoo
 // processBackfillEpisodeImageTask 由 ScrapeWorker 调用:处理单个 Season。
 // 查 season.index + series.tmdb_id,调 TMDB 拉 season.episodes 的 still_path,下载分发。
 func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, client *TmdbClient, seasonID string) error {
-	var seriesTmdbID *int64
-	err := pool.QueryRow(ctx,
-		`SELECT sr.tmdb_id
-		   FROM items se
-		   JOIN items sr ON sr.id = se.parent_id AND sr.type = 'Series'
-		  WHERE se.id = $1::uuid AND se.type = 'Season'`,
-		seasonID,
-	).Scan(&seriesTmdbID)
+	repo := repository.NewBackgroundTaskRepository(pool)
+	seriesTmdbID, err := repo.GetSeasonSeriesTMDBID(ctx, seasonID)
 	if err != nil {
 		return err
 	}
@@ -149,28 +115,10 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 	}
 
 	// 查该 season 下仍缺 still 的 episodes
-	rows, err := pool.Query(ctx,
-		`SELECT id::text, index_number
-		   FROM items
-		  WHERE season_id = $1::uuid AND type = 'Episode'
-		    AND primary_image_path IS NULL
-		    AND index_number IS NOT NULL`,
-		seasonID)
+	eps, err := repo.ListEpisodesMissingStill(ctx, seasonID)
 	if err != nil {
 		return err
 	}
-	type epRow struct {
-		id    string
-		epNum int32
-	}
-	var eps []epRow
-	for rows.Next() {
-		var r epRow
-		if err := rows.Scan(&r.id, &r.epNum); err == nil {
-			eps = append(eps, r)
-		}
-	}
-	rows.Close()
 
 	// saveMode 决定媒体目录 / data dir 的写入策略,与 applyMergedDetails 一致。
 	saveMode := getScrapeSaveMode(ctx, pool)
@@ -179,7 +127,7 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 
 	var downloaded, failed, notInTmdb int
 	for _, ep := range eps {
-		still, ok := stills[ep.epNum]
+		still, ok := stills[ep.EpNum]
 		if !ok || still == "" {
 			notInTmdb++
 			continue
@@ -188,7 +136,7 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 		var dbTag *string
 		mediaSaved := false
 		if saveToMedia {
-			if mediaPath := resolveEpisodeThumbMediaPath(ctx, pool, ep.id); mediaPath != "" {
+			if mediaPath := resolveEpisodeThumbMediaPath(ctx, pool, ep.ID); mediaPath != "" {
 				if client.DownloadImage(ctx, still, mediaPath, "w300") {
 					dbPath = mediaPath
 					dbTag = GenerateImageTag(mediaPath)
@@ -197,22 +145,19 @@ func processBackfillEpisodeImageTask(ctx context.Context, pool *pgxpool.Pool, cl
 			}
 		}
 		if saveToData || (saveToMedia && !mediaSaved) {
-			dataPath := fmt.Sprintf("data/metadata/%s/still.jpg", ep.id)
+			dataPath := fmt.Sprintf("data/metadata/%s/still.jpg", ep.ID)
 			if client.DownloadImage(ctx, still, dataPath, "w300") && dbPath == "" {
 				dbPath = dataPath
 				dbTag = GenerateImageTag(dataPath)
 			}
 		}
 		if dbPath != "" {
-			_, _ = pool.Exec(ctx,
-				`UPDATE items SET primary_image_path = $1, primary_image_tag = $2, updated_at = NOW()
-				  WHERE id = $3::uuid AND primary_image_path IS NULL`,
-				dbPath, dbTag, ep.id)
+			_ = repo.SetEpisodeStillIfEmpty(ctx, ep.ID, dbPath, dbTag)
 			downloaded++
 		} else {
 			failed++
 			slog.Debug("[Backfill-EpImg] download failed",
-				"episode_id", ep.id, "ep_num", ep.epNum, "still_path", still)
+				"episode_id", ep.ID, "ep_num", ep.EpNum, "still_path", still)
 		}
 	}
 	slog.Info("[Backfill-EpImg] done",

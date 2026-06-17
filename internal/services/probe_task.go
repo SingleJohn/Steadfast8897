@@ -12,8 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type ProbeProgress struct {
@@ -75,39 +76,11 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 	pt.stopFlag.Store(false)
 
 	ctx := context.Background()
-	rows, err := pool.Query(ctx,
-		`SELECT mv.id, mv.item_id, mv.file_path, mv.name
-		 FROM media_versions mv
-		 WHERE mv.mediainfo IS NULL
-		    OR mv.runtime_ticks IS NULL
-		    OR mv.size IS NULL
-		    OR mv.bitrate IS NULL
-		    OR NOT (mv.mediainfo ? 'RunTimeTicks')
-		    OR NOT (mv.mediainfo ? 'Size')
-		    OR NOT (mv.mediainfo ? 'Bitrate')
-		    OR NOT (mv.mediainfo ? 'MediaStreams')
-		    OR mv.chapters IS NULL
-		 ORDER BY mv.id`)
+	repo := repository.NewBackgroundTaskRepository(pool)
+	items, err := repo.ListProbeTargets(ctx)
 	if err != nil {
 		return err
 	}
-
-	type probeItem struct {
-		mvID     uuid.UUID
-		itemID   uuid.UUID
-		filePath string
-		name     string
-	}
-	var items []probeItem
-	for rows.Next() {
-		var pi probeItem
-		if err := rows.Scan(&pi.mvID, &pi.itemID, &pi.filePath, &pi.name); err != nil {
-			rows.Close()
-			return err
-		}
-		items = append(items, pi)
-	}
-	rows.Close()
 
 	if len(items) == 0 {
 		pt.mu.Lock()
@@ -141,13 +114,13 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 			sem <- struct{}{}
 			wg.Add(1)
 
-			go func(pi probeItem) {
+			go func(pi repository.ProbeTarget) {
 				defer func() { <-sem; wg.Done() }()
 				if pt.stopFlag.Load() {
 					return
 				}
 
-				err := probeOneItem(ctx, pool, pi.mvID.String(), pi.itemID.String(), pi.filePath, pi.name, mappings)
+				err := probeOneItem(ctx, pool, pi.MediaVersionID.String(), pi.ItemID.String(), pi.FilePath, pi.Name, mappings)
 				p := processed.Add(1)
 				if err != nil {
 					failed.Add(1)
@@ -159,7 +132,7 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 				pt.progress.ProcessedItems = p
 				pt.progress.SuccessItems = success.Load()
 				pt.progress.FailedItems = failed.Load()
-				pt.progress.CurrentItem = &pi.name
+				pt.progress.CurrentItem = &pi.Name
 				if pt.progress.TotalItems > 0 {
 					pt.progress.Percentage = int(float64(p) / float64(pt.progress.TotalItems) * 100)
 				}
@@ -184,14 +157,13 @@ func (pt *ProbeTask) Start(pool *pgxpool.Pool, threads int) error {
 }
 
 func getProbePathMappings(ctx context.Context, pool *pgxpool.Pool) [][2]string {
-	var val *string
-	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'probe_path_mappings'").Scan(&val)
-	if val == nil {
+	val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, "probe_path_mappings")
+	if err != nil || !ok || val == "" {
 		return nil
 	}
 
 	var arr []map[string]string
-	if err := json.Unmarshal([]byte(*val), &arr); err != nil {
+	if err := json.Unmarshal([]byte(val), &arr); err != nil {
 		return nil
 	}
 
@@ -300,44 +272,18 @@ func probeOneItem(ctx context.Context, pool *pgxpool.Pool, mvID, itemID, filePat
 
 	// 用 COALESCE 保护 size/bitrate:远程探测传 nil 时不覆盖已有列值。
 	// chapters 每次探测都更新（空数组表示"探过但无章节"，区分 NULL "未探"）。
-	_, err := pool.Exec(ctx,
-		`UPDATE media_versions
-		 SET mediainfo = $1,
-		     runtime_ticks = CASE WHEN $2 > 0 THEN $2 ELSE runtime_ticks END,
-		     bitrate = COALESCE($3, bitrate),
-		     size = COALESCE($4, size),
-		     chapters = $6
-		 WHERE id = $5::uuid`,
-		string(dbInfoJSON), result.DurationTicks, bitrate, fileSize, mvID, string(chaptersJSON))
-	if err != nil {
+	repo := repository.NewBackgroundTaskRepository(pool)
+	if err := repo.UpdateProbeMediaVersion(ctx, mvID, string(dbInfoJSON), result.DurationTicks, bitrate, fileSize, string(chaptersJSON)); err != nil {
 		return err
 	}
 
-	_, err = pool.Exec(ctx,
-		"UPDATE items SET runtime_ticks = $1, updated_at = NOW() WHERE id = $2 AND (runtime_ticks IS NULL OR runtime_ticks = 0)",
-		result.DurationTicks, itemID)
-	return err
+	return repo.FillItemRuntimeTicksIfEmpty(ctx, itemID, result.DurationTicks)
 }
 
 func GetMissingMediainfoCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		`SELECT count(*)
-		 FROM media_versions
-		 WHERE mediainfo IS NULL
-		    OR runtime_ticks IS NULL
-		    OR size IS NULL
-		    OR bitrate IS NULL
-		    OR NOT (mediainfo ? 'RunTimeTicks')
-		    OR NOT (mediainfo ? 'Size')
-		    OR NOT (mediainfo ? 'Bitrate')
-		    OR NOT (mediainfo ? 'MediaStreams')
-		    OR chapters IS NULL`).Scan(&count)
-	return count, err
+	return repository.NewBackgroundTaskRepository(pool).GetMissingMediainfoCount(ctx)
 }
 
 func GetTotalMediaVersionsCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx, "SELECT count(*) FROM media_versions").Scan(&count)
-	return count, err
+	return repository.NewBackgroundTaskRepository(pool).GetTotalMediaVersionsCount(ctx)
 }

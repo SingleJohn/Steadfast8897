@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 )
 
@@ -102,17 +103,11 @@ const missingMetadataScrapeWhere = `(overview IS NULL OR overview = '')
     AND type IN ('Movie', 'Series')`
 
 func GetMissingScrapeCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM items WHERE "+missingMetadataScrapeWhere,
-	).Scan(&count)
-	return count, err
+	return repository.NewBackgroundTaskRepository(pool).GetMissingScrapeCount(ctx)
 }
 
 func GetTopLevelItemCount(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE type IN ('Movie', 'Series')").Scan(&count)
-	return count, err
+	return repository.NewBackgroundTaskRepository(pool).GetTopLevelItemCount(ctx)
 }
 
 // ========== JSON helpers ==========
