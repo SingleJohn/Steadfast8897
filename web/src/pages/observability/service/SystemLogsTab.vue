@@ -19,7 +19,7 @@ const LOG_TARGET_OPTIONS = [
   { label: '任务', value: 'tasks' },
   { label: '指标', value: 'metrics' },
   { label: '系统', value: 'system' },
-] as const
+]
 const LOG_COLORS: Record<string, string> = {
   ERROR: '#ef4444',
   WARN: '#f59e0b',
