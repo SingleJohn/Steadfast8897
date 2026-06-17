@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/repository"
@@ -41,26 +40,11 @@ func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *Cac
 		return
 	}
 
-	rows, err := pool.Query(ctx, "SELECT id, name, paths FROM libraries WHERE deleted_at IS NULL ORDER BY name")
+	libs, err := repository.NewLibraryRepository(pool).ListLibrariesForWatcher(ctx)
 	if err != nil {
 		slog.Error("[FileWatcher] Failed to get libraries", "error", err)
 		return
 	}
-
-	type libInfo struct {
-		id    uuid.UUID
-		name  string
-		paths []string
-	}
-	var libs []libInfo
-	for rows.Next() {
-		var l libInfo
-		if err := rows.Scan(&l.id, &l.name, &l.paths); err != nil {
-			continue
-		}
-		libs = append(libs, l)
-	}
-	rows.Close()
 
 	if len(libs) == 0 {
 		slog.Info("[FileWatcher] No libraries to watch")
@@ -69,7 +53,7 @@ func (fw *FileWatcher) Start(ctx context.Context, pool *pgxpool.Pool, cache *Cac
 
 	var watchRoots []string
 	for _, lib := range libs {
-		for _, p := range lib.paths {
+		for _, p := range lib.Paths {
 			if p == "" {
 				continue
 			}

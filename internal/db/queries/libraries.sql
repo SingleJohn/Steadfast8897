@@ -5,6 +5,12 @@ FROM libraries
 WHERE deleted_at IS NULL
 ORDER BY sort_order ASC, name ASC;
 
+-- name: ListLibrariesForWatcher :many
+SELECT id, name, paths
+FROM libraries
+WHERE deleted_at IS NULL
+ORDER BY name;
+
 -- name: GetLibraryByID :one
 SELECT id, name, collection_type, paths, created_at, primary_image_path, primary_image_tag, sort_order,
        COALESCE(scrape_config::text, ''::text) AS scrape_config

@@ -15,6 +15,12 @@ type LibraryRepository struct {
 	queries *dbgen.Queries
 }
 
+type WatchLibrary struct {
+	ID    uuid.UUID
+	Name  string
+	Paths []string
+}
+
 func NewLibraryRepository(pool *pgxpool.Pool) *LibraryRepository {
 	return &LibraryRepository{queries: dbgen.New(pool)}
 }
@@ -27,6 +33,22 @@ func (r *LibraryRepository) ListLibraries(ctx context.Context) ([]Library, error
 	libs := make([]Library, 0, len(rows))
 	for _, row := range rows {
 		libs = append(libs, mapLibrary(row.ID, row.Name, row.CollectionType, row.Paths, row.CreatedAt, row.PrimaryImagePath, row.PrimaryImageTag, row.SortOrder, row.ScrapeConfig))
+	}
+	return libs, nil
+}
+
+func (r *LibraryRepository) ListLibrariesForWatcher(ctx context.Context) ([]WatchLibrary, error) {
+	rows, err := r.queries.ListLibrariesForWatcher(ctx)
+	if err != nil {
+		return nil, err
+	}
+	libs := make([]WatchLibrary, 0, len(rows))
+	for _, row := range rows {
+		libs = append(libs, WatchLibrary{
+			ID:    fromPGUUID(row.ID),
+			Name:  row.Name,
+			Paths: row.Paths,
+		})
 	}
 	return libs, nil
 }

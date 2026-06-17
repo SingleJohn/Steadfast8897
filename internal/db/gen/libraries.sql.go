@@ -217,6 +217,39 @@ func (q *Queries) ListLibraries(ctx context.Context) ([]ListLibrariesRow, error)
 	return items, nil
 }
 
+const listLibrariesForWatcher = `-- name: ListLibrariesForWatcher :many
+SELECT id, name, paths
+FROM libraries
+WHERE deleted_at IS NULL
+ORDER BY name
+`
+
+type ListLibrariesForWatcherRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Name  string      `json:"name"`
+	Paths []string    `json:"paths"`
+}
+
+func (q *Queries) ListLibrariesForWatcher(ctx context.Context) ([]ListLibrariesForWatcherRow, error) {
+	rows, err := q.db.Query(ctx, listLibrariesForWatcher)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLibrariesForWatcherRow
+	for rows.Next() {
+		var i ListLibrariesForWatcherRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.Paths); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markLibraryDeleted = `-- name: MarkLibraryDeleted :execrows
 UPDATE libraries SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL
 `
