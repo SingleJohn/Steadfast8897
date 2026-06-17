@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { CrewGroup } from '../types'
 
-defineProps<{
+const props = defineProps<{
   item: any
   crew: CrewGroup[]
 }>()
@@ -9,15 +10,25 @@ defineProps<{
 const emit = defineEmits<{
   tagClick: [tag: string]
 }>()
+
+const overviewText = computed(() => {
+  const raw = String(props.item?.Overview || '')
+  if (!raw) return ''
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+})
 </script>
 
 <template>
   <div class="content-grid">
     <div class="content-main">
       <p v-if="item.Tagline" class="item-tagline">{{ item.Tagline }}</p>
-      <template v-if="item.Overview">
+      <template v-if="overviewText">
         <h3 class="section-heading section-heading-light">简介</h3>
-        <p class="item-overview">{{ item.Overview }}</p>
+        <p class="item-overview">{{ overviewText }}</p>
       </template>
 
       <div v-if="crew.length" class="crew-inline">
