@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type PlatformLibrary struct {
@@ -52,17 +54,6 @@ const (
 	PlatformDimActor     = "actor"
 )
 
-// catalogPrefixExpr 番号前缀(label)派生表达式:去掉结尾的 "-数字",保留前面的整段 label。
-// 例:300MIUM-1328 → 300MIUM,IPZZ-857 → IPZZ,326IAV-002 → 326IAV。与 049 迁移的函数索引一致。
-const catalogPrefixExpr = "regexp_replace(upper(catalog_number), '-[0-9]+$', '')"
-
-type platformDimensionSQL struct {
-	MatchCondition string
-	GroupExpr      string
-	DiscoverFrom   string
-	CountExpr      string
-}
-
 type PlatformScanStatus string
 
 const (
@@ -96,95 +87,75 @@ type PlatformScanItem struct {
 	PlatformScanSource *string
 }
 
+func platformLibraryFromRepo(p repository.PlatformLibrary) PlatformLibrary {
+	return PlatformLibrary{
+		ID:             p.ID,
+		PlatformName:   p.PlatformName,
+		Enabled:        p.Enabled,
+		CollectionType: p.CollectionType,
+		IconURL:        p.IconURL,
+		CreatedAt:      p.CreatedAt,
+		ItemCount:      p.ItemCount,
+		SortOrder:      p.SortOrder,
+		Dimension:      p.Dimension,
+		MatchValue:     p.MatchValue,
+		MatchValues:    p.MatchValues,
+		CoverImagePath: p.CoverImagePath,
+		CoverImageTag:  p.CoverImageTag,
+		DisplayName:    p.DisplayName,
+	}
+}
+
+func platformLibrariesFromRepo(rows []repository.PlatformLibrary) []PlatformLibrary {
+	out := make([]PlatformLibrary, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, platformLibraryFromRepo(row))
+	}
+	return out
+}
+
+func platformScanItemFromRepo(item repository.PlatformScanItem) PlatformScanItem {
+	return PlatformScanItem{
+		ID:                 item.ID,
+		ItemType:           item.ItemType,
+		Name:               item.Name,
+		ProductionYear:     item.ProductionYear,
+		TmdbID:             item.TmdbID,
+		FilePath:           item.FilePath,
+		Studio:             item.Studio,
+		PlatformScanStatus: PlatformScanStatus(item.PlatformScanStatus),
+		PlatformScanSource: item.PlatformScanSource,
+	}
+}
+
+func platformScanItemsFromRepo(rows []repository.PlatformScanItem) []PlatformScanItem {
+	out := make([]PlatformScanItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, platformScanItemFromRepo(row))
+	}
+	return out
+}
+
 func GetPlatformLibraries(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
-	return listPlatforms(ctx, pool, false)
+	rows, err := repository.NewPlatformRepository(pool).ListLibraries(ctx, false, true)
+	return platformLibrariesFromRepo(rows), err
 }
 
 func GetEnabledPlatforms(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
-	return listPlatforms(ctx, pool, true)
+	rows, err := repository.NewPlatformRepository(pool).ListLibraries(ctx, true, true)
+	return platformLibrariesFromRepo(rows), err
 }
 
 func GetEnabledPlatformsLite(ctx context.Context, pool *pgxpool.Pool) ([]PlatformLibrary, error) {
-	return listPlatformsLite(ctx, pool, true)
-}
-
-// listPlatformsLite 只取虚拟库行,不算 ItemCount(供高频路径如出图解析用)。
-func listPlatformsLite(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([]PlatformLibrary, error) {
-	sql := `SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-	               dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
-	          FROM platform_libraries`
-	if onlyEnabled {
-		sql += ` WHERE enabled = true`
-	}
-	sql += ` ORDER BY sort_order, platform_name`
-
-	rows, err := pool.Query(ctx, sql)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []PlatformLibrary
-	for rows.Next() {
-		var p PlatformLibrary
-		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName); err != nil {
-			return nil, err
-		}
-		result = append(result, p)
-	}
-	return result, rows.Err()
-}
-
-// listPlatforms 取虚拟库行后,按各自维度逐行计数。用于 Views/管理列表(低频)。
-func listPlatforms(ctx context.Context, pool *pgxpool.Pool, onlyEnabled bool) ([]PlatformLibrary, error) {
-	result, err := listPlatformsLite(ctx, pool, onlyEnabled)
-	if err != nil {
-		return nil, err
-	}
-	for i := range result {
-		result[i].ItemCount, _ = CountItemsForVirtual(ctx, pool, result[i].Dimension, result[i].Values())
-	}
-	return result, nil
+	rows, err := repository.NewPlatformRepository(pool).ListLibraries(ctx, true, false)
+	return platformLibrariesFromRepo(rows), err
 }
 
 // virtualDimensionCondition 返回某维度的匹配 SQL 片段(占位符 $1 = text[] 多值)与是否合法。
 // 用 = ANY($1) 聚合多个值, 解决簡繁/译名拆库。
 // 所有路径统一带 type IN ('Movie','Series') AND merged_to_id IS NULL 由调用方拼。
 func virtualDimensionCondition(dimension string) (string, bool) {
-	spec, ok := platformDimensionSpec(dimension)
-	if !ok {
-		return "", false
-	}
-	return spec.MatchCondition, true
-}
-
-func platformDimensionSpec(dimension string) (platformDimensionSQL, bool) {
-	switch dimension {
-	case PlatformDimStudio:
-		return platformDimensionSQL{
-			MatchCondition: "studio = ANY($1)",
-			GroupExpr:      "studio",
-			DiscoverFrom:   `FROM items WHERE studio IS NOT NULL AND studio != '' AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
-			CountExpr:      "COUNT(*)",
-		}, true
-	case PlatformDimNumPrefix:
-		return platformDimensionSQL{
-			MatchCondition: catalogPrefixExpr + " = ANY($1)",
-			GroupExpr:      catalogPrefixExpr,
-			DiscoverFrom:   `FROM items WHERE catalog_number IS NOT NULL AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
-			CountExpr:      "COUNT(*)",
-		}, true
-	case PlatformDimActor:
-		return platformDimensionSQL{
-			MatchCondition: "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = items.id AND cm.name = ANY($1) AND cm.role = 'Actor')",
-			GroupExpr:      "cm.name",
-			DiscoverFrom:   `FROM cast_members cm JOIN items i ON i.id = cm.item_id WHERE cm.role = 'Actor' AND cm.name != '' AND i.type IN ('Movie','Series') AND i.merged_to_id IS NULL`,
-			CountExpr:      "COUNT(DISTINCT cm.item_id)",
-		}, true
-	default:
-		return platformDimensionSQL{}, false
-	}
+	return repository.PlatformDimensionCondition(dimension)
 }
 
 // VirtualDimensionCondition 暴露维度匹配条件(占位符 $1=text[] 多值)给其他包(如 coverart 取素材)。
@@ -194,15 +165,7 @@ func VirtualDimensionCondition(dimension string) (string, bool) {
 
 // CountItemsForVirtual 按维度 + 多个匹配值统计顶层影片数。
 func CountItemsForVirtual(ctx context.Context, pool *pgxpool.Pool, dimension string, values []string) (int64, error) {
-	cond, ok := virtualDimensionCondition(dimension)
-	if !ok || len(values) == 0 {
-		return 0, nil
-	}
-	var count int64
-	err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items WHERE `+cond+` AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
-		values).Scan(&count)
-	return count, err
+	return repository.NewPlatformRepository(pool).CountItemsForVirtual(ctx, dimension, values)
 }
 
 // DiscoveredValue 是维度发现结果的一项。
@@ -215,107 +178,29 @@ type DiscoveredValue struct {
 // DiscoverDimensionValues 扫描本地数据,列出某维度的 distinct 值 + 计数(供用户勾选添加)。
 // search 用 ILIKE 过滤,minCount 过滤低频项,按计数倒序。标注是否已加入虚拟库。
 func DiscoverDimensionValues(ctx context.Context, pool *pgxpool.Pool, dimension, search string, minCount int64) ([]DiscoveredValue, error) {
-	spec, ok := platformDimensionSpec(dimension)
-	if !ok {
-		return nil, fmt.Errorf("unknown dimension: %s", dimension)
-	}
-
-	args := []interface{}{}
-	idx := 1
-	having := ""
-	searchClause := ""
-	search = strings.TrimSpace(search)
-	if search != "" {
-		searchClause = fmt.Sprintf(" AND %s ILIKE $%d", spec.GroupExpr, idx)
-		args = append(args, "%"+search+"%")
-		idx++
-	}
-	if minCount > 1 {
-		having = fmt.Sprintf(" HAVING %s >= $%d", spec.CountExpr, idx)
-		args = append(args, minCount)
-		idx++
-	}
-
-	sql := fmt.Sprintf(
-		`SELECT %s AS v, %s AS cnt %s%s GROUP BY %s%s ORDER BY cnt DESC, v ASC LIMIT 2000`,
-		spec.GroupExpr, spec.CountExpr, spec.DiscoverFrom, searchClause, spec.GroupExpr, having)
-
-	rows, err := pool.Query(ctx, sql, args...)
+	rows, err := repository.NewPlatformRepository(pool).DiscoverDimensionValues(ctx, dimension, search, minCount)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var result []DiscoveredValue
-	for rows.Next() {
-		var v *string
-		var cnt int64
-		if err := rows.Scan(&v, &cnt); err != nil {
-			return nil, err
-		}
-		if v == nil || strings.TrimSpace(*v) == "" {
-			continue
-		}
-		result = append(result, DiscoveredValue{Value: *v, Count: cnt})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// 标注已加入(同维度同值)。
-	added, _ := getAddedMatchValues(ctx, pool, dimension)
-	for i := range result {
-		if _, ok := added[result[i].Value]; ok {
-			result[i].AlreadyAdded = true
-		}
+	result := make([]DiscoveredValue, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, DiscoveredValue(row))
 	}
 	return result, nil
 }
 
-func getAddedMatchValues(ctx context.Context, pool *pgxpool.Pool, dimension string) (map[string]struct{}, error) {
-	// 多值聚合后,某 discover 值只要是任一虚拟库的别名(在 match_values 里)就算"已加"。
-	rows, err := pool.Query(ctx,
-		`SELECT unnest(COALESCE(match_values, ARRAY[COALESCE(match_value, platform_name)]))
-		   FROM platform_libraries WHERE dimension = $1`, dimension)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	m := make(map[string]struct{})
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err == nil {
-			m[v] = struct{}{}
-		}
-	}
-	return m, rows.Err()
-}
-
 func SetPlatformEnabled(ctx context.Context, pool *pgxpool.Pool, platformName string, enabled bool) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries SET enabled = $1 WHERE platform_name = $2`,
-		enabled, platformName)
-	return err
+	return repository.NewPlatformRepository(pool).SetEnabled(ctx, platformName, enabled)
 }
 
 // SetPlatformEnabledByID 按 id 启用/停用(多维度下显示名可能重复,优先用 id)。
 func SetPlatformEnabledByID(ctx context.Context, pool *pgxpool.Pool, id string, enabled bool) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries SET enabled = $1 WHERE id = $2::uuid`,
-		enabled, id)
-	return err
+	return repository.NewPlatformRepository(pool).SetEnabledByID(ctx, id, enabled)
 }
 
 // UpdatePlatformSortOrder assigns sort_order by the position of each id in orderedIDs.
 func UpdatePlatformSortOrder(ctx context.Context, pool *pgxpool.Pool, orderedIDs []string) error {
-	for i, id := range orderedIDs {
-		if _, err := pool.Exec(ctx,
-			`UPDATE platform_libraries SET sort_order = $1 WHERE id = $2::uuid`,
-			i, id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return repository.NewPlatformRepository(pool).UpdateSortOrder(ctx, orderedIDs)
 }
 
 // AddPlatformLibrary 新增一个虚拟库。dimension 为空时默认 studio;displayName 为空时取 matchValue。
@@ -329,110 +214,52 @@ func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matc
 	if displayName == "" {
 		displayName = matchValue
 	}
-	_, err := pool.Exec(ctx,
-		`INSERT INTO platform_libraries (platform_name, dimension, match_value, match_values, enabled)
-		 VALUES ($1, $2, $3, ARRAY[$3], $4)
-		 ON CONFLICT (dimension, match_value) DO NOTHING`,
-		displayName, dimension, matchValue, enabled)
-	return err
+	return repository.NewPlatformRepository(pool).AddLibrary(ctx, dimension, matchValue, displayName, enabled)
 }
 
 // GetPlatformByID 取单个虚拟库(含维度/匹配值/封面),不填 ItemCount。
 func GetPlatformByID(ctx context.Context, pool *pgxpool.Pool, id string) (*PlatformLibrary, error) {
-	var p PlatformLibrary
-	err := pool.QueryRow(ctx,
-		`SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-		        dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
-		   FROM platform_libraries WHERE id = $1::uuid`, id).
-		Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName)
+	p, err := repository.NewPlatformRepository(pool).GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &p, nil
+	out := platformLibraryFromRepo(*p)
+	return &out, nil
 }
 
 // SetPlatformCover 记录某虚拟库生成的封面路径 + tag。
 func SetPlatformCover(ctx context.Context, pool *pgxpool.Pool, id, path, tag string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries SET cover_image_path = $1, cover_image_tag = $2 WHERE id = $3::uuid`,
-		path, tag, id)
-	return err
+	return repository.NewPlatformRepository(pool).SetCover(ctx, id, path, tag)
 }
 
 // ClearPlatformCover 清除虚拟库生成的封面(回退内置 logo / 默认渐变),
 // 返回被清除的封面文件路径(若有)供调用方删除磁盘文件。
 func ClearPlatformCover(ctx context.Context, pool *pgxpool.Pool, id string) (string, error) {
-	var oldPath *string
-	_ = pool.QueryRow(ctx,
-		`SELECT cover_image_path FROM platform_libraries WHERE id = $1::uuid`, id).Scan(&oldPath)
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries SET cover_image_path = NULL, cover_image_tag = NULL WHERE id = $1::uuid`, id)
-	if oldPath != nil {
-		return *oldPath, err
-	}
-	return "", err
+	return repository.NewPlatformRepository(pool).ClearCover(ctx, id)
 }
 
 // RenamePlatform 设置虚拟库的自定义显示名;name 为空串则清除,回退默认本地化名。
 func RenamePlatform(ctx context.Context, pool *pgxpool.Pool, id, name string) error {
-	name = strings.TrimSpace(name)
-	var val interface{}
-	if name != "" {
-		val = name
-	}
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries SET display_name = $1 WHERE id = $2::uuid`, val, id)
-	return err
+	return repository.NewPlatformRepository(pool).Rename(ctx, id, name)
 }
 
 // AddPlatformValues 把若干匹配值合并进某虚拟库(去重),实现"多个簡繁/译名聚合到一个库"。
 func AddPlatformValues(ctx context.Context, pool *pgxpool.Pool, id string, values []string) error {
-	clean := make([]string, 0, len(values))
-	for _, v := range values {
-		if v = strings.TrimSpace(v); v != "" {
-			clean = append(clean, v)
-		}
-	}
-	if len(clean) == 0 {
-		return nil
-	}
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries
-		    SET match_values = ARRAY(
-		      SELECT DISTINCT v
-		        FROM unnest(COALESCE(match_values, ARRAY[match_value]) || $2::text[]) AS v
-		       WHERE v IS NOT NULL AND v <> ''
-		    )
-		  WHERE id = $1::uuid`,
-		id, clean)
-	return err
+	return repository.NewPlatformRepository(pool).AddValues(ctx, id, values)
 }
 
 // RemovePlatformValue 从某虚拟库移除一个匹配值(不会移除主匹配值 match_value)。
 func RemovePlatformValue(ctx context.Context, pool *pgxpool.Pool, id, value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	_, err := pool.Exec(ctx,
-		`UPDATE platform_libraries
-		    SET match_values = array_remove(COALESCE(match_values, ARRAY[match_value]), $2)
-		  WHERE id = $1::uuid AND match_value <> $2`,
-		id, value)
-	return err
+	return repository.NewPlatformRepository(pool).RemoveValue(ctx, id, value)
 }
 
 func DeletePlatformLibrary(ctx context.Context, pool *pgxpool.Pool, id string) error {
-	_, err := pool.Exec(ctx, `DELETE FROM platform_libraries WHERE id = $1::uuid`, id)
-	return err
+	return repository.NewPlatformRepository(pool).DeleteLibrary(ctx, id)
 }
 
 // IsPlatformLibrariesEnabled checks the global toggle.
 func IsPlatformLibrariesEnabled(ctx context.Context, pool *pgxpool.Pool) bool {
-	var val *string
-	_ = pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'platform_libraries_enabled'").Scan(&val)
-	return val != nil && *val == "true"
+	return repository.NewPlatformRepository(pool).IsGlobalEnabled(ctx)
 }
 
 // platformNamespace is a fixed UUID namespace for generating deterministic platform virtual IDs.
@@ -450,7 +277,7 @@ func ResolvePlatformVirtualID(ctx context.Context, pool *pgxpool.Pool, id string
 		return nil, false
 	}
 	// 高频路径(出图等),用 lite 版避免逐行 count。
-	platforms, err := listPlatformsLite(ctx, pool, true)
+	platforms, err := GetEnabledPlatformsLite(ctx, pool)
 	if err != nil {
 		return nil, false
 	}
@@ -466,21 +293,7 @@ func ResolvePlatformVirtualID(ctx context.Context, pool *pgxpool.Pool, id string
 // 同时包含电影和剧集时返回空串(Emby 混合内容库语义),调用方据此省略 CollectionType,
 // 否则客户端会把整库当成电影库, 只显示电影而隐藏剧集。
 func PlatformCollectionType(ctx context.Context, pool *pgxpool.Pool, dimension string, values []string) string {
-	cond, ok := virtualDimensionCondition(dimension)
-	if !ok || len(values) == 0 {
-		return ""
-	}
-	var movieCount, seriesCount int64
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Movie' AND merged_to_id IS NULL`, values).Scan(&movieCount)
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+cond+` AND type = 'Series' AND merged_to_id IS NULL`, values).Scan(&seriesCount)
-	switch {
-	case seriesCount > 0 && movieCount == 0:
-		return "tvshows"
-	case movieCount > 0 && seriesCount == 0:
-		return "movies"
-	default:
-		return ""
-	}
+	return repository.NewPlatformRepository(pool).CollectionType(ctx, dimension, values)
 }
 
 // PlatformVirtualIDHash returns a deterministic emby-compatible numeric hash for a platform.
@@ -491,11 +304,7 @@ func PlatformVirtualIDHash(platformName string) string {
 
 // GetItemCountByStudio returns number of top-level items (Movie/Series) for a studio.
 func GetItemCountByStudio(ctx context.Context, pool *pgxpool.Pool, studio string) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items WHERE studio = $1 AND type IN ('Movie', 'Series') AND merged_to_id IS NULL`,
-		studio).Scan(&count)
-	return count, err
+	return repository.NewPlatformRepository(pool).CountItemsByStudio(ctx, studio)
 }
 
 // GradientColor defines a 3-stop gradient: [0%, 40%, 100%] as RGB.
@@ -650,173 +459,39 @@ func UpdateItemStudio(ctx context.Context, pool *pgxpool.Pool, itemID, studio st
 // PropagateStudioToChildren sets studio/state on child items (Season/Episode) of a Series.
 func PropagateStudioToChildren(ctx context.Context, pool *pgxpool.Pool, seriesID, studio string) error {
 	studio = CanonicalPlatformName(studio)
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		   SET studio = $1,
-		       platform_scan_status = 'matched',
-		       platform_scan_source = COALESCE(platform_scan_source, 'tmdb'),
-		       platform_scan_error = NULL,
-		       platform_scanned_at = NOW()
-		 WHERE (series_id = $2::uuid OR parent_id = $2::uuid)
-		   AND type IN ('Season', 'Episode')
-		   AND (platform_scan_status <> 'matched' OR studio IS DISTINCT FROM $1)`,
-		studio, seriesID)
-	if err != nil {
-		return err
-	}
-	_, err = pool.Exec(ctx,
-		`UPDATE items
-		   SET studio = $1,
-		       platform_scan_status = 'matched',
-		       platform_scan_source = COALESCE(platform_scan_source, 'tmdb'),
-		       platform_scan_error = NULL,
-		       platform_scanned_at = NOW()
-		 WHERE parent_id IN (
-		   SELECT id FROM items WHERE parent_id = $2::uuid AND type = 'Season'
-		 ) AND type = 'Episode'
-		   AND (platform_scan_status <> 'matched' OR studio IS DISTINCT FROM $1)`,
-		studio, seriesID)
-	return err
+	return repository.NewPlatformRepository(pool).PropagateStudioToChildren(ctx, seriesID, studio)
 }
 
 func MarkPlatformScanPending(ctx context.Context, pool *pgxpool.Pool, itemID string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		    SET platform_scan_status = 'pending',
-		        platform_scan_error = NULL
-		  WHERE id = $1::uuid`,
-		itemID)
-	return err
+	return repository.NewPlatformRepository(pool).MarkScanPending(ctx, itemID)
 }
 
 func MarkPlatformScanMatched(ctx context.Context, pool *pgxpool.Pool, itemID, studio string, source PlatformScanSource) error {
 	studio = CanonicalPlatformName(studio)
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		    SET studio = $1,
-		        platform_scan_status = 'matched',
-		        platform_scan_source = $2,
-		        platform_scan_error = NULL,
-		        platform_scanned_at = NOW()
-		  WHERE id = $3::uuid`,
-		studio, string(source), itemID)
-	return err
+	return repository.NewPlatformRepository(pool).MarkScanMatched(ctx, itemID, studio, string(source))
 }
 
 func MarkPlatformScanNoMatch(ctx context.Context, pool *pgxpool.Pool, itemID string, source PlatformScanSource, errMsg string) error {
-	var errorVal interface{}
-	if strings.TrimSpace(errMsg) != "" {
-		errorVal = strings.TrimSpace(errMsg)
-	}
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		    SET studio = NULL,
-		        platform_scan_status = 'no_match',
-		        platform_scan_source = $1,
-		        platform_scan_error = $2,
-		        platform_scanned_at = NOW()
-		  WHERE id = $3::uuid`,
-		string(source), errorVal, itemID)
-	return err
+	return repository.NewPlatformRepository(pool).MarkScanNoMatch(ctx, itemID, string(source), errMsg)
 }
 
 func MarkPlatformScanUnidentified(ctx context.Context, pool *pgxpool.Pool, itemID string, source PlatformScanSource, errMsg string) error {
-	var errorVal interface{}
-	if strings.TrimSpace(errMsg) != "" {
-		errorVal = strings.TrimSpace(errMsg)
-	}
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		    SET studio = NULL,
-		        platform_scan_status = 'unidentified',
-		        platform_scan_source = $1,
-		        platform_scan_error = $2,
-		        platform_scanned_at = NOW()
-		  WHERE id = $3::uuid`,
-		string(source), errorVal, itemID)
-	return err
+	return repository.NewPlatformRepository(pool).MarkScanUnidentified(ctx, itemID, string(source), errMsg)
 }
 
 func MarkPlatformScanError(ctx context.Context, pool *pgxpool.Pool, itemID string, source PlatformScanSource, errMsg string) error {
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		    SET platform_scan_status = 'error',
-		        platform_scan_source = $1,
-		        platform_scan_error = $2,
-		        platform_scanned_at = NOW()
-		  WHERE id = $3::uuid`,
-		string(source), strings.TrimSpace(errMsg), itemID)
-	return err
+	return repository.NewPlatformRepository(pool).MarkScanError(ctx, itemID, string(source), errMsg)
 }
 
 func GetItemsPendingPlatformScan(ctx context.Context, pool *pgxpool.Pool, limit int, requireTMDB bool, includeNoMatch bool) ([]PlatformScanItem, error) {
-	statuses := []string{string(PlatformScanPending), string(PlatformScanUnidentified), string(PlatformScanError)}
-	if includeNoMatch {
-		statuses = append(statuses, string(PlatformScanNoMatch))
-	}
-
-	sql := `SELECT id::text, type, name, production_year, tmdb_id, file_path, studio, platform_scan_status, platform_scan_source
-	          FROM items
-	         WHERE type IN ('Movie', 'Series')
-	           AND platform_scan_status = ANY($1)`
-	args := []interface{}{statuses}
-	if requireTMDB {
-		sql += ` AND tmdb_id IS NOT NULL`
-	}
-	sql += ` ORDER BY platform_scanned_at NULLS FIRST, updated_at DESC NULLS LAST`
-	if limit > 0 {
-		sql += ` LIMIT $2`
-		args = append(args, limit)
-	}
-
-	rows, err := pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []PlatformScanItem
-	for rows.Next() {
-		var item PlatformScanItem
-		if err := rows.Scan(
-			&item.ID,
-			&item.ItemType,
-			&item.Name,
-			&item.ProductionYear,
-			&item.TmdbID,
-			&item.FilePath,
-			&item.Studio,
-			&item.PlatformScanStatus,
-			&item.PlatformScanSource,
-		); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+	rows, err := repository.NewPlatformRepository(pool).ListPendingScanItems(ctx, limit, requireTMDB, includeNoMatch)
+	return platformScanItemsFromRepo(rows), err
 }
 
 func CountItemsPendingPlatformScan(ctx context.Context, pool *pgxpool.Pool, requireTMDB bool, includeNoMatch bool) (int64, error) {
-	statuses := []string{string(PlatformScanPending), string(PlatformScanUnidentified), string(PlatformScanError)}
-	if includeNoMatch {
-		statuses = append(statuses, string(PlatformScanNoMatch))
-	}
-	sql := `SELECT COUNT(*) FROM items WHERE type IN ('Movie', 'Series') AND platform_scan_status = ANY($1)`
-	args := []interface{}{statuses}
-	if requireTMDB {
-		sql += ` AND tmdb_id IS NOT NULL`
-	}
-	var count int64
-	err := pool.QueryRow(ctx, sql, args...).Scan(&count)
-	return count, err
+	return repository.NewPlatformRepository(pool).CountPendingScanItems(ctx, requireTMDB, includeNoMatch)
 }
 
 func CountItemsPendingPlatformMetadataScrape(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
-	var count int64
-	err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items
-		  WHERE type IN ('Movie', 'Series')
-		    AND tmdb_id IS NULL
-		    AND platform_scan_status IN ('pending', 'unidentified', 'error')`).Scan(&count)
-	return count, err
+	return repository.NewPlatformRepository(pool).CountPendingMetadataScrape(ctx)
 }

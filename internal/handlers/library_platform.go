@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services"
 )
 
@@ -366,64 +367,23 @@ func scanPlatformStudios(c *gin.Context, state *AppState) {
 func scanPlatformByFilename(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 
-	patterns := []struct {
-		platform string
-		sql      string
-	}{
-		{"Netflix", "file_path ILIKE '%%.NF.%%' OR file_path ILIKE '%%Netflix%%'"},
-		{"Disney+", "file_path ILIKE '%%.DSNP.%%' OR file_path ILIKE '%%Disney+%%'"},
-		{"Apple TV+", "file_path ILIKE '%%.ATVP.%%' OR file_path ILIKE '%%Apple TV%%'"},
-		{"Amazon", "file_path ILIKE '%%.AMZN.%%' OR file_path ILIKE '%%Amazon%%'"},
-		{"HBO", "file_path ILIKE '%%.HMAX.%%' OR file_path ILIKE '%%.HBO.%%'"},
-		{"Hulu", "file_path ILIKE '%%.HULU.%%'"},
-		{"Paramount+", "file_path ILIKE '%%.PMTP.%%' OR file_path ILIKE '%%Paramount+%%'"},
-		{"Peacock", "file_path ILIKE '%%.PCOK.%%'"},
-		{"Crunchyroll", "file_path ILIKE '%%.CR.%%' OR file_path ILIKE '%%Crunchyroll%%'"},
+	patterns := []repository.PlatformFilenamePattern{
+		{Platform: "Netflix", SQL: "file_path ILIKE '%%.NF.%%' OR file_path ILIKE '%%Netflix%%'"},
+		{Platform: "Disney+", SQL: "file_path ILIKE '%%.DSNP.%%' OR file_path ILIKE '%%Disney+%%'"},
+		{Platform: "Apple TV+", SQL: "file_path ILIKE '%%.ATVP.%%' OR file_path ILIKE '%%Apple TV%%'"},
+		{Platform: "Amazon", SQL: "file_path ILIKE '%%.AMZN.%%' OR file_path ILIKE '%%Amazon%%'"},
+		{Platform: "HBO", SQL: "file_path ILIKE '%%.HMAX.%%' OR file_path ILIKE '%%.HBO.%%'"},
+		{Platform: "Hulu", SQL: "file_path ILIKE '%%.HULU.%%'"},
+		{Platform: "Paramount+", SQL: "file_path ILIKE '%%.PMTP.%%' OR file_path ILIKE '%%Paramount+%%'"},
+		{Platform: "Peacock", SQL: "file_path ILIKE '%%.PCOK.%%'"},
+		{Platform: "Crunchyroll", SQL: "file_path ILIKE '%%.CR.%%' OR file_path ILIKE '%%Crunchyroll%%'"},
 	}
 
-	total := 0
-	for _, p := range patterns {
-		tag, err := state.DB.Exec(ctx, fmt.Sprintf(
-			`UPDATE items
-			    SET studio = $1,
-			        platform_scan_status = 'matched',
-			        platform_scan_source = 'filename',
-			        platform_scan_error = NULL,
-			        platform_scanned_at = NOW()
-			  WHERE type IN ('Movie', 'Series', 'Season', 'Episode')
-			    AND platform_scan_status IN ('pending', 'unidentified', 'error', 'no_match')
-			    AND (%s)`,
-			p.sql), models.CanonicalPlatformName(p.platform))
-		if err != nil {
-			slog.Warn("[PlatformFilename] update failed", "platform", p.platform, "error", err)
-			continue
-		}
-		total += int(tag.RowsAffected())
-
-		_, err = state.DB.Exec(ctx, `UPDATE items
-		    SET studio = $1,
-		        platform_scan_status = 'matched',
-		        platform_scan_source = 'filename',
-		        platform_scan_error = NULL,
-		        platform_scanned_at = NOW()
-		  WHERE type = 'Series' AND id IN (
-			SELECT DISTINCT series_id FROM items WHERE studio = $1 AND series_id IS NOT NULL
-		  )`, models.CanonicalPlatformName(p.platform))
-		if err != nil {
-			slog.Warn("[PlatformFilename] propagate series failed", "platform", p.platform, "error", err)
-		}
-		_, err = state.DB.Exec(ctx, `UPDATE items
-		    SET studio = $1,
-		        platform_scan_status = 'matched',
-		        platform_scan_source = 'filename',
-		        platform_scan_error = NULL,
-		        platform_scanned_at = NOW()
-		  WHERE type = 'Season' AND parent_id IN (
-			SELECT id FROM items WHERE studio = $1 AND type = 'Series'
-		  )`, models.CanonicalPlatformName(p.platform))
-		if err != nil {
-			slog.Warn("[PlatformFilename] propagate season failed", "platform", p.platform, "error", err)
-		}
+	total, err := repository.NewPlatformRepository(state.DB).ScanByFilename(ctx, patterns, models.CanonicalPlatformName)
+	if err != nil {
+		slog.Warn("[PlatformFilename] scan failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error(), "updated": total})
+		return
 	}
 
 	invalidateViewsCache(c, state)
