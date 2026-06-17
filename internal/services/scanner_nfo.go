@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 // ============ NFO Parser ============
@@ -89,14 +89,14 @@ func nfoTag(xml, name string) *string {
 }
 
 type NfoData struct {
-	Title         *string
-	OriginalTitle *string
-	Plot          *string
-	Year          *int32
-	Rating        *float64
-	TmdbID        *int32
-	ImdbID        *string
-	TvdbID        *int32
+	Title          *string
+	OriginalTitle  *string
+	Plot           *string
+	Year           *int32
+	Rating         *float64
+	TmdbID         *int32
+	ImdbID         *string
+	TvdbID         *int32
 	Genres         []string
 	Tags           []string
 	Actors         []NfoActor
@@ -348,6 +348,7 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 		slog.Warn("[ApplyNfo] begin tx failed", "item_id", itemID, "error", err)
 		return
 	}
+	txRepo := repository.NewScanIngestRepositoryWithTx(tx)
 	committed := false
 	defer func() {
 		if !committed {
@@ -393,7 +394,7 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 		addClause("name", "", *nfo.Title)
 		effType := itemType
 		if effType == "" {
-			_ = tx.QueryRow(ctx, "SELECT type FROM items WHERE id = $1::uuid", itemID).Scan(&effType)
+			effType, _ = txRepo.GetItemTypeForNFO(ctx, itemID)
 		}
 		if effType != "Episode" {
 			addClause("sort_name", "", strings.ToLower(*nfo.Title))
@@ -448,14 +449,7 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 				// 打成 error 状态,让未匹配/异常面板可见。
 				_ = tx.Rollback(ctx)
 				committed = true
-				_, markErr := pool.Exec(ctx,
-					`UPDATE items
-					    SET platform_scan_status = 'error',
-					        platform_scan_error  = $1,
-					        platform_scanned_at  = NOW(),
-					        updated_at           = NOW()
-					  WHERE id = $2::uuid`,
-					fmt.Sprintf("元数据写入冲突: %s", pgErr.Detail), itemID)
+				markErr := repository.NewScanIngestRepository(pool).MarkItemPlatformScanError(ctx, itemID, fmt.Sprintf("元数据写入冲突: %s", pgErr.Detail))
 				if markErr != nil {
 					slog.Warn("[ApplyNfo] mark error status failed", "item_id", itemID, "error", markErr)
 				}
@@ -469,63 +463,29 @@ func ApplyNfoDataWithType(ctx context.Context, pool *pgxpool.Pool, itemID string
 	}
 
 	if len(nfo.Genres) > 0 {
-		if _, err := tx.Exec(ctx, "DELETE FROM item_genres WHERE item_id = $1::uuid", itemID); err != nil {
-			slog.Warn("[ApplyNfo] delete item_genres failed", "item_id", itemID, "error", err)
-			return
-		}
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO genres (name) SELECT unnest($1::text[]) ON CONFLICT (name) DO NOTHING",
-			nfo.Genres); err != nil {
-			slog.Warn("[ApplyNfo] upsert genres failed", "item_id", itemID, "error", err)
-			return
-		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO item_genres (item_id, genre_id)
-			   SELECT $1::uuid, id FROM genres WHERE name = ANY($2::text[])
-			 ON CONFLICT DO NOTHING`,
-			itemID, nfo.Genres); err != nil {
-			slog.Warn("[ApplyNfo] link item_genres failed", "item_id", itemID, "error", err)
+		if err := txRepo.ReplaceItemGenresForNFO(ctx, itemID, nfo.Genres); err != nil {
+			slog.Warn("[ApplyNfo] replace item_genres failed", "item_id", itemID, "error", err)
 			return
 		}
 	}
 
 	if len(nfo.Tags) > 0 {
-		if _, err := tx.Exec(ctx, "DELETE FROM item_tags WHERE item_id = $1::uuid", itemID); err != nil {
-			slog.Warn("[ApplyNfo] delete item_tags failed", "item_id", itemID, "error", err)
-			return
-		}
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO tags (name) SELECT unnest($1::text[]) ON CONFLICT (name) DO NOTHING",
-			nfo.Tags); err != nil {
-			slog.Warn("[ApplyNfo] upsert tags failed", "item_id", itemID, "error", err)
-			return
-		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO item_tags (item_id, tag_id)
-			   SELECT $1::uuid, id FROM tags WHERE name = ANY($2::text[])
-			 ON CONFLICT DO NOTHING`,
-			itemID, nfo.Tags); err != nil {
-			slog.Warn("[ApplyNfo] link item_tags failed", "item_id", itemID, "error", err)
+		if err := txRepo.ReplaceItemTagsForNFO(ctx, itemID, nfo.Tags); err != nil {
+			slog.Warn("[ApplyNfo] replace item_tags failed", "item_id", itemID, "error", err)
 			return
 		}
 	}
 
 	if len(nfo.Actors) > 0 || len(nfo.Directors) > 0 {
 		existingImages := make(map[string]string)
-		rows, qerr := tx.Query(ctx,
-			"SELECT name, role, image_url FROM cast_members WHERE item_id = $1::uuid AND image_url IS NOT NULL AND image_url <> ''",
-			itemID)
+		existingCastImages, qerr := txRepo.ListCastImagesForNFO(ctx, itemID)
 		if qerr == nil {
-			for rows.Next() {
-				var name, role, imageURL string
-				if rows.Scan(&name, &role, &imageURL) == nil {
-					existingImages[name+"|"+role] = imageURL
-				}
+			for _, row := range existingCastImages {
+				existingImages[row.Name+"|"+row.Role] = row.ImageURL
 			}
-			rows.Close()
 		}
 
-		if _, err := tx.Exec(ctx, "DELETE FROM cast_members WHERE item_id = $1::uuid", itemID); err != nil {
+		if err := txRepo.DeleteCastMembersForNFO(ctx, itemID); err != nil {
 			slog.Warn("[ApplyNfo] delete cast_members failed", "item_id", itemID, "error", err)
 			return
 		}
@@ -630,8 +590,9 @@ func syncNfoProviderHints(ctx context.Context, pool *pgxpool.Pool, itemID string
 		return
 	}
 
-	var raw []byte
-	if err := pool.QueryRow(ctx, "SELECT provider_ids FROM items WHERE id = $1::uuid", itemID).Scan(&raw); err != nil {
+	repo := repository.NewScanIngestRepository(pool)
+	raw, err := repo.GetItemProviderIDsForNFO(ctx, itemID)
+	if err != nil {
 		slog.Warn("[ApplyNfo] load provider_ids failed", "item_id", itemID, "error", err)
 		return
 	}
@@ -640,14 +601,7 @@ func syncNfoProviderHints(ctx context.Context, pool *pgxpool.Pool, itemID string
 	for provider, value := range updates {
 		merged[provider] = value
 	}
-	payload, err := json.Marshal(merged)
-	if err != nil {
-		slog.Warn("[ApplyNfo] marshal provider_ids failed", "item_id", itemID, "error", err)
-		return
-	}
-	if _, err := pool.Exec(ctx,
-		"UPDATE items SET provider_ids = $1::jsonb, updated_at = NOW() WHERE id = $2::uuid",
-		string(payload), itemID); err != nil {
+	if err := repo.UpdateItemProviderIDsForNFO(ctx, itemID, merged); err != nil {
 		slog.Warn("[ApplyNfo] update provider_ids failed", "item_id", itemID, "error", err)
 	}
 }

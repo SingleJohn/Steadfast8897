@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const copyEpisodeMediaVersionsToCanonical = `-- name: CopyEpisodeMediaVersionsToCanonical :exec
+INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
+SELECT $1::uuid, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label
+FROM media_versions
+WHERE item_id = $2::uuid
+ON CONFLICT (item_id, file_path) DO NOTHING
+`
+
+type CopyEpisodeMediaVersionsToCanonicalParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Column2 pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) CopyEpisodeMediaVersionsToCanonical(ctx context.Context, arg CopyEpisodeMediaVersionsToCanonicalParams) error {
+	_, err := q.db.Exec(ctx, copyEpisodeMediaVersionsToCanonical, arg.Column1, arg.Column2)
+	return err
+}
+
+const deleteCastMembersForNFO = `-- name: DeleteCastMembersForNFO :exec
+DELETE FROM cast_members
+WHERE item_id = $1::uuid
+`
+
+func (q *Queries) DeleteCastMembersForNFO(ctx context.Context, dollar_1 pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCastMembersForNFO, dollar_1)
+	return err
+}
+
 const deleteEmptySeasons = `-- name: DeleteEmptySeasons :exec
 DELETE FROM items
 WHERE type = 'Season'
@@ -43,6 +71,16 @@ DELETE FROM external_subtitles WHERE media_version_id = $1::uuid
 
 func (q *Queries) DeleteExternalSubtitlesForMediaVersion(ctx context.Context, dollar_1 pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteExternalSubtitlesForMediaVersion, dollar_1)
+	return err
+}
+
+const deleteItemByIDForScan = `-- name: DeleteItemByIDForScan :exec
+DELETE FROM items
+WHERE id = $1::uuid
+`
+
+func (q *Queries) DeleteItemByIDForScan(ctx context.Context, dollar_1 pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteItemByIDForScan, dollar_1)
 	return err
 }
 
@@ -258,6 +296,50 @@ func (q *Queries) GetItemPrimaryImageTag(ctx context.Context, dollar_1 pgtype.UU
 	return primary_image_tag, err
 }
 
+const getItemProviderIDsForNFO = `-- name: GetItemProviderIDsForNFO :one
+SELECT provider_ids
+FROM items
+WHERE id = $1::uuid
+`
+
+func (q *Queries) GetItemProviderIDsForNFO(ctx context.Context, dollar_1 pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getItemProviderIDsForNFO, dollar_1)
+	var provider_ids []byte
+	err := row.Scan(&provider_ids)
+	return provider_ids, err
+}
+
+const getItemTMDBIDByType = `-- name: GetItemTMDBIDByType :one
+SELECT tmdb_id
+FROM items
+WHERE id = $1::uuid AND type = $2
+`
+
+type GetItemTMDBIDByTypeParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Type    string      `json:"type"`
+}
+
+func (q *Queries) GetItemTMDBIDByType(ctx context.Context, arg GetItemTMDBIDByTypeParams) (pgtype.Int4, error) {
+	row := q.db.QueryRow(ctx, getItemTMDBIDByType, arg.Column1, arg.Type)
+	var tmdb_id pgtype.Int4
+	err := row.Scan(&tmdb_id)
+	return tmdb_id, err
+}
+
+const getItemTypeForNFO = `-- name: GetItemTypeForNFO :one
+SELECT type
+FROM items
+WHERE id = $1::uuid
+`
+
+func (q *Queries) GetItemTypeForNFO(ctx context.Context, dollar_1 pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getItemTypeForNFO, dollar_1)
+	var type_ string
+	err := row.Scan(&type_)
+	return type_, err
+}
+
 const getLibraryByItemID = `-- name: GetLibraryByItemID :one
 SELECT l.id, l.name, l.collection_type, l.paths, l.created_at, l.primary_image_path, l.primary_image_tag, l.sort_order,
        COALESCE(l.scrape_config::text, ''::text) AS scrape_config
@@ -362,6 +444,40 @@ func (q *Queries) InsertMixedFolder(ctx context.Context, arg InsertMixedFolderPa
 	var id string
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listCastImagesForNFO = `-- name: ListCastImagesForNFO :many
+SELECT name, role, image_url
+FROM cast_members
+WHERE item_id = $1::uuid
+  AND image_url IS NOT NULL
+  AND image_url <> ''
+`
+
+type ListCastImagesForNFORow struct {
+	Name     string      `json:"name"`
+	Role     string      `json:"role"`
+	ImageUrl pgtype.Text `json:"image_url"`
+}
+
+func (q *Queries) ListCastImagesForNFO(ctx context.Context, dollar_1 pgtype.UUID) ([]ListCastImagesForNFORow, error) {
+	rows, err := q.db.Query(ctx, listCastImagesForNFO, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCastImagesForNFORow
+	for rows.Next() {
+		var i ListCastImagesForNFORow
+		if err := rows.Scan(&i.Name, &i.Role, &i.ImageUrl); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCatalogNumberBackfillCandidates = `-- name: ListCatalogNumberBackfillCandidates :many
@@ -724,6 +840,51 @@ func (q *Queries) ListSeriesSubtreeTargetIDs(ctx context.Context, dollar_1 pgtyp
 	return items, nil
 }
 
+const markItemPlatformScanError = `-- name: MarkItemPlatformScanError :exec
+UPDATE items
+SET platform_scan_status = 'error',
+    platform_scan_error = $1,
+    platform_scanned_at = NOW(),
+    updated_at = NOW()
+WHERE id = $2::uuid
+`
+
+type MarkItemPlatformScanErrorParams struct {
+	PlatformScanError pgtype.Text `json:"platform_scan_error"`
+	Column2           pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) MarkItemPlatformScanError(ctx context.Context, arg MarkItemPlatformScanErrorParams) error {
+	_, err := q.db.Exec(ctx, markItemPlatformScanError, arg.PlatformScanError, arg.Column2)
+	return err
+}
+
+const mergeEpisodeUserDataToCanonical = `-- name: MergeEpisodeUserDataToCanonical :exec
+INSERT INTO user_item_data (user_id, item_id, playback_position_ticks, play_count, is_favorite, played, last_played_date)
+SELECT user_id, $1::uuid, playback_position_ticks, play_count, is_favorite, played, last_played_date
+FROM user_item_data
+WHERE item_id = $2::uuid
+ON CONFLICT (user_id, item_id) DO UPDATE SET
+    playback_position_ticks = GREATEST(user_item_data.playback_position_ticks, EXCLUDED.playback_position_ticks),
+    play_count = GREATEST(user_item_data.play_count, EXCLUDED.play_count),
+    is_favorite = user_item_data.is_favorite OR EXCLUDED.is_favorite,
+    played = user_item_data.played OR EXCLUDED.played,
+    last_played_date = GREATEST(
+        COALESCE(user_item_data.last_played_date, TIMESTAMP 'epoch'),
+        COALESCE(EXCLUDED.last_played_date, TIMESTAMP 'epoch')
+    )
+`
+
+type MergeEpisodeUserDataToCanonicalParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Column2 pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) MergeEpisodeUserDataToCanonical(ctx context.Context, arg MergeEpisodeUserDataToCanonicalParams) error {
+	_, err := q.db.Exec(ctx, mergeEpisodeUserDataToCanonical, arg.Column1, arg.Column2)
+	return err
+}
+
 const pruneExternalSubtitlesForMediaVersion = `-- name: PruneExternalSubtitlesForMediaVersion :exec
 DELETE FROM external_subtitles
 WHERE media_version_id = $1::uuid
@@ -761,6 +922,58 @@ func (q *Queries) RenameExternalSubtitlePaths(ctx context.Context, arg RenameExt
 		arg.Substring,
 		arg.FilePath_3,
 	)
+	return err
+}
+
+const replaceItemGenresForNFO = `-- name: ReplaceItemGenresForNFO :exec
+WITH deleted AS (
+    DELETE FROM item_genres WHERE item_id = $1::uuid
+),
+inserted_genres AS (
+    INSERT INTO genres (name)
+    SELECT unnest($2::text[])
+    ON CONFLICT (name) DO NOTHING
+)
+INSERT INTO item_genres (item_id, genre_id)
+SELECT $1::uuid, id
+FROM genres
+WHERE name = ANY($2::text[])
+ON CONFLICT DO NOTHING
+`
+
+type ReplaceItemGenresForNFOParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Column2 []string    `json:"column_2"`
+}
+
+func (q *Queries) ReplaceItemGenresForNFO(ctx context.Context, arg ReplaceItemGenresForNFOParams) error {
+	_, err := q.db.Exec(ctx, replaceItemGenresForNFO, arg.Column1, arg.Column2)
+	return err
+}
+
+const replaceItemTagsForNFO = `-- name: ReplaceItemTagsForNFO :exec
+WITH deleted AS (
+    DELETE FROM item_tags WHERE item_id = $1::uuid
+),
+inserted_tags AS (
+    INSERT INTO tags (name)
+    SELECT unnest($2::text[])
+    ON CONFLICT (name) DO NOTHING
+)
+INSERT INTO item_tags (item_id, tag_id)
+SELECT $1::uuid, id
+FROM tags
+WHERE name = ANY($2::text[])
+ON CONFLICT DO NOTHING
+`
+
+type ReplaceItemTagsForNFOParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Column2 []string    `json:"column_2"`
+}
+
+func (q *Queries) ReplaceItemTagsForNFO(ctx context.Context, arg ReplaceItemTagsForNFOParams) error {
+	_, err := q.db.Exec(ctx, replaceItemTagsForNFO, arg.Column1, arg.Column2)
 	return err
 }
 
@@ -915,6 +1128,23 @@ type UpdateItemPrimaryImageParams struct {
 
 func (q *Queries) UpdateItemPrimaryImage(ctx context.Context, arg UpdateItemPrimaryImageParams) error {
 	_, err := q.db.Exec(ctx, updateItemPrimaryImage, arg.PrimaryImagePath, arg.PrimaryImageTag, arg.Column3)
+	return err
+}
+
+const updateItemProviderIDsForNFO = `-- name: UpdateItemProviderIDsForNFO :exec
+UPDATE items
+SET provider_ids = $1::jsonb,
+    updated_at = NOW()
+WHERE id = $2::uuid
+`
+
+type UpdateItemProviderIDsForNFOParams struct {
+	Column1 []byte      `json:"column_1"`
+	Column2 pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) UpdateItemProviderIDsForNFO(ctx context.Context, arg UpdateItemProviderIDsForNFOParams) error {
+	_, err := q.db.Exec(ctx, updateItemProviderIDsForNFO, arg.Column1, arg.Column2)
 	return err
 }
 

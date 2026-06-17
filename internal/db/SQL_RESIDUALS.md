@@ -43,6 +43,8 @@
 | `internal/services/scanner_cleanup.go` | prune 候选、catalog number backfill、media_versions backfill 改走 `ScanIngestRepository` / `PlaybackRepository` |
 | `internal/services/scanner_dir.go` | local trailer、extra backdrops、artwork sync 改走 `ScanIngestRepository` |
 | `internal/services/scanner_mixed.go` | mixed folder upsert/lookup、parent 绑定改走 `ScanIngestRepository` |
+| `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go` | movie/episode `media_versions` upsert 改走 `PlaybackRepository.UpsertMediaVersion`；TMDB 补全资格查找改走 `ScanIngestRepository` |
+| `internal/services/scanner_nfo.go` | provider_ids、genres/tags、cast image 查询/清理、平台错误标记改走 `ScanIngestRepository`；事务与 `CopyFrom` 保持原边界 |
 
 ## migrated_in_phase_11
 
@@ -71,7 +73,7 @@
 | `internal/services/notify.go`、`internal/services/notify_sweeper.go` | 通知订阅筛选和过期清理 | 后续可按 notifier repository 收口 |
 | `internal/gateway/store.go`、`internal/services/redirect_bitrate.go` | gateway 日志统计、重定向码率候选 | 保留在 gateway/redirect 边界内 |
 | `internal/services/refresh_scheduler.go`、`internal/services/refresh_worker.go` | refresh queue 和 sidecar 变更调度 | 后续按 refresh repository 逐步迁移 |
-| `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路 | 不为清零 SQL 破坏扫描/ingest 语义；优先迁固定 helper |
+| `internal/services/scanner_movie.go`、`internal/services/scanner_tv.go`、`internal/services/scanner_nfo.go` | 扫描、NFO、tv/movie ingest 主链路仍含 item 创建、查重、动态 NFO update、episode canonical merge 等高耦合路径 | 不为清零 SQL 破坏扫描/ingest 语义；继续按固定 helper 和集中 builder 迁移 |
 | `internal/services/backfill_*.go`、`internal/services/tmdb_identify.go`、`internal/services/unmatched.go` | 后台补全、候选识别、未匹配查询 | 先保留，后续按任务域迁 repository |
 
 ## allowed_infra
@@ -84,7 +86,7 @@
 | `main.go` | 启动级 PG session/pool 设置 | 仅允许固定启动设置，不放业务 SQL |
 | `internal/handlers/system.go` | 备份/恢复、动态表导出导入、truncate 白名单、系统日志/指标查询 | 只能使用表名 allowlist；不迁移备份恢复动态 SQL |
 | `internal/gateway/store.go` | `CopyFrom` 批量写 gateway 日志 | `CopyFrom` 属于批量写入例外 |
-| `internal/services/scanner_nfo.go` | `CopyFrom` 批量导入 cast members | `CopyFrom` 属于批量写入例外；其余 NFO 固定 SQL 后续继续迁移 |
+| `internal/services/scanner_nfo.go` | `CopyFrom` 批量导入 cast members | `CopyFrom` 属于批量写入例外；动态 `UPDATE items SET ...` 后续应收敛为 NFO repository builder |
 | `internal/models/item_query.go` | `pg_class.reltuples` 估算计数 | PG 系统统计例外 |
 | `internal/services/progress_buffer.go` | 播放进度缓冲落库 | 可后续迁移，但当前属于内部缓冲写入边界 |
 | `internal/handlers/compat_query.go` | Emby 兼容的只读 SQLite 风格查询入口 | 仅保留兼容白名单/转换后的查询，不允许任意写入 |

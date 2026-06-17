@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 )
 
 // enqueueMovieNfoComplement 给 NFO 扫入的 Movie 入队 TMDB 补全任务。
@@ -25,10 +25,7 @@ func enqueueMovieNfoComplement(ctx context.Context, pool *pgxpool.Pool, itemID s
 		return
 	}
 	var tmdbID *int64
-	_ = pool.QueryRow(ctx,
-		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Movie'",
-		itemID,
-	).Scan(&tmdbID)
+	tmdbID, _ = repository.NewScanIngestRepository(pool).GetItemTMDBIDByType(ctx, itemID, "Movie")
 	if tmdbID == nil || *tmdbID <= 0 {
 		return
 	}
@@ -550,10 +547,6 @@ func ensureMovieMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uu
 			container = "mkv"
 		}
 
-		var miJSON []byte
-		if mi != nil {
-			miJSON, _ = json.Marshal(mi)
-		}
 		var runtimeTicks, bitrate, size *int64
 		if mi != nil {
 			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
@@ -563,28 +556,23 @@ func ensureMovieMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uu
 
 		q, qLabel := ComputeMediaVersionQuality(filepath.Base(fpath), mi)
 
-		var mvID uuid.UUID
-		err := pool.QueryRow(ctx,
-			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-			 ON CONFLICT (item_id, file_path) DO UPDATE SET
-			 	name = EXCLUDED.name,
-			 	container = EXCLUDED.container,
-			 	is_primary = EXCLUDED.is_primary,
-			 	mediainfo = COALESCE(EXCLUDED.mediainfo, media_versions.mediainfo),
-			 	runtime_ticks = COALESCE(EXCLUDED.runtime_ticks, media_versions.runtime_ticks),
-			 	bitrate = COALESCE(EXCLUDED.bitrate, media_versions.bitrate),
-			 	size = COALESCE(EXCLUDED.size, media_versions.size),
-			 	resolution = COALESCE(EXCLUDED.resolution, media_versions.resolution),
-			 	hdr_format = COALESCE(EXCLUDED.hdr_format, media_versions.hdr_format),
-			 	video_codec = COALESCE(EXCLUDED.video_codec, media_versions.video_codec),
-			 	audio_codec = COALESCE(EXCLUDED.audio_codec, media_versions.audio_codec),
-			 	source = COALESCE(EXCLUDED.source, media_versions.source),
-			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)
-			 RETURNING id`,
-			itemID, verName, fpath, container, isPrimary, nullableJSON(miJSON), runtimeTicks, bitrate, size,
-			NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
-			NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel)).Scan(&mvID)
+		mvID, err := repository.NewPlaybackRepository(pool).UpsertMediaVersion(ctx, repository.MediaVersionUpsert{
+			ItemID:       itemID.String(),
+			Name:         verName,
+			FilePath:     fpath,
+			Container:    container,
+			IsPrimary:    isPrimary,
+			MediaInfo:    mi,
+			RuntimeTicks: runtimeTicks,
+			Bitrate:      bitrate,
+			Size:         size,
+			Resolution:   stringPtrIfNotEmpty(q.Resolution),
+			HDRFormat:    stringPtrIfNotEmpty(q.HDRFormat),
+			VideoCodec:   stringPtrIfNotEmpty(q.VideoCodec),
+			AudioCodec:   stringPtrIfNotEmpty(q.AudioCodec),
+			Source:       stringPtrIfNotEmpty(q.Source),
+			QualityLabel: stringPtrIfNotEmpty(qLabel),
+		})
 		if err != nil {
 			continue
 		}

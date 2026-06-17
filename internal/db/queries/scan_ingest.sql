@@ -279,3 +279,99 @@ UPDATE items
 SET parent_id = $1::uuid,
     updated_at = NOW()
 WHERE library_id = $2::uuid AND type = $3 AND file_path = $4;
+
+-- name: GetItemTMDBIDByType :one
+SELECT tmdb_id
+FROM items
+WHERE id = $1::uuid AND type = $2;
+
+-- name: GetItemTypeForNFO :one
+SELECT type
+FROM items
+WHERE id = $1::uuid;
+
+-- name: GetItemProviderIDsForNFO :one
+SELECT provider_ids
+FROM items
+WHERE id = $1::uuid;
+
+-- name: UpdateItemProviderIDsForNFO :exec
+UPDATE items
+SET provider_ids = $1::jsonb,
+    updated_at = NOW()
+WHERE id = $2::uuid;
+
+-- name: MarkItemPlatformScanError :exec
+UPDATE items
+SET platform_scan_status = 'error',
+    platform_scan_error = $1,
+    platform_scanned_at = NOW(),
+    updated_at = NOW()
+WHERE id = $2::uuid;
+
+-- name: ReplaceItemGenresForNFO :exec
+WITH deleted AS (
+    DELETE FROM item_genres WHERE item_id = $1::uuid
+),
+inserted_genres AS (
+    INSERT INTO genres (name)
+    SELECT unnest($2::text[])
+    ON CONFLICT (name) DO NOTHING
+)
+INSERT INTO item_genres (item_id, genre_id)
+SELECT $1::uuid, id
+FROM genres
+WHERE name = ANY($2::text[])
+ON CONFLICT DO NOTHING;
+
+-- name: ReplaceItemTagsForNFO :exec
+WITH deleted AS (
+    DELETE FROM item_tags WHERE item_id = $1::uuid
+),
+inserted_tags AS (
+    INSERT INTO tags (name)
+    SELECT unnest($2::text[])
+    ON CONFLICT (name) DO NOTHING
+)
+INSERT INTO item_tags (item_id, tag_id)
+SELECT $1::uuid, id
+FROM tags
+WHERE name = ANY($2::text[])
+ON CONFLICT DO NOTHING;
+
+-- name: ListCastImagesForNFO :many
+SELECT name, role, image_url
+FROM cast_members
+WHERE item_id = $1::uuid
+  AND image_url IS NOT NULL
+  AND image_url <> '';
+
+-- name: DeleteCastMembersForNFO :exec
+DELETE FROM cast_members
+WHERE item_id = $1::uuid;
+
+-- name: CopyEpisodeMediaVersionsToCanonical :exec
+INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
+SELECT $1::uuid, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label
+FROM media_versions
+WHERE item_id = $2::uuid
+ON CONFLICT (item_id, file_path) DO NOTHING;
+
+-- name: MergeEpisodeUserDataToCanonical :exec
+INSERT INTO user_item_data (user_id, item_id, playback_position_ticks, play_count, is_favorite, played, last_played_date)
+SELECT user_id, $1::uuid, playback_position_ticks, play_count, is_favorite, played, last_played_date
+FROM user_item_data
+WHERE item_id = $2::uuid
+ON CONFLICT (user_id, item_id) DO UPDATE SET
+    playback_position_ticks = GREATEST(user_item_data.playback_position_ticks, EXCLUDED.playback_position_ticks),
+    play_count = GREATEST(user_item_data.play_count, EXCLUDED.play_count),
+    is_favorite = user_item_data.is_favorite OR EXCLUDED.is_favorite,
+    played = user_item_data.played OR EXCLUDED.played,
+    last_played_date = GREATEST(
+        COALESCE(user_item_data.last_played_date, TIMESTAMP 'epoch'),
+        COALESCE(EXCLUDED.last_played_date, TIMESTAMP 'epoch')
+    );
+
+-- name: DeleteItemByIDForScan :exec
+DELETE FROM items
+WHERE id = $1::uuid;

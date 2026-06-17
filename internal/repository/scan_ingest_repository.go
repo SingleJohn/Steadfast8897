@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,8 +68,18 @@ type MediaVersionBackfillCandidate struct {
 	Container string
 }
 
+type NFOCastImage struct {
+	Name     string
+	Role     string
+	ImageURL string
+}
+
 func NewScanIngestRepository(pool *pgxpool.Pool) *ScanIngestRepository {
 	return &ScanIngestRepository{queries: dbgen.New(pool)}
+}
+
+func NewScanIngestRepositoryWithTx(tx pgx.Tx) *ScanIngestRepository {
+	return &ScanIngestRepository{queries: dbgen.New(nil).WithTx(tx)}
 }
 
 func (r *ScanIngestRepository) UpsertExternalSubtitle(ctx context.Context, row ExternalSubtitleUpsert) error {
@@ -535,6 +546,132 @@ func (r *ScanIngestRepository) SetMixedItemParent(ctx context.Context, libraryID
 		Type:     itemType,
 		FilePath: textValue(filePath),
 	})
+}
+
+func (r *ScanIngestRepository) GetItemTMDBIDByType(ctx context.Context, itemID, itemType string) (*int64, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, err
+	}
+	v, err := r.queries.GetItemTMDBIDByType(ctx, dbgen.GetItemTMDBIDByTypeParams{
+		Column1: toPGUUID(uid),
+		Type:    itemType,
+	})
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !v.Valid {
+		return nil, nil
+	}
+	out := int64(v.Int32)
+	return &out, nil
+}
+
+func (r *ScanIngestRepository) GetItemTypeForNFO(ctx context.Context, itemID string) (string, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return "", err
+	}
+	return r.queries.GetItemTypeForNFO(ctx, toPGUUID(uid))
+}
+
+func (r *ScanIngestRepository) GetItemProviderIDsForNFO(ctx context.Context, itemID string) ([]byte, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, err
+	}
+	return r.queries.GetItemProviderIDsForNFO(ctx, toPGUUID(uid))
+}
+
+func (r *ScanIngestRepository) UpdateItemProviderIDsForNFO(ctx context.Context, itemID string, providerIDs map[string]string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(providerIDs)
+	if err != nil {
+		return err
+	}
+	return r.queries.UpdateItemProviderIDsForNFO(ctx, dbgen.UpdateItemProviderIDsForNFOParams{
+		Column1: payload,
+		Column2: toPGUUID(uid),
+	})
+}
+
+func (r *ScanIngestRepository) MarkItemPlatformScanError(ctx context.Context, itemID, message string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.MarkItemPlatformScanError(ctx, dbgen.MarkItemPlatformScanErrorParams{
+		PlatformScanError: textValue(message),
+		Column2:           toPGUUID(uid),
+	})
+}
+
+func (r *ScanIngestRepository) ReplaceItemGenresForNFO(ctx context.Context, itemID string, genres []string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.ReplaceItemGenresForNFO(ctx, dbgen.ReplaceItemGenresForNFOParams{
+		Column1: toPGUUID(uid),
+		Column2: genres,
+	})
+}
+
+func (r *ScanIngestRepository) ReplaceItemTagsForNFO(ctx context.Context, itemID string, tags []string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.ReplaceItemTagsForNFO(ctx, dbgen.ReplaceItemTagsForNFOParams{
+		Column1: toPGUUID(uid),
+		Column2: tags,
+	})
+}
+
+func (r *ScanIngestRepository) ListCastImagesForNFO(ctx context.Context, itemID string) ([]NFOCastImage, error) {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.queries.ListCastImagesForNFO(ctx, toPGUUID(uid))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NFOCastImage, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, NFOCastImage{Name: row.Name, Role: row.Role, ImageURL: textOrEmpty(row.ImageUrl)})
+	}
+	return out, nil
+}
+
+func (r *ScanIngestRepository) DeleteCastMembersForNFO(ctx context.Context, itemID string) error {
+	uid, err := uuid.Parse(itemID)
+	if err != nil {
+		return err
+	}
+	return r.queries.DeleteCastMembersForNFO(ctx, toPGUUID(uid))
+}
+
+func (r *ScanIngestRepository) MergeDuplicateEpisodeIntoCanonical(ctx context.Context, canonicalID, duplicateID uuid.UUID) error {
+	if err := r.queries.CopyEpisodeMediaVersionsToCanonical(ctx, dbgen.CopyEpisodeMediaVersionsToCanonicalParams{
+		Column1: toPGUUID(canonicalID),
+		Column2: toPGUUID(duplicateID),
+	}); err != nil {
+		return err
+	}
+	if err := r.queries.MergeEpisodeUserDataToCanonical(ctx, dbgen.MergeEpisodeUserDataToCanonicalParams{
+		Column1: toPGUUID(canonicalID),
+		Column2: toPGUUID(duplicateID),
+	}); err != nil {
+		return err
+	}
+	return r.queries.DeleteItemByIDForScan(ctx, toPGUUID(duplicateID))
 }
 
 func (r *ScanIngestRepository) getTextByID(ctx context.Context, id string, fn func(context.Context, pgtype.UUID) (pgtype.Text, error)) (*string, error) {

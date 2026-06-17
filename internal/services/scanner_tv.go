@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/models"
+	"fyms/internal/repository"
 	"fyms/internal/services/scraper"
 )
 
@@ -568,10 +568,7 @@ func scanOneShow(
 	// autoScrapeNewItems 不会把已识别 / NFO 源的 item 重入队,BackfillTask 又只在用户手动
 	// 触发或启动 24h 后跑,所以这里是常规 rescrape 路径外的主动补全入口。
 	var seriesTmdbID *int64
-	_ = pool.QueryRow(ctx,
-		"SELECT tmdb_id FROM items WHERE id = $1::uuid AND type = 'Series'",
-		seriesID,
-	).Scan(&seriesTmdbID)
+	seriesTmdbID, _ = repository.NewScanIngestRepository(pool).GetItemTMDBIDByType(ctx, seriesID, "Series")
 	seriesScraped := seriesTmdbID != nil && *seriesTmdbID > 0
 
 	// 分支 1:已刮削 Series 下新增 Episode → 增量补 name/image,避免新集停在占位符。
@@ -849,33 +846,9 @@ func mergeDuplicateEpisodeIntoCanonical(ctx context.Context, pool *pgxpool.Pool,
 		return
 	}
 
-	pool.Exec(ctx,
-		`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
-		 SELECT $1, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label
-		 FROM media_versions
-		 WHERE item_id = $2
-		 ON CONFLICT (item_id, file_path) DO NOTHING`,
-		canonicalID, duplicateID,
-	)
-
-	pool.Exec(ctx,
-		`INSERT INTO user_item_data (user_id, item_id, playback_position_ticks, play_count, is_favorite, played, last_played_date)
-		 SELECT user_id, $1, playback_position_ticks, play_count, is_favorite, played, last_played_date
-		 FROM user_item_data
-		 WHERE item_id = $2
-		 ON CONFLICT (user_id, item_id) DO UPDATE SET
-		 	playback_position_ticks = GREATEST(user_item_data.playback_position_ticks, EXCLUDED.playback_position_ticks),
-		 	play_count = GREATEST(user_item_data.play_count, EXCLUDED.play_count),
-		 	is_favorite = user_item_data.is_favorite OR EXCLUDED.is_favorite,
-		 	played = user_item_data.played OR EXCLUDED.played,
-		 	last_played_date = GREATEST(
-		 		COALESCE(user_item_data.last_played_date, TIMESTAMP 'epoch'),
-		 		COALESCE(EXCLUDED.last_played_date, TIMESTAMP 'epoch')
-		 	)`,
-		canonicalID, duplicateID,
-	)
-
-	pool.Exec(ctx, "DELETE FROM items WHERE id = $1::uuid", duplicateID)
+	if err := repository.NewScanIngestRepository(pool).MergeDuplicateEpisodeIntoCanonical(ctx, canonicalID, duplicateID); err != nil {
+		slog.Warn("[Scan] merge duplicate episode failed", "canonical", canonicalID, "duplicate", duplicateID, "error", err)
+	}
 }
 
 func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, files []epFile) {
@@ -901,10 +874,6 @@ func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID 
 			}
 		}
 
-		var miJSON []byte
-		if mi != nil {
-			miJSON, _ = json.Marshal(mi)
-		}
 		var runtimeTicks, bitrate, size *int64
 		if mi != nil {
 			runtimeTicks = getJSONInt64(mi, "RunTimeTicks")
@@ -914,29 +883,23 @@ func ensureEpisodeMediaVersions(ctx context.Context, pool *pgxpool.Pool, itemID 
 
 		q, qLabel := ComputeMediaVersionQuality(f.name, mi)
 
-		var mvID uuid.UUID
-		err := pool.QueryRow(ctx,
-			`INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-			 ON CONFLICT (item_id, file_path) DO UPDATE SET
-			 	name = EXCLUDED.name,
-			 	container = EXCLUDED.container,
-			 	is_primary = EXCLUDED.is_primary,
-			 	mediainfo = COALESCE(EXCLUDED.mediainfo, media_versions.mediainfo),
-			 	runtime_ticks = COALESCE(EXCLUDED.runtime_ticks, media_versions.runtime_ticks),
-			 	bitrate = COALESCE(EXCLUDED.bitrate, media_versions.bitrate),
-			 	size = COALESCE(EXCLUDED.size, media_versions.size),
-			 	resolution = COALESCE(EXCLUDED.resolution, media_versions.resolution),
-			 	hdr_format = COALESCE(EXCLUDED.hdr_format, media_versions.hdr_format),
-			 	video_codec = COALESCE(EXCLUDED.video_codec, media_versions.video_codec),
-			 	audio_codec = COALESCE(EXCLUDED.audio_codec, media_versions.audio_codec),
-			 	source = COALESCE(EXCLUDED.source, media_versions.source),
-			 	quality_label = COALESCE(EXCLUDED.quality_label, media_versions.quality_label)
-			 RETURNING id`,
-			itemID, verName, f.path, container, isPrimary,
-			nullableJSON(miJSON), runtimeTicks, bitrate, size,
-			NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
-			NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel)).Scan(&mvID)
+		mvID, err := repository.NewPlaybackRepository(pool).UpsertMediaVersion(ctx, repository.MediaVersionUpsert{
+			ItemID:       itemID.String(),
+			Name:         verName,
+			FilePath:     f.path,
+			Container:    container,
+			IsPrimary:    isPrimary,
+			MediaInfo:    mi,
+			RuntimeTicks: runtimeTicks,
+			Bitrate:      bitrate,
+			Size:         size,
+			Resolution:   stringPtrIfNotEmpty(q.Resolution),
+			HDRFormat:    stringPtrIfNotEmpty(q.HDRFormat),
+			VideoCodec:   stringPtrIfNotEmpty(q.VideoCodec),
+			AudioCodec:   stringPtrIfNotEmpty(q.AudioCodec),
+			Source:       stringPtrIfNotEmpty(q.Source),
+			QualityLabel: stringPtrIfNotEmpty(qLabel),
+		})
 		if err != nil {
 			continue
 		}
