@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // FileChangeEvent 是 Webhook 对外 API 的事件格式,保留不变以兼容外部推送方。
@@ -64,14 +66,13 @@ func HandleFileChangeEvents(ctx context.Context, worker *IngestWorker, events []
 }
 
 func getWebhookPathMappings(ctx context.Context, pool *pgxpool.Pool) [][2]string {
-	var val *string
-	pool.QueryRow(ctx, "SELECT value FROM system_config WHERE key = 'webhook_path_mappings'").Scan(&val)
-	if val == nil {
+	val, ok, err := repository.NewSystemConfigRepository(pool).GetString(ctx, "webhook_path_mappings")
+	if err != nil || !ok || val == "" {
 		return nil
 	}
 
 	var arr []map[string]string
-	if err := json.Unmarshal([]byte(*val), &arr); err != nil {
+	if err := json.Unmarshal([]byte(val), &arr); err != nil {
 		return nil
 	}
 
@@ -99,20 +100,8 @@ func applyWebhookPathMappings(path string, mappings [][2]string) string {
 // 由 IngestWorker.processDelete 调用,放在这里是因为它是跨事件的"结构清理"
 // 而非单事件处理。
 func cleanupEmptyParents(ctx context.Context, pool *pgxpool.Pool) error {
-	_, err := pool.Exec(ctx,
-		`DELETE FROM items WHERE type = 'Season' AND id NOT IN (
-			SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Episode'
-		) AND type = 'Season'`)
-	if err != nil {
-		return fmt.Errorf("cleanup seasons: %w", err)
-	}
-
-	_, err = pool.Exec(ctx,
-		`DELETE FROM items WHERE type = 'Series' AND id NOT IN (
-			SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Season'
-		) AND type = 'Series'`)
-	if err != nil {
-		return fmt.Errorf("cleanup series: %w", err)
+	if err := repository.NewScanIngestRepository(pool).DeleteEmptyParents(ctx); err != nil {
+		return fmt.Errorf("cleanup empty parents: %w", err)
 	}
 	return nil
 }

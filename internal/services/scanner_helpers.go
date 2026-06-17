@@ -135,6 +135,13 @@ func NullableStr(s string) interface{} {
 	return s
 }
 
+func stringPtrIfNotEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // ComputeMediaVersionQuality 组合 mediainfo(优先)与文件名 NameParser(兜底)推导 QualityTags,
 // 并给出短标签(如 "4K HDR BluRay")。是所有 media_versions INSERT 路径的共用入口。
 func ComputeMediaVersionQuality(fileName string, mi map[string]interface{}) (scraper.QualityTags, string) {

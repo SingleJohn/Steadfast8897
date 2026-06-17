@@ -8,8 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 type libraryMatch struct {
@@ -34,27 +35,20 @@ func newLibraryIndex(pool *pgxpool.Pool) *libraryIndex {
 
 // Refresh 从 DB 重新加载 libraries → paths 映射。
 func (li *libraryIndex) Refresh(ctx context.Context) error {
-	rows, err := li.pool.Query(ctx, "SELECT id, collection_type, paths FROM libraries WHERE deleted_at IS NULL")
+	libs, err := repository.NewLibraryRepository(li.pool).ListLibrariesForIngestMatch(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
 	var entries []libraryMatch
-	for rows.Next() {
-		var id uuid.UUID
-		var ct string
-		var paths []string
-		if err := rows.Scan(&id, &ct, &paths); err != nil {
-			continue
-		}
-		for _, p := range paths {
+	for _, lib := range libs {
+		for _, p := range lib.Paths {
 			if p == "" {
 				continue
 			}
 			entries = append(entries, libraryMatch{
-				libID:          id.String(),
-				collectionType: ct,
+				libID:          lib.ID.String(),
+				collectionType: lib.CollectionType,
 				path:           filepath.Clean(p),
 			})
 		}

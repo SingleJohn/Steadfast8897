@@ -11,12 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteEmptySeasons = `-- name: DeleteEmptySeasons :exec
+DELETE FROM items
+WHERE type = 'Season'
+  AND id NOT IN (
+      SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Episode'
+  )
+`
+
+func (q *Queries) DeleteEmptySeasons(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteEmptySeasons)
+	return err
+}
+
+const deleteEmptySeries = `-- name: DeleteEmptySeries :exec
+DELETE FROM items
+WHERE type = 'Series'
+  AND id NOT IN (
+      SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Season'
+  )
+`
+
+func (q *Queries) DeleteEmptySeries(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteEmptySeries)
+	return err
+}
+
 const deleteExternalSubtitlesForMediaVersion = `-- name: DeleteExternalSubtitlesForMediaVersion :exec
 DELETE FROM external_subtitles WHERE media_version_id = $1::uuid
 `
 
 func (q *Queries) DeleteExternalSubtitlesForMediaVersion(ctx context.Context, dollar_1 pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteExternalSubtitlesForMediaVersion, dollar_1)
+	return err
+}
+
+const deleteItemExtraBackdrops = `-- name: DeleteItemExtraBackdrops :exec
+DELETE FROM item_images
+WHERE item_id = $1::uuid AND image_type = 'Backdrop'
+`
+
+func (q *Queries) DeleteItemExtraBackdrops(ctx context.Context, dollar_1 pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteItemExtraBackdrops, dollar_1)
 	return err
 }
 
@@ -99,6 +135,25 @@ func (q *Queries) DeleteItemsByPathPrefix(ctx context.Context, arg DeleteItemsBy
 		return nil, err
 	}
 	return items, nil
+}
+
+const fillCatalogNumberIfEmpty = `-- name: FillCatalogNumberIfEmpty :execrows
+UPDATE items
+SET catalog_number = $1
+WHERE id = $2::uuid AND (catalog_number IS NULL OR catalog_number = '')
+`
+
+type FillCatalogNumberIfEmptyParams struct {
+	CatalogNumber pgtype.Text `json:"catalog_number"`
+	Column2       pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) FillCatalogNumberIfEmpty(ctx context.Context, arg FillCatalogNumberIfEmptyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, fillCatalogNumberIfEmpty, arg.CatalogNumber, arg.Column2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getDominantEpisodeSeasonNumber = `-- name: GetDominantEpisodeSeasonNumber :one
@@ -260,6 +315,38 @@ func (q *Queries) GetSeasonParentIndexNumber(ctx context.Context, dollar_1 pgtyp
 	return parent_index_number, err
 }
 
+const listCatalogNumberBackfillCandidates = `-- name: ListCatalogNumberBackfillCandidates :many
+SELECT id, name, COALESCE(file_path, '') AS file_path
+FROM items
+WHERE type IN ('Movie', 'Series') AND (catalog_number IS NULL OR catalog_number = '')
+`
+
+type ListCatalogNumberBackfillCandidatesRow struct {
+	ID       pgtype.UUID `json:"id"`
+	Name     string      `json:"name"`
+	FilePath string      `json:"file_path"`
+}
+
+func (q *Queries) ListCatalogNumberBackfillCandidates(ctx context.Context) ([]ListCatalogNumberBackfillCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listCatalogNumberBackfillCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCatalogNumberBackfillCandidatesRow
+	for rows.Next() {
+		var i ListCatalogNumberBackfillCandidatesRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.FilePath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listItemsByPathPrefix = `-- name: ListItemsByPathPrefix :many
 SELECT id, file_path
 FROM items
@@ -286,6 +373,41 @@ func (q *Queries) ListItemsByPathPrefix(ctx context.Context, arg ListItemsByPath
 	for rows.Next() {
 		var i ListItemsByPathPrefixRow
 		if err := rows.Scan(&i.ID, &i.FilePath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMediaVersionBackfillCandidates = `-- name: ListMediaVersionBackfillCandidates :many
+SELECT i.id, i.file_path, i.container
+FROM items i
+WHERE i.type IN ('Movie', 'Episode')
+  AND i.file_path IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM media_versions mv WHERE mv.item_id = i.id)
+ORDER BY i.created_at DESC
+`
+
+type ListMediaVersionBackfillCandidatesRow struct {
+	ID        pgtype.UUID `json:"id"`
+	FilePath  pgtype.Text `json:"file_path"`
+	Container pgtype.Text `json:"container"`
+}
+
+func (q *Queries) ListMediaVersionBackfillCandidates(ctx context.Context) ([]ListMediaVersionBackfillCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listMediaVersionBackfillCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMediaVersionBackfillCandidatesRow
+	for rows.Next() {
+		var i ListMediaVersionBackfillCandidatesRow
+		if err := rows.Scan(&i.ID, &i.FilePath, &i.Container); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -323,6 +445,42 @@ func (q *Queries) ListMediaVersionsByPath(ctx context.Context, arg ListMediaVers
 	for rows.Next() {
 		var i ListMediaVersionsByPathRow
 		if err := rows.Scan(&i.ItemID, &i.ID, &i.FilePath); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPruneCandidatePaths = `-- name: ListPruneCandidatePaths :many
+SELECT id::text, file_path
+FROM items
+WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL
+`
+
+type ListPruneCandidatePathsParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Type    string      `json:"type"`
+}
+
+type ListPruneCandidatePathsRow struct {
+	ID       string      `json:"id"`
+	FilePath pgtype.Text `json:"file_path"`
+}
+
+func (q *Queries) ListPruneCandidatePaths(ctx context.Context, arg ListPruneCandidatePathsParams) ([]ListPruneCandidatePathsRow, error) {
+	rows, err := q.db.Query(ctx, listPruneCandidatePaths, arg.Column1, arg.Type)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPruneCandidatePathsRow
+	for rows.Next() {
+		var i ListPruneCandidatePathsRow
+		if err := rows.Scan(&i.ID, &i.FilePath); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -557,6 +715,71 @@ func (q *Queries) RenameExternalSubtitlePaths(ctx context.Context, arg RenameExt
 	return err
 }
 
+const setLocalTrailerPath = `-- name: SetLocalTrailerPath :exec
+UPDATE items
+SET local_trailer_path = $1
+WHERE id = $2::uuid
+`
+
+type SetLocalTrailerPathParams struct {
+	LocalTrailerPath pgtype.Text `json:"local_trailer_path"`
+	Column2          pgtype.UUID `json:"column_2"`
+}
+
+func (q *Queries) SetLocalTrailerPath(ctx context.Context, arg SetLocalTrailerPathParams) error {
+	_, err := q.db.Exec(ctx, setLocalTrailerPath, arg.LocalTrailerPath, arg.Column2)
+	return err
+}
+
+const syncItemArtwork = `-- name: SyncItemArtwork :exec
+UPDATE items
+SET primary_image_path = CASE
+                           WHEN $1::boolean THEN NULL
+                           WHEN NULLIF($2::text, '') IS NOT NULL THEN $2::text
+                           ELSE primary_image_path
+                         END,
+    primary_image_tag = CASE
+                          WHEN $1::boolean THEN NULL
+                          WHEN NULLIF($3::text, '') IS NOT NULL THEN $3::text
+                          ELSE primary_image_tag
+                        END,
+    backdrop_image_path = CASE
+                            WHEN $4::boolean THEN NULL
+                            WHEN NULLIF($5::text, '') IS NOT NULL THEN $5::text
+                            ELSE backdrop_image_path
+                          END,
+    backdrop_image_tag = CASE
+                           WHEN $4::boolean THEN NULL
+                           WHEN NULLIF($6::text, '') IS NOT NULL THEN $6::text
+                           ELSE backdrop_image_tag
+                         END,
+    updated_at = NOW()
+WHERE id = $7::uuid
+`
+
+type SyncItemArtworkParams struct {
+	ClearPoster   bool        `json:"clear_poster"`
+	PosterPath    string      `json:"poster_path"`
+	PosterTag     string      `json:"poster_tag"`
+	ClearBackdrop bool        `json:"clear_backdrop"`
+	BackdropPath  string      `json:"backdrop_path"`
+	BackdropTag   string      `json:"backdrop_tag"`
+	ItemID        pgtype.UUID `json:"item_id"`
+}
+
+func (q *Queries) SyncItemArtwork(ctx context.Context, arg SyncItemArtworkParams) error {
+	_, err := q.db.Exec(ctx, syncItemArtwork,
+		arg.ClearPoster,
+		arg.PosterPath,
+		arg.PosterTag,
+		arg.ClearBackdrop,
+		arg.BackdropPath,
+		arg.BackdropTag,
+		arg.ItemID,
+	)
+	return err
+}
+
 const updateItemBackdropImage = `-- name: UpdateItemBackdropImage :exec
 UPDATE items
 SET backdrop_image_path = $1, backdrop_image_tag = $2, updated_at = NOW()
@@ -701,6 +924,31 @@ func (q *Queries) UpsertExternalSubtitle(ctx context.Context, arg UpsertExternal
 		arg.Title,
 		arg.IsDefault,
 		arg.IsForced,
+	)
+	return err
+}
+
+const upsertItemExtraBackdrop = `-- name: UpsertItemExtraBackdrop :exec
+INSERT INTO item_images (item_id, image_type, idx, path, tag)
+VALUES ($1::uuid, 'Backdrop', $2, $3, $4)
+ON CONFLICT (item_id, image_type, idx) DO UPDATE SET
+  path = EXCLUDED.path,
+  tag = EXCLUDED.tag
+`
+
+type UpsertItemExtraBackdropParams struct {
+	Column1 pgtype.UUID `json:"column_1"`
+	Idx     int32       `json:"idx"`
+	Path    string      `json:"path"`
+	Tag     string      `json:"tag"`
+}
+
+func (q *Queries) UpsertItemExtraBackdrop(ctx context.Context, arg UpsertItemExtraBackdropParams) error {
+	_, err := q.db.Exec(ctx, upsertItemExtraBackdrop,
+		arg.Column1,
+		arg.Idx,
+		arg.Path,
+		arg.Tag,
 	)
 	return err
 }

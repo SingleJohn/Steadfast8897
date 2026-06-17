@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -10,8 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // ============ Pruning (Phase 3 差集) ============
@@ -51,28 +51,17 @@ func pruneMissingPaths(
 		}
 	}
 
-	type row struct{ id, fp string }
 	var count int
+	repo := repository.NewScanIngestRepository(pool)
 	for _, target := range targets {
-		rows, err := pool.Query(ctx,
-			`SELECT id::text, file_path FROM items
-			  WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL`,
-			libraryID, target.itemType)
+		candidates, err := repo.ListPruneCandidatePaths(ctx, libraryID, target.itemType)
 		if err != nil {
 			slog.Warn("[Prune] query failed", "library", libraryID, "type", target.itemType, "error", err)
 			continue
 		}
-		var candidates []row
-		for rows.Next() {
-			var r row
-			if rows.Scan(&r.id, &r.fp) == nil {
-				candidates = append(candidates, r)
-			}
-		}
-		rows.Close()
 
 		for _, c := range candidates {
-			cleaned := filepath.Clean(c.fp)
+			cleaned := filepath.Clean(c.FilePath)
 			if !pathInTrustedRoots(cleaned, trustedRoots) {
 				continue
 			}
@@ -110,39 +99,22 @@ func pathInTrustedRoots(cleaned string, trustedRoots []string) bool {
 // backfillCatalogNumbers 给 catalog_number 为空的 Movie/Series 用名称/文件名兜底提取番号。
 // NFO <num> 已在入库时写入,此处只填空值,不覆盖。
 func backfillCatalogNumbers(ctx context.Context, pool *pgxpool.Pool) {
-	rows, err := pool.Query(ctx,
-		`SELECT id, name, COALESCE(file_path, '') FROM items
-		  WHERE type IN ('Movie', 'Series') AND (catalog_number IS NULL OR catalog_number = '')`)
+	repo := repository.NewScanIngestRepository(pool)
+	pending, err := repo.ListCatalogNumberBackfillCandidates(ctx)
 	if err != nil {
 		return
 	}
-	type cnRow struct {
-		id       uuid.UUID
-		name     string
-		filePath string
-	}
-	var pending []cnRow
-	for rows.Next() {
-		var r cnRow
-		if err := rows.Scan(&r.id, &r.name, &r.filePath); err != nil {
-			continue
-		}
-		pending = append(pending, r)
-	}
-	rows.Close()
 
 	updated := 0
 	for _, r := range pending {
-		num := ExtractCatalogNumber(r.name)
-		if num == "" && r.filePath != "" {
-			num = ExtractCatalogNumber(filepath.Base(r.filePath))
+		num := ExtractCatalogNumber(r.Name)
+		if num == "" && r.FilePath != "" {
+			num = ExtractCatalogNumber(filepath.Base(r.FilePath))
 		}
 		if num == "" {
 			continue
 		}
-		if _, err := pool.Exec(ctx,
-			`UPDATE items SET catalog_number = $1 WHERE id = $2 AND (catalog_number IS NULL OR catalog_number = '')`,
-			num, r.id); err == nil {
+		if n, err := repo.FillCatalogNumberIfEmpty(ctx, r.ID, num); err == nil && n > 0 {
 			updated++
 		}
 	}
@@ -152,37 +124,10 @@ func backfillCatalogNumbers(ctx context.Context, pool *pgxpool.Pool) {
 }
 
 func backfillMediaVersions(ctx context.Context, pool *pgxpool.Pool) {
-	rows, err := pool.Query(ctx,
-		"SELECT i.id, i.file_path, i.container FROM items i "+
-			"WHERE i.type IN ('Movie', 'Episode') AND i.file_path IS NOT NULL "+
-			"AND NOT EXISTS (SELECT 1 FROM media_versions mv WHERE mv.item_id = i.id) "+
-			"ORDER BY i.created_at DESC")
+	items, err := repository.NewScanIngestRepository(pool).ListMediaVersionBackfillCandidates(ctx)
 	if err != nil {
 		return
 	}
-	defer rows.Close()
-
-	type backfillRow struct {
-		id        uuid.UUID
-		filePath  string
-		container string
-	}
-	var items []backfillRow
-	for rows.Next() {
-		var r backfillRow
-		var fp, ct *string
-		if err := rows.Scan(&r.id, &fp, &ct); err != nil {
-			continue
-		}
-		if fp != nil {
-			r.filePath = *fp
-		}
-		if ct != nil {
-			r.container = *ct
-		}
-		items = append(items, r)
-	}
-	rows.Close()
 
 	if len(items) == 0 {
 		return
@@ -195,35 +140,31 @@ func backfillMediaVersions(ctx context.Context, pool *pgxpool.Pool) {
 
 	for _, item := range items {
 		wg.Add(1)
-		go func(item backfillRow) {
+		go func(item repository.MediaVersionBackfillCandidate) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(item.filePath), "."))
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(item.FilePath), "."))
 			var vfContainer string
 			if ext == "strm" {
-				if rp := ResolveStrmPath(item.filePath); rp != nil {
+				if rp := ResolveStrmPath(item.FilePath); rp != nil {
 					vfContainer = strings.TrimPrefix(filepath.Ext(*rp), ".")
 				}
 				if vfContainer == "" {
-					vfContainer = item.container
+					vfContainer = item.Container
 				}
-			} else if item.container != "" {
-				vfContainer = item.container
+			} else if item.Container != "" {
+				vfContainer = item.Container
 			} else {
 				vfContainer = ext
 			}
 
-			name := strings.TrimSuffix(filepath.Base(item.filePath), filepath.Ext(item.filePath))
+			name := strings.TrimSuffix(filepath.Base(item.FilePath), filepath.Ext(item.FilePath))
 			if name == "" {
 				name = "Unknown"
 			}
-			mi := ReadMediainfoJSON(item.filePath)
-			var miJSON []byte
-			if mi != nil {
-				miJSON, _ = json.Marshal(mi)
-			}
+			mi := ReadMediainfoJSON(item.FilePath)
 
 			var runtimeTicks, bitrate, size *int64
 			if mi != nil {
@@ -232,14 +173,24 @@ func backfillMediaVersions(ctx context.Context, pool *pgxpool.Pool) {
 				size = getJSONInt64(mi, "Size")
 			}
 
-			q, qLabel := ComputeMediaVersionQuality(filepath.Base(item.filePath), mi)
-
-			pool.Exec(ctx,
-				"INSERT INTO media_versions (item_id, name, file_path, container, is_primary, mediainfo, runtime_ticks, bitrate, size, resolution, hdr_format, video_codec, audio_codec, source, quality_label) "+
-					"VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT DO NOTHING",
-				item.id, name, item.filePath, vfContainer, nullableJSON(miJSON), runtimeTicks, bitrate, size,
-				NullableStr(q.Resolution), NullableStr(q.HDRFormat), NullableStr(q.VideoCodec),
-				NullableStr(q.AudioCodec), NullableStr(q.Source), NullableStr(qLabel))
+			q, qLabel := ComputeMediaVersionQuality(filepath.Base(item.FilePath), mi)
+			_, _ = repository.NewPlaybackRepository(pool).UpsertMediaVersion(ctx, repository.MediaVersionUpsert{
+				ItemID:       item.ID.String(),
+				Name:         name,
+				FilePath:     item.FilePath,
+				Container:    vfContainer,
+				IsPrimary:    true,
+				MediaInfo:    mi,
+				RuntimeTicks: runtimeTicks,
+				Bitrate:      bitrate,
+				Size:         size,
+				Resolution:   stringPtrIfNotEmpty(q.Resolution),
+				HDRFormat:    stringPtrIfNotEmpty(q.HDRFormat),
+				VideoCodec:   stringPtrIfNotEmpty(q.VideoCodec),
+				AudioCodec:   stringPtrIfNotEmpty(q.AudioCodec),
+				Source:       stringPtrIfNotEmpty(q.Source),
+				QualityLabel: stringPtrIfNotEmpty(qLabel),
+			})
 			count.Add(1)
 		}(item)
 	}

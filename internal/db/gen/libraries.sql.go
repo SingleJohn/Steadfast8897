@@ -217,6 +217,39 @@ func (q *Queries) ListLibraries(ctx context.Context) ([]ListLibrariesRow, error)
 	return items, nil
 }
 
+const listLibrariesForIngestMatch = `-- name: ListLibrariesForIngestMatch :many
+SELECT id, collection_type, paths
+FROM libraries
+WHERE deleted_at IS NULL
+ORDER BY name
+`
+
+type ListLibrariesForIngestMatchRow struct {
+	ID             pgtype.UUID `json:"id"`
+	CollectionType string      `json:"collection_type"`
+	Paths          []string    `json:"paths"`
+}
+
+func (q *Queries) ListLibrariesForIngestMatch(ctx context.Context) ([]ListLibrariesForIngestMatchRow, error) {
+	rows, err := q.db.Query(ctx, listLibrariesForIngestMatch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLibrariesForIngestMatchRow
+	for rows.Next() {
+		var i ListLibrariesForIngestMatchRow
+		if err := rows.Scan(&i.ID, &i.CollectionType, &i.Paths); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLibrariesForWatcher = `-- name: ListLibrariesForWatcher :many
 SELECT id, name, paths
 FROM libraries

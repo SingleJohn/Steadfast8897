@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // ============ Directory Utilities ============
@@ -269,12 +271,7 @@ func FindLocalTrailer(dir string) string {
 
 // setLocalTrailer 把本地预告片路径写入 items.local_trailer_path(空路径则置空,幂等)。
 func setLocalTrailer(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, trailerPath string) {
-	var val interface{}
-	if trailerPath != "" {
-		val = trailerPath
-	}
-	if _, err := pool.Exec(ctx,
-		"UPDATE items SET local_trailer_path = $1 WHERE id = $2::uuid", val, itemID); err != nil {
+	if err := repository.NewScanIngestRepository(pool).SetLocalTrailerPath(ctx, itemID, trailerPath); err != nil {
 		slog.Warn("[Scan] Failed to set local trailer", "itemId", itemID, "error", err)
 	}
 }
@@ -296,8 +293,8 @@ func trailingNumber(path string) int {
 // syncItemExtraBackdrops 把 item 的额外 Backdrop(extrafanart)全量重写进 item_images。
 // 幂等:每次先删后插,重复扫不会放大。paths 为空时仅清理旧记录。
 func syncItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID uuid.UUID, paths []string) {
-	if _, err := pool.Exec(ctx,
-		"DELETE FROM item_images WHERE item_id = $1::uuid AND image_type = 'Backdrop'", itemID); err != nil {
+	repo := repository.NewScanIngestRepository(pool)
+	if err := repo.DeleteItemExtraBackdrops(ctx, itemID); err != nil {
 		slog.Warn("[Scan] Failed to clear extra backdrops", "itemId", itemID, "error", err)
 		return
 	}
@@ -306,11 +303,7 @@ func syncItemExtraBackdrops(ctx context.Context, pool *pgxpool.Pool, itemID uuid
 		if tag == nil {
 			continue
 		}
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO item_images (item_id, image_type, idx, path, tag)
-			 VALUES ($1::uuid, 'Backdrop', $2, $3, $4)
-			 ON CONFLICT (item_id, image_type, idx) DO UPDATE SET path = EXCLUDED.path, tag = EXCLUDED.tag`,
-			itemID, i+1, p, *tag); err != nil {
+		if err := repo.UpsertItemExtraBackdrop(ctx, itemID, i+1, p, *tag); err != nil {
 			slog.Warn("[Scan] Failed to insert extra backdrop", "itemId", itemID, "path", p, "error", err)
 		}
 	}
@@ -425,39 +418,7 @@ func syncItemArtworkWithClear(
 		return nil
 	}
 
-	_, err := pool.Exec(ctx,
-		`UPDATE items
-		 SET primary_image_path = CASE
-		                            WHEN $4 THEN NULL
-		                            WHEN NULLIF($2, '') IS NOT NULL THEN $2
-		                            ELSE primary_image_path
-		                          END,
-		     primary_image_tag = CASE
-		                           WHEN $4 THEN NULL
-		                           WHEN NULLIF($3, '') IS NOT NULL THEN $3
-		                           ELSE primary_image_tag
-		                         END,
-		     backdrop_image_path = CASE
-		                             WHEN $7 THEN NULL
-		                             WHEN NULLIF($5, '') IS NOT NULL THEN $5
-		                             ELSE backdrop_image_path
-		                           END,
-		     backdrop_image_tag = CASE
-		                            WHEN $7 THEN NULL
-		                            WHEN NULLIF($6, '') IS NOT NULL THEN $6
-		                            ELSE backdrop_image_tag
-		                          END,
-		     updated_at = NOW()
-		 WHERE id = $1::uuid`,
-		itemID,
-		derefStr(poster),
-		derefStr(posterTag),
-		clearPoster,
-		derefStr(backdrop),
-		derefStr(backdropTag),
-		clearBackdrop,
-	)
-	return err
+	return repository.NewScanIngestRepository(pool).SyncItemArtwork(ctx, itemID, poster, posterTag, clearPoster, backdrop, backdropTag, clearBackdrop)
 }
 
 func ReadMediainfoJSON(filePath string) map[string]interface{} {

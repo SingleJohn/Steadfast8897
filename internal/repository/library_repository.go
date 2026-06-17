@@ -21,6 +21,12 @@ type WatchLibrary struct {
 	Paths []string
 }
 
+type IngestMatchLibrary struct {
+	ID             uuid.UUID
+	CollectionType string
+	Paths          []string
+}
+
 func NewLibraryRepository(pool *pgxpool.Pool) *LibraryRepository {
 	return &LibraryRepository{queries: dbgen.New(pool)}
 }
@@ -48,6 +54,22 @@ func (r *LibraryRepository) ListLibrariesForWatcher(ctx context.Context) ([]Watc
 			ID:    fromPGUUID(row.ID),
 			Name:  row.Name,
 			Paths: row.Paths,
+		})
+	}
+	return libs, nil
+}
+
+func (r *LibraryRepository) ListLibrariesForIngestMatch(ctx context.Context) ([]IngestMatchLibrary, error) {
+	rows, err := r.queries.ListLibrariesForIngestMatch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	libs := make([]IngestMatchLibrary, 0, len(rows))
+	for _, row := range rows {
+		libs = append(libs, IngestMatchLibrary{
+			ID:             fromPGUUID(row.ID),
+			CollectionType: row.CollectionType,
+			Paths:          row.Paths,
 		})
 	}
 	return libs, nil

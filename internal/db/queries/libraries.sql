@@ -11,6 +11,12 @@ FROM libraries
 WHERE deleted_at IS NULL
 ORDER BY name;
 
+-- name: ListLibrariesForIngestMatch :many
+SELECT id, collection_type, paths
+FROM libraries
+WHERE deleted_at IS NULL
+ORDER BY name;
+
 -- name: GetLibraryByID :one
 SELECT id, name, collection_type, paths, created_at, primary_image_path, primary_image_tag, sort_order,
        COALESCE(scrape_config::text, ''::text) AS scrape_config

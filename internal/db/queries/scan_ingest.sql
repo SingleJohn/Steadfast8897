@@ -175,3 +175,81 @@ ORDER BY index_number;
 
 -- name: GetItemPrimaryImageTag :one
 SELECT primary_image_tag FROM items WHERE id = $1::uuid;
+
+-- name: DeleteEmptySeasons :exec
+DELETE FROM items
+WHERE type = 'Season'
+  AND id NOT IN (
+      SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Episode'
+  );
+
+-- name: DeleteEmptySeries :exec
+DELETE FROM items
+WHERE type = 'Series'
+  AND id NOT IN (
+      SELECT DISTINCT parent_id FROM items WHERE parent_id IS NOT NULL AND type = 'Season'
+  );
+
+-- name: SetLocalTrailerPath :exec
+UPDATE items
+SET local_trailer_path = $1
+WHERE id = $2::uuid;
+
+-- name: DeleteItemExtraBackdrops :exec
+DELETE FROM item_images
+WHERE item_id = $1::uuid AND image_type = 'Backdrop';
+
+-- name: UpsertItemExtraBackdrop :exec
+INSERT INTO item_images (item_id, image_type, idx, path, tag)
+VALUES ($1::uuid, 'Backdrop', $2, $3, $4)
+ON CONFLICT (item_id, image_type, idx) DO UPDATE SET
+  path = EXCLUDED.path,
+  tag = EXCLUDED.tag;
+
+-- name: SyncItemArtwork :exec
+UPDATE items
+SET primary_image_path = CASE
+                           WHEN sqlc.arg(clear_poster)::boolean THEN NULL
+                           WHEN NULLIF(sqlc.arg(poster_path)::text, '') IS NOT NULL THEN sqlc.arg(poster_path)::text
+                           ELSE primary_image_path
+                         END,
+    primary_image_tag = CASE
+                          WHEN sqlc.arg(clear_poster)::boolean THEN NULL
+                          WHEN NULLIF(sqlc.arg(poster_tag)::text, '') IS NOT NULL THEN sqlc.arg(poster_tag)::text
+                          ELSE primary_image_tag
+                        END,
+    backdrop_image_path = CASE
+                            WHEN sqlc.arg(clear_backdrop)::boolean THEN NULL
+                            WHEN NULLIF(sqlc.arg(backdrop_path)::text, '') IS NOT NULL THEN sqlc.arg(backdrop_path)::text
+                            ELSE backdrop_image_path
+                          END,
+    backdrop_image_tag = CASE
+                           WHEN sqlc.arg(clear_backdrop)::boolean THEN NULL
+                           WHEN NULLIF(sqlc.arg(backdrop_tag)::text, '') IS NOT NULL THEN sqlc.arg(backdrop_tag)::text
+                           ELSE backdrop_image_tag
+                         END,
+    updated_at = NOW()
+WHERE id = sqlc.arg(item_id)::uuid;
+
+-- name: ListPruneCandidatePaths :many
+SELECT id::text, file_path
+FROM items
+WHERE library_id = $1::uuid AND type = $2 AND file_path IS NOT NULL;
+
+-- name: ListCatalogNumberBackfillCandidates :many
+SELECT id, name, COALESCE(file_path, '') AS file_path
+FROM items
+WHERE type IN ('Movie', 'Series') AND (catalog_number IS NULL OR catalog_number = '');
+
+-- name: FillCatalogNumberIfEmpty :execrows
+UPDATE items
+SET catalog_number = $1
+WHERE id = $2::uuid AND (catalog_number IS NULL OR catalog_number = '');
+
+-- name: ListMediaVersionBackfillCandidates :many
+SELECT i.id, i.file_path, i.container
+FROM items i
+WHERE i.type IN ('Movie', 'Episode')
+  AND i.file_path IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM media_versions mv WHERE mv.item_id = i.id)
+ORDER BY i.created_at DESC;
