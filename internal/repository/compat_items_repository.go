@@ -245,7 +245,7 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 		}
 	}
 	if strings.TrimSpace(opts.AnyProviderIDEquals) != "" {
-		var ors []string
+		var kv []string
 		for _, raw := range strings.FieldsFunc(opts.AnyProviderIDEquals, func(r rune) bool { return r == ';' || r == ',' }) {
 			raw = strings.TrimSpace(raw)
 			dot := strings.Index(raw, ".")
@@ -257,14 +257,13 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 			if provider == "" || id == "" {
 				continue
 			}
-			ors = append(ors, fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM jsonb_each_text(i.provider_ids) pe WHERE LOWER(pe.key) = $%d AND pe.value = $%d)",
-				idx, idx+1))
-			args = append(args, provider, id)
-			idx += 2
+			kv = append(kv, provider+"="+id)
 		}
-		if len(ors) > 0 {
-			whereParts = append(whereParts, "i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
+		if len(kv) > 0 {
+			// 走 idx_items_provider_kv(GIN),等价于原 OR-of-EXISTS,避免整表顺序扫描。
+			whereParts = append(whereParts, fmt.Sprintf("item_provider_kv(i.provider_ids) && $%d::text[]", idx))
+			args = append(args, kv)
+			idx++
 		}
 	}
 	if len(whereParts) > 0 {

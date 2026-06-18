@@ -25,7 +25,7 @@ ON CONFLICT (item_id, file_path) DO UPDATE SET
 RETURNING id::text;
 
 -- name: GetMergedPrimaryID :one
-SELECT merged_to_id::text
+SELECT COALESCE(merged_to_id::text, '')
 FROM items
 WHERE id = $1::uuid;
 

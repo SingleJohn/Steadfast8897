@@ -145,16 +145,16 @@ func (q *Queries) GetMediaVersionItemAndInfo(ctx context.Context, dollar_1 pgtyp
 }
 
 const getMergedPrimaryID = `-- name: GetMergedPrimaryID :one
-SELECT merged_to_id::text
+SELECT COALESCE(merged_to_id::text, '')
 FROM items
 WHERE id = $1::uuid
 `
 
 func (q *Queries) GetMergedPrimaryID(ctx context.Context, dollar_1 pgtype.UUID) (string, error) {
 	row := q.db.QueryRow(ctx, getMergedPrimaryID, dollar_1)
-	var merged_to_id string
-	err := row.Scan(&merged_to_id)
-	return merged_to_id, err
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const getPrimaryMediaStreamsJSON = `-- name: GetPrimaryMediaStreamsJSON :one

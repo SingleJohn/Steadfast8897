@@ -244,16 +244,15 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 	}
 
 	if len(options.AnyProviderID) > 0 {
-		ors := make([]string, len(options.AnyProviderID))
+		// 走 idx_items_provider_kv(GIN):规范化成 lower(key)=value 数组后做重叠匹配,
+		// 等价于原 OR-of-EXISTS(任一命中),避免整表 jsonb_each_text 顺序扫描。
+		kv := make([]string, len(options.AnyProviderID))
 		for i, p := range options.AnyProviderID {
-			ors[i] = fmt.Sprintf(
-				"EXISTS (SELECT 1 FROM jsonb_each_text(i.provider_ids) pe WHERE LOWER(pe.key) = $%d AND pe.value = $%d)",
-				paramIdx, paramIdx+1)
-			params = append(params, p.Provider, p.ID)
-			paramIdx += 2
+			kv[i] = p.Provider + "=" + p.ID
 		}
-		conditions = append(conditions,
-			"i.provider_ids IS NOT NULL AND jsonb_typeof(i.provider_ids) = 'object' AND ("+strings.Join(ors, " OR ")+")")
+		conditions = append(conditions, fmt.Sprintf("item_provider_kv(i.provider_ids) && $%d::text[]", paramIdx))
+		params = append(params, kv)
+		paramIdx++
 	}
 
 	if options.HasSubtitles != nil {
@@ -356,8 +355,24 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 		return &ItemQueryResult{Rows: rowMaps, TotalCount: totalCount}, nil
 	}
 
+	// useRepresentative 的数据查询本就必须扫全库 + 窗口排序(无法借索引提前终止),
+	// 所以总数随数据查询用 COUNT(*) OVER() 一并带出,省掉这里再单独 COUNT 全扫一次。
+	// 仅当数据查询返回 0 行(OFFSET 越界 / 空集)拿不到窗口值时,用此闭包回填精确总数。
+	representativeCount := func() (int64, error) {
+		countSQL := fmt.Sprintf(
+			"SELECT COUNT(DISTINCT %s) FROM items i %s %s %s",
+			itemMergedRepresentativeExpr("i"), genreJoin, userJoin, whereClause)
+		countParams := append([]any{}, params...)
+		var n int64
+		err := r.pool.QueryRow(ctx, countSQL, countParams...).Scan(&n)
+		return n, err
+	}
+
 	var totalCount int64
-	if options.StartIndex != nil && *options.StartIndex > 0 && genreJoin == "" && !useRepresentative {
+	totalCountFromRows := useRepresentative
+	if useRepresentative {
+		// 推迟到数据查询(见下方 COUNT(*) OVER())
+	} else if options.StartIndex != nil && *options.StartIndex > 0 && genreJoin == "" {
 		if len(options.IncludeItemTypes) == 1 && options.ParentID == nil && len(options.ParentIDs) == 0 && options.LibraryID == nil && options.SearchTerm == nil && len(options.Studio) == 0 {
 			_ = r.pool.QueryRow(ctx,
 				"SELECT COALESCE(n_live_tup, 0) FROM pg_stat_user_tables WHERE relname = 'items'").Scan(&totalCount)
@@ -374,9 +389,7 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 		}
 	} else {
 		countTarget := "DISTINCT i.id"
-		if useRepresentative {
-			countTarget = "DISTINCT " + itemMergedRepresentativeExpr("i")
-		} else if genreJoin == "" {
+		if genreJoin == "" {
 			countTarget = "*"
 		}
 		countSQL := fmt.Sprintf(
@@ -410,7 +423,7 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 					) AS merge_row_num
 				FROM filtered
 			)
-			SELECT * FROM ranked WHERE merge_row_num = 1 ORDER BY %s`,
+			SELECT *, COUNT(*) OVER() AS __total_count FROM ranked WHERE merge_row_num = 1 ORDER BY %s`,
 			needDistinct, userColumns, seriesCols, itemMergedRepresentativeExpr("i"),
 			genreJoin, userJoin, seriesJoin, whereClause, outerOrder)
 	} else if genreJoin != "" {
@@ -441,6 +454,19 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 	rowMaps, err := scanItemQueryRows(rows)
 	if err != nil {
 		return nil, err
+	}
+	if totalCountFromRows {
+		if len(rowMaps) > 0 {
+			if v, ok := rowMaps[0]["__total_count"].(int64); ok {
+				totalCount = v
+			}
+			for _, m := range rowMaps {
+				delete(m, "__total_count")
+			}
+		} else if n, err := representativeCount(); err == nil {
+			// 0 行:OFFSET 越界或空集,无窗口值可取,回填精确总数。
+			totalCount = n
+		}
 	}
 	return &ItemQueryResult{Rows: rowMaps, TotalCount: totalCount}, nil
 }
