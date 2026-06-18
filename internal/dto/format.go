@@ -258,6 +258,11 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 		if item.SeriesBackdropImageTag != nil {
 			dto.ParentBackdropItemID = seriesItemID
 			dto.ParentBackdropImageTags = []string{*item.SeriesBackdropImageTag}
+		} else if item.PrimaryImageTag != nil {
+			// 分集/季在自身与剧集都没有 backdrop 时,用自身 thumb(Primary,16:9 剧照)兜底为 Backdrop,
+			// 对齐 Emby「缺 Backdrop 回落 thumb」的行为:否则客户端/通知工具读不到任何 backdrop tag
+			// 就不会发起 /Images/Backdrop 请求。配合 images.go 中 Backdrop→自身 Primary 的回落即可取到图。
+			dto.BackdropImageTags = []string{*item.PrimaryImageTag}
 		}
 	}
 
