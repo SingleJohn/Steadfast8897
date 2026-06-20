@@ -107,6 +107,7 @@ func getUserViews(c *gin.Context) {
 			if colType != "" {
 				entry["CollectionType"] = colType
 			}
+			entry = applyCollectionFolderDefaults(entry, colType, colType != "")
 			platformEntries = append(platformEntries, entry)
 		}
 	}
@@ -178,6 +179,16 @@ func getUserViews(c *gin.Context) {
 			}
 		} else if len(lib.Paths) > 0 {
 			entry["Path"] = lib.Paths[0]
+		}
+		entry = applyCollectionFolderDefaults(entry, lib.CollectionType, lib.CollectionType != "mixed")
+		if lib.CollectionType == "mixed" {
+			if ud, ok := entry["UserData"].(gin.H); ok {
+				delete(ud, "PlayCount")
+				delete(ud, "UnplayedItemCount")
+			} else if ud, ok := entry["UserData"].(map[string]interface{}); ok {
+				delete(ud, "PlayCount")
+				delete(ud, "UnplayedItemCount")
+			}
 		}
 		libEntries = append(libEntries, entry)
 	}
@@ -499,7 +510,7 @@ func getItems(c *gin.Context) {
 	applySeasonNames(ctx, state.DB, items)
 
 	c.JSON(http.StatusOK, gin.H{
-		"Items":            items,
+		"Items":            baseItemsToEmbyMaps(items),
 		"TotalRecordCount": embyTotalRecordCount(c, res.TotalCount),
 	})
 }
@@ -602,7 +613,7 @@ func getResumeItems(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"Items":            items,
+		"Items":            baseItemsToEmbyMaps(items),
 		"TotalRecordCount": embyTotalRecordCount(c, res.TotalCount),
 	})
 }
@@ -662,7 +673,7 @@ func getLatestItems(c *gin.Context) {
 				items = append(items, item)
 			}
 			applyUnplayedItemCounts(ctx, state.DB, pathUser, items)
-			c.JSON(http.StatusOK, items)
+			c.JSON(http.StatusOK, baseItemsToEmbyMaps(items))
 			return
 		}
 	}
@@ -673,7 +684,7 @@ func getLatestItems(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, items)
+	c.JSON(http.StatusOK, baseItemsToEmbyMaps(items))
 }
 
 func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID string, limit int64, scope *userLibraryScope, userID string, platformByID map[string]models.PlatformLibrary) ([]dto.BaseItemDto, error) {
@@ -790,5 +801,9 @@ func getLatestBatch(c *gin.Context) {
 		result[libID] = items
 	}
 
-	c.JSON(http.StatusOK, result)
+	out := gin.H{}
+	for id, items := range result {
+		out[id] = baseItemsToEmbyMaps(items)
+	}
+	c.JSON(http.StatusOK, out)
 }

@@ -431,6 +431,7 @@ func getItemDetail(c *gin.Context) {
 		if colType != "" {
 			resp["CollectionType"] = colType
 		}
+		resp = applyCollectionFolderDefaults(resp, colType, colType != "")
 		c.JSON(http.StatusOK, resp)
 		return
 	}
@@ -477,6 +478,7 @@ func getItemDetail(c *gin.Context) {
 			if len(lib.Paths) > 0 {
 				resp["Path"] = lib.Paths[0]
 			}
+			resp = applyCollectionFolderDefaults(resp, lib.CollectionType, lib.CollectionType != "mixed")
 			c.JSON(http.StatusOK, resp)
 			return
 		}
@@ -564,7 +566,7 @@ func getItemDetail(c *gin.Context) {
 	if item.ItemType == "Movie" || item.ItemType == "Episode" {
 		// Ensure MediaSources is always present (even as []) for playable items
 		if _, ok := result["MediaSources"]; !ok {
-			result["MediaSources"] = []dto.MediaSourceInfo{}
+			result["MediaSources"] = []gin.H{}
 		}
 
 		// Top-level MediaStreams: if DB had no streams, try mediainfo fallback (matching Rust)
@@ -578,6 +580,10 @@ func getItemDetail(c *gin.Context) {
 			}
 		}
 	}
+	if len(base.MediaSources) > 0 {
+		result["MediaSources"] = mediaSourcesToEmbyMaps(base.MediaSources)
+	}
+	applyBaseItemEmbyDefaults(result)
 
 	c.JSON(http.StatusOK, result)
 }
@@ -633,5 +639,5 @@ func getSimilarItems(c *gin.Context) {
 	for i := range items {
 		out = append(out, dto.FormatItemDto(&items[i], sid, nil))
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": out, "TotalRecordCount": len(out)})
+	c.JSON(http.StatusOK, gin.H{"Items": baseItemsToEmbyMaps(out), "TotalRecordCount": len(out)})
 }

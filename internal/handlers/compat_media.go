@@ -46,6 +46,12 @@ func applyMediaSourceCompatDefaults(src *dto.MediaSourceInfo, itemID string) {
 	}
 	src.ItemID = itemID
 	src.SupportsProbing = true
+	src.HasMixedProtocols = false
+	src.IsInfiniteStream = false
+	src.RequiresOpening = false
+	src.RequiresClosing = false
+	src.RequiresLooping = false
+	src.ReadAtNativeFramerate = false
 	if src.RequiredHTTPHeaders == nil {
 		src.RequiredHTTPHeaders = map[string]string{}
 	}
@@ -54,6 +60,16 @@ func applyMediaSourceCompatDefaults(src *dto.MediaSourceInfo, itemID string) {
 	}
 	if src.Chapters == nil {
 		src.Chapters = []dto.ChapterInfo{}
+	}
+	if src.MediaStreams == nil {
+		src.MediaStreams = []dto.MediaStreamInfo{}
+	}
+	if src.MediaAttachments == nil {
+		src.MediaAttachments = []interface{}{}
+	}
+	if src.VideoType == nil {
+		videoType := "VideoFile"
+		src.VideoType = &videoType
 	}
 }
 

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -589,7 +588,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 				sources := buildItemMediaSources(ctx, state, itemID, &row)
 				if len(sources) > 0 {
 					hideMediaSourceSizeForInfuse(c, sources)
-					result["MediaSources"] = sources
+					result["MediaSources"] = mediaSourcesToEmbyMaps(sources)
 					result["MediaStreams"] = sources[0].MediaStreams
 					if strings.TrimSpace(sources[0].Path) != "" {
 						result["Path"] = sources[0].Path
@@ -651,15 +650,7 @@ func uuidToString(v interface{}) string {
 }
 
 func dtoToMap(d dto.BaseItemDto) gin.H {
-	b, err := json.Marshal(d)
-	if err != nil {
-		return gin.H{"Id": d.ID, "Name": d.Name, "Type": d.Type}
-	}
-	var m gin.H
-	if err := json.Unmarshal(b, &m); err != nil {
-		return gin.H{"Id": d.ID, "Name": d.Name, "Type": d.Type}
-	}
-	return m
+	return baseItemToEmbyMap(d)
 }
 
 func searchHints(c *gin.Context, state *AppState) {

@@ -90,7 +90,7 @@ func getSeasons(c *gin.Context, state *AppState) {
 		items = append(items, d)
 	}
 	applyUnplayedItemCounts(ctx, state.DB, userID, items)
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, int64(len(items)))})
+	c.JSON(http.StatusOK, gin.H{"Items": baseItemsToEmbyMaps(items), "TotalRecordCount": embyTotalRecordCount(c, int64(len(items)))})
 }
 
 func getEpisodes(c *gin.Context, state *AppState) {
@@ -256,5 +256,5 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		items = append(items, d)
 	}
 	applySeasonNames(ctx, state.DB, items)
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": embyTotalRecordCount(c, totalCount)})
+	c.JSON(http.StatusOK, gin.H{"Items": baseItemsToEmbyMaps(items), "TotalRecordCount": embyTotalRecordCount(c, totalCount)})
 }

@@ -15,6 +15,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+var emptyProviderIDsJSON = json.RawMessage(`{}`)
+
 // strmItemPathResolvedFlag 控制 strm 条目「item 级 Path」字段的取值:
 //   - false(默认)= 返回 .strm 文件本身的路径(对齐 Emby:item.Path 永远是 .strm,
 //     解析后的真实地址只出现在 MediaSources.Path)
@@ -142,17 +144,26 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	}
 	canDelete := false
 	supportsSync := true
+	lockData := false
+	locationType := "FileSystem"
 	dto.CanDelete = &canDelete
 	dto.SupportsSync = &supportsSync
+	dto.ForcedSortName = &sortName
+	dto.PresentationUniqueKey = &item.ID
+	dto.DisplayPreferencesID = &item.ID
+	dto.LockData = &lockData
+	dto.LocationType = &locationType
 
 	switch item.ItemType {
 	case "Movie", "Episode":
 		mediaType := "Video"
 		isFolder := false
 		canDownload := true
+		playAccess := "Full"
 		dto.MediaType = &mediaType
 		dto.IsFolder = &isFolder
 		dto.CanDownload = &canDownload
+		dto.PlayAccess = &playAccess
 	case "Series", "Season", "CollectionFolder", "Folder":
 		isFolder := true
 		canDownload := false
@@ -181,6 +192,10 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	dto.SeriesName = item.SeriesName
 	dto.SeasonID = item.SeasonID
 	dto.ProviderIDs = normalizeProviderIDs(item.ProviderIDs)
+	if dto.ProviderIDs == nil {
+		rm := json.RawMessage(append([]byte(nil), emptyProviderIDsJSON...))
+		dto.ProviderIDs = &rm
+	}
 
 	// displayPath = item 级 Path 字段；resolvedStrm = 解析 .strm 得到的内层真实路径
 	// (仅非列表模式下读盘获得，用于推导真实 Container)。
@@ -243,9 +258,7 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if item.PrimaryImageTag != nil {
 		imageTags["Primary"] = *item.PrimaryImageTag
 	}
-	if len(imageTags) > 0 {
-		dto.ImageTags = imageTags
-	}
+	dto.ImageTags = imageTags
 	if includePrimaryImageAspectRatio {
 		if ratio := primaryImageAspectRatio(item.PrimaryImagePath); ratio != nil {
 			dto.PrimaryImageAspectRatio = ratio
@@ -287,6 +300,12 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 
 	dto.ChildCount = item.ChildCount
 	dto.RecursiveItemCount = item.RecursiveItemCount
+	dto.ExternalURLs = []ExternalUrl{}
+	dto.RemoteTrailers = []MediaUrl{}
+	dto.LockedFields = []string{}
+	dto.ProductionLocations = []string{}
+	dto.Taglines = []string{}
+	dto.TagItems = []TagItem{}
 
 	// Supplemental fields for bot/search compatibility
 	if item.Tagline != nil && *item.Tagline != "" {
@@ -295,12 +314,11 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 	if item.CreatedAt != nil {
 		t := item.CreatedAt.UTC().Format("2006-01-02T15:04:05.0000000Z")
 		dto.DateCreated = &t
+		dto.DateModified = &t
 	}
 	if item.Studio != nil && *item.Studio != "" {
 		dto.Studios = []StudioItem{{Name: *item.Studio, ID: studioStableID(*item.Studio)}}
 	}
-	dto.ProductionLocations = []string{}
-
 	if userData != nil {
 		position := int64(0)
 		if userData.PlaybackPositionTicks != nil {
@@ -341,7 +359,12 @@ func formatItemDto(item *ItemRow, serverID string, userData *UserDataRow, skipSt
 			PlayedPercentage:      percentage,
 		}
 	} else {
-		dto.UserData = &UserItemDataDto{}
+		dto.UserData = &UserItemDataDto{
+			PlaybackPositionTicks: 0,
+			PlayCount:             0,
+			IsFavorite:            false,
+			Played:                false,
+		}
 	}
 
 	return dto

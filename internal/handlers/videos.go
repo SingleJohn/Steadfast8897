@@ -527,7 +527,7 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 	go services.ProbeOnPlay(state.DB, *uid, selectedMediaSourceID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"MediaSources":  sources,
+		"MediaSources":  mediaSourcesToEmbyMaps(sources),
 		"PlaySessionId": playSessionID,
 	})
 }
