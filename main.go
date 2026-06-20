@@ -25,6 +25,7 @@ import (
 	"fyms/internal/middleware"
 	"fyms/internal/repository"
 	"fyms/internal/services"
+	"fyms/internal/services/imagecache"
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
 	"fyms/internal/services/taskcenter/adapters"
@@ -151,7 +152,7 @@ func main() {
 	bitrateEstimator := services.NewRedirectBitrateEstimator(pool, sessionManager)
 	sysCollector := sysmetrics.NewCollector(2*time.Second, bitrateEstimator.Estimate)
 
-	imageCache := handlers.NewImageCache(cfg, httpClient)
+	imageCache := imagecache.NewImageCache(cfg, httpClient)
 	// 启动时从 system_config 加载"本地原图直读"开关(默认 false=直读)。
 	// postConfiguration 保存后会调 imageCache.SetCopyLocal 实时生效。
 	{
