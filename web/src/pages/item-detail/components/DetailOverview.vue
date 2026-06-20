@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { formatOverviewDetail } from '@/utils/overviewText'
 import type { CrewGroup } from '../types'
 
 const props = defineProps<{
@@ -12,13 +13,7 @@ const emit = defineEmits<{
 }>()
 
 const overviewText = computed(() => {
-  const raw = String(props.item?.Overview || '')
-  if (!raw) return ''
-  return raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return formatOverviewDetail(props.item?.Overview)
 })
 </script>
 

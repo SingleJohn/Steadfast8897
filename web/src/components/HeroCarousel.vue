@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Swiper, SwiperSlide } from 'swiper/vue'
 import { Autoplay, Pagination } from 'swiper/modules'
@@ -7,10 +8,16 @@ import 'swiper/css'
 // @ts-ignore
 import 'swiper/css/pagination'
 import { getImageUrl, toggleFavorite } from '../api/client'
+import { formatOverviewSummary } from '@/utils/overviewText'
 
-defineProps<{ items: any[] }>()
+const props = defineProps<{ items: any[] }>()
 const router = useRouter()
 const modules = [Autoplay, Pagination]
+
+const slides = computed(() => props.items.map((item) => ({
+  item,
+  overviewSummary: formatOverviewSummary(item?.Overview),
+})))
 
 function formatRating(r?: number) {
   return r ? r.toFixed(1) : null
@@ -68,16 +75,16 @@ function titleClass(item: any): string {
 </script>
 
 <template>
-  <div v-if="items.length" class="hero-carousel">
+  <div v-if="slides.length" class="hero-carousel">
     <Swiper
       :modules="modules"
       :slides-per-view="1"
-      :autoplay="items.length > 1 ? { delay: 8000, disableOnInteraction: false } : false"
+      :autoplay="slides.length > 1 ? { delay: 8000, disableOnInteraction: false } : false"
       :pagination="{ clickable: true, el: '.hero-pagination' }"
-      :loop="items.length > 1"
+      :loop="slides.length > 1"
       class="hero-swiper"
     >
-      <SwiperSlide v-for="(item, index) in items" :key="item.Id">
+      <SwiperSlide v-for="({ item, overviewSummary }, index) in slides" :key="item.Id">
         <article class="hero-slide">
           <img
             :src="getImageUrl(backdropId(item), 'Backdrop', { maxWidth: 1920, quality: 86 })"
@@ -117,7 +124,7 @@ function titleClass(item: any): string {
 
               <h1 class="hero-title" :class="titleClass(item)" :title="item.Name">{{ item.Name }}</h1>
 
-              <p v-if="item.Overview" class="hero-overview">{{ item.Overview }}</p>
+              <p v-if="overviewSummary" class="hero-overview">{{ overviewSummary }}</p>
 
               <div class="hero-actions">
                 <button class="hero-btn hero-btn-primary" @click.prevent="goPlay(item)">
