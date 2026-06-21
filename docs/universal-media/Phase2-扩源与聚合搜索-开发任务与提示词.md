@@ -192,6 +192,8 @@ normalize.go；internal/services 的并发/超时模式。
 
 实际落点（续修）：修复真实站点搜索/聚合搜索入库时报 `source_items.directors` NOT NULL 约束失败的问题。`internal/source/ingest.go` 在 SourceIngestor 入库前将 nil `Directors/Actors` 归一为 `[]string{}`；`internal/repository/source_item_repository.go` 在 source_items upsert SQL 中对 directors/actors 使用 `COALESCE($n, '{}'::text[])` 做最终兜底；`internal/repository/source_scan_repository.go` 增加通用 `nonNilStrings` helper。已核查 `provider_ids/raw/headers/resolver_payload` 仍通过 `jsonObjectBytes/jsonBytesOrObject` 兜底为 `{}`。验证：`go build ./...` 通过；按 §A 未启动服务，暴風/索尼/快帆/量子/非凡与 `/SourceSearch` 运行期结果待你复测。T14 续修 commit 范围：6e6cd2b。
 
+实际落点（续修）：修复真实配置下 `/SourceSearch` 被慢站/死站拖到整体 deadline 后快站结果清零的问题。`internal/source/federated_search.go` 移除聚合层固定 12s 父 deadline 与跨 provider 的共享并发闸门，所有 searchable CMS provider 独立 goroutine 并发执行；每站使用自己的 `timeout_ms`（默认 8s）创建独立 context，聚合收集窗口按最大单站 timeout + 3s 余量计算，到点只把未完成 provider 归入 `errors[]`，已完成结果正常合并返回；per-provider limiter 仍按 provider ID 独立复用。顺手补齐 `internal/source/cms_provider.go` 对 UTF-8 BOM、空响应、未知格式响应的容错，空/未知格式归一为 `site_unavailable`；`internal/source/observability.go` 同步错误类型归一。验证：`go build ./...` 通过；按 §A 未启动服务，0821 真实 `/SourceSearch` 合并暴風/量子结果与 5 个不可用站 errors 待你复测。T14 聚合超时续修 commit 范围：c409386。
+
 ---
 
 ## T15 — 聚合搜索接入 Emby + Web 前端【人工里程碑】
