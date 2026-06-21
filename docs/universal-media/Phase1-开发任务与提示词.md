@@ -250,6 +250,25 @@ images.go（图片缓存与回退链）、platform 虚拟库在 getUserViews 的
 
 实际落点：新增 internal/source/ssrf.go、internal/source/play_resolver.go、internal/handlers/media/source_play.go、internal/handlers/media/source_playback.go、internal/handlers/playback/source_userdata.go；扩展 internal/repository/source_repository.go、internal/handlers/media/videos.go、internal/handlers/playback/playback.go；新增 /SourcePlay/{playSourceUUID}/stream 双注册代理端点、direct ResolvePlay、Redis/内存短缓存、SSRF 出站校验、在线 PlaybackInfo MediaSources、source_user_item_data 进度/已看/收藏回写；T4 commit 范围：6d938fe..bd5e815。
 
+### T4 实测发现（放行 T5 前由 Codex 修复）
+
+P0 PoC 抓包实测：后端全链路通（Views/Items/剧集合成/PlaybackInfo/代理拉流/图片均正常），但发现两个 bug：
+
+1. **【必修·阻断显示】CollectionType="mixed" 非法导致客户端不渲染整库。**
+   现状：source_library_views → Emby DTO 把 `collection_type='mixed'` 原样输出成 `CollectionType:"mixed"`。
+   但 "mixed" 不是 Emby 合法 CollectionType，混合内容库的标准表示是**省略该字段(null)**。Yamby 等第三方客户端遇到不认识的值直接跳过不显示。
+   修复：DTO 映射在 `collection_type` 为 'mixed'/空 时**不输出 CollectionType 字段**；仅 movies/tvshows/music 等合法值才输出。
+   修完混合在线库应能显示，且电影与剧集都能列出。
+
+2. **【顺手修】/SourcePlay 代理不支持 Range（拖进度/seek 会坏）。**
+   现状：发 `Range: bytes=0-1` 仍回 `200 OK + 完整 Content-Length`，未回 `206 Partial Content`。
+   修复：透传客户端 Range 到上游，将上游 206 + Content-Range + 部分内容如实回传；上游不支持时再回退 200。
+   保持 Accept-Ranges 语义一致、流式转发(io.Copy 不要整文件读内存)、正确传 Content-Range/Content-Length/状态码。
+
+修复落点：internal/handlers/library/source_dto.go 在在线库 collection_type 为 mixed/空时省略 CollectionType，仅保留 movies/tvshows 等合法值；internal/handlers/media/source_play.go 透传 Range 并按上游状态/Content-Range/Content-Length 流式回传；修复 commit：dc6ef07、ef3d5f1。
+
+3. **（外观，可延后）** source_library_views 的 `ImageTags` 为空 → 库无封面。后续接 coverart/poster 即可，不阻断。
+
 ---
 
 ## T5 — JSON CMS Provider + 入库归一
