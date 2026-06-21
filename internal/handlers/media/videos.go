@@ -38,6 +38,7 @@ func RegisterVideoRoutes(group *gin.RouterGroup, state *AppState, authMW gin.Han
 	group.GET("/Videos/:itemId/stream", func(c *gin.Context) { streamVideo(c, state) })
 	group.GET("/Videos/:itemId/stream.:container", func(c *gin.Context) { streamVideo(c, state) })
 	group.GET("/Videos/:itemId/trailer", func(c *gin.Context) { streamTrailer(c, state) })
+	group.GET("/SourcePlay/:playSourceUUID/stream", func(c *gin.Context) { streamSourcePlay(c, state) })
 	group.GET("/Videos/:itemId/:mediaSourceId/Subtitles/:index/Stream.:format", func(c *gin.Context) { streamSubtitle(c, state) })
 	group.GET("/Videos/:itemId/:mediaSourceId/Subtitles/:index/:startPositionTicks/Stream.:format", func(c *gin.Context) { streamSubtitle(c, state) })
 }
