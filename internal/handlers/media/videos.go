@@ -327,6 +327,9 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
 	itemID := c.Param("itemId")
 	selectedMediaSourceID := mediaSourceIDFromPlaybackRequest(c)
+	if handleSourcePlaybackInfo(c, state, itemID, selectedMediaSourceID) {
+		return
+	}
 	uid, err := models.ResolveToUUID(ctx, state.DB, itemID)
 	if err != nil || uid == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid item id"})
