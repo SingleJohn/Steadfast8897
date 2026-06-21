@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -146,6 +148,28 @@ type SourceLibraryView struct {
 	Config         []byte
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type SourceEpisode struct {
+	SourceItemID   int64
+	SourceItemUUID string
+	ProviderID     int64
+	SeriesTitle    string
+	SeriesSummary  *string
+	PosterURL      *string
+	BackdropURL    *string
+	EpisodeKey     string
+	EpisodeTitle   string
+	EpisodeNumber  *int32
+	LineCount      int64
+	FirstSeenAt    time.Time
+}
+
+type SourceItemListOptions struct {
+	Limit       int64
+	Offset      int64
+	SearchTerm  string
+	IncludeTypes []string
 }
 
 type SourceConfigImportUpsert struct {
@@ -532,6 +556,196 @@ func (r *SourceRepository) GetLibraryViewByID(ctx context.Context, id int64) (*S
 		  FROM source_library_views
 		 WHERE id = $1`, id)
 	return scanSourceLibraryView(row)
+}
+
+func (r *SourceRepository) ListExposedLibraryViews(ctx context.Context) ([]SourceLibraryView, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, public_uuid::text, name, display_name, dimension, match_value, match_values,
+		       collection_type, provider_ids, filter, enabled, expose_to_emby, sort_order,
+		       config, created_at, updated_at
+		  FROM source_library_views
+		 WHERE enabled = TRUE AND expose_to_emby = TRUE
+		 ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourceLibraryView
+	for rows.Next() {
+		view, err := scanSourceLibraryView(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *view)
+	}
+	return out, rows.Err()
+}
+
+func (r *SourceRepository) CountItemsForLibraryView(ctx context.Context, view SourceLibraryView) (int64, error) {
+	where, args, err := sourceViewWhere(view, nil)
+	if err != nil {
+		return 0, err
+	}
+	var count int64
+	err = r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM source_items si WHERE `+where, args...).Scan(&count)
+	return count, err
+}
+
+func (r *SourceRepository) ListItemsForLibraryView(ctx context.Context, view SourceLibraryView, opts SourceItemListOptions) ([]SourceItem, int64, error) {
+	where, args, err := sourceViewWhere(view, &opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM source_items si WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 100
+	}
+	limitIdx := len(args) + 1
+	offsetIdx := len(args) + 2
+	args = append(args, opts.Limit, opts.Offset)
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, public_uuid::text, provider_id, source_item_id, source_parent_id, item_type, title,
+		       original_title, sort_title, year, region, area, language, category_name, normalized_kind,
+		       season_number, episode_number, poster_url, backdrop_url, remarks, summary, directors, actors,
+		       provider_ids, raw, detail_loaded, last_seen_at, created_at, updated_at
+		  FROM source_items si
+		 WHERE `+where+`
+		 ORDER BY COALESCE(sort_title, title), id
+		 LIMIT $`+fmt.Sprint(limitIdx)+` OFFSET $`+fmt.Sprint(offsetIdx), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []SourceItem
+	for rows.Next() {
+		item, err := scanSourceItem(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *item)
+	}
+	return out, total, rows.Err()
+}
+
+func (r *SourceRepository) ListEpisodesForSeries(ctx context.Context, sourceItemID int64) ([]SourceEpisode, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT si.id, si.public_uuid::text, si.provider_id, si.title, si.summary, si.poster_url, si.backdrop_url,
+		       COALESCE(NULLIF(sps.episode_key, ''), sps.episode_title, sps.id::text) AS episode_key,
+		       COALESCE(NULLIF(sps.episode_title, ''), NULLIF(sps.episode_key, ''), sps.line_name) AS episode_title,
+		       MIN(sps.episode_number) AS episode_number,
+		       COUNT(*) AS line_count,
+		       MIN(sps.created_at) AS first_seen_at
+		  FROM source_items si
+		  JOIN source_play_sources sps ON sps.source_item_id = si.id
+		 WHERE si.id = $1
+		 GROUP BY si.id, si.public_uuid, si.provider_id, si.title, si.summary, si.poster_url, si.backdrop_url,
+		          COALESCE(NULLIF(sps.episode_key, ''), sps.episode_title, sps.id::text),
+		          COALESCE(NULLIF(sps.episode_title, ''), NULLIF(sps.episode_key, ''), sps.line_name)
+		 ORDER BY MIN(sps.sort_order), MIN(sps.episode_number) NULLS LAST, episode_key`, sourceItemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourceEpisode
+	for rows.Next() {
+		var ep SourceEpisode
+		if err := rows.Scan(&ep.SourceItemID, &ep.SourceItemUUID, &ep.ProviderID, &ep.SeriesTitle,
+			&ep.SeriesSummary, &ep.PosterURL, &ep.BackdropURL, &ep.EpisodeKey, &ep.EpisodeTitle,
+			&ep.EpisodeNumber, &ep.LineCount, &ep.FirstSeenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ep)
+	}
+	return out, rows.Err()
+}
+
+func (r *SourceRepository) GetUserItemData(ctx context.Context, userID string, sourceItemID int64) (*SourceUserItemData, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT user_id::text, source_item_id, playback_position_ticks, play_count,
+		       is_favorite, played, last_played_date, updated_at
+		  FROM source_user_item_data
+		 WHERE user_id = $1::uuid AND source_item_id = $2`, userID, sourceItemID)
+	return scanSourceUserItemData(row)
+}
+
+func (r *SourceRepository) ListPlaySourcesForItem(ctx context.Context, sourceItemID int64) ([]SourcePlaySource, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, public_uuid::text, source_item_id, provider_id, line_name, episode_title, episode_key,
+		       episode_number, raw_url, parse_mode, flag, headers, resolver_payload, sort_order,
+		       health_status, success_count, failure_count, avg_latency_ms,
+		       last_success_at, last_failure_at, created_at, updated_at
+		  FROM source_play_sources
+		 WHERE source_item_id = $1
+		 ORDER BY sort_order, line_name, episode_number NULLS LAST, episode_key`, sourceItemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourcePlaySource
+	for rows.Next() {
+		ps, err := scanSourcePlaySource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *ps)
+	}
+	return out, rows.Err()
+}
+
+func sourceViewWhere(view SourceLibraryView, opts *SourceItemListOptions) (string, []any, error) {
+	clauses := []string{"si.item_type IN ('Movie', 'Series')"}
+	args := []any{}
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	switch view.Dimension {
+	case "normalized_kind":
+		clauses = append(clauses, "si.normalized_kind = "+addArg(view.MatchValue))
+	case "region":
+		clauses = append(clauses, sourceRegionCondition("si.region", view.MatchValue, addArg))
+	case "kind_region":
+		kind, region, ok := strings.Cut(view.MatchValue, "/")
+		if !ok || strings.TrimSpace(kind) == "" || strings.TrimSpace(region) == "" {
+			return "", nil, fmt.Errorf("invalid kind_region match_value: %s", view.MatchValue)
+		}
+		clauses = append(clauses, "si.normalized_kind = "+addArg(strings.TrimSpace(kind)))
+		clauses = append(clauses, sourceRegionCondition("si.region", strings.TrimSpace(region), addArg))
+	case "provider":
+		clauses = append(clauses, "si.provider_id = "+addArg(view.MatchValue))
+	case "custom":
+		values := view.MatchValues
+		if len(values) == 0 {
+			values = []string{view.MatchValue}
+		}
+		clauses = append(clauses, "(si.normalized_kind = ANY("+addArg(values)+"::text[]) OR si.region = ANY("+fmt.Sprintf("$%d", len(args))+"::text[]))")
+	default:
+		return "", nil, fmt.Errorf("unknown source view dimension: %s", view.Dimension)
+	}
+
+	if len(view.ProviderIDs) > 0 {
+		clauses = append(clauses, "si.provider_id = ANY("+addArg(view.ProviderIDs)+"::bigint[])")
+	}
+	if opts != nil {
+		if len(opts.IncludeTypes) > 0 {
+			clauses = append(clauses, "si.item_type = ANY("+addArg(opts.IncludeTypes)+"::text[])")
+		}
+		if strings.TrimSpace(opts.SearchTerm) != "" {
+			clauses = append(clauses, "si.title ILIKE "+addArg("%"+strings.TrimSpace(opts.SearchTerm)+"%"))
+		}
+	}
+	return strings.Join(clauses, " AND "), args, nil
+}
+
+func sourceRegionCondition(column, matchValue string, addArg func(any) string) string {
+	if strings.EqualFold(matchValue, "Foreign") {
+		return "(" + column + " IS NULL OR " + column + " <> 'CN')"
+	}
+	return column + " = " + addArg(matchValue)
 }
 
 func scanSourceConfigImport(row pgx.Row) (*SourceConfigImport, error) {
