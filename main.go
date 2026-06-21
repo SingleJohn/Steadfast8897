@@ -29,6 +29,7 @@ import (
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
 	"fyms/internal/services/taskcenter/adapters"
+	sourcebridge "fyms/internal/source"
 )
 
 //go:embed all:web/dist
@@ -145,6 +146,11 @@ func main() {
 	notifier := services.NewNotifyDispatcher(pool, cfg, notifyHTTPClient)
 	services.SetNotifier(notifier)
 
+	jsRuntime := sourcebridge.NewJSRuntimeManager(repo.Source, httpClient, cfg.DataDir)
+	if err := jsRuntime.Start(context.Background()); err != nil {
+		slog.Warn("JS runtime sidecar unavailable", "log_target", "provider", "error", err)
+	}
+
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()
 
@@ -193,6 +199,7 @@ func main() {
 		BackfillTask:   backfillTask,
 		SysMetrics:     sysCollector,
 		ImageCache:     imageCache,
+		JSRuntime:      jsRuntime,
 	}
 	sysCollector.Start(context.Background())
 	imageCache.StartJanitor(context.Background())
