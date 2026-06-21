@@ -39,12 +39,15 @@ coverage/
 
 # Local editor / AI tool config
 .claude/
+.codex/
 .vscode/
 .idea/
 
 # Local-only working docs (refactor plans, notes)
 docs/refactor/
-docs/
+docs/*
+!docs/universal-media/
+!docs/universal-media/**
 
 # Downloaded fonts for cover art generation (fetched by scripts/fetch-fonts.sh)
 internal/services/coverart/assets/fonts/*.otf
