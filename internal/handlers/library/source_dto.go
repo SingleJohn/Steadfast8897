@@ -23,13 +23,13 @@ func sourceViewDisplayName(view repository.SourceLibraryView) string {
 func sourceViewDTO(state *AppState, view repository.SourceLibraryView, count int64) gin.H {
 	id := view.PublicUUID
 	name := sourceViewDisplayName(view)
+	collectionType := sourceViewCollectionType(view.CollectionType)
 	entry := gin.H{
 		"Name":               name,
 		"ServerId":           state.Config.ServerID,
 		"Id":                 id,
 		"Etag":               id,
 		"Type":               "CollectionFolder",
-		"CollectionType":     view.CollectionType,
 		"IsFolder":           true,
 		"ChildCount":         count,
 		"RecursiveItemCount": count,
@@ -46,7 +46,10 @@ func sourceViewDTO(state *AppState, view repository.SourceLibraryView, count int
 			"UnplayedItemCount":     count,
 		},
 	}
-	return embysupport.ApplyCollectionFolderDefaults(entry, view.CollectionType, view.CollectionType != "")
+	if collectionType != "" {
+		entry["CollectionType"] = collectionType
+	}
+	return embysupport.ApplyCollectionFolderDefaults(entry, collectionType, collectionType != "")
 }
 
 func sourceItemDTO(state *AppState, item repository.SourceItem, userData *repository.SourceUserItemData) dto.BaseItemDto {
@@ -107,6 +110,14 @@ func sourceItemDTO(state *AppState, item repository.SourceItem, userData *reposi
 		out.Genres = []string{*item.CategoryName}
 	}
 	return out
+}
+
+func sourceViewCollectionType(collectionType string) string {
+	collectionType = strings.TrimSpace(collectionType)
+	if collectionType == "" || strings.EqualFold(collectionType, "mixed") {
+		return ""
+	}
+	return collectionType
 }
 
 func sourceEpisodeDTO(state *AppState, ep repository.SourceEpisode, userData *repository.SourceUserItemData) dto.BaseItemDto {
