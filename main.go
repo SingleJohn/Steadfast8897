@@ -242,6 +242,7 @@ func main() {
 	go notifier.Run(ctx)
 	go notifier.RunLibraryNewSweeper(ctx)
 	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)
+	services.StartSourceItemsGC(ctx, pool, repo.Source)
 	fileWatcher.Start(ctx, pool, cache)
 
 	// M7.Backfill: 启动开关 + 24h 防重。保持异步,不阻塞启动。
