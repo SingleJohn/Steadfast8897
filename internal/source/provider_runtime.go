@@ -102,7 +102,11 @@ func (m *ProviderRuntimeManager) HealthCheck(ctx context.Context, providerID int
 	categories, err := provider.Categories(ctx)
 	if err != nil {
 		msg := err.Error()
-		updated, updateErr := m.repo.UpdateProviderHealth(ctx, row.ID, "error", &msg, nil)
+		status := "error"
+		if ErrorType(err) == "site_unavailable" {
+			status = "unhealthy"
+		}
+		updated, updateErr := m.repo.UpdateProviderHealth(ctx, row.ID, status, &msg, nil)
 		if updateErr != nil {
 			LogProviderAction(m.logger, start, row.ID, "health", updateErr)
 			return updated, updateErr

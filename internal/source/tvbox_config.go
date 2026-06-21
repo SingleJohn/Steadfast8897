@@ -28,9 +28,9 @@ type TVBoxConfig struct {
 type TVBoxSite struct {
 	Key         string         `json:"key"`
 	Name        string         `json:"name"`
-	Type        *int32         `json:"type"`
+	Type        *int32         `json:"-"`
 	API         string         `json:"api"`
-	Ext         map[string]any `json:"ext"`
+	Ext         map[string]any `json:"-"`
 	Categories  []string       `json:"categories"`
 	Searchable  *int32         `json:"searchable"`
 	QuickSearch *int32         `json:"quickSearch"`
@@ -41,17 +41,45 @@ type TVBoxSite struct {
 }
 
 func (s *TVBoxSite) UnmarshalJSON(data []byte) error {
-	type alias TVBoxSite
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	type alias struct {
+		Key        string   `json:"key"`
+		Name       string   `json:"name"`
+		API        string   `json:"api"`
+		Categories []string `json:"categories"`
 	}
 	var out alias
 	if err := json.Unmarshal(data, &out); err != nil {
 		return err
 	}
-	*s = TVBoxSite(out)
+	*s = TVBoxSite{
+		Key:        out.Key,
+		Name:       out.Name,
+		API:        out.API,
+		Categories: out.Categories,
+	}
 	s.Raw = raw
+	if value, ok := raw["type"]; ok {
+		s.Type = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["searchable"]; ok {
+		s.Searchable = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["quickSearch"]; ok {
+		s.QuickSearch = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["filterable"]; ok {
+		s.Filterable = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["playerType"]; ok {
+		s.PlayerType = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["timeout"]; ok {
+		s.Timeout = normalizeTVBoxInt32(value)
+	}
 	if ext, ok := raw["ext"]; ok {
 		s.Ext = normalizeTVBoxExt(ext)
 	}
@@ -143,11 +171,42 @@ func normalizeTVBoxExt(value any) map[string]any {
 		if strings.TrimSpace(v) == "" {
 			return map[string]any{}
 		}
-		return map[string]any{"value": strings.TrimSpace(v)}
+		return map[string]any{"_raw": strings.TrimSpace(v), "_path": strings.TrimSpace(v)}
 	case map[string]any:
 		return v
 	default:
-		return map[string]any{"value": v}
+		return map[string]any{"_raw": v}
+	}
+}
+
+func normalizeTVBoxInt32(value any) *int32 {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case float64:
+		out := int32(v)
+		return &out
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return nil
+		}
+		out := int32(n)
+		return &out
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
+		}
+		var n json.Number = json.Number(v)
+		parsed, err := n.Int64()
+		if err != nil {
+			return nil
+		}
+		out := int32(parsed)
+		return &out
+	default:
+		return nil
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 )
 
 const defaultCMSTimeout = 8 * time.Second
+
+var ErrCMSHTMLResponse = errors.New("cms html response")
 
 type CMSProviderOption func(*CMSProvider)
 
@@ -200,28 +203,45 @@ func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out 
 	if len(body) == 0 {
 		return fmt.Errorf("CMS 响应为空")
 	}
-	if isCMSXMLResponse(requestURL, resp.Header.Get("Content-Type"), body) {
+	switch detectCMSResponseFormat(body) {
+	case "xml":
 		if err := parseCMSXML(body, out); err != nil {
 			return fmt.Errorf("解析 CMS XML 失败: %w", err)
 		}
 		return nil
+	case "json":
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("解析 CMS JSON 失败: %w", err)
+		}
+		return nil
+	case "html":
+		return fmt.Errorf("%w: CMS 返回 HTML 页面，站点当前不可用", ErrCMSHTMLResponse)
+	default:
+		return fmt.Errorf("CMS 响应格式无法识别")
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("解析 CMS JSON 失败: %w", err)
-	}
-	return nil
 }
 
-func isCMSXMLResponse(requestURL, contentType string, body []byte) bool {
-	if len(body) > 0 && body[0] == '<' {
-		return true
+func detectCMSResponseFormat(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return ""
 	}
-	lowerType := strings.ToLower(contentType)
-	if strings.Contains(lowerType, "xml") {
-		return true
+	switch body[0] {
+	case '{', '[':
+		return "json"
+	case '<':
+		lower := strings.ToLower(string(body[:min(len(body), 128)]))
+		switch {
+		case strings.HasPrefix(lower, "<!doctype") || strings.HasPrefix(lower, "<html") || strings.Contains(lower, "<html"):
+			return "html"
+		case strings.HasPrefix(lower, "<?xml") || strings.HasPrefix(lower, "<rss"):
+			return "xml"
+		default:
+			return "xml"
+		}
+	default:
+		return ""
 	}
-	lowerURL := strings.ToLower(requestURL)
-	return strings.Contains(lowerURL, "at/xml") || strings.Contains(lowerURL, "/xml")
 }
 
 func mergeCMSQuery(rawURL string, params map[string]string) (string, error) {

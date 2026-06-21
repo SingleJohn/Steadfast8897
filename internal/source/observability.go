@@ -31,6 +31,9 @@ func ErrorType(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
+	if errors.Is(err, ErrCMSHTMLResponse) {
+		return "site_unavailable"
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
@@ -48,6 +51,8 @@ func ErrorType(err error) string {
 		return "blocked_url"
 	case strings.Contains(msg, "status"):
 		return "http_status"
+	case strings.Contains(msg, "html") || strings.Contains(msg, "cloudflare") || strings.Contains(msg, "just a moment"):
+		return "site_unavailable"
 	case strings.Contains(msg, "json"):
 		return "parse"
 	default:
