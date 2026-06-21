@@ -90,7 +90,8 @@ func proxySourceStream(c *gin.Context, result *source.PlayResult) error {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", c.GetHeader("User-Agent"))
 	}
-	if rangeHeader := c.GetHeader("Range"); rangeHeader != "" {
+	rangeHeader := strings.TrimSpace(c.GetHeader("Range"))
+	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 	}
 
@@ -101,14 +102,29 @@ func proxySourceStream(c *gin.Context, result *source.PlayResult) error {
 	}
 	defer resp.Body.Close()
 
-	for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
-		if value := resp.Header.Get(header); value != "" {
-			c.Header(header, value)
-		}
-	}
+	copySourceStreamHeaders(c, resp, rangeHeader)
 	c.Status(resp.StatusCode)
 	_, err = io.Copy(c.Writer, resp.Body)
 	return err
+}
+
+func copySourceStreamHeaders(c *gin.Context, resp *http.Response, rangeHeader string) {
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		c.Header("Content-Type", contentType)
+	}
+	if acceptRanges := resp.Header.Get("Accept-Ranges"); acceptRanges != "" {
+		c.Header("Accept-Ranges", acceptRanges)
+	} else {
+		c.Header("Accept-Ranges", "bytes")
+	}
+	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+		c.Header("Content-Length", contentLength)
+	}
+	if rangeHeader == "" || resp.StatusCode == http.StatusPartialContent {
+		if contentRange := resp.Header.Get("Content-Range"); contentRange != "" {
+			c.Header("Content-Range", contentRange)
+		}
+	}
 }
 
 func sourcePlayCacheKey(publicUUID string) string {
