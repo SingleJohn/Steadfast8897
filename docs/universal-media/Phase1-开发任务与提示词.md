@@ -301,6 +301,8 @@ P0 PoC 抓包实测：后端全链路通（Views/Items/剧集合成/PlaybackInfo
 完成判定：对一个真实 JSON CMS api（我会提供）能跑通 分类→搜索→详情→拆线路→入库，归一字段正确（go build ./... 通过；运行期由我手动验证）。
 ```
 
+实际落点：新增 internal/source/provider.go、cms_provider.go、cms_parse.go、normalize.go、ingest.go；实现 JSON CMS Provider 的 Categories/Search/Category/Detail/ResolvePlay、URL builder query 合并、CMS JSON 解析清理、vod_play_from/vod_play_url 拆线路、normalized_kind/region 归一、source_items/source_play_sources 入库编排；未新增路由/表，未写 items；T5 commit 范围：a8263a1..cc83410。
+
 ---
 
 ## T6 — TVBox 配置导入 + Provider 启停 + 限流 + 健康检查
