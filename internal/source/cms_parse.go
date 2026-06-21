@@ -2,6 +2,7 @@ package source
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"html"
 	"net/url"
 	"path"
@@ -43,6 +44,71 @@ type cmsVOD struct {
 	VodRemarks  string         `json:"vod_remarks"`
 	VodPlayFrom string         `json:"vod_play_from"`
 	VodPlayURL  string         `json:"vod_play_url"`
+}
+
+type cmsXMLRSS struct {
+	List  cmsXMLList  `xml:"list"`
+	Class cmsXMLClass `xml:"class"`
+}
+
+type cmsXMLList struct {
+	Page        cmsXMLInt     `xml:"page,attr"`
+	PageCount   cmsXMLInt     `xml:"pagecount,attr"`
+	RecordCount cmsXMLInt     `xml:"recordcount,attr"`
+	Total       cmsXMLInt     `xml:"total,attr"`
+	Videos      []cmsXMLVideo `xml:"video"`
+}
+
+type cmsXMLClass struct {
+	Items []cmsXMLCategory `xml:"ty"`
+}
+
+type cmsXMLCategory struct {
+	ID   string `xml:"id,attr"`
+	Name string `xml:",chardata"`
+}
+
+type cmsXMLVideo struct {
+	Last        string   `xml:"last"`
+	ID          string   `xml:"id"`
+	TypeID      string   `xml:"tid"`
+	Name        string   `xml:"name"`
+	TypeName    string   `xml:"type"`
+	DT          string   `xml:"dt"`
+	Note        string   `xml:"note"`
+	Pic         string   `xml:"pic"`
+	Year        string   `xml:"year"`
+	Area        string   `xml:"area"`
+	Lang        string   `xml:"lang"`
+	Actor       string   `xml:"actor"`
+	Director    string   `xml:"director"`
+	Description string   `xml:"des"`
+	Content     string   `xml:"content"`
+	Remarks     string   `xml:"remarks"`
+	PlayFrom    string   `xml:"vod_play_from"`
+	PlayURL     string   `xml:"vod_play_url"`
+	DL          cmsXMLDL `xml:"dl"`
+}
+
+type cmsXMLDL struct {
+	Items []cmsXMLDD `xml:"dd"`
+}
+
+type cmsXMLDD struct {
+	Flag  string `xml:"flag,attr"`
+	Value string `xml:",chardata"`
+}
+
+type cmsXMLInt int
+
+func (i *cmsXMLInt) UnmarshalXMLAttr(attr xml.Attr) error {
+	value, _ := strconv.Atoi(cleanCMSValue(attr.Value))
+	*i = cmsXMLInt(value)
+	return nil
+}
+
+func (i cmsXMLInt) Int() int {
+	return int(i)
 }
 
 func (v *cmsVOD) UnmarshalJSON(data []byte) error {
@@ -103,6 +169,40 @@ func (i cmsInt) Int() int {
 	return int(i)
 }
 
+func parseCMSXML(data []byte, out *cmsResponse) error {
+	var payload cmsXMLRSS
+	if err := xml.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	out.Code = 1
+	out.Msg = "XML CMS"
+	out.Page = cmsInt(payload.List.Page.Int())
+	out.PageCount = cmsInt(payload.List.PageCount.Int())
+	total := payload.List.Total.Int()
+	if total == 0 {
+		total = payload.List.RecordCount.Int()
+	}
+	out.Total = cmsInt(total)
+	out.Class = make([]cmsCategory, 0, len(payload.Class.Items))
+	for _, item := range payload.Class.Items {
+		id := cleanCMSValue(item.ID)
+		name := cleanCMSValue(item.Name)
+		if id == "" || name == "" {
+			continue
+		}
+		out.Class = append(out.Class, cmsCategory{TypeID: cmsString(id), TypeName: name})
+	}
+	out.List = make([]cmsVOD, 0, len(payload.List.Videos))
+	for _, item := range payload.List.Videos {
+		vod := item.toCMSVOD()
+		if vod.VodID.String() == "" && cleanCMSValue(vod.VodName) == "" {
+			continue
+		}
+		out.List = append(out.List, vod)
+	}
+	return nil
+}
+
 func parseCMSPage(api string, payload cmsResponse, detailLoaded bool) *ProviderPage {
 	items := make([]SourceItemSnapshot, 0, len(payload.List))
 	for _, vod := range payload.List {
@@ -129,7 +229,9 @@ func parseCMSItem(api string, vod cmsVOD, detailLoaded bool) SourceItemSnapshot 
 	if raw == nil {
 		raw = map[string]any{}
 	}
-	raw["provider_format"] = "json_cms"
+	if _, ok := raw["provider_format"]; !ok {
+		raw["provider_format"] = "json_cms"
+	}
 	if categoryID := vod.TypeID.String(); categoryID != "" {
 		raw["type_id"] = categoryID
 	}
@@ -153,6 +255,108 @@ func parseCMSItem(api string, vod cmsVOD, detailLoaded bool) SourceItemSnapshot 
 		Raw:            raw,
 		DetailLoaded:   detailLoaded,
 	}
+}
+
+func (v cmsXMLVideo) toCMSVOD() cmsVOD {
+	playFrom, playURL := v.playFields()
+	raw := map[string]any{"provider_format": "xml_cms"}
+	addRaw := func(key, value string) {
+		if value = cleanCMSValue(value); value != "" {
+			raw[key] = value
+		}
+	}
+	addRaw("last", v.Last)
+	addRaw("id", v.ID)
+	addRaw("tid", v.TypeID)
+	addRaw("name", v.Name)
+	addRaw("type", v.TypeName)
+	addRaw("dt", v.DT)
+	addRaw("note", v.Note)
+	addRaw("pic", v.Pic)
+	addRaw("year", v.Year)
+	addRaw("area", v.Area)
+	addRaw("lang", v.Lang)
+	addRaw("actor", v.Actor)
+	addRaw("director", v.Director)
+	addRaw("des", v.Description)
+	addRaw("content", v.Content)
+	addRaw("vod_play_from", playFrom)
+	addRaw("vod_play_url", playURL)
+	return cmsVOD{
+		Raw:         raw,
+		VodID:       cmsString(cleanCMSValue(v.ID)),
+		VodName:     cleanCMSValue(v.Name),
+		TypeID:      cmsString(cleanCMSValue(v.TypeID)),
+		TypeName:    cleanCMSValue(v.TypeName),
+		VodPic:      cleanCMSValue(v.Pic),
+		VodYear:     cmsString(cleanCMSValue(v.Year)),
+		VodArea:     cleanCMSValue(v.Area),
+		VodLang:     cleanCMSValue(v.Lang),
+		VodActor:    cleanCMSValue(v.Actor),
+		VodDirector: cleanCMSValue(v.Director),
+		VodContent:  firstCMSValue(v.Description, v.Content),
+		VodRemarks:  firstCMSValue(v.Note, v.Remarks),
+		VodPlayFrom: playFrom,
+		VodPlayURL:  playURL,
+	}
+}
+
+func (v cmsXMLVideo) playFields() (string, string) {
+	playFrom := cleanCMSValue(v.PlayFrom)
+	playURL := cleanCMSValue(v.PlayURL)
+	if len(v.DL.Items) > 0 {
+		lineNames := make([]string, 0, len(v.DL.Items))
+		lineURLs := make([]string, 0, len(v.DL.Items))
+		dtNames := splitCMSLineNames(v.DT)
+		for idx, item := range v.DL.Items {
+			rawURL := cleanCMSValue(item.Value)
+			if rawURL == "" {
+				continue
+			}
+			lineName := cleanCMSValue(item.Flag)
+			if lineName == "" && idx < len(dtNames) {
+				lineName = dtNames[idx]
+			}
+			if lineName == "" {
+				lineName = "线路" + strconv.Itoa(idx+1)
+			}
+			lineNames = append(lineNames, lineName)
+			lineURLs = append(lineURLs, rawURL)
+		}
+		if len(lineURLs) > 0 {
+			return strings.Join(lineNames, "$$$"), strings.Join(lineURLs, "$$$")
+		}
+	}
+	if playFrom == "" {
+		playFrom = strings.Join(splitCMSLineNames(v.DT), "$$$")
+	}
+	return playFrom, playURL
+}
+
+func splitCMSLineNames(value string) []string {
+	value = cleanCMSValue(value)
+	if value == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '$' || r == ',' || r == '/' || r == '|' || r == '，'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = cleanCMSValue(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func firstCMSValue(values ...string) string {
+	for _, value := range values {
+		if value = cleanCMSValue(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func splitCMSPlaySources(playFrom, playURL string) []PlaySourceSnapshot {

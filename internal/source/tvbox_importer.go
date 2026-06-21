@@ -3,7 +3,6 @@ package source
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"fyms/internal/repository"
@@ -135,7 +134,7 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			RawSite:      site.Raw,
 			Usable:       false,
 		}
-		if isJSONCMSVodSite(site) {
+		if isNativeCMSVodSite(site) {
 			def.ProviderKind = "cms_vod"
 			def.RuntimeKind = "native_cms"
 			def.Enabled = true
@@ -173,22 +172,12 @@ func (d ProviderDefinition) toUpsert(configID int64) repository.SourceProviderUp
 	}
 }
 
-func isJSONCMSVodSite(site TVBoxSite) bool {
+func isNativeCMSVodSite(site TVBoxSite) bool {
 	api := strings.TrimSpace(site.API)
 	if api == "" || !strings.Contains(strings.ToLower(api), "provide/vod") {
 		return false
 	}
 	lower := strings.ToLower(api)
-	if strings.Contains(lower, "at/xml") || strings.Contains(lower, "/xml") {
-		return false
-	}
-	u, err := url.Parse(api)
-	if err == nil {
-		at := strings.ToLower(strings.TrimSpace(u.Query().Get("at")))
-		if at == "xml" {
-			return false
-		}
-	}
 	if site.Type != nil && *site.Type != 0 && *site.Type != 1 {
 		return false
 	}

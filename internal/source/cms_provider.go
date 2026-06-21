@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -85,7 +86,7 @@ func WithCMSHeaders(headers map[string]string) CMSProviderOption {
 
 func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error) {
 	var payload cmsResponse
-	if err := p.getJSON(ctx, nil, &payload); err != nil {
+	if err := p.getCMS(ctx, nil, &payload); err != nil {
 		return nil, err
 	}
 	categories := make([]ProviderCategory, 0, len(payload.Class))
@@ -107,7 +108,7 @@ func (p *CMSProvider) Search(ctx context.Context, req SearchRequest) (*ProviderP
 		"wd": strings.TrimSpace(req.Keyword),
 		"pg": strconv.Itoa(normalizePage(req.Page)),
 	}
-	if err := p.getJSON(ctx, params, &payload); err != nil {
+	if err := p.getCMS(ctx, params, &payload); err != nil {
 		return nil, err
 	}
 	return parseCMSPage(p.api, payload, false), nil
@@ -120,7 +121,7 @@ func (p *CMSProvider) Category(ctx context.Context, req CategoryRequest) (*Provi
 		"t":  strings.TrimSpace(req.CategoryID),
 		"pg": strconv.Itoa(normalizePage(req.Page)),
 	}
-	if err := p.getJSON(ctx, params, &payload); err != nil {
+	if err := p.getCMS(ctx, params, &payload); err != nil {
 		return nil, err
 	}
 	return parseCMSPage(p.api, payload, false), nil
@@ -136,7 +137,7 @@ func (p *CMSProvider) Detail(ctx context.Context, sourceItemID string) (*Provide
 		"ac":  "detail",
 		"ids": sourceItemID,
 	}
-	if err := p.getJSON(ctx, params, &payload); err != nil {
+	if err := p.getCMS(ctx, params, &payload); err != nil {
 		return nil, err
 	}
 	if len(payload.List) == 0 {
@@ -165,7 +166,7 @@ func (p *CMSProvider) ResolvePlay(ctx context.Context, play PlaySourceSnapshot) 
 	return &PlayResult{URL: play.RawURL, Headers: headers}, nil
 }
 
-func (p *CMSProvider) getJSON(ctx context.Context, params map[string]string, out any) error {
+func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out *cmsResponse) error {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	requestURL, err := mergeCMSQuery(p.api, params)
@@ -179,7 +180,7 @@ func (p *CMSProvider) getJSON(ctx context.Context, params map[string]string, out
 	if err != nil {
 		return fmt.Errorf("创建 CMS 请求失败: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, application/xml, text/xml;q=0.9, */*;q=0.8")
 	for key, value := range p.headers {
 		req.Header.Set(key, value)
 	}
@@ -195,10 +196,32 @@ func (p *CMSProvider) getJSON(ctx context.Context, params map[string]string, out
 	if err != nil {
 		return fmt.Errorf("读取 CMS 响应失败: %w", err)
 	}
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return fmt.Errorf("CMS 响应为空")
+	}
+	if isCMSXMLResponse(requestURL, resp.Header.Get("Content-Type"), body) {
+		if err := parseCMSXML(body, out); err != nil {
+			return fmt.Errorf("解析 CMS XML 失败: %w", err)
+		}
+		return nil
+	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("解析 CMS JSON 失败: %w", err)
 	}
 	return nil
+}
+
+func isCMSXMLResponse(requestURL, contentType string, body []byte) bool {
+	if len(body) > 0 && body[0] == '<' {
+		return true
+	}
+	lowerType := strings.ToLower(contentType)
+	if strings.Contains(lowerType, "xml") {
+		return true
+	}
+	lowerURL := strings.ToLower(requestURL)
+	return strings.Contains(lowerURL, "at/xml") || strings.Contains(lowerURL, "/xml")
 }
 
 func mergeCMSQuery(rawURL string, params map[string]string) (string, error) {
