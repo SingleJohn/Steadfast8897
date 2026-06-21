@@ -208,6 +208,8 @@ images.go（图片缓存与回退链）、platform 虚拟库在 getUserViews 的
 用 Emby token 调 /Users/{}/Views、/Users/{}/Items?ParentId=、/Items/{uuid}、/Items/{uuid}/Images/Primary 均正常（go build ./... 通过；运行期由我手动验证）。
 ```
 
+实际落点：扩展 internal/repository/source_repository.go 的在线 View/Item/Episode 查询；新增 internal/handlers/library/source_dto.go、source_items.go、source_images.go 与 internal/handlers/compat/source_items.go；改造 internal/handlers/library/library_query.go、library_detail.go、internal/handlers/media/images.go、internal/handlers/compat/compat_items.go、internal/source/entity.go；新增 /Users/{userId}/Views 在线库合流、/Users/{userId}/Items 与 /Items 在 ParentId 命中 source view/series 时的在线列表、/Items/{sourceUUID} 在线详情、/Items/{episodeUUID} 合成分集详情、/Items/{uuid}/Images/* 在线图片代理缓存；T3 commit 范围：7cfeff9..6cd7ce1。
+
 ---
 
 ## T4 — 播放：Resolve + Redis 短缓存 + 代理端点 + SSRF + 在线 PlaybackInfo　【P0 PoC 检查点】
