@@ -47,6 +47,30 @@ type SourceProvider struct {
 	UpdatedAt    time.Time
 }
 
+type SourceRuntimeArtifact struct {
+	ID            int64
+	ProviderID    *int64
+	SourceType    string
+	ArtifactKind  string
+	Name          string
+	SourceURL     string
+	BaseURL       *string
+	RelativePath  *string
+	LocalPath     string
+	MD5           string
+	SHA256        string
+	ByteSize      int64
+	ContentType   *string
+	TrustStatus   string
+	Status        string
+	LastFetchedAt time.Time
+	VerifiedAt    *time.Time
+	LastError     *string
+	Raw           json.RawMessage
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type SourceItem struct {
 	ID             int64
 	PublicUUID     string
@@ -199,6 +223,25 @@ type SourceProviderUpsert struct {
 	HealthStatus string
 	LastError    *string
 	RawSite      json.RawMessage
+}
+
+type SourceRuntimeArtifactUpsert struct {
+	ProviderID   *int64
+	SourceType   string
+	ArtifactKind string
+	Name         string
+	SourceURL    string
+	BaseURL      *string
+	RelativePath *string
+	LocalPath    string
+	MD5          string
+	SHA256       string
+	ByteSize     int64
+	ContentType  *string
+	TrustStatus  string
+	Status       string
+	LastError    *string
+	Raw          json.RawMessage
 }
 
 type SourceItemUpsert struct {
