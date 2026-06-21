@@ -31,7 +31,7 @@ func ErrorType(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
-	if errors.Is(err, ErrCMSHTMLResponse) {
+	if errors.Is(err, ErrCMSHTMLResponse) || errors.Is(err, ErrCMSUnavailableResponse) {
 		return "site_unavailable"
 	}
 	var netErr net.Error

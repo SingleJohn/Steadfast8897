@@ -15,8 +15,7 @@ import (
 const (
 	defaultFederatedSearchLimit       = 50
 	maxFederatedSearchLimit           = 100
-	defaultFederatedSearchTimeout     = 12 * time.Second
-	defaultFederatedProviderParallel  = 4
+	defaultFederatedSearchGrace       = 3 * time.Second
 	defaultFederatedProviderTimeoutMS = 8000
 )
 
@@ -105,8 +104,6 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		limit = maxFederatedSearchLimit
 	}
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, defaultFederatedSearchTimeout)
-	defer cancel()
 
 	providers, err := m.repo.ListProviders(ctx, repository.SourceProviderListOptions{
 		Limit:      1000,
@@ -126,51 +123,69 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		searchable = append(searchable, provider)
 	}
 
-	results := make(chan federatedProviderResult, len(searchable))
-	sem := make(chan struct{}, defaultFederatedProviderParallel)
-	var wg sync.WaitGroup
-	for _, provider := range searchable {
-		provider := provider
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results <- federatedProviderResult{provider: provider, err: ctx.Err()}
-				return
-			}
-			defer func() { <-sem }()
-			results <- m.searchProviderSafely(ctx, provider, keyword)
-		}()
-	}
-	wg.Wait()
-	close(results)
-
 	response := &FederatedSearchResponse{
 		Keyword:    keyword,
 		Provider:   FederatedSearchProvider{Total: len(searchable)},
 		CacheWrite: true,
 	}
 	groups := map[string]*FederatedSearchItem{}
-	for result := range results {
-		if result.err != nil {
-			response.Provider.Failed++
-			response.Errors = append(response.Errors, FederatedSearchError{
-				ProviderID:   result.provider.ID,
-				ProviderName: result.provider.Name,
-				SourceKey:    result.provider.SourceKey,
-				ErrorType:    ErrorType(result.err),
-				Message:      result.err.Error(),
-				LatencyMS:    result.latency,
-			})
-			continue
-		}
-		response.Provider.Success++
-		for _, item := range result.items {
-			addFederatedItem(groups, keyword, result.provider, item)
+	results := make(chan federatedProviderResult, len(searchable))
+	providerRoot := context.WithoutCancel(ctx)
+	var wg sync.WaitGroup
+	for _, provider := range searchable {
+		provider := provider
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- m.searchProviderSafely(providerRoot, provider, keyword)
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	pending := make(map[int64]repository.SourceProvider, len(searchable))
+	for _, provider := range searchable {
+		pending[provider.ID] = provider
+	}
+	timer := time.NewTimer(federatedSearchBudget(searchable))
+	defer timer.Stop()
+	for len(pending) > 0 {
+		select {
+		case result, ok := <-results:
+			if !ok {
+				pending = map[int64]repository.SourceProvider{}
+				break
+			}
+			delete(pending, result.provider.ID)
+			applyFederatedProviderResult(response, groups, keyword, result)
+		case <-timer.C:
+			for {
+				select {
+				case result, ok := <-results:
+					if !ok {
+						pending = map[int64]repository.SourceProvider{}
+						goto collected
+					}
+					delete(pending, result.provider.ID)
+					applyFederatedProviderResult(response, groups, keyword, result)
+				default:
+					goto timedOut
+				}
+			}
+		timedOut:
+			for _, provider := range pending {
+				applyFederatedProviderResult(response, groups, keyword, federatedProviderResult{
+					provider: provider,
+					err:      context.DeadlineExceeded,
+					latency:  time.Since(start).Milliseconds(),
+				})
+			}
+			pending = map[int64]repository.SourceProvider{}
 		}
 	}
+collected:
 	response.Items = flattenFederatedItems(groups)
 	sort.SliceStable(response.Items, func(i, j int) bool {
 		if response.Items[i].Score != response.Items[j].Score {
@@ -207,16 +222,49 @@ func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provi
 			result.err = fmt.Errorf("provider panic: %v", recovered)
 		}
 	}()
-	timeout := time.Duration(provider.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultFederatedProviderTimeoutMS * time.Millisecond
-	}
-	providerCtx, cancel := context.WithTimeout(ctx, timeout)
+	providerCtx, cancel := context.WithTimeout(ctx, federatedProviderTimeout(provider))
 	defer cancel()
 	_, items, err := m.Search(providerCtx, provider.ID, SearchRequest{Keyword: keyword, Page: 1})
 	result.items = items
 	result.err = err
 	return result
+}
+
+func applyFederatedProviderResult(response *FederatedSearchResponse, groups map[string]*FederatedSearchItem, keyword string, result federatedProviderResult) {
+	if result.err != nil {
+		response.Provider.Failed++
+		response.Errors = append(response.Errors, FederatedSearchError{
+			ProviderID:   result.provider.ID,
+			ProviderName: result.provider.Name,
+			SourceKey:    result.provider.SourceKey,
+			ErrorType:    ErrorType(result.err),
+			Message:      result.err.Error(),
+			LatencyMS:    result.latency,
+		})
+		return
+	}
+	response.Provider.Success++
+	for _, item := range result.items {
+		addFederatedItem(groups, keyword, result.provider, item)
+	}
+}
+
+func federatedSearchBudget(providers []repository.SourceProvider) time.Duration {
+	maxTimeout := defaultFederatedProviderTimeoutMS * time.Millisecond
+	for _, provider := range providers {
+		if timeout := federatedProviderTimeout(provider); timeout > maxTimeout {
+			maxTimeout = timeout
+		}
+	}
+	return maxTimeout + defaultFederatedSearchGrace
+}
+
+func federatedProviderTimeout(provider repository.SourceProvider) time.Duration {
+	timeout := time.Duration(provider.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		return defaultFederatedProviderTimeoutMS * time.Millisecond
+	}
+	return timeout
 }
 
 func addFederatedItem(groups map[string]*FederatedSearchItem, keyword string, provider repository.SourceProvider, item repository.SourceItem) {

@@ -16,7 +16,10 @@ import (
 
 const defaultCMSTimeout = 8 * time.Second
 
-var ErrCMSHTMLResponse = errors.New("cms html response")
+var (
+	ErrCMSHTMLResponse        = errors.New("cms html response")
+	ErrCMSUnavailableResponse = errors.New("cms unavailable response")
+)
 
 type CMSProviderOption func(*CMSProvider)
 
@@ -199,9 +202,9 @@ func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out 
 	if err != nil {
 		return fmt.Errorf("读取 CMS 响应失败: %w", err)
 	}
-	body = bytes.TrimSpace(body)
+	body = trimCMSResponsePrefix(body)
 	if len(body) == 0 {
-		return fmt.Errorf("CMS 响应为空")
+		return fmt.Errorf("%w: CMS 响应为空", ErrCMSUnavailableResponse)
 	}
 	switch detectCMSResponseFormat(body) {
 	case "xml":
@@ -217,12 +220,12 @@ func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out 
 	case "html":
 		return fmt.Errorf("%w: CMS 返回 HTML 页面，站点当前不可用", ErrCMSHTMLResponse)
 	default:
-		return fmt.Errorf("CMS 响应格式无法识别")
+		return fmt.Errorf("%w: CMS 响应格式无法识别", ErrCMSUnavailableResponse)
 	}
 }
 
 func detectCMSResponseFormat(body []byte) string {
-	body = bytes.TrimSpace(body)
+	body = trimCMSResponsePrefix(body)
 	if len(body) == 0 {
 		return ""
 	}
@@ -242,6 +245,12 @@ func detectCMSResponseFormat(body []byte) string {
 	default:
 		return ""
 	}
+}
+
+func trimCMSResponsePrefix(body []byte) []byte {
+	body = bytes.TrimSpace(body)
+	body = bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf})
+	return bytes.TrimSpace(body)
 }
 
 func mergeCMSQuery(rawURL string, params map[string]string) (string, error) {
