@@ -190,6 +190,8 @@ normalize.go；internal/services 的并发/超时模式。
 
 实际落点：针对真实配置 `https://tvboxconfig.singlelovely.cn/gao/0821.json` 的 T14 硬化修复 A/B/C。`internal/source/tvbox_config.go` 将 `sites[].ext` 改为宽松归一：object 保持 map，string 保留为 `_raw`/`_path`，null/default 为空对象，避免 86 站配置中字符串 ext 导致整份解析失败；同文件将 `type/searchable/quickSearch/filterable/playerType/timeout` 统一按 int 或数字字符串归一为 `*int32`。`internal/source/cms_provider.go` 将 CMS JSON/XML 自动识别改为只看响应首个非空白字节（`{`/`[` 为 JSON，`<` 为 XML/HTML 分支），并显式将 `<!doctype`/`<html`/Cloudflare HTML 类响应判为站点不可用，不当 XML 入库；`internal/source/observability.go` 与 `provider_runtime.go` 将该类错误归一为 `site_unavailable`，HealthCheck 写 `health_status=unhealthy`。验证：使用 PowerShell 拉取真实配置复核 type/ext 形态；`go build ./...` 通过；未启动服务、未写测试、未写 items、未引入 sidecar。T14 commit 范围：601352a。
 
+实际落点（续修）：修复真实站点搜索/聚合搜索入库时报 `source_items.directors` NOT NULL 约束失败的问题。`internal/source/ingest.go` 在 SourceIngestor 入库前将 nil `Directors/Actors` 归一为 `[]string{}`；`internal/repository/source_item_repository.go` 在 source_items upsert SQL 中对 directors/actors 使用 `COALESCE($n, '{}'::text[])` 做最终兜底；`internal/repository/source_scan_repository.go` 增加通用 `nonNilStrings` helper。已核查 `provider_ids/raw/headers/resolver_payload` 仍通过 `jsonObjectBytes/jsonBytesOrObject` 兜底为 `{}`。验证：`go build ./...` 通过；按 §A 未启动服务，暴風/索尼/快帆/量子/非凡与 `/SourceSearch` 运行期结果待你复测。T14 续修 commit 范围：6e6cd2b。
+
 ---
 
 ## T15 — 聚合搜索接入 Emby + Web 前端【人工里程碑】
