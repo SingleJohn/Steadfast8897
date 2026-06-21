@@ -11,11 +11,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"fyms/internal/dto"
 	embysupport "fyms/internal/handlers/mediasupport"
+	"fyms/internal/handlers/shared"
 	"fyms/internal/middleware"
 	"fyms/internal/repository"
 	"fyms/internal/source"
 )
+
+const sourceEmbySearchEnabledKey = "source_emby_search_enabled"
 
 func handleSourceCompatItems(c *gin.Context, state *AppState, parentID string, recursive bool) bool {
 	ctx := c.Request.Context()
@@ -136,6 +140,170 @@ func compatSourceItemDTO(state *AppState, item repository.SourceItem, data *repo
 	}
 	embysupport.ApplyBaseItemEmbyDefaults(out)
 	return out
+}
+
+func shouldAppendSourceSearchResults(c *gin.Context, state *AppState, searchTerm, parentID, ids string) bool {
+	if strings.TrimSpace(searchTerm) == "" || strings.TrimSpace(parentID) != "" || strings.TrimSpace(ids) != "" {
+		return false
+	}
+	if state == nil || state.Repo == nil || state.Repo.SystemConfig == nil {
+		return false
+	}
+	return state.Repo.SystemConfig.GetBoolOrDefault(c.Request.Context(), sourceEmbySearchEnabledKey, true)
+}
+
+func sourceSearchAllowedForAuth(c *gin.Context, state *AppState) (bool, error) {
+	auth := middleware.GetAuthUser(c)
+	if auth == nil {
+		return false, nil
+	}
+	if strings.HasPrefix(auth.ID, "api-key-") || auth.IsAdmin {
+		return true, nil
+	}
+	scope, err := shared.LoadUserLibraryScope(c.Request.Context(), state, auth.ID)
+	if err != nil {
+		return false, err
+	}
+	return scope == nil || scope.AllowAll, nil
+}
+
+func appendCompatSourceSearchItems(c *gin.Context, state *AppState, items []gin.H, total int64, searchTerm, parentID, ids, includeTypes string, limit, offset int64) ([]gin.H, int64, error) {
+	if !shouldAppendSourceSearchResults(c, state, searchTerm, parentID, ids) {
+		return items, total, nil
+	}
+	if ok, err := sourceSearchAllowedForAuth(c, state); err != nil {
+		return items, total, err
+	} else if !ok {
+		return items, total, nil
+	}
+	sourceLimit := limit
+	if sourceLimit <= 0 {
+		sourceLimit = 20
+	}
+	if sourceLimit > 50 {
+		sourceLimit = 50
+	}
+	rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(c.Request.Context(), repository.SourceItemSearchOptions{
+		SearchTerm:   searchTerm,
+		IncludeTypes: compatSourceIncludeTypes(includeTypes),
+		Limit:        sourceLimit,
+		Offset:       offset,
+	})
+	if err != nil {
+		return items, total, err
+	}
+	for i := range rows {
+		items = append(items, compatSourceItemDTO(state, rows[i], nil))
+	}
+	return items, total + sourceTotal, nil
+}
+
+func AppendSourceSearchDTOs(c *gin.Context, state *AppState, items []dto.BaseItemDto, total int64, searchTerm, parentID string, includeTypes []string, limit, offset int64) ([]dto.BaseItemDto, int64, error) {
+	if !shouldAppendSourceSearchResults(c, state, searchTerm, parentID, "") {
+		return items, total, nil
+	}
+	if ok, err := sourceSearchAllowedForAuth(c, state); err != nil {
+		return items, total, err
+	} else if !ok {
+		return items, total, nil
+	}
+	sourceLimit := limit
+	if sourceLimit <= 0 {
+		sourceLimit = 20
+	}
+	if sourceLimit > 50 {
+		sourceLimit = 50
+	}
+	rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(c.Request.Context(), repository.SourceItemSearchOptions{
+		SearchTerm:   searchTerm,
+		IncludeTypes: includeTypes,
+		Limit:        sourceLimit,
+		Offset:       offset,
+	})
+	if err != nil {
+		return items, total, err
+	}
+	for i := range rows {
+		items = append(items, sourceItemDTOForCompatSearch(state, rows[i]))
+	}
+	return items, total + sourceTotal, nil
+}
+
+func AppendCompatSourceSearchItems(c *gin.Context, state *AppState, items []gin.H, total int64, searchTerm, parentID, ids, includeTypes string, limit, offset int64) ([]gin.H, int64, error) {
+	return appendCompatSourceSearchItems(c, state, items, total, searchTerm, parentID, ids, includeTypes, limit, offset)
+}
+
+func sourceItemDTOForCompatSearch(state *AppState, item repository.SourceItem) dto.BaseItemDto {
+	id := item.PublicUUID
+	itemType := compatSourceItemType(item.ItemType)
+	isFolder := itemType == "Series" || itemType == "Folder"
+	canDownload := !isFolder
+	canDelete := false
+	supportsSync := true
+	lockData := false
+	locationType := "Virtual"
+	mediaType := "Video"
+	playAccess := "Full"
+	sortName := item.Title
+	if item.SortTitle != nil && strings.TrimSpace(*item.SortTitle) != "" {
+		sortName = strings.TrimSpace(*item.SortTitle)
+	}
+	dateCreated := compatSourceTime(item.CreatedAt)
+	out := dto.BaseItemDto{
+		ID:                    id,
+		Name:                  item.Title,
+		ServerID:              state.Config.ServerID,
+		Type:                  itemType,
+		IsFolder:              &isFolder,
+		CanDelete:             &canDelete,
+		CanDownload:           &canDownload,
+		SupportsSync:          &supportsSync,
+		SortName:              &sortName,
+		ForcedSortName:        &sortName,
+		PresentationUniqueKey: &id,
+		DisplayPreferencesID:  &id,
+		Overview:              item.Summary,
+		ProductionYear:        item.Year,
+		ImageTags:             sourceSearchImageTags(item),
+		BackdropImageTags:     sourceSearchBackdropTags(item),
+		ProviderIDs:           sourceSearchProviderIDs(item.ProviderIDs),
+		ExternalURLs:          []dto.ExternalUrl{},
+		RemoteTrailers:        []dto.MediaUrl{},
+		LockedFields:          []string{},
+		LockData:              &lockData,
+		LocationType:          &locationType,
+		DateCreated:           &dateCreated,
+		DateModified:          &dateCreated,
+		UserData:              &dto.UserItemDataDto{PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false},
+	}
+	if !isFolder {
+		out.MediaType = &mediaType
+		out.PlayAccess = &playAccess
+	}
+	return out
+}
+
+func sourceSearchImageTags(item repository.SourceItem) map[string]string {
+	if item.PosterURL == nil || strings.TrimSpace(*item.PosterURL) == "" {
+		return map[string]string{}
+	}
+	return map[string]string{"Primary": compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.PosterURL)}
+}
+
+func sourceSearchBackdropTags(item repository.SourceItem) []string {
+	if item.BackdropURL == nil || strings.TrimSpace(*item.BackdropURL) == "" {
+		return []string{}
+	}
+	return []string{compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.BackdropURL)}
+}
+
+func sourceSearchProviderIDs(raw []byte) *json.RawMessage {
+	if len(raw) == 0 || !json.Valid(raw) {
+		msg := json.RawMessage(`{}`)
+		return &msg
+	}
+	msg := json.RawMessage(append([]byte(nil), raw...))
+	return &msg
 }
 
 func compatSourceEpisodeDTO(state *AppState, ep repository.SourceEpisode, data *repository.SourceUserItemData) gin.H {

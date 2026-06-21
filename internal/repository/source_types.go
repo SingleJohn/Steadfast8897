@@ -159,6 +159,13 @@ type SourceItemListOptions struct {
 	IncludeTypes []string
 }
 
+type SourceItemSearchOptions struct {
+	Limit        int64
+	Offset       int64
+	SearchTerm   string
+	IncludeTypes []string
+}
+
 type SourceConfigImportUpsert struct {
 	SourceType    string
 	Name          string

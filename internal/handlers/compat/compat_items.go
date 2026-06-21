@@ -634,7 +634,15 @@ func itemsSearch(c *gin.Context, state *AppState) {
 	if items == nil {
 		items = []gin.H{}
 	}
-	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": result.Total})
+	total := result.Total
+	if nextItems, nextTotal, err := AppendCompatSourceSearchItems(c, state, items, total, searchTerm, parentID, ids, includeTypes, limitVal, startIndex); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	} else {
+		items = nextItems
+		total = nextTotal
+	}
+	c.JSON(http.StatusOK, gin.H{"Items": items, "TotalRecordCount": total})
 }
 
 func uuidToString(v interface{}) string {
@@ -751,7 +759,49 @@ func searchHints(c *gin.Context, state *AppState) {
 	if hints == nil {
 		hints = []gin.H{}
 	}
-	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": result.Total})
+	total := result.Total
+	if shouldAppendSourceSearchResults(c, state, searchTerm, "", "") {
+		rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(ctx, repository.SourceItemSearchOptions{
+			SearchTerm:   searchTerm,
+			IncludeTypes: compatSourceIncludeTypes(includeTypes),
+			Limit:        limitVal,
+			Offset:       startIndex,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		for i := range rows {
+			hints = append(hints, compatSourceSearchHint(state, rows[i]))
+		}
+		total += sourceTotal
+	}
+	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": total})
+}
+
+func compatSourceSearchHint(state *AppState, item repository.SourceItem) gin.H {
+	itemType := compatSourceItemType(item.ItemType)
+	hint := gin.H{
+		"Id":        item.PublicUUID,
+		"ItemId":    item.PublicUUID,
+		"Name":      item.Title,
+		"Type":      itemType,
+		"MediaType": "Video",
+		"ServerId":  state.Config.ServerID,
+		"IsFolder":  itemType == "Series" || itemType == "Folder",
+	}
+	if item.Year != nil {
+		hint["ProductionYear"] = *item.Year
+	}
+	if item.PosterURL != nil && strings.TrimSpace(*item.PosterURL) != "" {
+		tag := compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.PosterURL)
+		hint["PrimaryImageTag"] = tag
+		hint["ThumbImageTag"] = tag
+	}
+	if item.BackdropURL != nil && strings.TrimSpace(*item.BackdropURL) != "" {
+		hint["BackdropImageTag"] = compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.BackdropURL)
+	}
+	return hint
 }
 
 // hideMediaSourceSizeForInfuse 暂不隐藏 MediaSource.Size,用于验证 Infuse 在

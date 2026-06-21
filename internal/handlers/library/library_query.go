@@ -506,10 +506,34 @@ func getItems(c *gin.Context) {
 	}
 	compathandlers.ApplyUnplayedItemCounts(ctx, state.DB, pathUser, items)
 	compathandlers.ApplySeasonNames(ctx, state.DB, items)
+	totalCount := res.TotalCount
+	parentID := ""
+	if opts.ParentID != nil {
+		parentID = *opts.ParentID
+	}
+	searchTerm := ""
+	if opts.SearchTerm != nil {
+		searchTerm = *opts.SearchTerm
+	}
+	limit := int64(20)
+	if opts.Limit != nil {
+		limit = *opts.Limit
+	}
+	offset := int64(0)
+	if opts.StartIndex != nil {
+		offset = *opts.StartIndex
+	}
+	if nextItems, nextTotal, err := compathandlers.AppendSourceSearchDTOs(c, state, items, totalCount, searchTerm, parentID, opts.IncludeItemTypes, limit, offset); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	} else {
+		items = nextItems
+		totalCount = nextTotal
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"Items":            embysupport.BaseItemsToEmbyMaps(items),
-		"TotalRecordCount": shared.EmbyTotalRecordCount(c, res.TotalCount),
+		"TotalRecordCount": shared.EmbyTotalRecordCount(c, totalCount),
 	})
 }
 

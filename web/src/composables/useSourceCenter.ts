@@ -1,9 +1,11 @@
 import { computed, reactive, ref, shallowRef } from 'vue'
+import { getSystemConfig, listCoverStyles, updateSystemConfig, type CoverStyle } from '@/api/client'
 import {
   createSourceView,
   deleteSourceView,
   deleteSourceViewCover,
   discoverSourceViewValues,
+  federatedSourceSearch,
   generateSourceViewCover,
   healthCheckSourceProvider,
   importTVBoxConfig,
@@ -18,11 +20,11 @@ import {
   updateSourceView,
   updateSourceViewDisplayOrder,
   type DimensionValue,
+  type FederatedSearchResponse,
   type SourceConfig,
   type SourceProvider,
   type SourceView,
 } from '@/api/source'
-import { listCoverStyles, type CoverStyle } from '@/api/client'
 
 type ToastFn = (message: string, type?: any) => void
 
@@ -42,6 +44,12 @@ export function useSourceCenter(showToast: ToastFn) {
   const providerSearchResult = shallowRef<any>(null)
   const providerCategories = ref<Array<{ id: string; name: string }>>([])
   const providerAction = shallowRef('')
+  const federatedKeyword = shallowRef('')
+  const federatedLimit = shallowRef(50)
+  const federatedLoading = shallowRef(false)
+  const federatedResult = shallowRef<FederatedSearchResponse | null>(null)
+  const embySourceSearchEnabled = shallowRef(true)
+  const savingEmbySourceSearch = shallowRef(false)
 
   const viewDraft = reactive({
     id: null as number | null,
@@ -82,6 +90,15 @@ export function useSourceCenter(showToast: ToastFn) {
       if (!activeProviderId.value && nextProviders.length > 0) activeProviderId.value = nextProviders[0].ID
     } finally {
       loading.value = false
+    }
+  }
+
+  async function loadSourceSearchConfig() {
+    try {
+      const cfg: any = await getSystemConfig()
+      embySourceSearchEnabled.value = String(cfg?.source_emby_search_enabled ?? 'true') !== 'false'
+    } catch {
+      embySourceSearchEnabled.value = true
     }
   }
 
@@ -158,6 +175,37 @@ export function useSourceCenter(showToast: ToastFn) {
       showToast(e?.message || '分类加载失败', 'error')
     } finally {
       providerAction.value = ''
+    }
+  }
+
+  async function runFederatedSearch() {
+    const keyword = federatedKeyword.value.trim()
+    if (!keyword) {
+      showToast('请填写聚合搜索关键词', 'info')
+      return
+    }
+    federatedLoading.value = true
+    try {
+      federatedResult.value = await federatedSourceSearch(keyword, federatedLimit.value)
+      showToast('聚合搜索完成，命中已写入在线缓存', 'success')
+      await refreshAll()
+    } catch (e: any) {
+      showToast(e?.message || '聚合搜索失败', 'error')
+    } finally {
+      federatedLoading.value = false
+    }
+  }
+
+  async function updateEmbySourceSearchEnabled(value: boolean) {
+    savingEmbySourceSearch.value = true
+    try {
+      await updateSystemConfig({ source_emby_search_enabled: value ? 'true' : 'false' })
+      embySourceSearchEnabled.value = value
+      showToast(value ? 'Emby 在线搜索已开启' : 'Emby 在线搜索已关闭', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '保存失败', 'error')
+    } finally {
+      savingEmbySourceSearch.value = false
     }
   }
 
@@ -278,6 +326,12 @@ export function useSourceCenter(showToast: ToastFn) {
     providerSearchResult,
     providerCategories,
     providerAction,
+    federatedKeyword,
+    federatedLimit,
+    federatedLoading,
+    federatedResult,
+    embySourceSearchEnabled,
+    savingEmbySourceSearch,
     viewDraft,
     discoverDimension,
     discoverSearch,
@@ -289,12 +343,15 @@ export function useSourceCenter(showToast: ToastFn) {
     coverStyleOptions,
     generatingCover,
     refreshAll,
+    loadSourceSearchConfig,
     submitImport,
     toggleConfig,
     toggleProvider,
     runProviderHealth,
     runProviderSearch,
     loadProviderCategories,
+    runFederatedSearch,
+    updateEmbySourceSearchEnabled,
     editView,
     saveView,
     removeView,

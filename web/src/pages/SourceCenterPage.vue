@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { NSpin } from 'naive-ui'
 import PageShell from '@/components/PageShell.vue'
+import SourceFederatedSearchPanel from '@/components/source-center/SourceFederatedSearchPanel.vue'
 import SourceImportPanel from '@/components/source-center/SourceImportPanel.vue'
 import SourceProviderPanel from '@/components/source-center/SourceProviderPanel.vue'
 import SourceViewsPanel from '@/components/source-center/SourceViewsPanel.vue'
@@ -26,6 +27,12 @@ const {
   providerSearchResult,
   providerCategories,
   providerAction,
+  federatedKeyword,
+  federatedLimit,
+  federatedLoading,
+  federatedResult,
+  embySourceSearchEnabled,
+  savingEmbySourceSearch,
   viewDraft,
   discoverDimension,
   discoverSearch,
@@ -42,6 +49,7 @@ void configs
 
 onMounted(() => {
   void source.refreshAll()
+  void source.loadSourceSearchConfig()
 })
 </script>
 
@@ -75,6 +83,19 @@ onMounted(() => {
           @health="source.runProviderHealth"
           @categories="source.loadProviderCategories"
           @search="source.runProviderSearch"
+        />
+
+        <SourceFederatedSearchPanel
+          :keyword="federatedKeyword"
+          :limit="federatedLimit"
+          :loading="federatedLoading"
+          :result="federatedResult"
+          :emby-enabled="embySourceSearchEnabled"
+          :saving-emby-enabled="savingEmbySourceSearch"
+          @update:keyword="federatedKeyword = $event"
+          @update:limit="federatedLimit = $event"
+          @update:emby-enabled="source.updateEmbySourceSearchEnabled"
+          @search="source.runFederatedSearch"
         />
 
         <SourceViewsPanel

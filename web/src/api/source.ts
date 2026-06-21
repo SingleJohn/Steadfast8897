@@ -66,6 +66,56 @@ export type ProviderPage = {
   items: Array<Record<string, unknown>>
 }
 
+export type FederatedSearchProviderSummary = {
+  total: number
+  success: number
+  failed: number
+}
+
+export type FederatedSearchError = {
+  provider_id: number
+  provider_name: string
+  source_key: string
+  error_type: string
+  message: string
+  latency_ms: number
+}
+
+export type FederatedSearchItemProvider = {
+  id: number
+  name: string
+  source_key: string
+  health_status: string
+  item_uuid: string
+  source_item_id: string
+  remarks?: string
+}
+
+export type FederatedSearchItem = {
+  public_uuid: string
+  title: string
+  year?: number
+  item_type: string
+  normalized_kind: string
+  region?: string
+  poster_url?: string
+  remarks?: string
+  provider_count: number
+  providers: FederatedSearchItemProvider[]
+  score: number
+}
+
+export type FederatedSearchResponse = {
+  keyword: string
+  total: number
+  items: FederatedSearchItem[]
+  errors?: FederatedSearchError[]
+  provider: FederatedSearchProviderSummary
+  latency_ms: number
+  truncated: boolean
+  cache_write: boolean
+}
+
 export async function importTVBoxConfig(payload: { name?: string; source_url?: string; raw_json?: string }) {
   return requestJson<ImportTVBoxResult>('/SourceConfigs/ImportTVBox', {
     method: 'POST',
@@ -100,6 +150,14 @@ export async function searchSourceProvider(id: number, keyword: string, page = 1
   return requestJson<{ page: ProviderPage; items: unknown[] }>(`/SourceProviders/${id}/Search`, {
     method: 'POST',
     body: JSON.stringify({ keyword, page }),
+    timeoutMs: 120_000,
+  })
+}
+
+export async function federatedSourceSearch(keyword: string, limit = 50) {
+  return requestJson<FederatedSearchResponse>('/SourceSearch', {
+    method: 'POST',
+    body: JSON.stringify({ keyword, limit }),
     timeoutMs: 120_000,
   })
 }
