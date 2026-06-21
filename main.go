@@ -318,6 +318,7 @@ func main() {
 		handlers.RegisterSystemMetricsRoutes(group, state, adminMW)
 		handlers.RegisterAdminQueueRoutes(group, state, adminMW)
 		handlers.RegisterScrapeConfigRoutes(group, adminMW)
+		handlers.RegisterSourceRoutes(group, state, adminMW)
 		gateway.RegisterAPIRoutes(group, gwStore, gwRuntime, adminMW)
 	}
 

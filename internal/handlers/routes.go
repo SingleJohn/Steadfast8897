@@ -83,6 +83,10 @@ func RegisterScrapeConfigRoutes(group *gin.RouterGroup, adminMW gin.HandlerFunc)
 	adminhandlers.RegisterScrapeConfigRoutes(group, adminMW)
 }
 
+func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.HandlerFunc) {
+	adminhandlers.RegisterSourceRoutes(group, state, adminMW)
+}
+
 func FlushStalePlaybacks(pool *pgxpool.Pool, sm *services.SessionManager) {
 	playbackhandlers.FlushStalePlaybacks(pool, sm)
 }
