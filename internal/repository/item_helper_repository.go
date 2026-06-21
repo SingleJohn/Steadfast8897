@@ -327,6 +327,12 @@ func (r *ItemHelperRepository) ResolveItemUUIDByEmbyID(ctx context.Context, emby
 	return &id, nil
 }
 
+func (r *ItemHelperRepository) ItemExists(ctx context.Context, itemID string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM items WHERE id = $1::uuid)`, itemID).Scan(&exists)
+	return exists, err
+}
+
 func (r *ItemHelperRepository) GetItemEmbyID(ctx context.Context, itemID string) (*int32, error) {
 	uid, err := uuid.Parse(itemID)
 	if err != nil {
