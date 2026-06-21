@@ -163,6 +163,8 @@ normalize.go；internal/services 的并发/超时模式。
 完成判定：多 provider 下 POST /SourceSearch 能并发返回合并去重结果，单源故障被隔离（go build 通过；运行期我验证）。
 ```
 
+实际落点：新增 `internal/source/federated_search.go`，在 `ProviderRuntimeManager` 上实现 `FederatedSearch`：筛选 effective enabled + searchable + native CMS provider，并发调用既有 `Search`（复用 per-provider limiter、timeout、错误日志与 `SourceIngestor` upsert 到 `source_items`），单源 panic/错误/超时隔离为 `errors[]`；按归一标题 + 年份去重合并，返回 provider 列表、source item UUID、命中分数，并按标题匹配度、provider 健康、年份/海报信号排序；新增双注册 `POST /SourceSearch`（body: `{keyword, limit}`）到 `internal/handlers/admin/source_routes.go` / `source_handlers.go`，返回聚合结果与错误明细。未新增表、未写 items、未接前端/Emby 搜索。构建：`go build ./...` 通过。T13 commit 范围：66e5a16。
+
 ---
 
 ## T14 — 真实 TVBox 配置硬化联调【人工里程碑】
