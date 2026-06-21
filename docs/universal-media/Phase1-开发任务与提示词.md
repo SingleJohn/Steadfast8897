@@ -337,6 +337,8 @@ P0 PoC 抓包实测：后端全链路通（Views/Items/剧集合成/PlaybackInfo
 完成判定：导入示例 TVBox 配置后 cms_vod provider 正确入库并可启停/探活/搜索；重导入同 site key 不换 ID（go build ./... 通过；运行期由我手动验证）。
 ```
 
+实际落点：扩展 internal/repository/source_repository.go 的配置/provider 列表、启停、site key 复用 upsert、旧配置 supersede、健康状态写回；新增 internal/source/tvbox_config.go、tvbox_importer.go、provider_runtime.go，实现 TVBox URL/粘贴 JSON 导入、content_sha256、site→provider 归一、JSON CMS 接纳与 runtime_required 标记、per-provider limiter、effective_enabled 检查、分类/搜索/健康检查运行态；新增 internal/handlers/admin/source_routes.go、source_handlers.go 并接入 internal/handlers/routes.go、main.go，新增双注册路由 POST /SourceConfigs/ImportTVBox、GET /SourceConfigs、POST /SourceConfigs/{id}/Enable|Disable、GET /SourceProviders、POST /SourceProviders/{id}/Enable|Disable、POST /SourceProviders/{id}/HealthCheck、POST /SourceProviders/{id}/Search、GET /SourceProviders/{id}/Categories；未新增表，未写 items；T6 commit 范围：924f860..b4ed350。
+
 ---
 
 ## T7 — 虚拟在线库 CRUD / 管理（后端，对标 platform_libraries）
