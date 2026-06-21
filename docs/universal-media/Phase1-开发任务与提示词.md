@@ -248,6 +248,8 @@ images.go（图片缓存与回退链）、platform 虚拟库在 getUserViews 的
 - 若客户端不接受在线 View/Item 或代理播放不通，先停下复盘形态，不要继续 T5+。
 ```
 
+实际落点：新增 internal/source/ssrf.go、internal/source/play_resolver.go、internal/handlers/media/source_play.go、internal/handlers/media/source_playback.go、internal/handlers/playback/source_userdata.go；扩展 internal/repository/source_repository.go、internal/handlers/media/videos.go、internal/handlers/playback/playback.go；新增 /SourcePlay/{playSourceUUID}/stream 双注册代理端点、direct ResolvePlay、Redis/内存短缓存、SSRF 出站校验、在线 PlaybackInfo MediaSources、source_user_item_data 进度/已看/收藏回写；T4 commit 范围：6d938fe..bd5e815。
+
 ---
 
 ## T5 — JSON CMS Provider + 入库归一
