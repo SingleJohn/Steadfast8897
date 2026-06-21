@@ -18,6 +18,7 @@ type Repository struct {
 	Playback     *PlaybackRepository
 	Background   *BackgroundTaskRepository
 	Notify       *NotifyRepository
+	Source       *SourceRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
@@ -37,5 +38,6 @@ func New(pool *pgxpool.Pool) *Repository {
 		Playback:     NewPlaybackRepository(pool),
 		Background:   NewBackgroundTaskRepository(pool),
 		Notify:       NewNotifyRepository(pool),
+		Source:       NewSourceRepository(pool),
 	}
 }
