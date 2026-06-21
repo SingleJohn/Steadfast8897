@@ -195,6 +195,22 @@ const router = createRouter({
             requiresAdmin: true,
           },
         },
+        {
+          path: 'gateway/source-center',
+          name: 'gateway_source_center',
+          component: () => import('./pages/SourceCenterPage.vue'),
+          meta: {
+            title: '来源中心',
+            navLabel: '来源中心',
+            icon: 'gateway',
+            section: 'gateway',
+            sectionLabel: '网关',
+            sectionIcon: 'gateway',
+            sectionOrder: 3,
+            order: 4,
+            requiresAdmin: true,
+          },
+        },
 
         // ── 模块 4：观测中心（两个父容器：网关观测 / 服务观测）
         {
