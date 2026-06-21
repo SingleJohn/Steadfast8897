@@ -184,6 +184,7 @@ func (m *JSRuntimeManager) runWorker(ctx context.Context, req JSRuntimeRequest, 
 	reader.Buffer(make([]byte, 64*1024), jsRuntimeOutputMaxBytes)
 	logs := []string{}
 	var result *JSRuntimeMethodResult
+	resultReceived := false
 	for reader.Scan() {
 		line := bytes.TrimSpace(reader.Bytes())
 		if len(line) == 0 {
@@ -214,12 +215,20 @@ func (m *JSRuntimeManager) runWorker(ctx context.Context, req JSRuntimeRequest, 
 		case "result":
 			parsed := parseJSRuntimeResult(req.Method, msg.Result, msg.DurationMs)
 			result = &parsed
+			resultReceived = true
+			break
+		}
+		if resultReceived {
+			break
 		}
 	}
 	if err := reader.Err(); err != nil {
 		return JSRuntimeMethodResult{}, logs, pid, err
 	}
-	waitErr := cmd.Wait()
+	if resultReceived {
+		_ = stdin.Close()
+	}
+	waitErr := waitForWorkerExit(cmd, resultReceived)
 	if stderr.Len() > 0 {
 		logs = append(logs, strings.Split(strings.TrimSpace(stderr.String()), "\n")...)
 	}
@@ -230,6 +239,30 @@ func (m *JSRuntimeManager) runWorker(ctx context.Context, req JSRuntimeRequest, 
 		return JSRuntimeMethodResult{}, logs, pid, fmt.Errorf("JS runtime worker 无结果")
 	}
 	return *result, logs, pid, waitErr
+}
+
+func waitForWorkerExit(cmd *exec.Cmd, resultReceived bool) error {
+	if cmd == nil {
+		return nil
+	}
+	if !resultReceived {
+		return cmd.Wait()
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(1200 * time.Millisecond):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		err := <-done
+		if err != nil {
+			return nil
+		}
+		return nil
+	}
 }
 
 type jsonLineWriter struct {
@@ -257,6 +290,7 @@ type jsHTTPBridgeReq struct {
 }
 
 func (m *JSRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *int64, id string, in jsHTTPBridgeReq) map[string]any {
+	start := time.Now()
 	if err := ValidateOutboundURL(ctx, in.URL); err != nil {
 		return map[string]any{"type": "http_response", "id": id, "ok": false, "error": err.Error()}
 	}
@@ -312,6 +346,8 @@ func (m *JSRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *int
 		"status":     resp.StatusCode,
 		"headers":    headers,
 		"bodyBase64": base64.StdEncoding.EncodeToString(raw),
+		"bodyBytes":  len(raw),
+		"durationMs": time.Since(start).Milliseconds(),
 	}
 }
 

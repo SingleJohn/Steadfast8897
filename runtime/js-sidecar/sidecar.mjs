@@ -7,6 +7,7 @@ const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (
 const PC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.54 Safari/537.36';
 const pendingHTTP = new Map();
 const local = new Map();
+const runtimeTimers = new Set();
 let seq = 0;
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -33,14 +34,25 @@ async function onLine(line) {
     const result = await runRuntime(msg);
     emitResult(result, Date.now() - started);
     process.stdin.destroy();
+    clearRuntimeTimers();
+    setImmediate(() => process.exit(0));
   }
 }
 
 async function runRuntime(input) {
   const logs = [];
+  const phase = makePhaseLogger(logs);
+  phase('runtime:start', { method: input.method || 'init' });
   const context = createContext(input, logs);
+  phase('engine:load:start', { bytes: String(input.engineCode || '').length });
   const engine = await loadEngine(context, input.engineCode || '');
+  phase('engine:load:done', { ok: engine.ok, stage: engine.stage, error: engine.error || '', durationMs: engine.durationMs || 0 });
+  if (!engine.ok) {
+    phase('engine:degrade', { reason: engine.error || engine.stage || 'unknown' });
+  }
+  phase('rule:load:start', { bytes: String(input.ruleCode || '').length });
   const ruleResult = loadRule(context, input.ruleCode || '');
+  phase('rule:load:done', { ok: ruleResult.ok, error: ruleResult.error || '', durationMs: ruleResult.durationMs || 0 });
   if (!ruleResult.ok) {
     return {
       ok: false,
@@ -55,8 +67,12 @@ async function runRuntime(input) {
   const methods = method === 'all' ? ['init', 'home', 'search', 'detail', 'play'] : [method];
   const results = [];
   for (const m of methods) {
+    phase('dispatch:start', { method: m });
     results.push(await runOne(context, m, input.args || {}, engine));
+    const last = results[results.length - 1];
+    phase('dispatch:done', { method: m, ok: last.ok, durationMs: last.durationMs, errorType: last.errorType || '' });
   }
+  phase('runtime:done', { ok: results.every(r => r.ok), durationMs: Date.now() - phase.startedAt });
   return {
     ok: results.every(r => r.ok),
     method,
@@ -76,12 +92,14 @@ function createContext(input, logs) {
   async function request(raw, options = {}) {
     const url = makeURL(baseUrl, raw);
     const headers = Object.assign({ 'User-Agent': MOBILE_UA }, options.headers || {});
+    logLine(`[bridgeHTTP:start] ${options.method || 'GET'} ${safeURLForLog(url)}`);
     const resp = await bridgeHTTP({
       url,
       method: options.method || 'GET',
       headers,
       body: options.body || '',
     });
+    logLine(`[bridgeHTTP:done] status=${resp.status || 0} durationMs=${resp.durationMs || 0} bytes=${resp.bodyBytes || 0}`);
     const body = Buffer.from(resp.bodyBase64 || '', 'base64').toString(options.encoding || 'utf8');
     if (options.withHeaders) return { statusCode: resp.status, headers: resp.headers || {}, body };
     return body;
@@ -94,8 +112,10 @@ function createContext(input, logs) {
     URL,
     URLSearchParams,
     crypto,
-    setTimeout,
-    clearTimeout,
+    setTimeout: trackedSetTimeout,
+    clearTimeout: trackedClearTimeout,
+    setInterval: trackedSetInterval,
+    clearInterval: trackedClearInterval,
     MOBILE_UA,
     PC_UA,
     UA: MOBILE_UA,
@@ -113,6 +133,7 @@ function createContext(input, logs) {
     ocr: () => { throw new Error('OCR host function is not supported yet'); },
     sniffer: () => { throw new Error('sniffer host function is not supported yet'); },
     proxy: () => ({ error: 'proxy host function is not supported yet' }),
+    __unsupportedImport: spec => Promise.reject(new Error(`dynamic import is not supported in FYMS sidecar: ${spec}`)),
     setItem: (k, v) => local.set(String(k), String(v)),
     getItem: (k, fallback = '') => local.has(String(k)) ? local.get(String(k)) : fallback,
     clearItem: k => local.delete(String(k)),
@@ -151,8 +172,8 @@ async function dispatch(context, method, args) {
   const rule = context.rule || {};
   const candidates = methodFunctionNames(method);
   for (const name of candidates) {
-    if (typeof context[name] === 'function') return await context[name](...methodArgs(method, args));
     if (typeof rule[name] === 'function') return await rule[name](...methodArgs(method, args));
+    if (context.__engineActive && typeof context[name] === 'function') return await context[name](...methodArgs(method, args));
   }
   if (method === 'init') return { ok: true, rule: rule.title || rule.name || '', host: hostSummary() };
   if (method === 'home') return fallbackHome(rule);
@@ -165,6 +186,7 @@ async function dispatch(context, method, args) {
 }
 
 function loadRule(context, code) {
+  const started = Date.now();
   try {
     const transformed = transformModuleCode(String(code || ''))
       .replace(/\bvar\s+rule\s*=/, 'globalThis.rule =')
@@ -172,30 +194,40 @@ function loadRule(context, code) {
       .replace(/\bconst\s+rule\s*=/, 'globalThis.rule =');
     vm.runInContext(transformed, context, { timeout: 8000 });
     if (!context.rule && context.__defaultExport) context.rule = context.__defaultExport;
-    if (!context.rule) return { ok: false, error: '规则未导出 rule 对象' };
-    return { ok: true };
+    if (!context.rule) return { ok: false, error: '规则未导出 rule 对象', durationMs: Date.now() - started };
+    return { ok: true, durationMs: Date.now() - started };
   } catch (err) {
-    return { ok: false, error: err?.message || String(err) };
+    return { ok: false, error: err?.message || String(err), durationMs: Date.now() - started };
   }
 }
 
 async function loadEngine(context, code) {
-  if (!code) return { ok: false, stage: 'empty', error: 'engine artifact empty' };
+  const started = Date.now();
+  if (!code) return { ok: false, stage: 'empty', error: 'engine artifact empty', durationMs: 0 };
   try {
     const transformed = transformModuleCode(String(code));
-    vm.runInContext(transformed, context, { timeout: 8000 });
-    return { ok: true, stage: 'vm-load', needsHost: detectHostFunctions(code) };
+    vm.runInContext(transformed, context, { timeout: 1500, microtaskMode: 'afterEvaluate' });
+    clearRuntimeTimers();
+    return { ok: true, stage: 'vm-load', needsHost: detectHostFunctions(code), durationMs: Date.now() - started };
   } catch (err) {
-    return { ok: false, stage: 'vm-load', error: err?.message || String(err), needsHost: detectHostFunctions(code) };
+    clearRuntimeTimers();
+    return { ok: false, stage: 'vm-load-degraded', error: err?.message || String(err), needsHost: detectHostFunctions(code), durationMs: Date.now() - started };
   }
 }
 
 function transformModuleCode(code) {
-  return code
-    .replace(/import\s+[^;]+;?/g, '')
-    .replace(/export\s+default\s+/g, 'globalThis.__defaultExport = ')
+  return stripStaticImports(code)
+    .replace(/\bimport\s*\(/g, '__unsupportedImport(')
+    .replace(/export\s+default\b/g, 'globalThis.__defaultExport = ')
     .replace(/export\s+\{[^}]+\};?/g, '')
     .replace(/export\s+(async\s+function|function|const|let|var|class)\s+/g, '$1 ');
+}
+
+function stripStaticImports(code) {
+  return String(code || '')
+    .replace(/\bimport\s+[^;'"()]+?\s*from\s*['"][^'"]+['"]\s*;?/g, '')
+    .replace(/\bimport\s*\{[^}]*\}\s*from\s*['"][^'"]+['"]\s*;?/g, '')
+    .replace(/\bimport\s*['"][^'"]+['"]\s*;?/g, '');
 }
 
 function fallbackHome(rule) {
@@ -315,6 +347,51 @@ function emitResult(result, durationMs = 0) {
   write({ type: 'result', result: { ...result, durationMs }, durationMs });
 }
 
+function makePhaseLogger(logs) {
+  const startedAt = Date.now();
+  const logger = (stage, fields = {}) => {
+    const suffix = Object.entries(fields).map(([k, v]) => `${k}=${String(v)}`).join(' ');
+    const line = `[phase] ${stage} t=${Date.now() - startedAt}ms${suffix ? ' ' + suffix : ''}`;
+    logs.push(line);
+    write({ type: 'log', message: line });
+  };
+  logger.startedAt = startedAt;
+  return logger;
+}
+
+function trackedSetTimeout(fn, ms, ...args) {
+  const timer = setTimeout(() => {
+    runtimeTimers.delete(timer);
+    fn(...args);
+  }, ms);
+  runtimeTimers.add(timer);
+  return timer;
+}
+
+function trackedClearTimeout(timer) {
+  runtimeTimers.delete(timer);
+  clearTimeout(timer);
+}
+
+function trackedSetInterval(fn, ms, ...args) {
+  const timer = setInterval(fn, ms, ...args);
+  runtimeTimers.add(timer);
+  return timer;
+}
+
+function trackedClearInterval(timer) {
+  runtimeTimers.delete(timer);
+  clearInterval(timer);
+}
+
+function clearRuntimeTimers() {
+  for (const timer of runtimeTimers) {
+    clearTimeout(timer);
+    clearInterval(timer);
+  }
+  runtimeTimers.clear();
+}
+
 function makeURL(base, path) {
   try { return new URL(path || '', base || 'https://tvboxconfig.singlelovely.cn/gao/').toString(); }
   catch { return String(path || ''); }
@@ -404,6 +481,15 @@ function makeCryptoJS() {
 function joinMaybe(value) {
   if (Array.isArray(value)) return value.join(',');
   return value == null ? '' : String(value);
+}
+
+function safeURLForLog(raw) {
+  try {
+    const u = new URL(raw);
+    return `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return '[invalid-url]';
+  }
 }
 
 function classifyError(err) {
