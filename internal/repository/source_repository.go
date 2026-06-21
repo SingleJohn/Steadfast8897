@@ -737,6 +737,36 @@ func (r *SourceRepository) ListPlaySourcesForItem(ctx context.Context, sourceIte
 	return out, rows.Err()
 }
 
+func (r *SourceRepository) MarkPlaySourceSuccess(ctx context.Context, id int64, latencyMS int64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE source_play_sources
+		   SET health_status = 'ok',
+		       success_count = success_count + 1,
+		       avg_latency_ms = CASE
+		         WHEN avg_latency_ms IS NULL THEN $2
+		         ELSE ((avg_latency_ms + $2) / 2)::integer
+		       END,
+		       last_success_at = NOW(),
+		       updated_at = NOW()
+		 WHERE id = $1`, id, latencyMS)
+	return err
+}
+
+func (r *SourceRepository) MarkPlaySourceFailure(ctx context.Context, id int64, latencyMS int64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE source_play_sources
+		   SET health_status = 'error',
+		       failure_count = failure_count + 1,
+		       avg_latency_ms = CASE
+		         WHEN avg_latency_ms IS NULL THEN $2
+		         ELSE ((avg_latency_ms + $2) / 2)::integer
+		       END,
+		       last_failure_at = NOW(),
+		       updated_at = NOW()
+		 WHERE id = $1`, id, latencyMS)
+	return err
+}
+
 func sourceViewWhere(view SourceLibraryView, opts *SourceItemListOptions) (string, []any, error) {
 	clauses := []string{"si.item_type IN ('Movie', 'Series')"}
 	args := []any{}
