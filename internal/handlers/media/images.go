@@ -23,6 +23,8 @@ import (
 
 	"fyms/internal/assets"
 	"fyms/internal/models"
+	"fyms/internal/repository"
+	"fyms/internal/source"
 )
 
 var imageSemaphore = make(chan struct{}, 10)
@@ -216,6 +218,25 @@ func serveImage(c *gin.Context, state *AppState) {
 			return
 		}
 		servePlatformLogo(c, state, p.PlatformName)
+		return
+	}
+
+	if resolved, err := source.ResolveEntity(ctx, state.DB, itemID); err == nil && resolved != nil && resolved.Kind == source.EntityKindSourceItem {
+		item, err := state.Repo.Source.GetSourceItemByID(ctx, resolved.SourceItemID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		if item == nil {
+			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+			return
+		}
+		sourcePath := sourceMediaImageURLForType(*item, imageType)
+		if sourcePath == "" {
+			c.JSON(http.StatusNotFound, gin.H{"message": "No image"})
+			return
+		}
+		serveRemoteImage(c, state, sourcePath)
 		return
 	}
 
@@ -481,6 +502,33 @@ func serveImage(c *gin.Context, state *AppState) {
 	state.ImageCache.Touch(localPath)
 	c.Header("Cache-Control", "public, max-age=31536000")
 	c.File(localPath)
+}
+
+func serveRemoteImage(c *gin.Context, state *AppState, sourcePath string) {
+	imageSemaphore <- struct{}{}
+	defer func() { <-imageSemaphore }()
+
+	localPath, _, err := state.ImageCache.Materialize(sourcePath, true)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+		return
+	}
+	state.ImageCache.Touch(localPath)
+	c.Header("Cache-Control", "public, max-age=31536000")
+	c.File(localPath)
+}
+
+func sourceMediaImageURLForType(item repository.SourceItem, imageType string) string {
+	switch strings.ToLower(strings.TrimSpace(imageType)) {
+	case "backdrop", "banner":
+		if item.BackdropURL != nil && strings.TrimSpace(*item.BackdropURL) != "" {
+			return strings.TrimSpace(*item.BackdropURL)
+		}
+	}
+	if item.PosterURL != nil && strings.TrimSpace(*item.PosterURL) != "" {
+		return strings.TrimSpace(*item.PosterURL)
+	}
+	return ""
 }
 
 func resizeImage(srcPath, dstPath string, maxW, maxH, quality int, format imaging.Format) error {

@@ -514,6 +514,9 @@ func itemsSearch(c *gin.Context, state *AppState) {
 		Offset:     startIndex,
 	}
 	if parentID != "" {
+		if handleSourceCompatItems(c, state, parentID, recursive) {
+			return
+		}
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
 			if scope != nil && !scope.AllowAll {
 				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})

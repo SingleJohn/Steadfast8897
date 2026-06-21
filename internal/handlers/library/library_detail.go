@@ -398,6 +398,10 @@ func getItemDetail(c *gin.Context) {
 		return
 	}
 
+	if handleSourceItemDetail(c, state, itemID, pathUser, scope) {
+		return
+	}
+
 	// Check if this is a platform virtual library
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
 		if !scope.AllowAll {

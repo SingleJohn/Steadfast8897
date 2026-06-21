@@ -114,6 +114,12 @@ func getUserViews(c *gin.Context) {
 			platformEntries = append(platformEntries, entry)
 		}
 	}
+	var sourceEntries []gin.H
+	if scope.AllowAll {
+		if entries, err := sourceViews(c, state); err == nil {
+			sourceEntries = entries
+		}
+	}
 
 	libEntries := make([]gin.H, 0, len(libs))
 	for _, lib := range libs {
@@ -199,9 +205,10 @@ func getUserViews(c *gin.Context) {
 	// 统一展示顺序:有 library_display_order 记录时,实际库与虚拟库按其交错排序;
 	// 否则回退 platform_libraries_position(before/after)。
 	order, _ := state.Repo.DisplayOrder.GetDisplayOrder(ctx)
-	out := make([]gin.H, 0, len(libEntries)+len(platformEntries))
+	virtualEntries := append(platformEntries, sourceEntries...)
+	out := make([]gin.H, 0, len(libEntries)+len(virtualEntries))
 	if len(order) > 0 {
-		out = append(out, platformEntries...)
+		out = append(out, virtualEntries...)
 		out = append(out, libEntries...)
 		sort.SliceStable(out, func(i, j int) bool {
 			oi, iok := order[fmt.Sprint(out[i]["Id"])]
@@ -213,11 +220,11 @@ func getUserViews(c *gin.Context) {
 			return iok && !jok
 		})
 	} else if platformBefore {
-		out = append(out, platformEntries...)
+		out = append(out, virtualEntries...)
 		out = append(out, libEntries...)
 	} else {
 		out = append(out, libEntries...)
-		out = append(out, platformEntries...)
+		out = append(out, virtualEntries...)
 	}
 
 	resp := gin.H{
@@ -444,6 +451,10 @@ func getItems(c *gin.Context) {
 		return
 	}
 	shared.ApplyLibraryScope(opts, scope)
+
+	if opts.ParentID != nil && handleSourceItems(c, state, *opts.ParentID, pathUser, scope) {
+		return
+	}
 
 	// 大批量分页列表：跳过 series_fallback JOIN 提升性能
 	if opts.Recursive && opts.ParentID == nil && opts.UserID == nil && len(opts.GenreIDs) == 0 {
