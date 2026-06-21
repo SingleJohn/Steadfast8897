@@ -112,6 +112,7 @@ func RunMigrations(pool *pgxpool.Pool, migrationsDir string) error {
 			return fmt.Errorf("read %s: %w", file, err)
 		}
 		checksum := checksumSQL(sql)
+		legacyChecksum := legacyChecksumSQL(sql)
 
 		if rec, ok := applied[file]; ok && rec.applied {
 			if rec.checksum == "" {
@@ -120,10 +121,17 @@ func RunMigrations(pool *pgxpool.Pool, migrationsDir string) error {
 				}
 				continue
 			}
-			if rec.checksum != checksum {
-				return fmt.Errorf("migration %s checksum mismatch: applied=%s current=%s", file, rec.checksum, checksum)
+			if rec.checksum == checksum {
+				continue
 			}
-			continue
+			if rec.checksum == legacyChecksum || rec.checksum == legacyCRLFChecksumSQL(sql) {
+				if _, err := pool.Exec(ctx, "UPDATE migrations SET checksum = $1 WHERE name = $2", checksum, file); err != nil {
+					return fmt.Errorf("normalize checksum for %s: %w", file, err)
+				}
+				slog.Info("Normalized legacy migration checksum", "file", file)
+				continue
+			}
+			return fmt.Errorf("migration %s checksum mismatch: applied=%s current=%s", file, rec.checksum, checksum)
 		}
 
 		slog.Info("Applying migration", "file", file)
@@ -169,8 +177,42 @@ func RunMigrations(pool *pgxpool.Pool, migrationsDir string) error {
 }
 
 func checksumSQL(sql []byte) string {
+	normalized := normalizeSQLForChecksum(sql)
+	sum := sha256.Sum256(normalized)
+	return hex.EncodeToString(sum[:])
+}
+
+func legacyChecksumSQL(sql []byte) string {
 	sum := sha256.Sum256(sql)
 	return hex.EncodeToString(sum[:])
+}
+
+func legacyCRLFChecksumSQL(sql []byte) string {
+	normalized := normalizeSQLForChecksum(sql)
+	crlf := make([]byte, 0, len(normalized))
+	for _, b := range normalized {
+		if b == '\n' {
+			crlf = append(crlf, '\r')
+		}
+		crlf = append(crlf, b)
+	}
+	sum := sha256.Sum256(crlf)
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeSQLForChecksum(sql []byte) []byte {
+	normalized := make([]byte, 0, len(sql))
+	for i := 0; i < len(sql); i++ {
+		if sql[i] == '\r' {
+			if i+1 < len(sql) && sql[i+1] == '\n' {
+				i++
+			}
+			normalized = append(normalized, '\n')
+			continue
+		}
+		normalized = append(normalized, sql[i])
+	}
+	return normalized
 }
 
 func recordMigrationFailure(ctx context.Context, pool *pgxpool.Pool, name, checksum string, executionTimeMS int64, migrationErr error) error {
