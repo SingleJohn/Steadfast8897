@@ -220,6 +220,8 @@ normalize.go；internal/services 的并发/超时模式。
 完成判定（人工里程碑）：Web 能聚合搜索并展示；Emby 客户端搜索能看到在线条目并播放（go build/npm build 通过；我在客户端验证）。
 ```
 
+实际落点：后端新增 `SourceRepository.SearchSourceItems`，只查询已入库的 `source_items`，并限定 effective enabled/searchable 的 native CMS provider；`/Items?SearchTerm=`、`/Users/{userId}/Items?SearchTerm=` 与 `/Search/Hints?SearchTerm=` 在本地搜索结果后追加在线缓存结果，Id 使用 source item `public_uuid`，不现场调用外部 Provider、不写 `items`，并通过 `source_emby_search_enabled` 系统配置默认开启/可关闭。为避免权限体验错位，管理员/API key/全库用户可追加在线结果，受限媒体库用户不追加。Web 来源中心新增 `SourceFederatedSearchPanel`，调用 `POST /SourceSearch` 展示合并结果、Provider 成功/失败明细、错误类型/耗时，并提供在线详情/线路与电影播放入口；配置页同步提供 Emby 在线搜索开关。验证：`go build ./...` 通过，`cd web && npm run build` 通过（仅既有 artplayer CommonJS warning）；未启动服务、未写测试、未写 `items`、未引入 sidecar。T15 commit 范围：283455c。
+
 ---
 
 ## §C 总目标提示词（自驱 T10~T13，里程碑停 T14/T15）
