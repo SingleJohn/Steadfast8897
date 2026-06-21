@@ -132,6 +132,8 @@ source_play.go（/SourcePlay 代理与 MarkPlaySourceSuccess/Failure）、reposi
 完成判定：构造一条坏线路 + 一条好线路，/SourcePlay 能跳过坏的播好的；PlaybackInfo 顺序健康优先（go build 通过；运行期我验证）。
 ```
 
+实际落点：`internal/repository/source_play_repository.go` 为 `ListPlaySourcesForItem` 增加健康排序（health_status、direct/unknown 优先、成功率、avg_latency_ms），新增 `ListPlayableAlternatives` 查询同 source_item + episode_key 的候选线路，并在连续失败达到阈值后标记 `unhealthy`；`internal/handlers/media/source_play.go` 在 `/SourcePlay/{playSourceUUID}/stream` 中按入口线路优先、后续健康排序候选逐条 resolve/探测上游响应头，只有 2xx/3xx 响应才写客户端并开始 `io.Copy`，首字节前失败会自动切换下一条，已写出后不再切换。未转码、仍仅字节中转 + header 注入。构建：`go build ./...` 通过。T12 commit 范围：156e73a。
+
 ---
 
 ## T13 — 跨来源聚合搜索（后端）
