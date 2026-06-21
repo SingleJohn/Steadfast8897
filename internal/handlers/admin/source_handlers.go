@@ -133,6 +133,29 @@ type providerSearchRequest struct {
 	Page    int    `json:"page"`
 }
 
+type federatedSearchRequest struct {
+	Keyword string `json:"keyword"`
+	Limit   int    `json:"limit"`
+}
+
+func federatedSourceSearch(c *gin.Context, state *AppState) {
+	var req federatedSearchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient)
+	result, err := manager.FederatedSearch(c.Request.Context(), sourcebridge.FederatedSearchRequest{
+		Keyword: req.Keyword,
+		Limit:   req.Limit,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func searchSourceProvider(c *gin.Context, state *AppState) {
 	id, ok := pathInt64(c, "id")
 	if !ok {

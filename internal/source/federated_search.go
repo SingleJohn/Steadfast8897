@@ -1,0 +1,312 @@
+package source
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"fyms/internal/repository"
+)
+
+const (
+	defaultFederatedSearchLimit       = 50
+	maxFederatedSearchLimit           = 100
+	defaultFederatedSearchTimeout     = 12 * time.Second
+	defaultFederatedProviderParallel  = 4
+	defaultFederatedProviderTimeoutMS = 8000
+)
+
+type FederatedSearchRequest struct {
+	Keyword string
+	Limit   int
+}
+
+type FederatedSearchResponse struct {
+	Keyword    string                  `json:"keyword"`
+	Total      int                     `json:"total"`
+	Items      []FederatedSearchItem   `json:"items"`
+	Errors     []FederatedSearchError  `json:"errors,omitempty"`
+	Provider   FederatedSearchProvider `json:"provider"`
+	LatencyMS  int64                   `json:"latency_ms"`
+	Truncated  bool                    `json:"truncated"`
+	CacheWrite bool                    `json:"cache_write"`
+}
+
+type FederatedSearchProvider struct {
+	Total   int `json:"total"`
+	Success int `json:"success"`
+	Failed  int `json:"failed"`
+}
+
+type FederatedSearchItem struct {
+	PublicUUID     string                          `json:"public_uuid"`
+	Title          string                          `json:"title"`
+	Year           *int32                          `json:"year,omitempty"`
+	ItemType       string                          `json:"item_type"`
+	NormalizedKind string                          `json:"normalized_kind"`
+	Region         *string                         `json:"region,omitempty"`
+	PosterURL      *string                         `json:"poster_url,omitempty"`
+	Remarks        *string                         `json:"remarks,omitempty"`
+	ProviderCount  int                             `json:"provider_count"`
+	Providers      []FederatedSearchItemProvider   `json:"providers"`
+	Score          int                             `json:"score"`
+	SourceItems    []FederatedSearchItemSourceItem `json:"source_items"`
+}
+
+type FederatedSearchItemProvider struct {
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	SourceKey    string  `json:"source_key"`
+	HealthStatus string  `json:"health_status"`
+	ItemUUID     string  `json:"item_uuid"`
+	SourceItemID string  `json:"source_item_id"`
+	Remarks      *string `json:"remarks,omitempty"`
+}
+
+type FederatedSearchItemSourceItem struct {
+	PublicUUID   string `json:"public_uuid"`
+	ProviderID   int64  `json:"provider_id"`
+	SourceItemID string `json:"source_item_id"`
+}
+
+type FederatedSearchError struct {
+	ProviderID   int64  `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	SourceKey    string `json:"source_key"`
+	ErrorType    string `json:"error_type"`
+	Message      string `json:"message"`
+	LatencyMS    int64  `json:"latency_ms"`
+}
+
+type federatedProviderResult struct {
+	provider repository.SourceProvider
+	items    []repository.SourceItem
+	err      error
+	latency  int64
+}
+
+func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req FederatedSearchRequest) (*FederatedSearchResponse, error) {
+	if m == nil || m.repo == nil {
+		return nil, fmt.Errorf("provider runtime 缺少 repository")
+	}
+	keyword := strings.TrimSpace(req.Keyword)
+	if keyword == "" {
+		return nil, fmt.Errorf("搜索关键词不能为空")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultFederatedSearchLimit
+	}
+	if limit > maxFederatedSearchLimit {
+		limit = maxFederatedSearchLimit
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, defaultFederatedSearchTimeout)
+	defer cancel()
+
+	providers, err := m.repo.ListProviders(ctx, repository.SourceProviderListOptions{
+		Limit:      1000,
+		OnlyUsable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	searchable := make([]repository.SourceProvider, 0, len(providers))
+	for _, provider := range providers {
+		if provider.ProviderKind != "cms_vod" || provider.RuntimeKind != "native_cms" {
+			continue
+		}
+		if !provider.Enabled || !provider.Searchable {
+			continue
+		}
+		searchable = append(searchable, provider)
+	}
+
+	results := make(chan federatedProviderResult, len(searchable))
+	sem := make(chan struct{}, defaultFederatedProviderParallel)
+	var wg sync.WaitGroup
+	for _, provider := range searchable {
+		provider := provider
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results <- federatedProviderResult{provider: provider, err: ctx.Err()}
+				return
+			}
+			defer func() { <-sem }()
+			results <- m.searchProviderSafely(ctx, provider, keyword)
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	response := &FederatedSearchResponse{
+		Keyword:    keyword,
+		Provider:   FederatedSearchProvider{Total: len(searchable)},
+		CacheWrite: true,
+	}
+	groups := map[string]*FederatedSearchItem{}
+	for result := range results {
+		if result.err != nil {
+			response.Provider.Failed++
+			response.Errors = append(response.Errors, FederatedSearchError{
+				ProviderID:   result.provider.ID,
+				ProviderName: result.provider.Name,
+				SourceKey:    result.provider.SourceKey,
+				ErrorType:    ErrorType(result.err),
+				Message:      result.err.Error(),
+				LatencyMS:    result.latency,
+			})
+			continue
+		}
+		response.Provider.Success++
+		for _, item := range result.items {
+			addFederatedItem(groups, keyword, result.provider, item)
+		}
+	}
+	response.Items = flattenFederatedItems(groups)
+	sort.SliceStable(response.Items, func(i, j int) bool {
+		if response.Items[i].Score != response.Items[j].Score {
+			return response.Items[i].Score > response.Items[j].Score
+		}
+		if response.Items[i].ProviderCount != response.Items[j].ProviderCount {
+			return response.Items[i].ProviderCount > response.Items[j].ProviderCount
+		}
+		return strings.Compare(response.Items[i].Title, response.Items[j].Title) < 0
+	})
+	response.Total = len(response.Items)
+	if len(response.Items) > limit {
+		response.Items = response.Items[:limit]
+		response.Truncated = true
+	}
+	response.LatencyMS = time.Since(start).Milliseconds()
+	LogSourceAction(m.logger, start, slog.LevelInfo, "[Provider] federated_search",
+		"action", "federated_search",
+		"status", "ok",
+		"keyword_len", len(keyword),
+		"provider_total", response.Provider.Total,
+		"provider_success", response.Provider.Success,
+		"provider_failed", response.Provider.Failed,
+		"hit_count", response.Total)
+	return response, nil
+}
+
+func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string) (result federatedProviderResult) {
+	start := time.Now()
+	result.provider = provider
+	defer func() {
+		result.latency = time.Since(start).Milliseconds()
+		if recovered := recover(); recovered != nil {
+			result.err = fmt.Errorf("provider panic: %v", recovered)
+		}
+	}()
+	timeout := time.Duration(provider.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = defaultFederatedProviderTimeoutMS * time.Millisecond
+	}
+	providerCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, items, err := m.Search(providerCtx, provider.ID, SearchRequest{Keyword: keyword, Page: 1})
+	result.items = items
+	result.err = err
+	return result
+}
+
+func addFederatedItem(groups map[string]*FederatedSearchItem, keyword string, provider repository.SourceProvider, item repository.SourceItem) {
+	key := federatedItemKey(item)
+	group := groups[key]
+	if group == nil {
+		group = &FederatedSearchItem{
+			PublicUUID:     item.PublicUUID,
+			Title:          item.Title,
+			Year:           item.Year,
+			ItemType:       item.ItemType,
+			NormalizedKind: item.NormalizedKind,
+			Region:         item.Region,
+			PosterURL:      item.PosterURL,
+			Remarks:        item.Remarks,
+			Score:          federatedItemScore(keyword, provider, item),
+		}
+		groups[key] = group
+	}
+	group.ProviderCount++
+	group.Providers = append(group.Providers, FederatedSearchItemProvider{
+		ID:           provider.ID,
+		Name:         provider.Name,
+		SourceKey:    provider.SourceKey,
+		HealthStatus: provider.HealthStatus,
+		ItemUUID:     item.PublicUUID,
+		SourceItemID: item.SourceItemID,
+		Remarks:      item.Remarks,
+	})
+	group.SourceItems = append(group.SourceItems, FederatedSearchItemSourceItem{
+		PublicUUID:   item.PublicUUID,
+		ProviderID:   provider.ID,
+		SourceItemID: item.SourceItemID,
+	})
+	if score := federatedItemScore(keyword, provider, item); score > group.Score {
+		group.Score = score
+		group.PublicUUID = item.PublicUUID
+		if group.PosterURL == nil {
+			group.PosterURL = item.PosterURL
+		}
+	}
+}
+
+func flattenFederatedItems(groups map[string]*FederatedSearchItem) []FederatedSearchItem {
+	out := make([]FederatedSearchItem, 0, len(groups))
+	for _, item := range groups {
+		out = append(out, *item)
+	}
+	return out
+}
+
+func federatedItemKey(item repository.SourceItem) string {
+	title := normalizeFederatedTitle(item.Title)
+	if title == "" {
+		return fmt.Sprintf("provider:%d:%s", item.ProviderID, item.SourceItemID)
+	}
+	if item.Year != nil && *item.Year > 0 {
+		return fmt.Sprintf("%s:%d", title, *item.Year)
+	}
+	return title
+}
+
+func normalizeFederatedTitle(title string) string {
+	title = strings.ToLower(cleanCMSValue(title))
+	replacer := strings.NewReplacer(" ", "", "　", "", "-", "", "_", "", ":", "", "：", "", "·", "")
+	return replacer.Replace(title)
+}
+
+func federatedItemScore(keyword string, provider repository.SourceProvider, item repository.SourceItem) int {
+	keyword = normalizeFederatedTitle(keyword)
+	title := normalizeFederatedTitle(item.Title)
+	score := 0
+	switch {
+	case keyword != "" && title == keyword:
+		score += 100
+	case keyword != "" && strings.HasPrefix(title, keyword):
+		score += 80
+	case keyword != "" && strings.Contains(title, keyword):
+		score += 60
+	default:
+		score += 20
+	}
+	if provider.HealthStatus == "ok" {
+		score += 10
+	}
+	if item.Year != nil && *item.Year > 0 {
+		score += 3
+	}
+	if item.PosterURL != nil && strings.TrimSpace(*item.PosterURL) != "" {
+		score += 2
+	}
+	return score
+}
