@@ -104,8 +104,8 @@ func (i *SourceIngestor) IngestItem(ctx context.Context, snapshot SourceItemSnap
 		BackdropURL:    snapshot.BackdropURL,
 		Remarks:        snapshot.Remarks,
 		Summary:        snapshot.Summary,
-		Directors:      snapshot.Directors,
-		Actors:         snapshot.Actors,
+		Directors:      nonNilStringList(snapshot.Directors),
+		Actors:         nonNilStringList(snapshot.Actors),
 		ProviderIDs:    jsonObjectBytes(snapshot.ProviderIDs),
 		Raw:            jsonObjectBytes(snapshot.Raw),
 		DetailLoaded:   snapshot.DetailLoaded,
@@ -258,6 +258,13 @@ func jsonObjectBytes(value map[string]any) []byte {
 		return []byte("{}")
 	}
 	return raw
+}
+
+func nonNilStringList(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func mergeJSONObjects(raw []byte, overlay map[string]any) map[string]any {

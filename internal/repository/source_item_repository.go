@@ -11,7 +11,7 @@ func (r *SourceRepository) UpsertSourceItem(ctx context.Context, in SourceItemUp
 			remarks, summary, directors, actors, provider_ids, raw, detail_loaded
 		) VALUES (
 			$1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24::jsonb, $25
+			$14, $15, $16, $17, $18, $19, $20, COALESCE($21, '{}'::text[]), COALESCE($22, '{}'::text[]), $23::jsonb, $24::jsonb, $25
 		)
 		ON CONFLICT (public_uuid) DO UPDATE SET
 			provider_id = EXCLUDED.provider_id,
@@ -47,7 +47,7 @@ func (r *SourceRepository) UpsertSourceItem(ctx context.Context, in SourceItemUp
 		in.PublicUUID, in.ProviderID, in.SourceItemID, in.SourceParentID, defaultString(in.ItemType, "unknown"),
 		in.Title, in.OriginalTitle, in.SortTitle, in.Year, in.Region, in.Area, in.Language, in.CategoryName,
 		defaultString(in.NormalizedKind, "unknown"), in.SeasonNumber, in.EpisodeNumber, in.PosterURL,
-		in.BackdropURL, in.Remarks, in.Summary, in.Directors, in.Actors, jsonBytesOrObject(in.ProviderIDs),
+		in.BackdropURL, in.Remarks, in.Summary, nonNilStrings(in.Directors), nonNilStrings(in.Actors), jsonBytesOrObject(in.ProviderIDs),
 		jsonBytesOrObject(in.Raw), in.DetailLoaded)
 	return scanSourceItem(row)
 }

@@ -92,6 +92,13 @@ func jsonBytesOrObject(raw []byte) []byte {
 	return raw
 }
 
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
 func jsonBytesOrArray(raw []byte) []byte {
 	if len(raw) == 0 || !json.Valid(raw) {
 		return []byte("[]")
