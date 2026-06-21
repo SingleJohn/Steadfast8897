@@ -280,6 +280,9 @@ func OnPlaybackStart(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
+	if handleSourcePlaybackStart(c, st, auth, body) {
+		return
+	}
 
 	info := middleware.GetAuthInfo(c)
 	userAgent := c.GetHeader("User-Agent")
@@ -384,6 +387,9 @@ func OnPlaybackProgress(c *gin.Context) {
 	var body playbackBody
 	if err := c.ShouldBindJSON(&body); err != nil || body.ItemId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
+		return
+	}
+	if handleSourcePlaybackProgress(c, st, auth, body) {
 		return
 	}
 
@@ -508,6 +514,9 @@ func OnPlaybackStopped(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request body"})
 		return
 	}
+	if handleSourcePlaybackStopped(c, st, auth, body) {
+		return
+	}
 
 	deviceID := deviceIDFromRequest(c)
 	key := playbackKey(auth.ID, deviceID)
@@ -615,6 +624,9 @@ func MarkPlayed(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if handleSourceMarkPlayed(c, st, userID, itemID, true) {
+		return
+	}
 	resolved, err := models.ResolveToUUID(c.Request.Context(), st.DB, itemID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -643,6 +655,9 @@ func MarkUnplayed(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if handleSourceMarkPlayed(c, st, userID, itemID, false) {
+		return
+	}
 	resolved, err := models.ResolveToUUID(c.Request.Context(), st.DB, itemID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -671,6 +686,9 @@ func MarkFavorite(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if handleSourceFavorite(c, st, userID, itemID, true) {
+		return
+	}
 	if _, err := uuid.Parse(itemID); err == nil && models.PersonExists(c.Request.Context(), st.DB, itemID) {
 		if err := models.UpsertUserPersonFavorite(c.Request.Context(), st.DB, userID, itemID, true); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -708,6 +726,9 @@ func UnmarkFavorite(c *gin.Context) {
 		return
 	}
 	itemID := c.Param("itemId")
+	if handleSourceFavorite(c, st, userID, itemID, false) {
+		return
+	}
 	if _, err := uuid.Parse(itemID); err == nil && models.PersonExists(c.Request.Context(), st.DB, itemID) {
 		if err := models.UpsertUserPersonFavorite(c.Request.Context(), st.DB, userID, itemID, false); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
