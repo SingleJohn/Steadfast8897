@@ -371,6 +371,8 @@ library_display_order 混排。在线库尽量复用同一套 coverart 与排序
 expose 开关控制 Emby 可见性（go build ./... 通过；运行期由我手动验证）。
 ```
 
+实际落点：新增 migrations/073_source_library_view_covers.sql 为 source_library_views 补 cover_image_path/cover_image_tag；扩展 internal/repository/source_repository.go 的在线库 CRUD、列表计数、filter 聚合、维度值发现、排序、封面读写、poster_url 素材查询；新增 internal/handlers/library/source_views.go 并接入 internal/handlers/library/library.go，新增双注册路由 GET/POST /Library/SourceViews、GET /Library/SourceViews/Discover、PUT/DELETE /Library/SourceViews/{id}、POST /Library/SourceViews/{id}/Rename、POST /Library/SourceViews/{id}/Image/Generate、DELETE /Library/SourceViews/{id}/Image、POST /Library/SourceViews/DisplayOrder；复用 coverart registry 生成在线库封面，expose_to_emby 继续由 T3 /Views 出口控制；未写 items；T7 commit 范围：af41f52..bb75e26。
+
 ---
 
 ## T8 — 前端：来源中心 + 虚拟库管理 UI
