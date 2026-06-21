@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"fyms/internal/repository"
 )
@@ -140,38 +141,62 @@ func (i *SourceIngestor) IngestPlaySource(ctx context.Context, item repository.S
 }
 
 func (p *CMSProvider) SearchAndIngest(ctx context.Context, ingestor *SourceIngestor, req SearchRequest) (*ProviderPage, []repository.SourceItem, error) {
+	start := time.Now()
+	providerID := int64(0)
+	if ingestor != nil {
+		providerID = ingestor.providerID
+	}
 	page, err := p.Search(ctx, req)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "search", err, "keyword_len", len(strings.TrimSpace(req.Keyword)))
 		return nil, nil, err
 	}
 	items, err := ingestor.IngestPage(ctx, page)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "search", err)
 		return nil, nil, err
 	}
+	LogProviderAction(SourceLogger("provider"), start, providerID, "search", nil, "count", len(items), "cache_hit", false)
 	return page, items, nil
 }
 
 func (p *CMSProvider) CategoryAndIngest(ctx context.Context, ingestor *SourceIngestor, req CategoryRequest) (*ProviderPage, []repository.SourceItem, error) {
+	start := time.Now()
+	providerID := int64(0)
+	if ingestor != nil {
+		providerID = ingestor.providerID
+	}
 	page, err := p.Category(ctx, req)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "category", err)
 		return nil, nil, err
 	}
 	items, err := ingestor.IngestPage(ctx, page)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "category", err)
 		return nil, nil, err
 	}
+	LogProviderAction(SourceLogger("provider"), start, providerID, "category", nil, "count", len(items), "cache_hit", false)
 	return page, items, nil
 }
 
 func (p *CMSProvider) DetailAndIngest(ctx context.Context, ingestor *SourceIngestor, sourceItemID string) (*ProviderDetail, *repository.SourceItem, []repository.SourcePlaySource, error) {
+	start := time.Now()
+	providerID := int64(0)
+	if ingestor != nil {
+		providerID = ingestor.providerID
+	}
 	detail, err := p.Detail(ctx, sourceItemID)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "detail", err, "source_item_hash", URLHash(sourceItemID))
 		return nil, nil, nil, err
 	}
 	item, playSources, err := ingestor.IngestDetail(ctx, detail)
 	if err != nil {
+		LogProviderAction(SourceLogger("provider"), start, providerID, "detail", err)
 		return nil, nil, nil, err
 	}
+	LogProviderAction(SourceLogger("provider"), start, providerID, "detail", nil, "play_source_count", len(playSources), "cache_hit", false)
 	return detail, item, playSources, nil
 }
 

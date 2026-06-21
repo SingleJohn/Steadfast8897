@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ type ProviderRuntimeManager struct {
 	client   *http.Client
 	mu       sync.Mutex
 	limiters map[int64]*rate.Limiter
+	logger   *slog.Logger
 }
 
 func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.Client) *ProviderRuntimeManager {
@@ -29,58 +31,89 @@ func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.C
 		repo:     repo,
 		client:   client,
 		limiters: map[int64]*rate.Limiter{},
+		logger:   SourceLogger("provider"),
 	}
 }
 
 func (m *ProviderRuntimeManager) Categories(ctx context.Context, providerID int64) ([]ProviderCategory, error) {
+	start := time.Now()
 	provider, row, err := m.enabledNativeCMSProvider(ctx, providerID)
 	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "categories", err)
 		return nil, err
 	}
 	if err := m.wait(row.ID).Wait(ctx); err != nil {
-		return nil, fmt.Errorf("provider 限流等待失败: %w", err)
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "categories", err)
+		return nil, err
 	}
-	return provider.Categories(ctx)
+	items, err := provider.Categories(ctx)
+	LogProviderAction(m.logger, start, row.ID, "categories", err, "count", len(items))
+	return items, err
 }
 
 func (m *ProviderRuntimeManager) Search(ctx context.Context, providerID int64, req SearchRequest) (*ProviderPage, []repository.SourceItem, error) {
+	start := time.Now()
 	provider, row, err := m.enabledNativeCMSProvider(ctx, providerID)
 	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "search", err)
 		return nil, nil, err
 	}
 	if err := m.wait(row.ID).Wait(ctx); err != nil {
-		return nil, nil, fmt.Errorf("provider 限流等待失败: %w", err)
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "search", err)
+		return nil, nil, err
 	}
 	page, err := provider.Search(ctx, req)
 	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "search", err, "keyword_len", len(strings.TrimSpace(req.Keyword)))
 		return nil, nil, err
 	}
 	ingestor, err := NewSourceIngestor(m.repo, row.SourceKey, row.ID)
 	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "search", err)
 		return nil, nil, err
 	}
 	items, err := ingestor.IngestPage(ctx, page)
 	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "search", err)
 		return nil, nil, err
 	}
+	LogProviderAction(m.logger, start, row.ID, "search", nil,
+		"keyword_len", len(strings.TrimSpace(req.Keyword)),
+		"page", req.Page,
+		"count", len(items),
+		"cache_hit", false)
 	return page, items, nil
 }
 
 func (m *ProviderRuntimeManager) HealthCheck(ctx context.Context, providerID int64) (*repository.SourceProvider, error) {
+	start := time.Now()
 	provider, row, err := m.nativeCMSProvider(ctx, providerID)
 	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "health", err)
 		return nil, err
 	}
 	if err := m.wait(row.ID).Wait(ctx); err != nil {
-		return nil, fmt.Errorf("provider 限流等待失败: %w", err)
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "health", err)
+		return nil, err
 	}
 	categories, err := provider.Categories(ctx)
 	if err != nil {
 		msg := err.Error()
-		return m.repo.UpdateProviderHealth(ctx, row.ID, "error", &msg, nil)
+		updated, updateErr := m.repo.UpdateProviderHealth(ctx, row.ID, "error", &msg, nil)
+		if updateErr != nil {
+			LogProviderAction(m.logger, start, row.ID, "health", updateErr)
+			return updated, updateErr
+		}
+		LogProviderAction(m.logger, start, row.ID, "health", err)
+		return updated, nil
 	}
 	raw := jsonBytes(categories, "[]")
-	return m.repo.UpdateProviderHealth(ctx, row.ID, "ok", nil, raw)
+	updated, err := m.repo.UpdateProviderHealth(ctx, row.ID, "ok", nil, raw)
+	LogProviderAction(m.logger, start, row.ID, "health", err, "count", len(categories))
+	return updated, err
 }
 
 func (m *ProviderRuntimeManager) enabledNativeCMSProvider(ctx context.Context, providerID int64) (*CMSProvider, *repository.SourceProvider, error) {

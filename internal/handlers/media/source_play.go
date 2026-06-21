@@ -4,20 +4,22 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"fyms/internal/source"
 	"fyms/internal/repository"
+	"fyms/internal/source"
 )
 
 const sourcePlayCacheTTL = 15 * time.Minute
 
 func streamSourcePlay(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
+	logger := source.SourceLogger("resolver")
 	publicUUID := strings.TrimSpace(c.Param("playSourceUUID"))
 	if publicUUID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid play source id"})
@@ -37,12 +39,15 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 	result, cacheHit, err := resolveCachedPlay(ctx, state, *playSource)
 	if err != nil {
 		_ = state.Repo.Source.MarkPlaySourceFailure(ctx, playSource.ID, time.Since(start).Milliseconds())
+		logSourceProxy(logger, start, *playSource, "", cacheHit, 0, err)
 		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
 		return
 	}
-	if err := proxySourceStream(c, result); err != nil {
+	statusCode, err := proxySourceStream(c, result)
+	if err != nil {
 		state.Cache.Del(ctx, sourcePlayCacheKey(playSource.PublicUUID))
 		_ = state.Repo.Source.MarkPlaySourceFailure(ctx, playSource.ID, time.Since(start).Milliseconds())
+		logSourceProxy(logger, start, *playSource, result.URL, cacheHit, statusCode, err)
 		if !c.Writer.Written() {
 			c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
 		}
@@ -51,6 +56,7 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 	if !cacheHit {
 		_ = state.Repo.Source.MarkPlaySourceSuccess(ctx, playSource.ID, time.Since(start).Milliseconds())
 	}
+	logSourceProxy(logger, start, *playSource, result.URL, cacheHit, statusCode, nil)
 }
 
 func resolveCachedPlay(ctx context.Context, state *AppState, playSource repository.SourcePlaySource) (*source.PlayResult, bool, error) {
@@ -71,16 +77,16 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 	return result, false, nil
 }
 
-func proxySourceStream(c *gin.Context, result *source.PlayResult) error {
+func proxySourceStream(c *gin.Context, result *source.PlayResult) (int, error) {
 	if result == nil || strings.TrimSpace(result.URL) == "" {
-		return fmt.Errorf("播放地址为空")
+		return 0, fmt.Errorf("播放地址为空")
 	}
 	if err := source.ValidateOutboundURL(c.Request.Context(), result.URL); err != nil {
-		return err
+		return 0, err
 	}
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, result.URL, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for key, value := range result.Headers {
 		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
@@ -98,14 +104,14 @@ func proxySourceStream(c *gin.Context, result *source.PlayResult) error {
 	client := &http.Client{Timeout: 0}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	copySourceStreamHeaders(c, resp, rangeHeader)
 	c.Status(resp.StatusCode)
 	_, err = io.Copy(c.Writer, resp.Body)
-	return err
+	return resp.StatusCode, err
 }
 
 func copySourceStreamHeaders(c *gin.Context, resp *http.Response, rangeHeader string) {
@@ -129,4 +135,25 @@ func copySourceStreamHeaders(c *gin.Context, resp *http.Response, rangeHeader st
 
 func sourcePlayCacheKey(publicUUID string) string {
 	return "sourceplay:" + publicUUID
+}
+
+func logSourceProxy(logger *slog.Logger, start time.Time, playSource repository.SourcePlaySource, rawURL string, cacheHit bool, upstreamStatus int, err error) {
+	status := "ok"
+	level := slog.LevelInfo
+	attrs := []any{
+		"provider_id", playSource.ProviderID,
+		"action", "proxy_stream",
+		"status", status,
+		"play_source_id", playSource.ID,
+		"cache_hit", cacheHit,
+		"upstream_status", upstreamStatus,
+		"url_hash", source.URLHash(rawURL),
+	}
+	if err != nil {
+		status = "error"
+		level = slog.LevelWarn
+		attrs[5] = status
+		attrs = append(attrs, "error_type", source.ErrorType(err), "error", err)
+	}
+	source.LogSourceAction(logger, start, level, "[Resolver] proxy_stream", attrs...)
 }

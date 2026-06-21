@@ -79,6 +79,12 @@ func inferLogTargetFromMessage(message string) string {
 		return "scrape"
 	case strings.HasPrefix(message, "[TMDB]") || strings.HasPrefix(message, "[Douban]") || strings.HasPrefix(message, "[Aggregator]") || strings.HasPrefix(message, "[Matcher]"):
 		return "tmdb"
+	case strings.HasPrefix(message, "[Source]") || strings.HasPrefix(message, "[SourceGC]"):
+		return "source"
+	case strings.HasPrefix(message, "[Provider]"):
+		return "provider"
+	case strings.HasPrefix(message, "[Resolver]"):
+		return "resolver"
 	case strings.HasPrefix(message, "[Stream]") || strings.HasPrefix(message, "[Play]") || strings.HasPrefix(message, "playback "):
 		return "playback"
 	case strings.HasPrefix(message, "[Metrics]"):

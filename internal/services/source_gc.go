@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fyms/internal/repository"
+	"fyms/internal/source"
 )
 
 const (
@@ -56,7 +57,7 @@ func runSourceItemsGCTick(ctx context.Context, repo *repository.SourceRepository
 		logger.Warn("[SourceGC] sweep failed",
 			"action", "source_items_gc",
 			"status", "error",
-			"error_type", errorType(err),
+			"error_type", source.ErrorType(err),
 			"retention_days", int(cfg.Retention.Hours()/24),
 			"batch_size", cfg.BatchSize,
 			"latency_ms", time.Since(start).Milliseconds(),
@@ -93,11 +94,4 @@ func readSourceItemsGCConfig(ctx context.Context, pool *pgxpool.Pool) sourceItem
 		Interval:  time.Duration(intervalHours) * time.Hour,
 		BatchSize: int64(batchSize),
 	}
-}
-
-func errorType(err error) string {
-	if err == nil {
-		return ""
-	}
-	return "error"
 }
