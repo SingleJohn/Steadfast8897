@@ -36,28 +36,66 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 		return
 	}
 
-	start := time.Now()
-	result, cacheHit, err := resolveCachedPlay(ctx, state, *playSource)
+	candidates, err := sourcePlayCandidates(ctx, state, *playSource)
 	if err != nil {
-		_ = state.Repo.Source.MarkPlaySourceFailure(ctx, playSource.ID, time.Since(start).Milliseconds())
-		logSourceProxy(logger, start, *playSource, "", cacheHit, 0, err)
-		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	statusCode, err := proxySourceStream(c, result)
-	if err != nil {
-		state.Cache.Del(ctx, sourcePlayCacheKey(playSource.PublicUUID))
-		_ = state.Repo.Source.MarkPlaySourceFailure(ctx, playSource.ID, time.Since(start).Milliseconds())
-		logSourceProxy(logger, start, *playSource, result.URL, cacheHit, statusCode, err)
-		if !c.Writer.Written() {
-			c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+	var lastErr error
+	for i := range candidates {
+		current := candidates[i]
+		start := time.Now()
+		result, cacheHit, err := resolveCachedPlay(ctx, state, current)
+		if err != nil {
+			_ = state.Repo.Source.MarkPlaySourceFailure(ctx, current.ID, time.Since(start).Milliseconds())
+			logSourceProxy(logger, start, current, "", cacheHit, 0, err)
+			lastErr = err
+			continue
 		}
+		statusCode, err := proxySourceStream(c, result)
+		if err != nil {
+			state.Cache.Del(ctx, sourcePlayCacheKey(current.PublicUUID))
+			_ = state.Repo.Source.MarkPlaySourceFailure(ctx, current.ID, time.Since(start).Milliseconds())
+			logSourceProxy(logger, start, current, result.URL, cacheHit, statusCode, err)
+			lastErr = err
+			if c.Writer.Written() {
+				return
+			}
+			continue
+		}
+		if !cacheHit {
+			_ = state.Repo.Source.MarkPlaySourceSuccess(ctx, current.ID, time.Since(start).Milliseconds())
+		}
+		logSourceProxy(logger, start, current, result.URL, cacheHit, statusCode, nil)
 		return
 	}
-	if !cacheHit {
-		_ = state.Repo.Source.MarkPlaySourceSuccess(ctx, playSource.ID, time.Since(start).Milliseconds())
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用播放线路")
 	}
-	logSourceProxy(logger, start, *playSource, result.URL, cacheHit, statusCode, nil)
+	c.JSON(http.StatusBadGateway, gin.H{"message": lastErr.Error()})
+}
+
+func sourcePlayCandidates(ctx context.Context, state *AppState, primary repository.SourcePlaySource) ([]repository.SourcePlaySource, error) {
+	episodeKey := strings.TrimSpace(primary.EpisodeKey)
+	if episodeKey == "" {
+		episodeKey = strings.TrimSpace(primary.EpisodeTitle)
+	}
+	if episodeKey == "" || primary.SourceItemID <= 0 {
+		return []repository.SourcePlaySource{primary}, nil
+	}
+	all, err := state.Repo.Source.ListPlayableAlternatives(ctx, primary.SourceItemID, episodeKey)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]repository.SourcePlaySource, 0, len(all)+1)
+	out = append(out, primary)
+	for i := range all {
+		if all[i].ID == primary.ID {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out, nil
 }
 
 func resolveCachedPlay(ctx context.Context, state *AppState, playSource repository.SourcePlaySource) (*source.PlayResult, bool, error) {
@@ -118,6 +156,9 @@ func proxySourceStream(c *gin.Context, result *source.PlayResult) (int, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return resp.StatusCode, fmt.Errorf("上游播放地址返回异常状态: %d", resp.StatusCode)
+	}
 
 	copySourceStreamHeaders(c, resp, rangeHeader)
 	c.Status(resp.StatusCode)
