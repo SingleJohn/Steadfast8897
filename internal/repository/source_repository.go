@@ -987,6 +987,39 @@ func (r *SourceRepository) CountItemsForLibraryView(ctx context.Context, view So
 	return count, err
 }
 
+func (r *SourceRepository) ListPosterURLsForLibraryView(ctx context.Context, view SourceLibraryView, limit int64) ([]string, error) {
+	where, args, err := sourceViewWhere(view, nil)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 36
+	}
+	limitIdx := len(args) + 1
+	args = append(args, limit)
+	rows, err := r.pool.Query(ctx, `
+		SELECT poster_url
+		  FROM source_items si
+		 WHERE `+where+`
+		   AND poster_url IS NOT NULL
+		   AND poster_url <> ''
+		 ORDER BY last_seen_at DESC, id DESC
+		 LIMIT $`+fmt.Sprint(limitIdx), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var poster string
+		if err := rows.Scan(&poster); err != nil {
+			return nil, err
+		}
+		out = append(out, poster)
+	}
+	return out, rows.Err()
+}
+
 func (r *SourceRepository) ListItemsForLibraryView(ctx context.Context, view SourceLibraryView, opts SourceItemListOptions) ([]SourceItem, int64, error) {
 	where, args, err := sourceViewWhere(view, &opts)
 	if err != nil {

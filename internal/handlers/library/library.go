@@ -133,4 +133,15 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.POST("/Library/Platforms/Rescrape", adminMW, func(c *gin.Context) { rescrapeMissingStudio(c, state) })
 	u.GET("/Library/Platforms/Rescrape/Progress", adminMW, func(c *gin.Context) { getRescrapeProgress(c, state) })
 	u.POST("/Library/Platforms/SortOrder", adminMW, func(c *gin.Context) { updatePlatformSortOrder(c, state) })
+
+	// Source library views
+	u.GET("/Library/SourceViews", adminMW, func(c *gin.Context) { listSourceViews(c, state) })
+	u.POST("/Library/SourceViews", adminMW, func(c *gin.Context) { createSourceView(c, state) })
+	u.GET("/Library/SourceViews/Discover", adminMW, func(c *gin.Context) { discoverSourceViewValues(c, state) })
+	u.PUT("/Library/SourceViews/:id", adminMW, func(c *gin.Context) { updateSourceView(c, state) })
+	u.DELETE("/Library/SourceViews/:id", adminMW, func(c *gin.Context) { deleteSourceView(c, state) })
+	u.POST("/Library/SourceViews/:id/Rename", adminMW, func(c *gin.Context) { renameSourceView(c, state) })
+	u.POST("/Library/SourceViews/:id/Image/Generate", adminMW, func(c *gin.Context) { generateSourceViewCover(c, state) })
+	u.DELETE("/Library/SourceViews/:id/Image", adminMW, func(c *gin.Context) { deleteSourceViewCover(c, state) })
+	u.POST("/Library/SourceViews/DisplayOrder", adminMW, func(c *gin.Context) { updateSourceViewDisplayOrder(c, state) })
 }
