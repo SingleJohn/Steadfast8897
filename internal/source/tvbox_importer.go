@@ -143,6 +143,11 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			def.HealthStatus = "unknown"
 			def.LastError = nil
 			def.Usable = true
+		} else if isDRPYJSSite(site) {
+			def.ProviderKind = "drpy_js"
+			def.RuntimeKind = JSRuntimeKindNodeDRPY
+			def.HealthStatus = "runtime_ready"
+			def.LastError = ptrString("JS runtime 已落地，Provider 正式接入将在 T18 启用")
 		}
 		out = append(out, def)
 	}
@@ -182,6 +187,20 @@ func isNativeCMSVodSite(site TVBoxSite) bool {
 		return false
 	}
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func isDRPYJSSite(site TVBoxSite) bool {
+	api := strings.ToLower(strings.TrimSpace(site.API))
+	if api == "" {
+		return false
+	}
+	if strings.HasSuffix(api, ".js") || strings.Contains(api, "/drpy") {
+		return true
+	}
+	if raw, ok := site.Ext["_path"].(string); ok && strings.HasSuffix(strings.ToLower(strings.TrimSpace(raw)), ".js") {
+		return true
+	}
+	return false
 }
 
 func tvboxCapabilities(site TVBoxSite) map[string]any {

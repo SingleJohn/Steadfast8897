@@ -1,0 +1,13 @@
+{
+  "name": "fyms-js-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FYMS DRPY JS runtime sidecar",
+  "scripts": {
+    "start": "node sidecar.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

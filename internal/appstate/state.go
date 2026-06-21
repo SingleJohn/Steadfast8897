@@ -14,6 +14,7 @@ import (
 	"fyms/internal/services/sysmetrics"
 	"fyms/internal/services/taskcenter"
 	"fyms/internal/services/taskcenter/adapters"
+	sourcebridge "fyms/internal/source"
 )
 
 type AppState struct {
@@ -43,6 +44,7 @@ type AppState struct {
 	SysMetrics     *sysmetrics.Collector
 	ImageCache     *imagecache.ImageCache
 	GatewayRuntime *gateway.Runtime
+	JSRuntime      *sourcebridge.JSRuntimeManager
 }
 
 func GetState(c *gin.Context) *AppState {

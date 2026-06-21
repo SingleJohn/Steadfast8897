@@ -27,6 +27,7 @@ RUN go mod download
 COPY main.go ./
 COPY internal/ ./internal/
 COPY scripts/ ./scripts/
+COPY runtime/ ./runtime/
 
 COPY --from=frontend-builder /build/web/dist /build/web/dist
 
@@ -47,7 +48,7 @@ FROM debian:12-slim
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
     sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null; \
     apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates ffmpeg \
+    ca-certificates ffmpeg libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 fyms
@@ -55,6 +56,8 @@ RUN useradd -m -u 1000 fyms
 WORKDIR /app
 
 COPY --from=backend-builder /build/fyms /app/fyms
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+COPY runtime/ /app/runtime/
 COPY migrations /app/migrations
 RUN mkdir -p /app/data/logs /app/data/cache/images && chown -R fyms:fyms /app
 
