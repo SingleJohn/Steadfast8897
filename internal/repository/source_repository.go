@@ -305,6 +305,35 @@ func (r *SourceRepository) ResolveSourceLibraryViewPublicUUID(ctx context.Contex
 	return id, true, nil
 }
 
+func (r *SourceRepository) ResolveEpisodePublicUUID(ctx context.Context, publicUUID string, makeEpisodeUUID func(string, string) string) (int64, string, bool, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT si.id, si.public_uuid::text,
+		       COALESCE(NULLIF(sps.episode_key, ''), sps.episode_title, sps.id::text) AS episode_key
+		  FROM source_items si
+		  JOIN source_play_sources sps ON sps.source_item_id = si.id
+		 WHERE si.item_type = 'Series'
+		 GROUP BY si.id, si.public_uuid,
+		          COALESCE(NULLIF(sps.episode_key, ''), sps.episode_title, sps.id::text)`)
+	if err != nil {
+		return 0, "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sourceItemID int64
+		var sourceItemUUID, episodeKey string
+		if err := rows.Scan(&sourceItemID, &sourceItemUUID, &episodeKey); err != nil {
+			return 0, "", false, err
+		}
+		if makeEpisodeUUID(sourceItemUUID, episodeKey) == publicUUID {
+			return sourceItemID, episodeKey, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, "", false, err
+	}
+	return 0, "", false, nil
+}
+
 func (r *SourceRepository) UpsertConfigImport(ctx context.Context, in SourceConfigImportUpsert) (*SourceConfigImport, error) {
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO source_config_imports (
@@ -660,6 +689,19 @@ func (r *SourceRepository) ListEpisodesForSeries(ctx context.Context, sourceItem
 		out = append(out, ep)
 	}
 	return out, rows.Err()
+}
+
+func (r *SourceRepository) GetEpisodeForSeries(ctx context.Context, sourceItemID int64, episodeKey string) (*SourceEpisode, error) {
+	episodes, err := r.ListEpisodesForSeries(ctx, sourceItemID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range episodes {
+		if episodes[i].EpisodeKey == episodeKey {
+			return &episodes[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func (r *SourceRepository) GetUserItemData(ctx context.Context, userID string, sourceItemID int64) (*SourceUserItemData, error) {

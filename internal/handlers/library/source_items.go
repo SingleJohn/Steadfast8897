@@ -87,6 +87,9 @@ func handleSourceItems(c *gin.Context, state *AppState, parentID string, userID 
 		}
 		c.JSON(http.StatusOK, gin.H{"Items": out, "TotalRecordCount": shared.EmbyTotalRecordCount(c, int64(len(out)))})
 		return true
+	case source.EntityKindSourceEpisode:
+		c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
+		return true
 	default:
 		return false
 	}
@@ -98,7 +101,7 @@ func handleSourceItemDetail(c *gin.Context, state *AppState, itemID string, user
 	if err != nil || resolved == nil {
 		return false
 	}
-	if scope != nil && !scope.AllowAll && (resolved.Kind == source.EntityKindSourceView || resolved.Kind == source.EntityKindSourceItem) {
+	if scope != nil && !scope.AllowAll && (resolved.Kind == source.EntityKindSourceView || resolved.Kind == source.EntityKindSourceItem || resolved.Kind == source.EntityKindSourceEpisode) {
 		c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 		return true
 	}
@@ -128,6 +131,19 @@ func handleSourceItemDetail(c *gin.Context, state *AppState, itemID string, user
 		}
 		ud, _ := state.Repo.Source.GetUserItemData(ctx, userID, item.ID)
 		c.JSON(http.StatusOK, embysupport.BaseItemToEmbyMap(sourceItemDTO(state, *item, ud)))
+		return true
+	case source.EntityKindSourceEpisode:
+		episode, err := state.Repo.Source.GetEpisodeForSeries(ctx, resolved.SourceItemID, resolved.EpisodeKey)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return true
+		}
+		if episode == nil {
+			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
+			return true
+		}
+		ud, _ := state.Repo.Source.GetUserItemData(ctx, userID, episode.SourceItemID)
+		c.JSON(http.StatusOK, embysupport.BaseItemToEmbyMap(sourceEpisodeDTO(state, *episode, ud)))
 		return true
 	default:
 		return false

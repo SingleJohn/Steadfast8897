@@ -221,7 +221,7 @@ func serveImage(c *gin.Context, state *AppState) {
 		return
 	}
 
-	if resolved, err := source.ResolveEntity(ctx, state.DB, itemID); err == nil && resolved != nil && resolved.Kind == source.EntityKindSourceItem {
+	if resolved, err := source.ResolveEntity(ctx, state.DB, itemID); err == nil && resolved != nil && (resolved.Kind == source.EntityKindSourceItem || resolved.Kind == source.EntityKindSourceEpisode) {
 		item, err := state.Repo.Source.GetSourceItemByID(ctx, resolved.SourceItemID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})

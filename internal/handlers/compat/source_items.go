@@ -82,6 +82,9 @@ func handleSourceCompatItems(c *gin.Context, state *AppState, parentID string, r
 		}
 		c.JSON(http.StatusOK, gin.H{"Items": out, "TotalRecordCount": len(out)})
 		return true
+	case source.EntityKindSourceEpisode:
+		c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
+		return true
 	default:
 		return false
 	}

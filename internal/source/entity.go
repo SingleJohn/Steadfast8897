@@ -18,6 +18,7 @@ const (
 	EntityKindLocalItem   EntityKind = "local_item"
 	EntityKindLocalView   EntityKind = "local_view"
 	EntityKindSourceItem  EntityKind = "source_item"
+	EntityKindSourceEpisode EntityKind = "source_episode"
 	EntityKindSourceView  EntityKind = "source_view"
 )
 
@@ -25,6 +26,7 @@ type ResolvedEntity struct {
 	Kind         EntityKind
 	LocalUUID    string
 	SourceItemID int64
+	EpisodeKey   string
 	SourceViewID int64
 }
 
@@ -51,6 +53,12 @@ func ResolveEntity(ctx context.Context, pool *pgxpool.Pool, id string) (*Resolve
 				return nil, err
 			}
 			return &ResolvedEntity{Kind: EntityKindSourceView, SourceViewID: sourceViewID}, nil
+		}
+		if sourceItemID, episodeKey, ok, err := sourceRepo.ResolveEpisodePublicUUID(ctx, id, EpisodePublicUUID); err != nil || ok {
+			if err != nil {
+				return nil, err
+			}
+			return &ResolvedEntity{Kind: EntityKindSourceEpisode, SourceItemID: sourceItemID, EpisodeKey: episodeKey}, nil
 		}
 		return nil, nil
 	}
