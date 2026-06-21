@@ -16,6 +16,7 @@ import (
 )
 
 const sourcePlayCacheTTL = 15 * time.Minute
+const sourcePlayMaxRedirects = 5
 
 func streamSourcePlay(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
@@ -101,7 +102,17 @@ func proxySourceStream(c *gin.Context, result *source.PlayResult) (int, error) {
 		req.Header.Set("Range", rangeHeader)
 	}
 
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= sourcePlayMaxRedirects {
+				return fmt.Errorf("播放地址重定向次数过多")
+			}
+			return source.ValidateOutboundURL(req.Context(), req.URL.String())
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
