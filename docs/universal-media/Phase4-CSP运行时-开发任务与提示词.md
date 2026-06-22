@@ -1,0 +1,254 @@
+# Phase 4 CSP 运行时 开发任务与提示词
+
+> 配合总纲 [Phase1-在线优先-实施规划.md](./Phase1-在线优先-实施规划.md)、[技术债与遗留项](./技术债与遗留项.md) 使用。
+> 延续 Phase 3 的 Codex 目标模式工作法。覆盖 0821 配置里 ~38 个 `csp_*` 站。
+
+## 1. CSP 调研结论（关键：不需要 Android 模拟器）
+
+CSP jar 本质是 jar，但**内含 `classes.dex`（Dalvik 字节码），不是标准 JVM `.class`**——普通 `java -jar` 不能直接加载，这是唯一硬障碍。
+
+但它对 Android 的**依赖很浅**：绝大多数 spider 只用 **OkHttp + Jsoup**（纯 Java，JVM/Android 通用）+ 少数 `android.*` 帮手（`TextUtils`/`Uri`/`Base64`/`Log`/`Context`/`SharedPreferences`）。**不需要 WebView/完整 framework**（除少数例外）。铁证：已有人把 FongMi CatVodSpider 移植成**纯 JVM 桌面版**（`Greatwallcorner/CatVodSpider`，for TV-Multiplatform），改动仅是 `TextUtils.join`→`StringUtils.join`、`init()` 去掉 `Context`。
+
+**结论：不需要 Android 模拟器/Robolectric。** 两条轻路径：
+
+| 路径 | 做法 | 跑的是谁 | 取舍 |
+|---|---|---|---|
+| **A. dex2jar + 薄桩（首选）** | `d2j-dex2jar classes.dex` → `URLClassLoader` 反射 → 提供薄 `android.*` 桩 | **配置里真实 dex jar**（覆盖 38 站） | 跑真实源；个别 R8 混淆/深度 Android API 的跑不了 |
+| **B. 源码重编译** | CatVodSpider 源码去 Android 化编译成标准 jar | 自己重编的 jar | 干净；但配置下发的自定义 jar 没源码覆盖不了 |
+
+**采用路径 A**（直接跑站点下发 jar），B 仅作个别高价值站兜底。
+
+**硬骨头少数派**（薄桩搞不定，归一化标"不支持"，不强求）：WebView 取数、OCR、深度 Android API、App 接口加密签名类。
+
+**与 Phase 3 的关系**：CSP runtime 形态 = **JVM sidecar**，和 Phase 3 的 Node sidecar 完全同构（独立进程 + RPC + 网络回调 Go 做 SSRF/限流 + artifact + 审计）。工作量同级，**不是数量级更重**。
+
+参考：FongMi/TV、FongMi/CatVodSpider、Greatwallcorner/CatVodSpider（JVM 移植）、CatVodTVOfficial/CatVodTVJarLoader（反射加载器）。
+
+## 2. 范围（轻量化，已定）
+
+Phase 4 = **CSP dex jar 运行时（JVM sidecar，路径 A：dex2jar + 薄 android 桩）**。
+
+**明确不做**：
+- Android 模拟器 / Robolectric / 完整 framework —— 太重，不碰。
+- WebView/OCR/深度 Android/App 加密签名类 spider —— 归一化标"不支持"，不强求。
+- AList 目录源 / 网盘搜索 —— 永久排除。
+
+**形态已基本确定 = JVM sidecar**（依据调研），但**可行性仍由 T21 PoC 先证伪**（dex2jar + 薄桩能不能真跑通配置 jar），PoC 后再定稿 T22~T24 细节。
+
+延续不变约束：**在线内容绝不写 items**；存储分离、出口统一；确定性 UUID；代理仅字节中转+header 注入、永不转码；外部出站经 SSRF + per-provider limiter。
+
+## §A 共享前置约束
+
+整段沿用 [Phase1-开发任务与提示词.md](./Phase1-开发任务与提示词.md) 的「§A 共享前置约束」，全程生效，每任务带上。
+
+**Phase 4 安全补充（运行不可信 dex/jar，比 JS 更危险）**：
+- **JVM 内沙箱已不可靠**（Java 17 弃用、21+ 移除 SecurityManager），所以**靠进程/OS/容器级隔离**：sidecar 以低权限独立进程运行，**不挂载媒体库真实路径**、工作目录隔离、资源/内存上限；容器内只读根文件系统 + 独立用户。
+- **网络出站只走 Go 回调**（经 `ValidateOutboundURL` + per-provider limiter）；尽量限制 sidecar 直接开 socket。
+- **jar 信任**：dex jar 必须校验 MD5/SHA256（配置 `spider=path;md5;hash` 自带 hash）；无 hash 默认 `unverified`，管理员显式确认才加载。
+- runtime/spider 崩溃、卡死、OOM 不得拖垮 FYMS Core；单次调用超时 + worker kill；spider 实例按 provider 隔离，不跨 provider 共享状态。
+
+## §B 任务顺序
+
+```
+T21 CSP PoC（dex2jar + JVM 反射 + 薄桩 跑通一个简单 spider）  【闸门：验证路径 A 可行性 + 定形态】
+      ▼
+T22 JVM sidecar 运行时 + 薄 android 桩 + CatVod 宿主(init/proxy) + 生命周期 + 沙箱 + artifact + Dockerfile 装 JRE  【重里程碑】
+      ▼
+T23 CSP JAR Provider 接入统一接口 + proxy()/playerContent 处理（复用 normalize/ingest/play/聚合）
+      ▼
+T24 前端启停·健康·搜索测试 + jar 信任确认 UI + runtime 审计（复用 source_runtime_invocations）
+```
+
+每任务停验（需重启 + 真实站点验证）。T22~T24 提示词以下为初稿，**T21 PoC 后据结论微调**。
+
+---
+
+## T21 — CSP PoC（可行性验证 + 形态确认）【闸门】
+
+**依赖**：Phase 3 完成　**完成判定**：能用配置里真实 dex jar 跑通一个简单 spider 的 home/category/detail/search/play，并产出可行性报告。
+
+**提示词**
+```
+目标：CSP dex jar 运行时最小可行性 PoC，回答"FYMS 能否经 dex2jar + 薄 android 桩在 JVM 跑通 TVBox 的 csp_* spider"。
+不求完整，只求证伪。§A + Phase 4 安全补充持续生效；不写 items、不接 Provider 正式链路、不引入 Android 模拟器。
+
+背景：0821 配置 spider="./jar/fan.txt;md5;6c4ab3a9d232164c75534f9060506ee5"，内含 classes.dex，
+csp_Xxx 对应 com.github.catvod.spider.Xxx，继承 com.github.catvod.crawler.Spider。
+调研结论：依赖浅（OkHttp/Jsoup + 少量 android.* 帮手），不需 Android 模拟器（见本文 §1）。
+
+PoC 步骤：
+1. 拉取并校验 spider jar（按 spider=path;md5;hash 解析、相对 base_url 解析、下载经 ValidateOutboundURL、校验 md5）。
+2. dex2jar：把 classes.dex 转成标准 class jar（用 dex-tools/d2j-dex2jar 或等价库）。记录转换成功/失败。
+3. JVM sidecar（最小）：URLClassLoader 加载转换后 jar，反射实例化一个【简单网页抓取型 spider】
+   （调研点名 SixV 或 FirstAid），调用 init/homeContent/categoryContent/detailContent/searchContent/playerContent。
+4. 薄 android 桩：只补让该 spider 跑起来必需的 android.* 类（TextUtils/Uri/Base64/Log/空 Context/SharedPreferences），
+   缺哪个补哪个，记录清单。CatVod 的 Spider 抽象 + init 宿主能力提供最小实现；网络 req 回调 Go（SSRF+limiter）。
+5. 临时入口暴露供人工验证：管理员 POST /SourceRuntime/TestCSP {configBaseUrl, spider, md5, api(csp_Xxx), method, args}
+   返回 {ok,data,logs,durationMs}。我重启后用 API 验证。
+6. 单次超时、禁文件访问媒体库、脚本异常不崩主进程。
+
+完成判定（go build 通过 + 我重启后 API 验证）：
+- /SourceRuntime/TestCSP 对 SixV 或 FirstAid 能返回 home/category/detail/search/play 真实数据（或明确 parse 标记）。
+- PoC 报告：dex2jar 是否可行/成功率、必需 android 桩清单与缺口、各方法成败、JRE 进镜像影响、
+  以及【形态确认：JVM sidecar】及理由（含 Java 无 SecurityManager → 靠进程/容器隔离的安全方案）。
+- 停下告诉我"CSP PoC 完成，待形态确认"，不进 T22。
+```
+
+### T21 实际落点（2026-06-22）
+
+**commit 范围**：`d3b4a7e`（实现 CSP JVM PoC 临时入口）~ `51791e0`（调整 CSP PoC 工具探测顺序）。
+
+**代码落点**
+- 管理员临时入口：`POST /SourceRuntime/TestCSP`，通过既有 `RegisterSourceRoutes` 自动双注册到根分组与 `/emby` 前缀。
+- Go 侧 PoC 管理器：`internal/source/csp_runtime_*`，负责请求归一、spider artifact 下载校验、dex2jar 转换、一次性 JVM worker 调用、超时与并发限制、source_runtime_artifacts/source_runtime_invocations 记录。
+- JVM PoC sidecar：`runtime/csp-sidecar/src`，提供 `fyms.csp.CSPProbe` 反射加载转换后 class jar，并补最小 `android.*` 与 CatVod 宿主桩。
+- 不接正式 Provider，不写 `items` / `source_items`，不改本地 Emby 主链路，不新增迁移。
+
+**PoC API**
+```json
+POST /SourceRuntime/TestCSP
+{
+  "configBaseUrl": "https://tvboxconfig.singlelovely.cn/gao/",
+  "spider": "./jar/fan.txt;md5;6c4ab3a9d232164c75534f9060506ee5",
+  "api": "csp_SixV",
+  "method": "home",
+  "args": {},
+  "timeoutMs": 30000
+}
+```
+
+返回结构：`{ok,runtimeKind,baseUrl,api,method,artifact,dex2jar,result,data,logs,durationMs,workerPid}`。
+
+**已实现的安全边界**
+- spider jar 下载前走 `ValidateOutboundURL`；只允许 http/https，拒绝内网、回环、链路本地地址。
+- `spider=path;md5;hash` 与独立 `md5` 字段均可校验；hash 命中后 artifact 标记 `verified`，无 hash 保持 `unverified`。
+- 单次调用有超时，worker 由 `exec.CommandContext` 拉起并在超时后终止；CSP PoC 并发上限为 2。
+- PoC 工作目录限定在 `data/source-runtime/csp/work`，artifact 放在 `data/source-runtime/csp/artifacts`；不挂载或暴露媒体库真实路径。
+- 审计只记录 provider/base/spider 的 hash、artifact sha256、dex2jar 状态、耗时与错误类型，不写敏感 URL 明文。
+
+**薄桩清单**
+- `android.text.TextUtils`
+- `android.net.Uri`
+- `android.util.Base64`
+- `android.util.Log`
+- `android.content.Context`
+- `android.content.SharedPreferences` / 内存实现
+- `com.github.catvod.crawler.Spider`
+- `com.github.catvod.net.OkHttp`（CatVod 常见网络包装，经 Go stdin/stdout 回调，复用 SSRF + per-provider limiter）
+
+**已知缺口 / 待人工验证**
+- 本机缺 `javac`，因此未能在开发环境预编译 `runtime/csp-sidecar/classes`；Go 构建不受影响，实际 API 调用时若目标环境有 JDK 会自动编译 classes，否则返回 `runtime_unavailable` 并提示缺 `javac/classes`。
+- 本机未安装 `d2j-dex2jar`，实际 API 调用在 jar 下载校验成功后会返回 dex2jar 工具缺失；目标环境需提供 `d2j-dex2jar` / `d2j-dex2jar.bat` / `d2j-dex2jar.sh`。
+- 若 spider 直接依赖自带 `okhttp3` 或深度 Android API，PoC 无法强制接管网络，可能返回 `missing_stub` / `runtime_error`；这正是 T21 用于确认 T22 宿主桥范围的证伪点。
+- WebView、OCR、深度 Android API、App 加密签名类仍按原计划标记不支持，不在 T21 扩展。
+
+**阶段结论**
+- 形态仍确认走 JVM sidecar：dex/jar 属不可信代码，JVM 内沙箱不可靠，必须继续按独立进程 + 工作目录隔离 + 超时 kill + 容器/低权限用户 + Go 网络回调的模型推进。
+- JRE/JDK 镜像影响：正式 T22 预计至少需要精简 JRE；若仍保留运行时自动编译 classes 或 dex2jar 依赖 Java 工具链，则需额外评估 JDK/dex-tools 层。更推荐 T22 把 sidecar classes 作为构建产物随镜像打包，运行期只需 JRE + dex2jar。
+
+---
+
+## T22 — JVM sidecar 运行时 + 薄桩 + 宿主 + 生命周期 + artifact【重里程碑】
+
+**依赖**：T21　**完成判定**：真实 fan.txt 内多个 csp spider 能加载并跑通；JRE 进镜像；崩溃自愈、超时 kill；artifact 校验 hash。
+
+**提示词（PoC 后微调）**
+```
+目标：把 T21 PoC 升级为正式 JVM sidecar 运行时。形态=独立 JVM sidecar，JRE 打进 FYMS Docker 镜像。
+§A + Phase 4 安全补充持续生效；不写 items、不接 Provider 正式链路(T23)。
+
+1. sidecar 工程（如 runtime/jvm-sidecar/，Java/Kotlin + Gradle）：提供 RPC（stdin/stdout JSON-lines 或本地 socket）：
+   loadJar/init/home/category/detail/search/play/proxy/destroy。
+   实现 CatVod Spider 抽象层（com.github.catvod.crawler.Spider 等宿主兼容类）+ init 宿主能力。
+2. dex2jar + 加载：jar 下载/校验 → dex2jar → URLClassLoader 反射实例化 csp_Xxx；className 解析默认
+   csp_Xxx→com.github.catvod.spider.Xxx，找不到返回 class_not_found，不猜近似类名。
+3. 薄 android 桩：补全 spider 常用 android.* 子集（TextUtils/Uri/Base64/Log/Context/SharedPreferences/MimeTypeMap…）；
+   OCR/WebView/深度 API 留桩归一化"不支持"。
+4. 宿主桥：网络 req/OkHttp 出站回调 Go（ValidateOutboundURL + per-provider limiter，单一真相）；
+   proxy() 宿主代理入口（见 T23）；siteKey 写入 spider 供 Proxy.getUrl 生成稳定地址。
+5. 生命周期：FYMS 启动拉起 sidecar 并监督（崩溃自愈）；spider 实例按 (providerKey + jar md5) 缓存、空闲销毁、
+   md5 变更重建；单次调用超时 kill；并发上限；实例隔离不跨 provider 共享 extend/cookie。
+6. 沙箱（§A 安全补充）：低权限进程、不挂媒体库、工作目录隔离 data/source-runtime/csp/{providerKey}、
+   资源/内存上限；JVM 无 SecurityManager 故靠进程/容器隔离。
+7. artifact：复用 source_runtime_artifacts（kind=csp_dex_jar），下载/校验 md5·sha256/trust_status，
+   无 hash 默认 unverified。
+8. Docker：装精简 JRE（如 temurin-jre-headless）+ sidecar 产物；本地无 Docker 回退 PATH 的 java。
+
+完成判定（go build + sidecar 构建通过 + 我重启后 API 验证）：
+- 真实 fan.txt 内 ≥1 个 csp spider（SixV/FirstAid 等）能加载并跑通 home/search/detail/play；
+- jar md5 校验、崩溃自愈、超时 kill、网络经 Go SSRF+limiter 均生效；artifact 落库带 hash。
+- 停下告诉我"T22 完成待验"，不进 T23。
+```
+
+---
+
+## T23 — CSP JAR Provider 接入 + proxy() 处理
+
+**依赖**：T22　**完成判定**：csp_* 站从 runtime_required 转为可用 provider，经 sidecar 跑通搜索/详情/播放；proxy() 型播放可用。
+
+**提示词（PoC 后微调）**
+```
+目标：把 runtime_kind=csp_dex 的 provider 接入统一 Provider 接口，处理 CSP 特有的 proxy()/playerContent。
+§A + Phase 4 安全持续生效；不写 items。
+
+1. 实现 CSPProvider，经 T22 sidecar 实现 Categories/Search/Category/Detail/ResolvePlay；
+   ProviderRuntimeManager 按 runtime_kind 分派（native_cms→CMS，js_node_drpy→JS，csp_dex→CSP）。
+2. 字段归一/入库/拆线路复用 normalize.go/ingest.go/play 链路；剧集按总纲 §4.1；聚合搜索自动纳入 csp provider。
+3. proxy() 处理：部分 spider playerContent 返回指向宿主代理的 URL，需由 sidecar 的 proxy(Object[]) 动态生成
+   MPD/M3U8/转发（如 Bili DASH）。FYMS 播放出口对接：/SourcePlay 命中 csp proxy 线路时经 sidecar proxy 取流/取直链，
+   仍走 Go 字节中转 + SSRF，不转码。
+4. 导入：csp_* 站绑定其 spider jar artifact，从 runtime_required 翻为可用 provider（jar 未确认信任则保持禁用/待确认）。
+5. parse=1 复用 Phase 3 解析器；magnet/cloud_share/不支持类归一化标记，不崩。
+
+完成判定（go build + 我重启后 API/客户端验证）：
+- 一个真实 csp 站作为可用 provider 出现，搜索/详情/播放跑通；proxy() 型线路能播；
+- 客户端浏览经 Phase 3 的 detail 按需入库出分集/线路。停下告诉我"T23 完成待验"。
+```
+
+---
+
+## T24 — 前端 + jar 信任 UI + 审计
+
+**依赖**：T23　**完成判定**：来源中心支持 csp provider 与 jar 信任管理；csp runtime 调用入审计。
+
+**提示词**
+```
+目标：前端接入 + 安全/可观测收尾。§A + 安全持续生效；不写 items；前端按领域组件拆分，注意多根模板过渡白屏。
+
+1. 来源中心：csp provider 启停/健康/搜索测试（复用既有 UI）；
+   jar 信任管理：展示 artifact 的 md5/sha256/trust_status，提供"确认信任"操作（unverified→verified 才允许加载）。
+2. 审计：csp runtime 调用入 source_runtime_invocations（providerKey/method/duration/status/error_type；敏感不入明文）。
+3. 错误归一化展示（来源名/动作/耗时/错误类型/可重试建议）；不支持类 spider 明确标注。
+
+完成判定（go build + npm run build + 我验证）：来源中心可管 csp 源与 jar 信任；csp 调用入审计；
+不支持类有清晰标注。停下告诉我"T24 完成待验"。
+```
+
+---
+
+## §C 总目标提示词（先只跑到 T21 闸门）
+
+```
+【总目标】按 docs/universal-media/Phase4-CSP运行时-开发任务与提示词.md 执行 Phase 4。
+先读该文件「调研结论/范围/§A/§B」与 T21，以及总纲与技术债文档。§A 全部约束(含 Phase 4 安全补充)持续生效。
+形态倾向=JVM sidecar（dex2jar+薄桩，路径 A），但本轮先做 T21 PoC 证伪，不预先铺开。
+
+【执行】本轮只做 T21 CSP PoC：按代码/功能边界增量提交(中文、每个 commit 能 go build)，
+完成后追加「实际落点」+commit 范围；go build ./... 通过。
+
+【T21 闸门】完成且构建绿后停下，产出 PoC 报告(dex2jar 可行性/必需 android 桩清单/各方法成败/JRE 进镜像影响/
+形态确认+安全方案)，明确告诉我"CSP PoC 完成，待形态确认"，不进 T22。T22~T24 待我据 PoC 结论定稿后再发。
+
+【冲突与边界】发现与总纲冲突或会违反 §A(污染 items、动本地主链路、写测试、自行启动服务、
+引入 Android 模拟器、把 AList/网盘纳入)即停下说明，不擅改、不绕约束、不扩范围。
+中文汇报：改了什么、构建是否通过、已知缺口。
+```
+
+---
+
+## 备注
+
+- T21 是命门：dex2jar + 薄桩能否真跑通配置 jar，决定 T22~T24 全部写法（和 Phase 3 的 T16 同性质）。
+- 镜像里会多一个**精简 JRE**（~50-80MB，和 Node 同量级）；FYMS 同时带 Node(JS) + JRE(CSP) 两个 sidecar runtime。
+- 安全红线：dex 是不可信第三方代码，JVM 内沙箱不可靠，**靠进程/容器隔离 + jar hash 校验 + 网络回调 Go**。
+- Phase 4 完成后，0821 配置的 CMS / JS / CSP 三大来源类型全覆盖（仅剩 OCR/WebView 等硬骨头少数派与 AList/网盘永久排除）。
