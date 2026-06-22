@@ -34,7 +34,8 @@ public final class CSPProbe {
     };
     private static final String[] CATVOD_STUBS = new String[] {
         "com.github.catvod.crawler.Spider",
-        "com.github.catvod.net.OkHttp"
+        "com.github.catvod.net.OkHttp",
+        "okhttp3.* bridge subset"
     };
 
     private CSPProbe() {}
@@ -194,7 +195,7 @@ public final class CSPProbe {
         out.put("durationMs", System.currentTimeMillis() - start);
         out.put("androidStubs", ANDROID_STUBS);
         out.put("catVodStubs", CATVOD_STUBS);
-        out.put("networkBridge", "catvod-okhttp-stub");
+        out.put("networkBridge", "okhttp3-go-bridge");
         return out;
     }
 

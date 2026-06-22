@@ -160,7 +160,8 @@ POST /SourceRuntime/TestCSP
   - `fyms.csp.CSPProbe` JSON-lines RPC 入口；
   - CatVod 宿主桩与 android 薄桩；
   - dex2jar 库依赖 `de.femtopedia.dex2jar:dex-translator:2.4.13`；
-  - 常见纯 Java 依赖 `okhttp:4.12.0`、`jsoup:1.17.2`、`org.json:20240303`。
+  - 常见纯 Java 依赖 `jsoup:1.17.2`、`org.json:20240303`；
+  - `okhttp3` 最小兼容桥接层，`OkHttpClient.newCall().execute()` 会发 JSON-lines `http_request` 给 Go，不在 sidecar 内裸连。
 - Go 侧改为 `java -jar <fat-jar>`，payload 传入 `artifactPath/workDir/className/method/args/ext`；不再查找或调用外部 `d2j-dex2jar`，不再运行期 `javac`。
 - Dockerfile 增加 Gradle 构建阶段生成 sidecar fat jar；运行镜像只安装 `openjdk-21-jre-headless`，不需要 JDK。
 
@@ -180,20 +181,22 @@ POST /SourceRuntime/TestCSP
 - `android.view.ViewGroup.LayoutParams`
 - `com.github.catvod.crawler.Spider`
 - `com.github.catvod.net.OkHttp`
+- `okhttp3` 桥接子集：`OkHttpClient` / `Request` / `Response` / `ResponseBody` / `Headers` / `FormBody` / `MediaType` / `Dns` / `Dispatcher` / `Call`
 
 **本地证据**
 - `runtime/csp-sidecar/build.ps1` 成功产出 fat jar。
 - `go build ./...` 通过。
-- 使用本地已校验 `fan.txt` artifact 与 `ext=https://www.xb6v.com/`，直接执行 `java -jar runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar`，已证实：
+- 使用本地已校验 `fan.txt` artifact 与 `ext=https://www.xb6v.com/`，执行 `java -jar runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar` 并用 JSON-lines 模拟 Go HTTP bridge，已证实：
   - `home`：成功返回 SixV 分类，如 `国剧/日韩剧/欧美剧/喜剧片/...`；
   - `category`：成功返回真实列表，如 `她的直拳法则[全集]`、`樊笼[全集]` 等；
   - `detail`：成功返回真实详情与 `vod_play_url`，含 magnet 播放项；
   - `play`：对 magnet 播放 id 成功返回 `{parse:0,url:"magnet:..."}`；
   - `search`：方法执行成功，关键词 `庆余年` 当前站点返回空 `list`，不是 runtime 缺失。
+  - 网络桥修正后，sidecar 已输出 `http_request`，等待 Go/模拟桥回写 `http_response` 后继续执行；返回 `networkBridge=okhttp3-go-bridge`。
 
 **仍需人工 API 验证**
 - 本地未启动 FYMS 服务；需重启后通过 `POST /SourceRuntime/TestCSP` 验证 Go HTTP 入口、artifact 下载校验、审计落库与 sidecar RPC 全链路。
-- 若其它 CSP spider 直接使用自带 `okhttp3` 出站，T21 允许作为 PoC 证伪记录；T22 需要继续收紧网络桥，尽量通过宿主包装或容器网络策略保证外部出站只走 Go。
+- 若其它 CSP spider 使用 T21 尚未覆盖的 OkHttp API 或其它网络库，会返回缺类/缺方法；T22 继续扩展桥接子集或加容器网络策略。
 
 **阶段结论**
 - T21 形态确认：JVM sidecar 可行，且应采用“构建期 fat jar + 运行期 JRE + sidecar 内 dex2jar 库 API”的自包含形态。

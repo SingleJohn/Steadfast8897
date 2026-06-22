@@ -22,7 +22,6 @@ sourceSets {
 
 dependencies {
     implementation 'de.femtopedia.dex2jar:dex-translator:2.4.13'
-    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'org.json:json:20240303'
 }
