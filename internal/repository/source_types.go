@@ -280,6 +280,13 @@ type SourceRuntimeArtifactUpsert struct {
 	Raw          json.RawMessage
 }
 
+type SourceRuntimeArtifactLookup struct {
+	ArtifactKind string
+	SourceURL    string
+	MD5          string
+	SHA256       string
+}
+
 type SourceRuntimeInvocationCreate struct {
 	ProviderID   *int64
 	RuntimeKind  string

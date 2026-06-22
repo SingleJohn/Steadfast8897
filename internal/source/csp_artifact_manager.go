@@ -62,11 +62,41 @@ func (m *CSPArtifactManager) Fetch(ctx context.Context, req CSPRuntimeRequest) (
 	if err != nil {
 		return CSPRuntimeArtifact{}, err
 	}
+	if cached, ok := m.cached(ctx, spiderURL, hashKind, hashValue); ok {
+		return cached, nil
+	}
 	download, err := m.fetch(ctx, req, spiderURL, hashKind, hashValue)
 	if err != nil {
 		return CSPRuntimeArtifact{}, err
 	}
 	return cspRuntimeArtifactFromRepo(download.Artifact), nil
+}
+
+func (m *CSPArtifactManager) cached(ctx context.Context, rawURL, hashKind, hashValue string) (CSPRuntimeArtifact, bool) {
+	if m == nil || m.repo == nil {
+		return CSPRuntimeArtifact{}, false
+	}
+	lookup := repository.SourceRuntimeArtifactLookup{
+		ArtifactKind: "csp_dex_jar",
+		SourceURL:    rawURL,
+	}
+	switch strings.ToLower(strings.TrimSpace(hashKind)) {
+	case "sha", "sha256":
+		lookup.SHA256 = strings.ToLower(strings.TrimSpace(hashValue))
+	default:
+		lookup.MD5 = strings.ToLower(strings.TrimSpace(hashValue))
+	}
+	artifact, err := m.repo.FindRuntimeArtifact(ctx, lookup)
+	if err != nil || artifact == nil {
+		return CSPRuntimeArtifact{}, false
+	}
+	out := cspRuntimeArtifactFromRepo(*artifact)
+	absPath, err := usableCSPArtifactPath(out.Path, hashKind, hashValue)
+	if err != nil {
+		return CSPRuntimeArtifact{}, false
+	}
+	out.Path = absPath
+	return out, true
 }
 
 func (m *CSPArtifactManager) fetch(ctx context.Context, req CSPRuntimeRequest, rawURL, hashKind, hashValue string) (cspArtifactDownload, error) {
@@ -225,6 +255,43 @@ func verifyCSPArtifactHash(kind, expected, md5Text, shaText string) error {
 		return fmt.Errorf("不支持的 spider hash 类型: %s", kind)
 	}
 	return nil
+}
+
+func usableCSPArtifactPath(path, hashKind, hashValue string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("artifact 本地路径为空")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("artifact 本地路径是目录: %s", abs)
+	}
+	if info.Size() > cspArtifactMaxBytes {
+		return "", fmt.Errorf("artifact 本地文件超过大小上限: %s", abs)
+	}
+	hashValue = strings.ToLower(strings.TrimSpace(hashValue))
+	if hashValue == "" {
+		return abs, nil
+	}
+	body, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	md5sum := md5.Sum(body)
+	sha := sha256.Sum256(body)
+	md5Text := hex.EncodeToString(md5sum[:])
+	shaText := hex.EncodeToString(sha[:])
+	if err := verifyCSPArtifactHash(hashKind, hashValue, md5Text, shaText); err != nil {
+		return "", err
+	}
+	return abs, nil
 }
 
 func cspRuntimeArtifactFromRepo(in repository.SourceRuntimeArtifact) CSPRuntimeArtifact {

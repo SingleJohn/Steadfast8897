@@ -205,6 +205,7 @@ POST /SourceRuntime/TestCSP
 - `CSPArtifactManager` 保存 artifact 时写入绝对 `local_path`；从旧 DB 记录读出相对路径时也会在返回 DTO 前绝对化。
 - 调用 sidecar 前会 `os.Stat` 校验 artifact 文件存在；若 DB/缓存记录命中但本地文件缺失，会重新下载并再次校验，不只信 `source_runtime_artifacts.local_path`。
 - 本地确认 `data/source-runtime/csp/artifacts/...-csp-fan.txt` 与 `data/source-runtime/csp/work` 均可解析为 Windows 绝对路径。
+- 本次补强：`source_runtime_artifacts` 命中缓存时先把 `local_path` 绝对化并校验本地文件与配置 hash；文件缺失、路径失效或 hash 不匹配时放弃缓存并重新下载。sidecar 内部也会把 `artifactPath` normalize 为绝对路径后再打开，错误返回绝对路径，便于定位。
 
 **阶段结论**
 - T21 形态确认：JVM sidecar 可行，且应采用“构建期 fat jar + 运行期 JRE + sidecar 内 dex2jar 库 API”的自包含形态。

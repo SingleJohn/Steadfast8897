@@ -159,7 +159,10 @@ public final class CSPProbe {
             throw new IllegalArgumentException("artifactPath 为空");
         }
         long start = System.currentTimeMillis();
-        Path artifact = Path.of(artifactPath);
+        Path artifact = Path.of(artifactPath).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(artifact)) {
+            throw new java.nio.file.NoSuchFileException(artifact.toString());
+        }
         String artifactName = artifact.getFileName() == null ? "spider" : artifact.getFileName().toString();
         Path root = Path.of(workDir).toAbsolutePath().normalize();
         Files.createDirectories(root);

@@ -93,6 +93,29 @@ func (r *SourceRepository) ListRuntimeArtifacts(ctx context.Context, providerID 
 	return out, rows.Err()
 }
 
+func (r *SourceRepository) FindRuntimeArtifact(ctx context.Context, in SourceRuntimeArtifactLookup) (*SourceRuntimeArtifact, error) {
+	if r == nil || r.pool == nil {
+		return nil, fmt.Errorf("source repository 未初始化")
+	}
+	if in.ArtifactKind == "" || in.SourceURL == "" {
+		return nil, fmt.Errorf("runtime artifact 查询条件不完整")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, provider_id, source_type, artifact_kind, name, source_url, base_url, relative_path,
+			local_path, md5, sha256, byte_size, content_type, trust_status, status, last_fetched_at,
+			verified_at, last_error, raw, created_at, updated_at
+		FROM source_runtime_artifacts
+		WHERE artifact_kind = $1
+		  AND source_url = $2
+		  AND ($3 = '' OR md5 = $3)
+		  AND ($4 = '' OR sha256 = $4)
+		  AND status = 'active'
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	`, in.ArtifactKind, in.SourceURL, in.MD5, in.SHA256)
+	return scanSourceRuntimeArtifact(row)
+}
+
 func (r *SourceRepository) TrustRuntimeArtifact(ctx context.Context, id int64) (*SourceRuntimeArtifact, error) {
 	if r == nil || r.pool == nil {
 		return nil, fmt.Errorf("source repository 未初始化")
