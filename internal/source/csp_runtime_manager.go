@@ -179,6 +179,9 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 	if err != nil {
 		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
+	}
 	payload := map[string]any{
 		"type":         "run",
 		"className":    cspClassName(req.API),
