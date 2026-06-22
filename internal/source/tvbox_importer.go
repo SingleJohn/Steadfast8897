@@ -146,8 +146,12 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 		} else if isDRPYJSSite(site) {
 			def.ProviderKind = "drpy_js"
 			def.RuntimeKind = JSRuntimeKindNodeDRPY
-			def.HealthStatus = "runtime_ready"
-			def.LastError = ptrString("JS runtime 已落地，Provider 正式接入将在 T18 启用")
+			def.Enabled = true
+			def.Visible = true
+			def.Searchable = tvboxBool(site.Searchable, true)
+			def.HealthStatus = "unknown"
+			def.LastError = nil
+			def.Usable = true
 		}
 		out = append(out, def)
 	}

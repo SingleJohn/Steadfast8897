@@ -107,7 +107,11 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 		}
 		state.Cache.Del(ctx, key)
 	}
-	result, err := source.ResolvePlay(ctx, playSource)
+	manager := source.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
+	result, err := manager.ResolvePlay(ctx, playSource)
+	if err != nil && !source.IsProviderDisabledError(err) {
+		result, err = source.ResolvePlay(ctx, playSource)
+	}
 	if err != nil {
 		state.Cache.Del(ctx, key)
 		return nil, false, err

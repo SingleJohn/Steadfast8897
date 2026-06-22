@@ -119,7 +119,7 @@ func healthCheckSourceProvider(c *gin.Context, state *AppState) {
 	if !ok {
 		return
 	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient)
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
 	item, err := manager.HealthCheck(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
@@ -144,7 +144,7 @@ func federatedSourceSearch(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient)
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
 	result, err := manager.FederatedSearch(c.Request.Context(), sourcebridge.FederatedSearchRequest{
 		Keyword: req.Keyword,
 		Limit:   req.Limit,
@@ -166,7 +166,7 @@ func searchSourceProvider(c *gin.Context, state *AppState) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient)
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
 	page, items, err := manager.Search(c.Request.Context(), id, sourcebridge.SearchRequest{
 		Keyword: req.Keyword,
 		Page:    req.Page,
@@ -178,12 +178,44 @@ func searchSourceProvider(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"page": page, "items": items})
 }
 
+type providerDetailRequest struct {
+	SourceItemID string `json:"source_item_id"`
+	ID           string `json:"id"`
+}
+
+func detailSourceProvider(c *gin.Context, state *AppState) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	var req providerDetailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	sourceItemID := strings.TrimSpace(req.SourceItemID)
+	if sourceItemID == "" {
+		sourceItemID = strings.TrimSpace(req.ID)
+	}
+	if sourceItemID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "source_item_id required"})
+		return
+	}
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
+	detail, item, playSources, err := manager.Detail(c.Request.Context(), id, sourceItemID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"detail": detail, "item": item, "play_sources": playSources})
+}
+
 func listSourceProviderCategories(c *gin.Context, state *AppState) {
 	id, ok := pathInt64(c, "id")
 	if !ok {
 		return
 	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient)
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime)
 	items, err := manager.Categories(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})

@@ -114,7 +114,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 	}
 	searchable := make([]repository.SourceProvider, 0, len(providers))
 	for _, provider := range providers {
-		if provider.ProviderKind != "cms_vod" || provider.RuntimeKind != "native_cms" {
+		if !isSearchableRuntimeProvider(provider) {
 			continue
 		}
 		if !provider.Enabled || !provider.Searchable {
@@ -211,6 +211,19 @@ collected:
 		"provider_failed", response.Provider.Failed,
 		"hit_count", response.Total)
 	return response, nil
+}
+
+func isSearchableRuntimeProvider(provider repository.SourceProvider) bool {
+	switch {
+	case provider.ProviderKind == "cms_vod" && provider.RuntimeKind == "native_cms":
+		return true
+	case provider.ProviderKind == "drpy_js" && provider.RuntimeKind == JSRuntimeKindNodeDRPY:
+		return true
+	case provider.ProviderKind == "tvbox_site" && provider.RuntimeKind == JSRuntimeKindNodeDRPY:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string) (result federatedProviderResult) {
