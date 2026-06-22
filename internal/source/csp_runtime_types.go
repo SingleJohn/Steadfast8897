@@ -3,7 +3,7 @@ package source
 import "encoding/json"
 
 const (
-	CSPRuntimeKindJVMPoC = "csp_jvm_poc"
+	CSPRuntimeKindJVM = "csp_dex"
 
 	CSPRuntimeMethodInit     = "init"
 	CSPRuntimeMethodHome     = "home"
@@ -11,6 +11,7 @@ const (
 	CSPRuntimeMethodDetail   = "detail"
 	CSPRuntimeMethodSearch   = "search"
 	CSPRuntimeMethodPlay     = "play"
+	CSPRuntimeMethodProxy    = "proxy"
 )
 
 type CSPRuntimeRequest struct {

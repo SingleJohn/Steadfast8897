@@ -37,6 +37,12 @@ public final class CSPProbe {
         "com.github.catvod.net.OkHttp",
         "okhttp3.* bridge subset"
     };
+    private static final String[] UNSUPPORTED_API = new String[] {
+        "WebView",
+        "OCR",
+        "deep android framework",
+        "native app signature"
+    };
 
     private CSPProbe() {}
 
@@ -163,9 +169,27 @@ public final class CSPProbe {
                 return invoke(clazz, spider, "playerContent",
                     new Class<?>[] { String.class, String.class, List.class },
                     new Object[] { stringArg(args, "flag", "from", ""), stringArg(args, "id", "url", ""), flags });
+            case "proxy":
+                return invokeProxy(clazz, spider, args);
             default:
-                throw new UnsupportedOperationException("暂不支持的 CSP PoC method: " + method);
+                throw new UnsupportedOperationException("暂不支持的 CSP runtime method: " + method);
         }
+    }
+
+    private static Object invokeProxy(Class<?> clazz, Object spider, Map<String, Object> args) throws Exception {
+        Method method = findMethod(clazz, "proxy", Map.class);
+        if (method != null) {
+            Map<String, String> params = new HashMap<>();
+            for (Map.Entry<String, Object> entry : args.entrySet()) {
+                params.put(entry.getKey(), stringValue(entry.getValue()));
+            }
+            return method.invoke(spider, params);
+        }
+        method = findMethod(clazz, "proxy", String.class);
+        if (method != null) {
+            return method.invoke(spider, stringArg(args, "id", "url", ""));
+        }
+        throw new UnsupportedOperationException("该 spider 未提供 proxy 宿主入口");
     }
 
     private static Object invoke(Class<?> clazz, Object instance, String name, Class<?>[] types, Object[] args) throws Exception {
@@ -196,6 +220,7 @@ public final class CSPProbe {
         out.put("androidStubs", ANDROID_STUBS);
         out.put("catVodStubs", CATVOD_STUBS);
         out.put("networkBridge", "okhttp3-go-bridge");
+        out.put("unsupportedApi", UNSUPPORTED_API);
         return out;
     }
 

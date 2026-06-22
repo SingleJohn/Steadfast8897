@@ -7,6 +7,7 @@ func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.POST("/SourceRuntime/TestJS", adminMW, func(c *gin.Context) { testSourceRuntimeJS(c, state) })
 	group.POST("/SourceRuntime/TestCSP", adminMW, func(c *gin.Context) { testSourceRuntimeCSP(c, state) })
 	group.GET("/SourceRuntime/Artifacts", adminMW, func(c *gin.Context) { listSourceRuntimeArtifacts(c, state) })
+	group.POST("/SourceRuntime/Artifacts/:id/Trust", adminMW, func(c *gin.Context) { trustSourceRuntimeArtifact(c, state) })
 	group.GET("/SourceRuntime/Invocations", adminMW, func(c *gin.Context) { listSourceRuntimeInvocations(c, state) })
 	group.GET("/SourceParsers", adminMW, func(c *gin.Context) { listSourceParsers(c, state) })
 	group.POST("/SourceParsers/:id/Enable", adminMW, func(c *gin.Context) { setSourceParserEnabled(c, state, true) })

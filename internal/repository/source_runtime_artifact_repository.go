@@ -93,6 +93,26 @@ func (r *SourceRepository) ListRuntimeArtifacts(ctx context.Context, providerID 
 	return out, rows.Err()
 }
 
+func (r *SourceRepository) TrustRuntimeArtifact(ctx context.Context, id int64) (*SourceRuntimeArtifact, error) {
+	if r == nil || r.pool == nil {
+		return nil, fmt.Errorf("source repository 未初始化")
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("runtime artifact id 无效")
+	}
+	row := r.pool.QueryRow(ctx, `
+		UPDATE source_runtime_artifacts
+		SET trust_status = 'trusted',
+		    verified_at = NOW(),
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, provider_id, source_type, artifact_kind, name, source_url, base_url, relative_path,
+			local_path, md5, sha256, byte_size, content_type, trust_status, status, last_fetched_at,
+			verified_at, last_error, raw, created_at, updated_at
+	`, id)
+	return scanSourceRuntimeArtifact(row)
+}
+
 type sourceRuntimeArtifactScanner interface {
 	Scan(dest ...any) error
 }

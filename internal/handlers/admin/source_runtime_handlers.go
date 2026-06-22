@@ -60,6 +60,24 @@ func listSourceRuntimeArtifacts(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+func trustSourceRuntimeArtifact(c *gin.Context, state *AppState) {
+	if state == nil || state.Repo == nil || state.Repo.Source == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "source repository 未初始化"})
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid artifact id"})
+		return
+	}
+	item, err := state.Repo.Source.TrustRuntimeArtifact(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
 func listSourceRuntimeInvocations(c *gin.Context, state *AppState) {
 	if state == nil || state.Repo == nil || state.Repo.Source == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "source repository 未初始化"})

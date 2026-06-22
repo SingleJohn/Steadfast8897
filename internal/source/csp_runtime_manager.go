@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/net/html/charset"
 	"golang.org/x/time/rate"
 
 	"fyms/internal/repository"
@@ -84,7 +86,7 @@ func (m *CSPRuntimeManager) Start(ctx context.Context) error {
 	}
 	m.javaPath = javaPath
 	m.sidecar = sidecar
-	m.logger.InfoContext(ctx, "CSP runtime PoC ready", "log_target", "provider", "java", javaPath, "sidecar", sidecar)
+	m.logger.InfoContext(ctx, "CSP runtime ready", "log_target", "provider", "java", javaPath, "sidecar", sidecar)
 	return nil
 }
 
@@ -122,6 +124,12 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
 	}
+	if err := ensureCSPArtifactTrusted(artifact); err != nil {
+		resp := m.errorResponse(start, req, err, "untrusted_artifact")
+		resp.Artifact = artifact
+		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		return resp, nil
+	}
 	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
 		if err := m.Start(runCtx); err != nil {
 			resp := m.errorResponse(start, req, err, "runtime_unavailable")
@@ -131,7 +139,7 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		}
 	}
 	resp := &CSPRuntimeResponse{
-		RuntimeKind: CSPRuntimeKindJVMPoC,
+		RuntimeKind: CSPRuntimeKindJVM,
 		BaseURL:     req.ConfigBaseURL,
 		API:         req.API,
 		Method:      req.Method,
@@ -167,7 +175,7 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 	if err != nil {
 		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
-	workDir, err := filepath.Abs(m.workDir)
+	workDir, err := filepath.Abs(m.providerWorkDir(req))
 	if err != nil {
 		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
@@ -178,6 +186,7 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		"args":         req.Args,
 		"baseUrl":      req.ConfigBaseURL,
 		"extend":       req.Ext,
+		"providerKey":  req.ProviderKey,
 		"artifactPath": artifactPath,
 		"workDir":      workDir,
 	}
@@ -287,6 +296,25 @@ func (m *CSPRuntimeManager) ensureLocalArtifact(ctx context.Context, req CSPRunt
 	return refetched, nil
 }
 
+func ensureCSPArtifactTrusted(artifact CSPRuntimeArtifact) error {
+	trust := strings.ToLower(strings.TrimSpace(artifact.TrustStatus))
+	if trust == "verified" || trust == "trusted" {
+		return nil
+	}
+	return fmt.Errorf("csp_dex_jar artifact 未校验或未信任，管理员确认后才允许加载")
+}
+
+func (m *CSPRuntimeManager) providerWorkDir(req CSPRuntimeRequest) string {
+	key := strings.TrimSpace(req.ProviderKey)
+	if key == "" && req.ProviderID != nil {
+		key = fmt.Sprintf("provider-%d", *req.ProviderID)
+	}
+	if key == "" {
+		key = "diagnostic"
+	}
+	return filepath.Join(m.workDir, safeRuntimePathPart(key))
+}
+
 func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *int64, id string, in jsHTTPBridgeReq) map[string]any {
 	start := time.Now()
 	if err := ValidateOutboundURL(ctx, in.URL); err != nil {
@@ -337,6 +365,7 @@ func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *in
 			headers[key] = values[0]
 		}
 	}
+	text, charsetName := decodeCSPHTTPText(raw, resp.Header.Get("Content-Type"))
 	return map[string]any{
 		"type":       "http_response",
 		"id":         id,
@@ -344,9 +373,38 @@ func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *in
 		"status":     resp.StatusCode,
 		"headers":    headers,
 		"bodyBase64": base64.StdEncoding.EncodeToString(raw),
+		"bodyText":   text,
+		"charset":    charsetName,
 		"bodyBytes":  len(raw),
 		"durationMs": time.Since(start).Milliseconds(),
 	}
+}
+
+func decodeCSPHTTPText(raw []byte, contentType string) (string, string) {
+	if len(raw) == 0 {
+		return "", "utf-8"
+	}
+	charsetName := charsetFromContentType(contentType)
+	reader, err := charset.NewReaderLabel(charsetName, bytes.NewReader(raw))
+	if err != nil {
+		reader, err = charset.NewReader(bytes.NewReader(raw), contentType)
+	}
+	if err == nil {
+		if data, readErr := io.ReadAll(io.LimitReader(reader, int64(len(raw))*4+4096)); readErr == nil {
+			return string(data), cspDefaultString(charsetName, "utf-8")
+		}
+	}
+	return string(raw), "unknown"
+}
+
+func charsetFromContentType(contentType string) string {
+	for _, part := range strings.Split(contentType, ";") {
+		part = strings.TrimSpace(part)
+		if key, value, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(key), "charset") {
+			return strings.Trim(strings.TrimSpace(value), `"'`)
+		}
+	}
+	return ""
 }
 
 func (m *CSPRuntimeManager) wait(providerID int64) *rate.Limiter {
@@ -366,7 +424,7 @@ func (m *CSPRuntimeManager) errorResponse(start time.Time, req CSPRuntimeRequest
 	}
 	return &CSPRuntimeResponse{
 		OK:          false,
-		RuntimeKind: CSPRuntimeKindJVMPoC,
+		RuntimeKind: CSPRuntimeKindJVM,
 		BaseURL:     req.ConfigBaseURL,
 		API:         req.API,
 		Method:      req.Method,
@@ -419,7 +477,7 @@ func (m *CSPRuntimeManager) recordInvocation(ctx context.Context, req CSPRuntime
 	}, "{}")
 	if _, err := m.repo.CreateRuntimeInvocation(ctx, repository.SourceRuntimeInvocationCreate{
 		ProviderID:   req.ProviderID,
-		RuntimeKind:  CSPRuntimeKindJVMPoC,
+		RuntimeKind:  CSPRuntimeKindJVM,
 		Method:       cspDefaultString(req.Method, "unknown"),
 		Status:       status,
 		ErrorType:    errorType,
@@ -568,6 +626,16 @@ func splitRuntimeLogs(parts ...string) []string {
 func cspDefaultString(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
+	}
+	return value
+}
+
+var unsafeRuntimePathPart = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+func safeRuntimePathPart(value string) string {
+	value = strings.Trim(unsafeRuntimePathPart.ReplaceAllString(value, "_"), "._-")
+	if value == "" {
+		return "default"
 	}
 	return value
 }

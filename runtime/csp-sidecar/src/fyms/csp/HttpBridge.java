@@ -49,8 +49,11 @@ public final class HttpBridge {
             int status = intValue(resp.get("status"), 200);
             @SuppressWarnings("unchecked")
             Map<String, String> responseHeaders = resp.get("headers") instanceof Map ? (Map<String, String>) resp.get("headers") : new LinkedHashMap<>();
-            String encoded = String.valueOf(resp.get("bodyBase64"));
-            String body = new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+            String body = String.valueOf(resp.get("bodyText"));
+            if (body == null || "null".equals(body)) {
+                String encoded = String.valueOf(resp.get("bodyBase64"));
+                body = new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+            }
             return new Response(status, Headers.of(responseHeaders), new ResponseBody(body));
         }
         throw new IOException("Go HTTP bridge 无响应");
