@@ -45,6 +45,7 @@ type AppState struct {
 	ImageCache     *imagecache.ImageCache
 	GatewayRuntime *gateway.Runtime
 	JSRuntime      *sourcebridge.JSRuntimeManager
+	CSPRuntime     *sourcebridge.CSPRuntimeManager
 }
 
 func GetState(c *gin.Context) *AppState {

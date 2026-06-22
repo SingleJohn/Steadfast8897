@@ -150,6 +150,10 @@ func main() {
 	if err := jsRuntime.Start(context.Background()); err != nil {
 		slog.Warn("JS runtime sidecar unavailable", "log_target", "provider", "error", err)
 	}
+	cspRuntime := sourcebridge.NewCSPRuntimeManager(repo.Source, httpClient, cfg.DataDir)
+	if err := cspRuntime.Start(context.Background()); err != nil {
+		slog.Warn("CSP runtime PoC unavailable", "log_target", "provider", "error", err)
+	}
 
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()
@@ -200,6 +204,7 @@ func main() {
 		SysMetrics:     sysCollector,
 		ImageCache:     imageCache,
 		JSRuntime:      jsRuntime,
+		CSPRuntime:     cspRuntime,
 	}
 	sysCollector.Start(context.Background())
 	imageCache.StartJanitor(context.Background())

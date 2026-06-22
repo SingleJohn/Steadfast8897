@@ -29,6 +29,24 @@ func testSourceRuntimeJS(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func testSourceRuntimeCSP(c *gin.Context, state *AppState) {
+	var req sourcebridge.CSPRuntimeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if state == nil || state.CSPRuntime == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "CSP runtime 未初始化"})
+		return
+	}
+	resp, err := state.CSPRuntime.Run(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 func listSourceRuntimeArtifacts(c *gin.Context, state *AppState) {
 	if state == nil || state.Repo == nil || state.Repo.Source == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "source repository 未初始化"})
