@@ -145,7 +145,7 @@ func (p *JSProvider) ResolvePlay(ctx context.Context, play PlaySourceSnapshot) (
 		}
 		return &PlayResult{URL: play.RawURL, Headers: headers}, nil
 	case "resolver":
-		return nil, fmt.Errorf("parse=1 线路需 T19 解析器: %s", play.RawURL)
+		return nil, fmt.Errorf("parse=1 线路需解析器")
 	default:
 		return nil, fmt.Errorf("需 runtime，暂不支持: %s", play.ParseMode)
 	}

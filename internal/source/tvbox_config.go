@@ -18,7 +18,7 @@ const tvboxConfigMaxBytes = 8 << 20
 type TVBoxConfig struct {
 	Spider    string         `json:"spider"`
 	Sites     []TVBoxSite    `json:"sites"`
-	Parses    []any          `json:"parses"`
+	Parses    []TVBoxParse   `json:"parses"`
 	Lives     []any          `json:"lives"`
 	Rules     []any          `json:"rules"`
 	Flags     []any          `json:"flags"`
@@ -38,6 +38,43 @@ type TVBoxSite struct {
 	PlayerType  *int32         `json:"playerType"`
 	Timeout     *int32         `json:"timeout"`
 	Raw         map[string]any `json:"-"`
+}
+
+type TVBoxParse struct {
+	Name string         `json:"name"`
+	Type *int32         `json:"-"`
+	URL  string         `json:"url"`
+	Raw  map[string]any `json:"-"`
+}
+
+func (p *TVBoxParse) UnmarshalJSON(data []byte) error {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if rawURL, ok := value.(string); ok {
+		rawURL = strings.TrimSpace(rawURL)
+		*p = TVBoxParse{Name: rawURL, URL: rawURL, Raw: map[string]any{"url": rawURL}}
+		return nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		*p = TVBoxParse{Raw: map[string]any{}}
+		return nil
+	}
+	type alias struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*p = TVBoxParse{Name: out.Name, URL: out.URL, Raw: raw}
+	if value, ok := raw["type"]; ok {
+		p.Type = normalizeTVBoxInt32(value)
+	}
+	return nil
 }
 
 func (s *TVBoxSite) UnmarshalJSON(data []byte) error {

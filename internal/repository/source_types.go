@@ -71,6 +71,25 @@ type SourceRuntimeArtifact struct {
 	UpdatedAt     time.Time
 }
 
+type SourceParser struct {
+	ID          int64
+	ConfigID    *int64
+	SourceType  string
+	Name        string
+	ParserType  int32
+	URL         string
+	BaseURL     *string
+	TimeoutMS   int32
+	Enabled     bool
+	TrustStatus string
+	Status      string
+	LastCheckAt *time.Time
+	LastError   *string
+	Raw         json.RawMessage
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type SourceItem struct {
 	ID             int64
 	PublicUUID     string
@@ -244,6 +263,21 @@ type SourceRuntimeArtifactUpsert struct {
 	Raw          json.RawMessage
 }
 
+type SourceParserUpsert struct {
+	ConfigID    *int64
+	SourceType  string
+	Name        string
+	ParserType  int32
+	URL         string
+	BaseURL     *string
+	TimeoutMS   int32
+	Enabled     bool
+	TrustStatus string
+	Status      string
+	LastError   *string
+	Raw         json.RawMessage
+}
+
 type SourceItemUpsert struct {
 	PublicUUID     string
 	ProviderID     int64
@@ -326,6 +360,13 @@ type SourceProviderListOptions struct {
 	Offset     int64
 	ConfigID   *int64
 	OnlyUsable bool
+}
+
+type SourceParserListOptions struct {
+	Limit       int64
+	Offset      int64
+	ConfigID    *int64
+	OnlyEnabled bool
 }
 
 type SourceDimensionValue struct {

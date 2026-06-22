@@ -22,6 +22,7 @@ type ImportTVBoxInput struct {
 type ImportTVBoxResult struct {
 	Config    *repository.SourceConfigImport `json:"config"`
 	Providers []repository.SourceProvider    `json:"providers"`
+	Parsers   []repository.SourceParser      `json:"parsers"`
 	Accepted  int                            `json:"accepted"`
 	Skipped   int                            `json:"skipped"`
 }
@@ -83,7 +84,16 @@ func (i *TVBoxImporter) Import(ctx context.Context, in ImportTVBoxInput) (*Impor
 			skipped++
 		}
 	}
-	return &ImportTVBoxResult{Config: config, Providers: providers, Accepted: accepted, Skipped: skipped}, nil
+	parserDefs := ParserDefinitionsFromTVBox(loaded.Config, loaded.BaseURL)
+	parsers := make([]repository.SourceParser, 0, len(parserDefs))
+	for _, def := range parserDefs {
+		parser, err := i.repo.UpsertParser(ctx, def.toUpsert(config.ID))
+		if err != nil {
+			return nil, err
+		}
+		parsers = append(parsers, *parser)
+	}
+	return &ImportTVBoxResult{Config: config, Providers: providers, Parsers: parsers, Accepted: accepted, Skipped: skipped}, nil
 }
 
 type ProviderDefinition struct {
@@ -105,6 +115,18 @@ type ProviderDefinition struct {
 	LastError    *string
 	RawSite      map[string]any
 	Usable       bool
+}
+
+type ParserDefinition struct {
+	Name        string
+	ParserType  int32
+	URL         string
+	BaseURL     *string
+	TimeoutMS   int32
+	TrustStatus string
+	Status      string
+	LastError   *string
+	Raw         map[string]any
 }
 
 func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
@@ -158,6 +180,39 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 	return out
 }
 
+func ParserDefinitionsFromTVBox(cfg TVBoxConfig, baseURL *string) []ParserDefinition {
+	out := make([]ParserDefinition, 0, len(cfg.Parses))
+	for _, parser := range cfg.Parses {
+		rawURL := strings.TrimSpace(parser.URL)
+		if rawURL == "" {
+			continue
+		}
+		parserType := int32(0)
+		if parser.Type != nil {
+			parserType = *parser.Type
+		}
+		name := strings.TrimSpace(parser.Name)
+		if name == "" {
+			name = rawURL
+		}
+		def := ParserDefinition{
+			Name:        name,
+			ParserType:  parserType,
+			URL:         rawURL,
+			BaseURL:     baseURL,
+			TimeoutMS:   8000,
+			TrustStatus: "unverified",
+			Status:      "active",
+			Raw:         parser.Raw,
+		}
+		if parserType == 3 {
+			def.LastError = ptrString("TVBox type=3 嗅探解析器暂未接入，已导入但默认禁用")
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 func (d ProviderDefinition) toUpsert(configID int64) repository.SourceProviderUpsert {
 	return repository.SourceProviderUpsert{
 		ConfigID:     &configID,
@@ -178,6 +233,23 @@ func (d ProviderDefinition) toUpsert(configID int64) repository.SourceProviderUp
 		HealthStatus: d.HealthStatus,
 		LastError:    d.LastError,
 		RawSite:      jsonBytes(d.RawSite, "{}"),
+	}
+}
+
+func (d ParserDefinition) toUpsert(configID int64) repository.SourceParserUpsert {
+	return repository.SourceParserUpsert{
+		ConfigID:    &configID,
+		SourceType:  "tvbox",
+		Name:        d.Name,
+		ParserType:  d.ParserType,
+		URL:         d.URL,
+		BaseURL:     d.BaseURL,
+		TimeoutMS:   d.TimeoutMS,
+		Enabled:     false,
+		TrustStatus: d.TrustStatus,
+		Status:      d.Status,
+		LastError:   d.LastError,
+		Raw:         jsonBytes(d.Raw, "{}"),
 	}
 }
 

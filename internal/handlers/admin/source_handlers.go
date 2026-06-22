@@ -97,6 +97,45 @@ func listSourceProviders(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"items": rows})
 }
 
+func listSourceParsers(c *gin.Context, state *AppState) {
+	var configID *int64
+	if raw := strings.TrimSpace(c.Query("config_id")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "invalid config_id"})
+			return
+		}
+		configID = &id
+	}
+	rows, err := state.Repo.Source.ListParsers(c.Request.Context(), repository.SourceParserListOptions{
+		Limit:    int64(queryInt(c, "limit", 100)),
+		Offset:   int64(queryInt(c, "offset", 0)),
+		ConfigID: configID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows})
+}
+
+func setSourceParserEnabled(c *gin.Context, state *AppState, enabled bool) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	item, err := state.Repo.Source.SetParserEnabled(c.Request.Context(), id, enabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if item == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "source parser not found"})
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
 func setSourceProviderEnabled(c *gin.Context, state *AppState, enabled bool) {
 	id, ok := pathInt64(c, "id")
 	if !ok {

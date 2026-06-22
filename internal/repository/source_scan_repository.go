@@ -33,6 +33,16 @@ func scanSourceProvider(row pgx.Row) (*SourceProvider, error) {
 	return &out, nil
 }
 
+func scanSourceParser(row pgx.Row) (*SourceParser, error) {
+	var out SourceParser
+	if err := row.Scan(&out.ID, &out.ConfigID, &out.SourceType, &out.Name, &out.ParserType,
+		&out.URL, &out.BaseURL, &out.TimeoutMS, &out.Enabled, &out.TrustStatus, &out.Status,
+		&out.LastCheckAt, &out.LastError, &out.Raw, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		return nilIfNoRows[SourceParser](err)
+	}
+	return &out, nil
+}
+
 func scanSourceItem(row pgx.Row) (*SourceItem, error) {
 	var out SourceItem
 	if err := row.Scan(&out.ID, &out.PublicUUID, &out.ProviderID, &out.SourceItemID,
