@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -74,6 +75,16 @@ func handleSourcePlaybackInfo(c *gin.Context, state *AppState, itemID, selectedM
 }
 
 func sourcePlaybackSources(ctx context.Context, state *AppState, resolved *source.ResolvedEntity) ([]repository.SourcePlaySource, error) {
+	if resolved.Kind == source.EntityKindSourceItem || resolved.Kind == source.EntityKindSourceEpisode {
+		if _, err := source.EnsureItemDetailLoaded(ctx, state.Repo.Source, state.HTTPClient, state.JSRuntime, resolved.SourceItemID); err != nil {
+			slog.Warn("[Source] ensure detail failed",
+				"log_target", "source",
+				"action", "ensure_detail",
+				"source_item_id", resolved.SourceItemID,
+				"error_type", source.ErrorType(err),
+				"error", err)
+		}
+	}
 	all, err := state.Repo.Source.ListPlaySourcesForItem(ctx, resolved.SourceItemID)
 	if err != nil || resolved.Kind != source.EntityKindSourceEpisode {
 		return all, err

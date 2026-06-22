@@ -273,6 +273,9 @@ func firstRuntimeVOD(raw json.RawMessage) (cmsVOD, error) {
 }
 
 func splitJSPlaySources(playFrom, playURL string) []PlaySourceSnapshot {
+	if strings.TrimSpace(playFrom) == "" && strings.TrimSpace(playURL) != "" {
+		playFrom = "默认线路"
+	}
 	out := splitCMSPlaySources(playFrom, playURL)
 	for i := range out {
 		out[i].ParseMode = parseModeForJSURL(out[i].RawURL)

@@ -137,8 +137,10 @@ func sourceItemSearchWhere(opts SourceItemSearchOptions, firstArg int) (string, 
 			 WHERE sp.id = si.provider_id
 			   AND sp.enabled = TRUE
 			   AND sp.searchable = TRUE
-			   AND sp.provider_kind = 'cms_vod'
-			   AND sp.runtime_kind = 'native_cms'
+			   AND (
+			     (sp.provider_kind = 'cms_vod' AND sp.runtime_kind = 'native_cms')
+			     OR (sp.provider_kind IN ('drpy_js', 'tvbox_site') AND sp.runtime_kind = 'js_node_drpy')
+			   )
 			   AND (sp.config_id IS NULL OR (sci.enabled = TRUE AND sci.import_status = 'active'))
 		)`,
 	}

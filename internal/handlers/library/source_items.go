@@ -1,14 +1,15 @@
 package library
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
-	"fyms/internal/handlers/shared"
 	embysupport "fyms/internal/handlers/mediasupport"
+	"fyms/internal/handlers/shared"
 	"fyms/internal/repository"
 	"fyms/internal/source"
 )
@@ -75,6 +76,7 @@ func handleSourceItems(c *gin.Context, state *AppState, parentID string, userID 
 			c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
 			return true
 		}
+		ensureSourceItemDetail(c, state, item.ID)
 		episodes, err := state.Repo.Source.ListEpisodesForSeries(ctx, item.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -129,6 +131,9 @@ func handleSourceItemDetail(c *gin.Context, state *AppState, itemID string, user
 			c.JSON(http.StatusNotFound, gin.H{"message": "Item not found"})
 			return true
 		}
+		if loaded := ensureSourceItemDetail(c, state, item.ID); loaded != nil && loaded.Item != nil {
+			item = loaded.Item
+		}
 		ud, _ := state.Repo.Source.GetUserItemData(ctx, userID, item.ID)
 		c.JSON(http.StatusOK, embysupport.BaseItemToEmbyMap(sourceItemDTO(state, *item, ud)))
 		return true
@@ -148,6 +153,20 @@ func handleSourceItemDetail(c *gin.Context, state *AppState, itemID string, user
 	default:
 		return false
 	}
+}
+
+func ensureSourceItemDetail(c *gin.Context, state *AppState, sourceItemID int64) *source.EnsureDetailResult {
+	result, err := source.EnsureItemDetailLoaded(c.Request.Context(), state.Repo.Source, state.HTTPClient, state.JSRuntime, sourceItemID)
+	if err != nil {
+		slog.Warn("[Source] ensure detail failed",
+			"log_target", "source",
+			"action", "ensure_detail",
+			"source_item_id", sourceItemID,
+			"error_type", source.ErrorType(err),
+			"error", err)
+		return result
+	}
+	return result
 }
 
 func sourcePaging(c *gin.Context) (int64, int64) {

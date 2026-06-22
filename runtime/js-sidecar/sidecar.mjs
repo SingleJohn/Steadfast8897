@@ -276,6 +276,7 @@ function fallbackPlay(args) {
 
 function normalizeDetailPayload(id, data, detailURL) {
   const item = data.data || data.list?.[0] || data || {};
+  const play = normalizePlayFields(item);
   return { list: [{
     vod_id: id,
     vod_name: item.title || item.name || item.vod_name || '',
@@ -285,11 +286,42 @@ function normalizeDetailPayload(id, data, detailURL) {
     vod_director: joinMaybe(item.director || item.vod_director),
     vod_actor: joinMaybe(item.actor || item.vod_actor),
     vod_content: item.description || item.vod_content || '',
-    vod_play_from: item.vod_play_from || '',
-    vod_play_url: item.vod_play_url || '',
+    vod_play_from: play.from,
+    vod_play_url: play.url,
     raw: item,
     detail_url: detailURL,
   }] };
+}
+
+function normalizePlayFields(item) {
+  const directFrom = item.vod_play_from || item.play_from || item.from || item.flag || '';
+  const directURL = item.vod_play_url || item.play_url || item.url || item.playUrl || '';
+  if (directURL) return { from: String(directFrom || '默认线路'), url: String(directURL) };
+  const rows = item.play || item.plays || item.playList || item.playlist || item.urls || item.videos || item.episodes;
+  if (!rows) return { from: '', url: '' };
+  if (Array.isArray(rows)) {
+    const episodes = rows.map((row, idx) => {
+      if (typeof row === 'string') {
+        return row ? `第${idx + 1}集$${row}` : '';
+      }
+      const title = row.title || row.name || row.n || `第${idx + 1}集`;
+      const rawURL = row.url || row.play_url || row.playUrl || row.u || row.id || '';
+      return rawURL ? `${title}$${rawURL}` : '';
+    }).filter(Boolean);
+    return { from: String(directFrom || '默认线路'), url: episodes.join('#') };
+  }
+  if (typeof rows === 'object') {
+    const from = [];
+    const urls = [];
+    for (const [lineName, value] of Object.entries(rows)) {
+      const normalized = normalizePlayFields({ play: Array.isArray(value) ? value : [value] });
+      if (!normalized.url) continue;
+      from.push(lineName);
+      urls.push(normalized.url);
+    }
+    return { from: from.join('$$$'), url: urls.join('$$$') };
+  }
+  return { from: String(directFrom || '默认线路'), url: String(rows || '') };
 }
 
 function mapJSONList(root, ruleExpr) {

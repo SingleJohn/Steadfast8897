@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,6 +75,7 @@ func handleSourceCompatItems(c *gin.Context, state *AppState, parentID string, r
 			c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
 			return true
 		}
+		ensureCompatSourceItemDetail(c, state, item.ID)
 		episodes, err := state.Repo.Source.ListEpisodesForSeries(ctx, item.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -92,6 +94,20 @@ func handleSourceCompatItems(c *gin.Context, state *AppState, parentID string, r
 	default:
 		return false
 	}
+}
+
+func ensureCompatSourceItemDetail(c *gin.Context, state *AppState, sourceItemID int64) *source.EnsureDetailResult {
+	result, err := source.EnsureItemDetailLoaded(c.Request.Context(), state.Repo.Source, state.HTTPClient, state.JSRuntime, sourceItemID)
+	if err != nil {
+		slog.Warn("[Source] ensure detail failed",
+			"log_target", "source",
+			"action", "ensure_detail",
+			"source_item_id", sourceItemID,
+			"error_type", source.ErrorType(err),
+			"error", err)
+		return result
+	}
+	return result
 }
 
 func compatSourceItemDTO(state *AppState, item repository.SourceItem, data *repository.SourceUserItemData) gin.H {
