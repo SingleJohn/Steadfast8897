@@ -112,18 +112,19 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
 	}
-	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.dex2jar) == "" || strings.TrimSpace(m.sidecar) == "" {
-		if err := m.Start(runCtx); err != nil {
-			resp := m.errorResponse(start, req, err, "runtime_unavailable")
-			m.recordInvocation(context.WithoutCancel(ctx), req, resp)
-			return resp, nil
-		}
-	}
 	artifact, err := m.artifacts.Fetch(runCtx, req)
 	if err != nil {
 		resp := m.errorResponse(start, req, err, ErrorType(err))
 		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
+	}
+	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.dex2jar) == "" || strings.TrimSpace(m.sidecar) == "" {
+		if err := m.Start(runCtx); err != nil {
+			resp := m.errorResponse(start, req, err, "runtime_unavailable")
+			resp.Artifact = artifact
+			m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+			return resp, nil
+		}
 	}
 	converted, dexLogs := m.convertDexJar(runCtx, artifact)
 	logs := append([]string{}, dexLogs...)
