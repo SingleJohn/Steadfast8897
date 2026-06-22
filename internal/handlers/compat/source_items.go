@@ -97,7 +97,7 @@ func handleSourceCompatItems(c *gin.Context, state *AppState, parentID string, r
 }
 
 func ensureCompatSourceItemDetail(c *gin.Context, state *AppState, sourceItemID int64) *source.EnsureDetailResult {
-	result, err := source.EnsureItemDetailLoaded(c.Request.Context(), state.Repo.Source, state.HTTPClient, state.JSRuntime, sourceItemID)
+	result, err := source.EnsureItemDetailLoaded(c.Request.Context(), state.Repo.Source, state.HTTPClient, state.JSRuntime, state.CSPRuntime, sourceItemID)
 	if err != nil {
 		slog.Warn("[Source] ensure detail failed",
 			"log_target", "source",

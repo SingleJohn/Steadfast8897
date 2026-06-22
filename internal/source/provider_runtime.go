@@ -19,6 +19,7 @@ type ProviderRuntimeManager struct {
 	repo     *repository.SourceRepository
 	client   *http.Client
 	js       *JSRuntimeManager
+	csp      *CSPRuntimeManager
 	mu       sync.Mutex
 	limiters map[int64]*rate.Limiter
 	logger   *slog.Logger
@@ -38,6 +39,11 @@ func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.C
 
 func (m *ProviderRuntimeManager) WithJSRuntime(runtime *JSRuntimeManager) *ProviderRuntimeManager {
 	m.js = runtime
+	return m
+}
+
+func (m *ProviderRuntimeManager) WithCSPRuntime(runtime *CSPRuntimeManager) *ProviderRuntimeManager {
+	m.csp = runtime
 	return m
 }
 
@@ -255,6 +261,10 @@ func (m *ProviderRuntimeManager) provider(ctx context.Context, providerID int64)
 		provider, err := m.jsProvider(ctx, row)
 		return provider, row, err
 	}
+	if row.ProviderKind == "tvbox_site" && row.RuntimeKind == CSPRuntimeKindJVM {
+		provider, err := m.cspProvider(ctx, row)
+		return provider, row, err
+	}
 	return nil, nil, fmt.Errorf("provider 需要后续 runtime: %s/%s", row.ProviderKind, row.RuntimeKind)
 }
 
@@ -335,6 +345,54 @@ func (m *ProviderRuntimeManager) jsRuleAndBaseURL(ctx context.Context, row *repo
 		rule = strings.TrimSpace(row.API)
 	}
 	return rule, baseURL
+}
+
+func (m *ProviderRuntimeManager) cspProvider(ctx context.Context, row *repository.SourceProvider) (*CSPProvider, error) {
+	if row == nil {
+		return nil, fmt.Errorf("provider 不存在")
+	}
+	if m.csp == nil {
+		return nil, fmt.Errorf("CSP runtime 未初始化")
+	}
+	spider, baseURL := m.cspSpiderAndBaseURL(ctx, row)
+	return NewCSPProvider(
+		row.ID,
+		row.SourceKey,
+		row.Name,
+		row.API,
+		spider,
+		baseURL,
+		row.Ext,
+		m.csp,
+		time.Duration(row.TimeoutMS)*time.Millisecond,
+	)
+}
+
+func (m *ProviderRuntimeManager) cspSpiderAndBaseURL(ctx context.Context, row *repository.SourceProvider) (string, string) {
+	baseURL := ""
+	spider := ""
+	if row == nil {
+		return spider, baseURL
+	}
+	if row.ConfigID != nil {
+		if config, err := m.repo.GetConfigImportByID(ctx, *row.ConfigID); err == nil && config != nil {
+			if config.BaseURL != nil {
+				baseURL = strings.TrimSpace(*config.BaseURL)
+			}
+			if config.SpiderRef != nil {
+				spider = strings.TrimSpace(*config.SpiderRef)
+			}
+		}
+	}
+	if spider == "" && len(row.RawSite) > 0 {
+		var raw map[string]any
+		if json.Unmarshal(row.RawSite, &raw) == nil {
+			if value, ok := raw["spider"].(string); ok {
+				spider = strings.TrimSpace(value)
+			}
+		}
+	}
+	return spider, baseURL
 }
 
 func (m *ProviderRuntimeManager) wait(providerID int64) *rate.Limiter {

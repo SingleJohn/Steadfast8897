@@ -221,6 +221,8 @@ func isSearchableRuntimeProvider(provider repository.SourceProvider) bool {
 		return true
 	case provider.ProviderKind == "tvbox_site" && provider.RuntimeKind == JSRuntimeKindNodeDRPY:
 		return true
+	case provider.ProviderKind == "tvbox_site" && provider.RuntimeKind == CSPRuntimeKindJVM:
+		return true
 	default:
 		return false
 	}

@@ -174,6 +174,15 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			def.HealthStatus = "unknown"
 			def.LastError = nil
 			def.Usable = true
+		} else if isCSPDexSite(site) {
+			def.ProviderKind = "tvbox_site"
+			def.RuntimeKind = CSPRuntimeKindJVM
+			def.Enabled = true
+			def.Visible = true
+			def.Searchable = tvboxBool(site.Searchable, true)
+			def.HealthStatus = "unknown"
+			def.LastError = nil
+			def.Usable = true
 		}
 		out = append(out, def)
 	}
@@ -277,6 +286,10 @@ func isDRPYJSSite(site TVBoxSite) bool {
 		return true
 	}
 	return false
+}
+
+func isCSPDexSite(site TVBoxSite) bool {
+	return strings.HasPrefix(strings.TrimSpace(site.API), "csp_")
 }
 
 func tvboxCapabilities(site TVBoxSite) map[string]any {

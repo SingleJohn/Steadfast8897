@@ -23,7 +23,7 @@ type EnsureDetailResult struct {
 	Loaded      bool
 }
 
-func EnsureItemDetailLoaded(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, itemID int64) (*EnsureDetailResult, error) {
+func EnsureItemDetailLoaded(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, itemID int64) (*EnsureDetailResult, error) {
 	start := time.Now()
 	logger := SourceLogger("provider")
 	result := &EnsureDetailResult{}
@@ -53,7 +53,7 @@ func EnsureItemDetailLoaded(ctx context.Context, repo *repository.SourceReposito
 	value, err, _ := sourceDetailLoadGroup.Do(key, func() (any, error) {
 		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureDetailTimeout)
 		defer cancel()
-		manager := NewProviderRuntimeManager(repo, client).WithJSRuntime(jsRuntime)
+		manager := NewProviderRuntimeManager(repo, client).WithJSRuntime(jsRuntime).WithCSPRuntime(cspRuntime)
 		_, loadedItem, playSources, err := manager.Detail(loadCtx, item.ProviderID, item.SourceItemID)
 		if err != nil {
 			return &EnsureDetailResult{Item: item}, err

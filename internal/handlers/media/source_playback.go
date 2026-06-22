@@ -76,7 +76,7 @@ func handleSourcePlaybackInfo(c *gin.Context, state *AppState, itemID, selectedM
 
 func sourcePlaybackSources(ctx context.Context, state *AppState, resolved *source.ResolvedEntity) ([]repository.SourcePlaySource, error) {
 	if resolved.Kind == source.EntityKindSourceItem || resolved.Kind == source.EntityKindSourceEpisode {
-		if _, err := source.EnsureItemDetailLoaded(ctx, state.Repo.Source, state.HTTPClient, state.JSRuntime, resolved.SourceItemID); err != nil {
+		if _, err := source.EnsureItemDetailLoaded(ctx, state.Repo.Source, state.HTTPClient, state.JSRuntime, state.CSPRuntime, resolved.SourceItemID); err != nil {
 			slog.Warn("[Source] ensure detail failed",
 				"log_target", "source",
 				"action", "ensure_detail",
