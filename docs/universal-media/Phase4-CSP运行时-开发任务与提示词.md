@@ -146,6 +146,59 @@ POST /SourceRuntime/TestCSP
 - 形态仍确认走 JVM sidecar：dex/jar 属不可信代码，JVM 内沙箱不可靠，必须继续按独立进程 + 工作目录隔离 + 超时 kill + 容器/低权限用户 + Go 网络回调的模型推进。
 - JRE/JDK 镜像影响：正式 T22 预计至少需要精简 JRE；若仍保留运行时自动编译 classes 或 dex2jar 依赖 Java 工具链，则需额外评估 JDK/dex-tools 层。更推荐 T22 把 sidecar classes 作为构建产物随镜像打包，运行期只需 JRE + dex2jar。
 
+### T21 自包含重做实际落点（2026-06-22）
+
+**commit 范围**：`2d99b1d`（重做 CSP PoC 为自包含 sidecar）。
+
+**重做原因**
+- 上一版卡在外部 `d2j-dex2jar.bat/.sh` 与运行期 `javac`，spider 未真正加载执行，不能视为 T21 过闸门。
+- 运行时现编译 classes 不适合生产路径；T21 重做后将 sidecar 构建前移，运行期只依赖 JRE。
+
+**自包含落点**
+- `runtime/csp-sidecar` 改为 Gradle wrapper 工程，`build.ps1` 一键执行 `clean shadowJar`，产物为 `runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar`。
+- sidecar fat jar 内含：
+  - `fyms.csp.CSPProbe` JSON-lines RPC 入口；
+  - CatVod 宿主桩与 android 薄桩；
+  - dex2jar 库依赖 `de.femtopedia.dex2jar:dex-translator:2.4.13`；
+  - 常见纯 Java 依赖 `okhttp:4.12.0`、`jsoup:1.17.2`、`org.json:20240303`。
+- Go 侧改为 `java -jar <fat-jar>`，payload 传入 `artifactPath/workDir/className/method/args/ext`；不再查找或调用外部 `d2j-dex2jar`，不再运行期 `javac`。
+- Dockerfile 增加 Gradle 构建阶段生成 sidecar fat jar；运行镜像只安装 `openjdk-21-jre-headless`，不需要 JDK。
+
+**dex2jar 库化方案**
+- sidecar 内部从 spider jar 中抽取 `classes.dex` 到隔离工作目录；
+- 调用 `com.googlecode.d2j.dex.Dex2jar.from(dexFile).skipDebug(true).reUseReg(true).to(outputJar)` 生成标准 class jar；
+- 由同一个 JVM 进程 `URLClassLoader` 反射加载 `com.github.catvod.spider.SixV`。
+
+**薄桩清单（本轮真实补齐）**
+- `android.text.TextUtils`
+- `android.net.Uri`
+- `android.util.Base64`
+- `android.util.Log`
+- `android.app.Application`
+- `android.content.Context`
+- `android.content.SharedPreferences` / 内存实现
+- `android.view.ViewGroup.LayoutParams`
+- `com.github.catvod.crawler.Spider`
+- `com.github.catvod.net.OkHttp`
+
+**本地证据**
+- `runtime/csp-sidecar/build.ps1` 成功产出 fat jar。
+- `go build ./...` 通过。
+- 使用本地已校验 `fan.txt` artifact 与 `ext=https://www.xb6v.com/`，直接执行 `java -jar runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar`，已证实：
+  - `home`：成功返回 SixV 分类，如 `国剧/日韩剧/欧美剧/喜剧片/...`；
+  - `category`：成功返回真实列表，如 `她的直拳法则[全集]`、`樊笼[全集]` 等；
+  - `detail`：成功返回真实详情与 `vod_play_url`，含 magnet 播放项；
+  - `play`：对 magnet 播放 id 成功返回 `{parse:0,url:"magnet:..."}`；
+  - `search`：方法执行成功，关键词 `庆余年` 当前站点返回空 `list`，不是 runtime 缺失。
+
+**仍需人工 API 验证**
+- 本地未启动 FYMS 服务；需重启后通过 `POST /SourceRuntime/TestCSP` 验证 Go HTTP 入口、artifact 下载校验、审计落库与 sidecar RPC 全链路。
+- 若其它 CSP spider 直接使用自带 `okhttp3` 出站，T21 允许作为 PoC 证伪记录；T22 需要继续收紧网络桥，尽量通过宿主包装或容器网络策略保证外部出站只走 Go。
+
+**阶段结论**
+- T21 形态确认：JVM sidecar 可行，且应采用“构建期 fat jar + 运行期 JRE + sidecar 内 dex2jar 库 API”的自包含形态。
+- 生产安全仍按 Phase4 补充执行：不信任 dex/jar，不依赖 JVM 内沙箱；靠独立进程、工作目录隔离、容器低权限/资源限制、单次超时 kill、artifact hash 信任与 Go 侧网络校验/限流。
+
 ---
 
 ## T22 — JVM sidecar 运行时 + 薄桩 + 宿主 + 生命周期 + artifact【重里程碑】
