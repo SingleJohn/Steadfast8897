@@ -33,6 +33,7 @@ const {
   providerCategories,
   providerAction,
   parserAction,
+  runtimeAction,
   runtimeAuditLoading,
   federatedKeyword,
   federatedLimit,
@@ -117,7 +118,9 @@ onMounted(() => {
           :invocations="runtimeInvocations"
           :artifacts="runtimeArtifacts"
           :loading="runtimeAuditLoading"
+          :action="runtimeAction"
           @refresh="source.refreshRuntimeData"
+          @trust="source.trustRuntimeArtifact"
         />
 
         <SourceViewsPanel

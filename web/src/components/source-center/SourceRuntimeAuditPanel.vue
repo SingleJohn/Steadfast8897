@@ -8,16 +8,19 @@ const props = defineProps<{
   invocations: SourceRuntimeInvocation[]
   artifacts: SourceRuntimeArtifact[]
   loading: boolean
+  action: string
 }>()
 
 const emit = defineEmits<{
   refresh: []
+  trust: [id: number]
 }>()
 
 const errorCount = computed(() => props.invocations.filter((item) => item.Status === 'error').length)
 
 const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
   { title: '时间', key: 'InvokedAt', width: 170, render: (row) => formatTime(row.InvokedAt) },
+  { title: '运行时', key: 'RuntimeKind', width: 110, render: (row) => runtimeLabel(row.RuntimeKind) },
   { title: 'Provider', key: 'ProviderID', width: 90, render: (row) => row.ProviderID || '-' },
   { title: '方法', key: 'Method', width: 90 },
   {
@@ -35,7 +38,7 @@ const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
 
 const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
   { title: '名称', key: 'Name', minWidth: 150 },
-  { title: '类型', key: 'ArtifactKind', width: 120 },
+  { title: '类型', key: 'ArtifactKind', width: 130, render: (row) => artifactLabel(row.ArtifactKind) },
   {
     title: '信任',
     key: 'TrustStatus',
@@ -46,6 +49,20 @@ const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
   },
   { title: '大小', key: 'ByteSize', width: 100, render: (row) => formatBytes(row.ByteSize) },
   { title: 'SHA256', key: 'SHA256', minWidth: 180, ellipsis: { tooltip: true } },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 110,
+    render(row) {
+      if (row.TrustStatus === 'trusted') return '-'
+      return h(NButton, {
+        size: 'small',
+        quaternary: true,
+        loading: props.action === `trust-artifact:${row.ID}`,
+        onClick: () => emit('trust', row.ID),
+      }, { default: () => '确认信任' })
+    },
+  },
 ]
 
 function formatTime(value?: string) {
@@ -59,6 +76,19 @@ function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
+
+function runtimeLabel(value: string) {
+  if (value === 'csp_dex') return 'CSP JAR'
+  if (value === 'js_node_drpy') return 'DRPY JS'
+  return value || '-'
+}
+
+function artifactLabel(value: string) {
+  if (value === 'csp_dex_jar') return 'CSP JAR'
+  if (value === 'drpy_rule') return 'DRPY 规则'
+  if (value === 'drpy_engine') return 'DRPY 引擎'
+  return value || '-'
+}
 </script>
 
 <template>
@@ -66,7 +96,7 @@ function formatBytes(value: number) {
     <div class="panel-head">
       <div>
         <h2 class="panel-title">运行时审计</h2>
-        <p class="panel-subtitle">最近 {{ invocations.length }} 次调用，{{ errorCount }} 次失败；敏感 URL 仅保留 hash。</p>
+        <p class="panel-subtitle">最近 {{ invocations.length }} 次调用，{{ errorCount }} 次失败；CSP JAR 与 JS 调用均只保留敏感 URL hash。</p>
       </div>
       <NButton quaternary size="small" :loading="loading" @click="emit('refresh')">刷新</NButton>
     </div>

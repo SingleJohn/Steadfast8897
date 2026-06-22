@@ -21,6 +21,7 @@ import {
   setSourceConfigEnabled,
   setSourceParserEnabled,
   setSourceProviderEnabled,
+  trustSourceRuntimeArtifact,
   updateSourceView,
   updateSourceViewDisplayOrder,
   type DimensionValue,
@@ -55,6 +56,7 @@ export function useSourceCenter(showToast: ToastFn) {
   const providerCategories = ref<Array<{ id: string; name: string }>>([])
   const providerAction = shallowRef('')
   const parserAction = shallowRef('')
+  const runtimeAction = shallowRef('')
   const runtimeAuditLoading = shallowRef(false)
   const federatedKeyword = shallowRef('')
   const federatedLimit = shallowRef(50)
@@ -179,6 +181,19 @@ export function useSourceCenter(showToast: ToastFn) {
       showToast(e?.message || '解析器启停失败', 'error')
     } finally {
       parserAction.value = ''
+    }
+  }
+
+  async function trustRuntimeArtifact(id: number) {
+    runtimeAction.value = `trust-artifact:${id}`
+    try {
+      await trustSourceRuntimeArtifact(id)
+      showToast('artifact 已确认信任', 'success')
+      await refreshRuntimeData()
+    } catch (e: any) {
+      showToast(e?.message || 'artifact 信任确认失败', 'error')
+    } finally {
+      runtimeAction.value = ''
     }
   }
 
@@ -373,6 +388,7 @@ export function useSourceCenter(showToast: ToastFn) {
     providerCategories,
     providerAction,
     parserAction,
+    runtimeAction,
     runtimeAuditLoading,
     federatedKeyword,
     federatedLimit,
@@ -397,6 +413,7 @@ export function useSourceCenter(showToast: ToastFn) {
     toggleConfig,
     toggleProvider,
     toggleParser,
+    trustRuntimeArtifact,
     runProviderHealth,
     runProviderSearch,
     loadProviderCategories,

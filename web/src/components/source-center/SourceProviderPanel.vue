@@ -32,7 +32,7 @@ const columns: DataTableColumns<SourceProvider> = [
     key: 'RuntimeKind',
     width: 150,
     render(row) {
-      return row.RuntimeKind === 'native_cms' ? 'JSON CMS' : row.RuntimeKind
+      return runtimeLabel(row.RuntimeKind)
     },
   },
   {
@@ -77,6 +77,13 @@ function hActions(row: SourceProvider) {
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
     ],
   })
+}
+
+function runtimeLabel(value: string) {
+  if (value === 'native_cms') return 'JSON CMS'
+  if (value === 'js_node_drpy') return 'DRPY JS'
+  if (value === 'csp_dex') return 'CSP JAR'
+  return value
 }
 </script>
 

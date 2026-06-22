@@ -208,6 +208,10 @@ export async function listSourceRuntimeArtifacts() {
   return res.items || []
 }
 
+export async function trustSourceRuntimeArtifact(id: number) {
+  return requestJson<SourceRuntimeArtifact>(`/SourceRuntime/Artifacts/${id}/Trust`, { method: 'POST' })
+}
+
 export async function setSourceProviderEnabled(id: number, enabled: boolean) {
   return requestJson<SourceProvider>(`/SourceProviders/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' })
 }
