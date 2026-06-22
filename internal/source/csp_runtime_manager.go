@@ -51,12 +51,16 @@ func NewCSPRuntimeManager(repo *repository.SourceRepository, client *http.Client
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = "data"
 	}
+	workDir := filepath.Join(dataDir, "source-runtime", "csp", "work")
+	if abs, err := filepath.Abs(workDir); err == nil {
+		workDir = abs
+	}
 	return &CSPRuntimeManager{
 		repo:      repo,
 		client:    client,
 		artifacts: NewCSPArtifactManager(repo, client, dataDir),
 		dataDir:   dataDir,
-		workDir:   filepath.Join(dataDir, "source-runtime", "csp", "work"),
+		workDir:   workDir,
 		sem:       make(chan struct{}, cspRuntimeMaxConcurrent),
 		limiters:  map[int64]*rate.Limiter{},
 		logger:    SourceLogger("provider"),
@@ -111,6 +115,13 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
 	}
+	artifact, err = m.ensureLocalArtifact(runCtx, req, artifact)
+	if err != nil {
+		resp := m.errorResponse(start, req, err, ErrorType(err))
+		resp.Artifact = artifact
+		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		return nil, err
+	}
 	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
 		if err := m.Start(runCtx); err != nil {
 			resp := m.errorResponse(start, req, err, "runtime_unavailable")
@@ -152,6 +163,14 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 }
 
 func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeRequest, artifact CSPRuntimeArtifact) (CSPSidecarResult, CSPDex2JarResult, []string, int, error) {
+	artifactPath, err := filepath.Abs(artifact.Path)
+	if err != nil {
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
+	}
+	workDir, err := filepath.Abs(m.workDir)
+	if err != nil {
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
+	}
 	payload := map[string]any{
 		"type":         "run",
 		"className":    cspClassName(req.API),
@@ -159,11 +178,11 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		"args":         req.Args,
 		"baseUrl":      req.ConfigBaseURL,
 		"extend":       req.Ext,
-		"artifactPath": artifact.Path,
-		"workDir":      m.workDir,
+		"artifactPath": artifactPath,
+		"workDir":      workDir,
 	}
 	cmd := exec.CommandContext(ctx, m.javaPath, "-jar", m.sidecar)
-	cmd.Dir = m.workDir
+	cmd.Dir = workDir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
@@ -242,6 +261,30 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		return CSPSidecarResult{}, dex2jar, logs, pid, fmt.Errorf("CSP runtime worker 无结果")
 	}
 	return *result, dex2jar, logs, pid, waitErr
+}
+
+func (m *CSPRuntimeManager) ensureLocalArtifact(ctx context.Context, req CSPRuntimeRequest, artifact CSPRuntimeArtifact) (CSPRuntimeArtifact, error) {
+	path, err := filepath.Abs(strings.TrimSpace(artifact.Path))
+	if err != nil {
+		return artifact, err
+	}
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		artifact.Path = path
+		return artifact, nil
+	}
+	refetched, err := m.artifacts.Fetch(ctx, req)
+	if err != nil {
+		return artifact, fmt.Errorf("artifact 本地文件缺失且重新下载失败: %w", err)
+	}
+	path, err = filepath.Abs(strings.TrimSpace(refetched.Path))
+	if err != nil {
+		return refetched, err
+	}
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		return refetched, fmt.Errorf("artifact 本地文件不存在: %s", path)
+	}
+	refetched.Path = path
+	return refetched, nil
 }
 
 func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *int64, id string, in jsHTTPBridgeReq) map[string]any {

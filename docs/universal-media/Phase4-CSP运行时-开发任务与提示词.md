@@ -200,6 +200,12 @@ POST /SourceRuntime/TestCSP
 - 本地未启动 FYMS 服务；需重启后通过 `POST /SourceRuntime/TestCSP` 验证 Go HTTP 入口、artifact 下载校验、审计落库与 sidecar RPC 全链路。
 - 若其它 CSP spider 使用 T21 尚未覆盖的 OkHttp API 或其它网络库，会返回缺类/缺方法；T22 继续扩展桥接子集或加容器网络策略。
 
+**路径修复（2026-06-22）**
+- Go 传给 JVM sidecar 的 `artifactPath` 与 `workDir` 已统一转为 `filepath.Abs` 后的绝对路径，避免 sidecar cwd 与 FYMS cwd 不一致导致 `NoSuchFileException`。
+- `CSPArtifactManager` 保存 artifact 时写入绝对 `local_path`；从旧 DB 记录读出相对路径时也会在返回 DTO 前绝对化。
+- 调用 sidecar 前会 `os.Stat` 校验 artifact 文件存在；若 DB/缓存记录命中但本地文件缺失，会重新下载并再次校验，不只信 `source_runtime_artifacts.local_path`。
+- 本地确认 `data/source-runtime/csp/artifacts/...-csp-fan.txt` 与 `data/source-runtime/csp/work` 均可解析为 Windows 绝对路径。
+
 **阶段结论**
 - T21 形态确认：JVM sidecar 可行，且应采用“构建期 fat jar + 运行期 JRE + sidecar 内 dex2jar 库 API”的自包含形态。
 - 生产安全仍按 Phase4 补充执行：不信任 dex/jar，不依赖 JVM 内沙箱；靠独立进程、工作目录隔离、容器低权限/资源限制、单次超时 kill、artifact hash 信任与 Go 侧网络校验/限流。

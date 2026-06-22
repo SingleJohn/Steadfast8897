@@ -37,10 +37,14 @@ func NewCSPArtifactManager(repo *repository.SourceRepository, client *http.Clien
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = "data"
 	}
+	artifactDir := filepath.Join(dataDir, "source-runtime", "csp", "artifacts")
+	if abs, err := filepath.Abs(artifactDir); err == nil {
+		artifactDir = abs
+	}
 	return &CSPArtifactManager{
 		repo:        repo,
 		client:      client,
-		artifactDir: filepath.Join(dataDir, "source-runtime", "csp", "artifacts"),
+		artifactDir: artifactDir,
 	}
 }
 
@@ -178,6 +182,9 @@ func (m *CSPArtifactManager) save(rawURL string, body []byte, shaText string) (s
 	if err := os.WriteFile(path, body, 0644); err != nil {
 		return "", err
 	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	return path, nil
 }
 
@@ -221,11 +228,15 @@ func verifyCSPArtifactHash(kind, expected, md5Text, shaText string) error {
 }
 
 func cspRuntimeArtifactFromRepo(in repository.SourceRuntimeArtifact) CSPRuntimeArtifact {
+	localPath := in.LocalPath
+	if abs, err := filepath.Abs(localPath); err == nil {
+		localPath = abs
+	}
 	return CSPRuntimeArtifact{
 		ID:           in.ID,
 		Kind:         in.ArtifactKind,
 		URL:          in.SourceURL,
-		Path:         in.LocalPath,
+		Path:         localPath,
 		Bytes:        in.ByteSize,
 		MD5:          in.MD5,
 		SHA256:       in.SHA256,
