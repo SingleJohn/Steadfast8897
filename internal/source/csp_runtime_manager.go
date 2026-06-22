@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/html/charset"
 	"golang.org/x/time/rate"
 
 	"fyms/internal/repository"
@@ -368,46 +367,21 @@ func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *in
 			headers[key] = values[0]
 		}
 	}
-	text, charsetName := decodeCSPHTTPText(raw, resp.Header.Get("Content-Type"))
-	return map[string]any{
+	out := map[string]any{
 		"type":       "http_response",
 		"id":         id,
 		"ok":         true,
 		"status":     resp.StatusCode,
 		"headers":    headers,
 		"bodyBase64": base64.StdEncoding.EncodeToString(raw),
-		"bodyText":   text,
-		"charset":    charsetName,
 		"bodyBytes":  len(raw),
 		"durationMs": time.Since(start).Milliseconds(),
 	}
-}
-
-func decodeCSPHTTPText(raw []byte, contentType string) (string, string) {
-	if len(raw) == 0 {
-		return "", "utf-8"
+	if text, charsetName, ok := decodeCSPHTTPText(raw, resp.Header.Get("Content-Type")); ok {
+		out["bodyText"] = text
+		out["charset"] = charsetName
 	}
-	charsetName := charsetFromContentType(contentType)
-	reader, err := charset.NewReaderLabel(charsetName, bytes.NewReader(raw))
-	if err != nil {
-		reader, err = charset.NewReader(bytes.NewReader(raw), contentType)
-	}
-	if err == nil {
-		if data, readErr := io.ReadAll(io.LimitReader(reader, int64(len(raw))*4+4096)); readErr == nil {
-			return string(data), cspDefaultString(charsetName, "utf-8")
-		}
-	}
-	return string(raw), "unknown"
-}
-
-func charsetFromContentType(contentType string) string {
-	for _, part := range strings.Split(contentType, ";") {
-		part = strings.TrimSpace(part)
-		if key, value, ok := strings.Cut(part, "="); ok && strings.EqualFold(strings.TrimSpace(key), "charset") {
-			return strings.Trim(strings.TrimSpace(value), `"'`)
-		}
-	}
-	return ""
+	return out
 }
 
 func (m *CSPRuntimeManager) wait(providerID int64) *rate.Limiter {

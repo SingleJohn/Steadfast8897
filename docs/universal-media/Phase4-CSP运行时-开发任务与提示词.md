@@ -305,12 +305,15 @@ POST /SourceRuntime/TestCSP
 - T21/T22 artifact 路径防御：`60c2b5f`（补强 CSP sidecar 绝对路径防御）。
 - T23 proxy 字节体处理：`808b837`（补强 CSP proxy 字节体处理）。
 - T24 artifact 信任 UI：已补强 `verified|trusted` 可信状态展示，仅 `unverified` 保留确认信任操作。
+- T21/T22 CSP 编码修复：Go HTTP bridge 在 JSON marshal 前完成文本响应转码，sidecar CatVod OkHttp 桩优先读取 `bodyText`。
 
 **T22 落点**
 - CSP runtime kind 正式定为 `csp_dex`，继续采用独立 JVM worker 形态；每次调用由 `exec.CommandContext` 拉起，单次超时由上下文 kill，崩溃/卡死不拖垮 FYMS Core。
 - 工作目录从全局 `data/source-runtime/csp/work` 下沉为按 providerKey/providerID 隔离的子目录；artifact/workDir 继续传绝对路径。
 - sidecar 启动前显式创建 provider 隔离工作目录，避免 `cmd.Dir` 指向未创建目录导致 Windows/相对路径类失败。
 - Go HTTP bridge 在 SSRF 校验与 per-provider limiter 后读取响应，并按 `Content-Type charset` / HTML meta 自动转 UTF-8 后传给 sidecar，修复 SixV/xb6v.com 等 GBK 站点乱码问题。
+- CSP HTTP bridge 增加文本响应判定与多级编码探测：`Content-Type charset`、HTML meta、BOM、GB18030/Big5 启发式、`DetermineEncoding`；二进制响应只保留 `bodyBase64`，避免把非 UTF-8 字节直接交给 Go `json.Marshal`。
+- sidecar 的 `com.github.catvod.net.OkHttp` 兼容桩改为优先使用 Go bridge 返回的 UTF-8 `bodyText`，防止 SixV 等 spider 经过旧 `bodyBase64` UTF-8 解码路径重新乱码。
 - artifact 信任门槛收紧：`trust_status=verified|trusted` 才允许加载；无 hash 的 `unverified` 默认拒绝，管理员可通过信任接口确认。
 - sidecar 补 `proxy` 方法入口和 unsupported API 清单；为 fan.txt/Bili proxy 类加载补齐轻量签名桩（Activity/AlertDialog/Intent/PackageManager/Handler/View/ImageView 等）与纯 Java Gson 依赖。WebView/OCR/深度 Android/App 签名仍按不支持类归一化，不引入 Android 模拟器。
 

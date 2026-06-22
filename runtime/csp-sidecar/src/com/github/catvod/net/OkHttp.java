@@ -47,6 +47,10 @@ public final class OkHttp {
             if (!Boolean.TRUE.equals(resp.get("ok"))) {
                 throw new RuntimeException(String.valueOf(resp.get("error")));
             }
+            Object text = resp.get("bodyText");
+            if (text != null) {
+                return String.valueOf(text);
+            }
             String encoded = String.valueOf(resp.get("bodyBase64"));
             return new String(java.util.Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
         }
