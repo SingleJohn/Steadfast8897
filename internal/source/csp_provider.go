@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -136,6 +137,9 @@ func (p *CSPProvider) Detail(ctx context.Context, sourceItemID string) (*Provide
 }
 
 func (p *CSPProvider) ResolvePlay(ctx context.Context, play PlaySourceSnapshot) (*PlayResult, error) {
+	if strings.EqualFold(strings.TrimSpace(play.ParseMode), "proxy") || isCSPProxyURL(play.RawURL) {
+		return p.resolveProxy(ctx, play)
+	}
 	flag := ""
 	if play.Flag != nil {
 		flag = strings.TrimSpace(*play.Flag)
@@ -152,7 +156,33 @@ func (p *CSPProvider) ResolvePlay(ctx context.Context, play PlaySourceSnapshot) 
 	if err != nil {
 		return nil, err
 	}
-	return parseCSPPlayResult(ctx, raw)
+	result, err := parseCSPPlayResult(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	if isCSPProxyURL(result.URL) {
+		proxyPlay := play
+		proxyPlay.RawURL = result.URL
+		proxyPlay.ParseMode = "proxy"
+		return p.resolveProxy(ctx, proxyPlay)
+	}
+	return result, nil
+}
+
+func (p *CSPProvider) resolveProxy(ctx context.Context, play PlaySourceSnapshot) (*PlayResult, error) {
+	args := map[string]any{
+		"url":  strings.TrimSpace(play.RawURL),
+		"id":   strings.TrimSpace(play.RawURL),
+		"flag": strings.TrimSpace(play.LineName),
+	}
+	for key, value := range cspProxyParams(play.RawURL) {
+		args[key] = value
+	}
+	raw, err := p.runData(ctx, CSPRuntimeMethodProxy, args)
+	if err != nil {
+		return nil, err
+	}
+	return parseCSPProxyResult(ctx, raw)
 }
 
 func (p *CSPProvider) runData(ctx context.Context, method string, args map[string]any) (json.RawMessage, error) {
@@ -286,6 +316,32 @@ func parseModeForCSPURL(rawURL string) string {
 	}
 }
 
+func isCSPProxyURL(rawURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(rawURL))
+	if strings.HasPrefix(lower, "proxy://") || strings.HasPrefix(lower, "fyms-csp-proxy://") {
+		return true
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		host := strings.ToLower(u.Hostname())
+		return (host == "127.0.0.1" || host == "localhost" || host == "::1") && strings.Contains(strings.ToLower(u.Path), "proxy")
+	}
+	return false
+}
+
+func cspProxyParams(rawURL string) map[string]string {
+	out := map[string]string{}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return out
+	}
+	for key, values := range u.Query() {
+		if len(values) > 0 {
+			out[key] = values[0]
+		}
+	}
+	return out
+}
+
 func parseCSPPlayResult(ctx context.Context, raw json.RawMessage) (*PlayResult, error) {
 	raw = normalizeRuntimeJSON(raw)
 	var payload struct {
@@ -315,4 +371,115 @@ func parseCSPPlayResult(ctx context.Context, raw json.RawMessage) (*PlayResult, 
 		return nil, err
 	}
 	return &PlayResult{URL: playURL, Headers: headers}, nil
+}
+
+func parseCSPProxyResult(ctx context.Context, raw json.RawMessage) (*PlayResult, error) {
+	raw = normalizeRuntimeJSON(raw)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("CSP proxy 返回为空")
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		text = strings.TrimSpace(text)
+		if isHTTPURL(text) {
+			if err := ValidateOutboundURL(ctx, text); err != nil {
+				return nil, err
+			}
+			return &PlayResult{URL: text}, nil
+		}
+		return &PlayResult{Body: []byte(text), ContentType: "application/octet-stream", StatusCode: 200}, nil
+	}
+	var obj struct {
+		URL         string            `json:"url"`
+		Header      map[string]string `json:"header"`
+		Headers     map[string]string `json:"headers"`
+		Content     string            `json:"content"`
+		Body        string            `json:"body"`
+		BodyBase64  string            `json:"bodyBase64"`
+		ContentType string            `json:"contentType"`
+		Type        string            `json:"type"`
+		Status      int               `json:"status"`
+		StatusCode  int               `json:"statusCode"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && (obj.URL != "" || obj.Content != "" || obj.Body != "" || obj.BodyBase64 != "") {
+		headers := obj.Headers
+		if len(headers) == 0 {
+			headers = obj.Header
+		}
+		if strings.TrimSpace(obj.URL) != "" {
+			if err := ValidateOutboundURL(ctx, obj.URL); err != nil {
+				return nil, err
+			}
+			return &PlayResult{URL: obj.URL, Headers: headers}, nil
+		}
+		status := obj.StatusCode
+		if status == 0 {
+			status = obj.Status
+		}
+		if status == 0 {
+			status = 200
+		}
+		contentType := strings.TrimSpace(obj.ContentType)
+		if contentType == "" {
+			contentType = strings.TrimSpace(obj.Type)
+		}
+		body := []byte(obj.Content)
+		if obj.Body != "" {
+			body = []byte(obj.Body)
+		}
+		if obj.BodyBase64 != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(obj.BodyBase64); err == nil {
+				body = decoded
+			}
+		}
+		return &PlayResult{Body: body, Headers: headers, ContentType: contentType, StatusCode: status}, nil
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return parseCSPProxyArray(ctx, arr)
+	}
+	return nil, fmt.Errorf("CSP proxy 返回格式无法识别")
+}
+
+func parseCSPProxyArray(ctx context.Context, arr []json.RawMessage) (*PlayResult, error) {
+	status := 200
+	if len(arr) > 0 {
+		var n int
+		if json.Unmarshal(arr[0], &n) == nil && n > 0 {
+			status = n
+		}
+	}
+	contentType := ""
+	if len(arr) > 1 {
+		_ = json.Unmarshal(arr[1], &contentType)
+	}
+	headers := map[string]string{}
+	if len(arr) > 2 {
+		_ = json.Unmarshal(arr[2], &headers)
+	}
+	body := []byte{}
+	if len(arr) > 3 {
+		var text string
+		if json.Unmarshal(arr[3], &text) == nil {
+			text = strings.TrimSpace(text)
+			if isHTTPURL(text) {
+				if err := ValidateOutboundURL(ctx, text); err != nil {
+					return nil, err
+				}
+				return &PlayResult{URL: text, Headers: headers}, nil
+			}
+			body = []byte(text)
+		} else {
+			var bytes []byte
+			if json.Unmarshal(arr[3], &bytes) == nil {
+				body = bytes
+			}
+		}
+	}
+	return &PlayResult{Body: body, Headers: headers, ContentType: contentType, StatusCode: status}, nil
+}
+
+func isHTTPURL(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }

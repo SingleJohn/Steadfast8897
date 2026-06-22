@@ -125,8 +125,25 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 }
 
 func proxySourceStream(c *gin.Context, result *source.PlayResult) (int, error) {
-	if result == nil || strings.TrimSpace(result.URL) == "" {
+	if result == nil {
 		return 0, fmt.Errorf("播放地址为空")
+	}
+	if len(result.Body) > 0 || strings.TrimSpace(result.URL) == "" {
+		status := result.StatusCode
+		if status == 0 {
+			status = http.StatusOK
+		}
+		for key, value := range result.Headers {
+			if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+				c.Header(key, value)
+			}
+		}
+		if strings.TrimSpace(result.ContentType) != "" {
+			c.Header("Content-Type", result.ContentType)
+		}
+		c.Status(status)
+		_, err := c.Writer.Write(result.Body)
+		return status, err
 	}
 	if err := source.ValidateOutboundURL(c.Request.Context(), result.URL); err != nil {
 		return 0, err

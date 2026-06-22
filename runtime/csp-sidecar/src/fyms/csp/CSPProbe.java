@@ -1,12 +1,15 @@
 package fyms.csp;
 
+import android.app.Application;
 import android.content.Context;
 import com.github.catvod.crawler.Spider;
 import com.googlecode.d2j.dex.Dex2jar;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
@@ -28,9 +31,28 @@ public final class CSPProbe {
         "android.util.Base64",
         "android.util.Log",
         "android.app.Application",
+        "android.app.Activity",
+        "android.app.AlertDialog",
         "android.content.Context",
+        "android.content.ComponentName",
+        "android.content.DialogInterface",
+        "android.content.Intent",
+        "android.content.pm.ApplicationInfo",
+        "android.content.pm.PackageManager",
+        "android.content.pm.PackageInfo",
         "android.content.SharedPreferences",
-        "android.view.ViewGroup.LayoutParams"
+        "android.graphics.Bitmap",
+        "android.graphics.drawable.ColorDrawable",
+        "android.os.Handler",
+        "android.os.Looper",
+        "android.text.Editable",
+        "android.view.View",
+        "android.view.Window",
+        "android.view.ViewGroup.LayoutParams",
+        "android.widget.EditText",
+        "android.widget.FrameLayout",
+        "android.widget.FrameLayout.LayoutParams",
+        "android.widget.ImageView"
     };
     private static final String[] CATVOD_STUBS = new String[] {
         "com.github.catvod.crawler.Spider",
@@ -84,17 +106,52 @@ public final class CSPProbe {
         ClassLoader parent = CSPProbe.class.getClassLoader();
         URL[] urls = new URL[] { Path.of(classJarPath).toUri().toURL() };
         URLClassLoader loader = new URLClassLoader(urls, parent);
+        Application app = new Application();
+        initCatVodHost(loader, app);
         Class<?> clazz = Class.forName(className, true, loader);
         Object instance = clazz.getDeclaredConstructor().newInstance();
         if (instance instanceof Spider) {
-            ((Spider) instance).init(new Context(), extend);
+            ((Spider) instance).init(app, extend);
         } else {
             Method init = findMethod(clazz, "init", Context.class, String.class);
             if (init != null) {
-                init.invoke(instance, new Context(), extend);
+                init.invoke(instance, app, extend);
             }
         }
         return instance;
+    }
+
+    private static void initCatVodHost(ClassLoader loader, Application app) {
+        try {
+            Class<?> initClass = Class.forName("com.github.catvod.spider.Init", true, loader);
+            Object initInstance = null;
+            Method get = findStaticMethod(initClass, "get");
+            if (get != null) {
+                initInstance = get.invoke(null);
+            }
+            injectApplicationFields(initClass, initInstance, app);
+            injectApplicationFields(initClass, null, app);
+        } catch (Throwable t) {
+            Throwable root = t.getCause() != null ? t.getCause() : t;
+            emitLog("CatVod Init 宿主字段注入跳过: " + root);
+        }
+    }
+
+    private static void injectApplicationFields(Class<?> clazz, Object target, Application app) {
+        for (Field field : clazz.getDeclaredFields()) {
+            if (!Application.class.isAssignableFrom(field.getType())) {
+                continue;
+            }
+            boolean isStatic = Modifier.isStatic(field.getModifiers());
+            if ((target == null && !isStatic) || (target != null && isStatic)) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                field.set(isStatic ? null : target, app);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private static DexResult convertDex(String artifactPath, String workDir) throws Exception {
@@ -177,17 +234,24 @@ public final class CSPProbe {
     }
 
     private static Object invokeProxy(Class<?> clazz, Object spider, Map<String, Object> args) throws Exception {
+        Map<String, String> params = stringMap(args);
         Method method = findMethod(clazz, "proxy", Map.class);
         if (method != null) {
-            Map<String, String> params = new HashMap<>();
-            for (Map.Entry<String, Object> entry : args.entrySet()) {
-                params.put(entry.getKey(), stringValue(entry.getValue()));
-            }
-            return method.invoke(spider, params);
+            return normalizeProxyResult(method.invoke(spider, params));
         }
         method = findMethod(clazz, "proxy", String.class);
         if (method != null) {
-            return method.invoke(spider, stringArg(args, "id", "url", ""));
+            return normalizeProxyResult(method.invoke(spider, stringArg(args, "id", "url", "")));
+        }
+        method = findStaticMethod(clazz, "proxy", Map.class);
+        if (method != null) {
+            return normalizeProxyResult(method.invoke(null, params));
+        }
+        ClassLoader loader = clazz.getClassLoader();
+        Class<?> proxyClass = Class.forName("com.github.catvod.spider.Proxy", true, loader);
+        method = findStaticMethod(proxyClass, "proxy", Map.class);
+        if (method != null) {
+            return normalizeProxyResult(method.invoke(null, params));
         }
         throw new UnsupportedOperationException("该 spider 未提供 proxy 宿主入口");
     }
@@ -209,6 +273,41 @@ public final class CSPProbe {
         } catch (NoSuchMethodException ignored) {
             return null;
         }
+    }
+
+    private static Method findStaticMethod(Class<?> clazz, String name, Class<?>... types) {
+        Method method = findMethod(clazz, name, types);
+        if (method != null && java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+            return method;
+        }
+        return null;
+    }
+
+    private static Map<String, String> stringMap(Map<String, Object> args) {
+        Map<String, String> out = new HashMap<>();
+        for (Map.Entry<String, Object> entry : args.entrySet()) {
+            out.put(entry.getKey(), stringValue(entry.getValue()));
+        }
+        return out;
+    }
+
+    private static Object normalizeProxyResult(Object value) {
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof Object[]) {
+            List<Object> out = new ArrayList<>();
+            for (Object item : (Object[]) value) {
+                out.add(normalizeProxyResult(item));
+            }
+            return out;
+        }
+        if (value instanceof byte[]) {
+            Map<String, Object> out = new HashMap<>();
+            out.put("bodyBase64", java.util.Base64.getEncoder().encodeToString((byte[]) value));
+            return out;
+        }
+        return value;
     }
 
     private static Map<String, Object> baseResult(boolean ok, String method, String className, long start) {

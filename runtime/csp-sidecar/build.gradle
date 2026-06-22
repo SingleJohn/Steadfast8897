@@ -24,6 +24,7 @@ dependencies {
     implementation 'de.femtopedia.dex2jar:dex-translator:2.4.13'
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'org.json:json:20240303'
+    implementation 'com.google.code.gson:gson:2.11.0'
 }
 
 tasks.withType(JavaCompile).configureEach {

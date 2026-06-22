@@ -12,8 +12,11 @@ import (
 )
 
 type PlayResult struct {
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
+	URL         string            `json:"url"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Body        []byte            `json:"body,omitempty"`
+	ContentType string            `json:"content_type,omitempty"`
+	StatusCode  int               `json:"status_code,omitempty"`
 }
 
 func ResolvePlay(ctx context.Context, playSource repository.SourcePlaySource) (*PlayResult, error) {
