@@ -27,6 +27,55 @@ export type SourceProvider = {
   Categories?: unknown[]
 }
 
+export type SourceParser = {
+  ID: number
+  ConfigID?: number
+  SourceType: string
+  Name: string
+  ParserType: number
+  URL: string
+  BaseURL?: string
+  TimeoutMS: number
+  Enabled: boolean
+  TrustStatus: string
+  Status: string
+  LastCheckAt?: string
+  LastError?: string
+  UpdatedAt: string
+}
+
+export type SourceRuntimeInvocation = {
+  ID: number
+  ProviderID?: number
+  RuntimeKind: string
+  Method: string
+  Status: string
+  ErrorType?: string
+  ErrorMessage?: string
+  DurationMS: number
+  EngineOK?: boolean
+  WorkerPID?: number
+  ArtifactIDs: number[]
+  URLHash?: string
+  InvokedAt: string
+}
+
+export type SourceRuntimeArtifact = {
+  ID: number
+  ProviderID?: number
+  SourceType: string
+  ArtifactKind: string
+  Name: string
+  SourceURL: string
+  MD5: string
+  SHA256: string
+  ByteSize: number
+  TrustStatus: string
+  Status: string
+  LastFetchedAt: string
+  LastError?: string
+}
+
 export type SourceView = {
   Id: number
   PublicUUID: string
@@ -55,6 +104,7 @@ export type DimensionValue = {
 export type ImportTVBoxResult = {
   config: SourceConfig
   providers: SourceProvider[]
+  parsers?: SourceParser[]
   accepted: number
   skipped: number
 }
@@ -135,6 +185,26 @@ export async function setSourceConfigEnabled(id: number, enabled: boolean) {
 
 export async function listSourceProviders() {
   const res = await requestJson<{ items: SourceProvider[] }>('/SourceProviders')
+  return res.items || []
+}
+
+export async function listSourceParsers() {
+  const res = await requestJson<{ items: SourceParser[] }>('/SourceParsers')
+  return res.items || []
+}
+
+export async function setSourceParserEnabled(id: number, enabled: boolean) {
+  return requestJson<SourceParser>(`/SourceParsers/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' })
+}
+
+export async function listSourceRuntimeInvocations(limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  const res = await requestJson<{ items: SourceRuntimeInvocation[] }>(`/SourceRuntime/Invocations?${params.toString()}`)
+  return res.items || []
+}
+
+export async function listSourceRuntimeArtifacts() {
+  const res = await requestJson<{ items: SourceRuntimeArtifact[] }>('/SourceRuntime/Artifacts')
   return res.items || []
 }
 

@@ -10,19 +10,26 @@ import {
   healthCheckSourceProvider,
   importTVBoxConfig,
   listSourceConfigs,
+  listSourceParsers,
   listSourceProviderCategories,
   listSourceProviders,
+  listSourceRuntimeArtifacts,
+  listSourceRuntimeInvocations,
   listSourceViews,
   renameSourceView,
   searchSourceProvider,
   setSourceConfigEnabled,
+  setSourceParserEnabled,
   setSourceProviderEnabled,
   updateSourceView,
   updateSourceViewDisplayOrder,
   type DimensionValue,
   type FederatedSearchResponse,
+  type SourceParser,
   type SourceConfig,
   type SourceProvider,
+  type SourceRuntimeArtifact,
+  type SourceRuntimeInvocation,
   type SourceView,
 } from '@/api/source'
 
@@ -31,6 +38,9 @@ type ToastFn = (message: string, type?: any) => void
 export function useSourceCenter(showToast: ToastFn) {
   const configs = ref<SourceConfig[]>([])
   const providers = ref<SourceProvider[]>([])
+  const parsers = ref<SourceParser[]>([])
+  const runtimeInvocations = ref<SourceRuntimeInvocation[]>([])
+  const runtimeArtifacts = ref<SourceRuntimeArtifact[]>([])
   const views = ref<SourceView[]>([])
   const coverStyles = ref<CoverStyle[]>([])
   const loading = shallowRef(false)
@@ -44,6 +54,8 @@ export function useSourceCenter(showToast: ToastFn) {
   const providerSearchResult = shallowRef<any>(null)
   const providerCategories = ref<Array<{ id: string; name: string }>>([])
   const providerAction = shallowRef('')
+  const parserAction = shallowRef('')
+  const runtimeAuditLoading = shallowRef(false)
   const federatedKeyword = shallowRef('')
   const federatedLimit = shallowRef(50)
   const federatedLoading = shallowRef(false)
@@ -93,6 +105,24 @@ export function useSourceCenter(showToast: ToastFn) {
     }
   }
 
+  async function refreshRuntimeData() {
+    runtimeAuditLoading.value = true
+    try {
+      const [nextParsers, nextInvocations, nextArtifacts] = await Promise.all([
+        listSourceParsers(),
+        listSourceRuntimeInvocations(100),
+        listSourceRuntimeArtifacts(),
+      ])
+      parsers.value = nextParsers
+      runtimeInvocations.value = nextInvocations
+      runtimeArtifacts.value = nextArtifacts
+    } catch (e: any) {
+      showToast(e?.message || '运行时数据加载失败', 'error')
+    } finally {
+      runtimeAuditLoading.value = false
+    }
+  }
+
   async function loadSourceSearchConfig() {
     try {
       const cfg: any = await getSystemConfig()
@@ -137,6 +167,19 @@ export function useSourceCenter(showToast: ToastFn) {
   async function toggleProvider(id: number, enabled: boolean) {
     await setSourceProviderEnabled(id, enabled)
     await refreshAll()
+  }
+
+  async function toggleParser(id: number, enabled: boolean) {
+    parserAction.value = `toggle:${id}`
+    try {
+      await setSourceParserEnabled(id, enabled)
+      showToast(enabled ? '解析器已启用' : '解析器已停用', 'success')
+      await refreshRuntimeData()
+    } catch (e: any) {
+      showToast(e?.message || '解析器启停失败', 'error')
+    } finally {
+      parserAction.value = ''
+    }
   }
 
   async function runProviderHealth(id: number) {
@@ -311,6 +354,9 @@ export function useSourceCenter(showToast: ToastFn) {
   return {
     configs,
     providers,
+    parsers,
+    runtimeInvocations,
+    runtimeArtifacts,
     views,
     loading,
     importing,
@@ -326,6 +372,8 @@ export function useSourceCenter(showToast: ToastFn) {
     providerSearchResult,
     providerCategories,
     providerAction,
+    parserAction,
+    runtimeAuditLoading,
     federatedKeyword,
     federatedLimit,
     federatedLoading,
@@ -343,10 +391,12 @@ export function useSourceCenter(showToast: ToastFn) {
     coverStyleOptions,
     generatingCover,
     refreshAll,
+    refreshRuntimeData,
     loadSourceSearchConfig,
     submitImport,
     toggleConfig,
     toggleProvider,
+    toggleParser,
     runProviderHealth,
     runProviderSearch,
     loadProviderCategories,

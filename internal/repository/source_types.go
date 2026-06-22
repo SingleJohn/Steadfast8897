@@ -71,6 +71,23 @@ type SourceRuntimeArtifact struct {
 	UpdatedAt     time.Time
 }
 
+type SourceRuntimeInvocation struct {
+	ID           int64
+	ProviderID   *int64
+	RuntimeKind  string
+	Method       string
+	Status       string
+	ErrorType    *string
+	ErrorMessage *string
+	DurationMS   int64
+	EngineOK     *bool
+	WorkerPID    *int32
+	ArtifactIDs  []int64
+	URLHash      *string
+	Raw          json.RawMessage
+	InvokedAt    time.Time
+}
+
 type SourceParser struct {
 	ID          int64
 	ConfigID    *int64
@@ -263,6 +280,21 @@ type SourceRuntimeArtifactUpsert struct {
 	Raw          json.RawMessage
 }
 
+type SourceRuntimeInvocationCreate struct {
+	ProviderID   *int64
+	RuntimeKind  string
+	Method       string
+	Status       string
+	ErrorType    *string
+	ErrorMessage *string
+	DurationMS   int64
+	EngineOK     *bool
+	WorkerPID    *int32
+	ArtifactIDs  []int64
+	URLHash      *string
+	Raw          json.RawMessage
+}
+
 type SourceParserUpsert struct {
 	ConfigID    *int64
 	SourceType  string
@@ -367,6 +399,14 @@ type SourceParserListOptions struct {
 	Offset      int64
 	ConfigID    *int64
 	OnlyEnabled bool
+}
+
+type SourceRuntimeInvocationListOptions struct {
+	Limit      int64
+	Offset     int64
+	ProviderID *int64
+	Method     string
+	Status     string
 }
 
 type SourceDimensionValue struct {

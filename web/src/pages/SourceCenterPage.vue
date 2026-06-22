@@ -4,7 +4,9 @@ import { NSpin } from 'naive-ui'
 import PageShell from '@/components/PageShell.vue'
 import SourceFederatedSearchPanel from '@/components/source-center/SourceFederatedSearchPanel.vue'
 import SourceImportPanel from '@/components/source-center/SourceImportPanel.vue'
+import SourceParserPanel from '@/components/source-center/SourceParserPanel.vue'
 import SourceProviderPanel from '@/components/source-center/SourceProviderPanel.vue'
+import SourceRuntimeAuditPanel from '@/components/source-center/SourceRuntimeAuditPanel.vue'
 import SourceViewsPanel from '@/components/source-center/SourceViewsPanel.vue'
 import { AppIcons } from '@/icons/appIcons'
 import { useSourceCenter } from '@/composables/useSourceCenter'
@@ -15,6 +17,9 @@ const source = useSourceCenter(showToast)
 const {
   configs,
   providers,
+  parsers,
+  runtimeInvocations,
+  runtimeArtifacts,
   views,
   loading,
   importing,
@@ -27,6 +32,8 @@ const {
   providerSearchResult,
   providerCategories,
   providerAction,
+  parserAction,
+  runtimeAuditLoading,
   federatedKeyword,
   federatedLimit,
   federatedLoading,
@@ -49,6 +56,7 @@ void configs
 
 onMounted(() => {
   void source.refreshAll()
+  void source.refreshRuntimeData()
   void source.loadSourceSearchConfig()
 })
 </script>
@@ -96,6 +104,20 @@ onMounted(() => {
           @update:limit="federatedLimit = $event"
           @update:emby-enabled="source.updateEmbySourceSearchEnabled"
           @search="source.runFederatedSearch"
+        />
+
+        <SourceParserPanel
+          :parsers="parsers"
+          :action="parserAction"
+          @toggle="source.toggleParser"
+          @refresh="source.refreshRuntimeData"
+        />
+
+        <SourceRuntimeAuditPanel
+          :invocations="runtimeInvocations"
+          :artifacts="runtimeArtifacts"
+          :loading="runtimeAuditLoading"
+          @refresh="source.refreshRuntimeData"
         />
 
         <SourceViewsPanel

@@ -98,27 +98,22 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 	case m.sem <- struct{}{}:
 		defer func() { <-m.sem }()
 	case <-runCtx.Done():
-		return nil, fmt.Errorf("JS runtime 等待 worker 超时: %w", runCtx.Err())
+		err := fmt.Errorf("JS runtime 等待 worker 超时: %w", runCtx.Err())
+		resp := m.errorResponse(start, req, err, "timeout")
+		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		return nil, err
 	}
 	if strings.TrimSpace(m.nodePath) == "" || strings.TrimSpace(m.script) == "" {
 		if err := m.Start(runCtx); err != nil {
-			return &JSRuntimeResponse{
-				OK:          false,
-				Engine:      "node-sidecar",
-				RuntimeKind: JSRuntimeKindNodeDRPY,
-				BaseURL:     req.ConfigBaseURL,
-				Results: []JSRuntimeMethodResult{{
-					OK:        false,
-					Method:    req.Method,
-					Error:     err.Error(),
-					ErrorType: "runtime_unavailable",
-				}},
-				DurationMs: time.Since(start).Milliseconds(),
-			}, nil
+			resp := m.errorResponse(start, req, err, "runtime_unavailable")
+			m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+			return resp, nil
 		}
 	}
 	artifacts, bodies, err := m.artifacts.FetchPair(runCtx, req)
 	if err != nil {
+		resp := m.errorResponse(start, req, err, ErrorType(err))
+		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
 	}
 	payload := map[string]any{
@@ -156,7 +151,105 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 		resp.Results[0].Error = "JS runtime 调用超时，worker 已终止"
 		resp.Results[0].ErrorType = "timeout"
 	}
+	m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 	return resp, nil
+}
+
+func (m *JSRuntimeManager) errorResponse(start time.Time, req JSRuntimeRequest, err error, errorType string) *JSRuntimeResponse {
+	if errorType == "" {
+		errorType = ErrorType(err)
+	}
+	return &JSRuntimeResponse{
+		OK:          false,
+		Engine:      "node-sidecar",
+		RuntimeKind: JSRuntimeKindNodeDRPY,
+		BaseURL:     req.ConfigBaseURL,
+		Results: []JSRuntimeMethodResult{{
+			OK:         false,
+			Method:     req.Method,
+			Error:      err.Error(),
+			ErrorType:  errorType,
+			DurationMs: time.Since(start).Milliseconds(),
+		}},
+		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
+func (m *JSRuntimeManager) recordInvocation(ctx context.Context, req JSRuntimeRequest, resp *JSRuntimeResponse) {
+	if m == nil || m.repo == nil || resp == nil {
+		return
+	}
+	status := "ok"
+	var errorType *string
+	var errorMessage *string
+	var engineOK *bool
+	var workerPID *int32
+	method := strings.TrimSpace(req.Method)
+	urlHash := URLHash(req.Rule)
+	artifactIDs := make([]int64, 0, len(resp.Artifacts))
+	for _, artifact := range resp.Artifacts {
+		if artifact.ID > 0 {
+			artifactIDs = append(artifactIDs, artifact.ID)
+		}
+	}
+	if len(resp.Results) > 0 {
+		result := resp.Results[0]
+		method = strings.TrimSpace(result.Method)
+		engineOK = &result.EngineOK
+		if !result.OK {
+			status = "error"
+			if result.ErrorType != "" {
+				v := result.ErrorType
+				errorType = &v
+			}
+			if result.Error != "" {
+				v := sanitizeRuntimeAuditError(result.Error)
+				errorMessage = &v
+			}
+		}
+	}
+	if method == "" {
+		method = "unknown"
+	}
+	if resp.WorkerPID > 0 {
+		v := int32(resp.WorkerPID)
+		workerPID = &v
+	}
+	raw := jsonBytes(map[string]any{
+		"provider_key_hash": URLHash(req.ProviderKey),
+		"base_hash":         URLHash(req.ConfigBaseURL),
+		"log_count":         len(resp.Logs),
+	}, "{}")
+	if _, err := m.repo.CreateRuntimeInvocation(ctx, repository.SourceRuntimeInvocationCreate{
+		ProviderID:   req.ProviderID,
+		RuntimeKind:  JSRuntimeKindNodeDRPY,
+		Method:       method,
+		Status:       status,
+		ErrorType:    errorType,
+		ErrorMessage: errorMessage,
+		DurationMS:   resp.DurationMs,
+		EngineOK:     engineOK,
+		WorkerPID:    workerPID,
+		ArtifactIDs:  artifactIDs,
+		URLHash:      stringPtrOrNil(urlHash),
+		Raw:          raw,
+	}); err != nil {
+		m.logger.WarnContext(ctx, "record JS runtime invocation failed", "log_target", "provider", "error", err)
+	}
+}
+
+func sanitizeRuntimeAuditError(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	if strings.Contains(message, "://") {
+		return "url_hash:" + URLHash(message)
+	}
+	if len(message) > 500 {
+		return message[:500]
+	}
+	return message
 }
 
 func (m *JSRuntimeManager) runWorker(ctx context.Context, req JSRuntimeRequest, payload map[string]any) (JSRuntimeMethodResult, []string, int, error) {

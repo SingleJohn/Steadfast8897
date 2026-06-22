@@ -43,6 +43,16 @@ func scanSourceParser(row pgx.Row) (*SourceParser, error) {
 	return &out, nil
 }
 
+func scanSourceRuntimeInvocation(row pgx.Row) (*SourceRuntimeInvocation, error) {
+	var out SourceRuntimeInvocation
+	if err := row.Scan(&out.ID, &out.ProviderID, &out.RuntimeKind, &out.Method, &out.Status,
+		&out.ErrorType, &out.ErrorMessage, &out.DurationMS, &out.EngineOK, &out.WorkerPID,
+		&out.ArtifactIDs, &out.URLHash, &out.Raw, &out.InvokedAt); err != nil {
+		return nilIfNoRows[SourceRuntimeInvocation](err)
+	}
+	return &out, nil
+}
+
 func scanSourceItem(row pgx.Row) (*SourceItem, error) {
 	var out SourceItem
 	if err := row.Scan(&out.ID, &out.PublicUUID, &out.ProviderID, &out.SourceItemID,
