@@ -120,8 +120,21 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 		state.Cache.Del(ctx, key)
 		return nil, false, err
 	}
-	state.Cache.SetJSON(ctx, key, result, sourcePlayCacheTTL)
+	if cacheableSourcePlayResult(ctx, result) {
+		state.Cache.SetJSON(ctx, key, result, sourcePlayCacheTTL)
+	}
 	return result, false, nil
+}
+
+func cacheableSourcePlayResult(ctx context.Context, result *source.PlayResult) bool {
+	if result == nil || len(result.Body) > 0 {
+		return false
+	}
+	playURL := strings.TrimSpace(result.URL)
+	if playURL == "" {
+		return false
+	}
+	return source.ValidateOutboundURL(ctx, playURL) == nil
 }
 
 func proxySourceStream(c *gin.Context, result *source.PlayResult) (int, error) {

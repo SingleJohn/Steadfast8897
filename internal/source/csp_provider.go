@@ -473,6 +473,30 @@ func parseCSPProxyArray(ctx context.Context, arr []json.RawMessage) (*PlayResult
 			var bytes []byte
 			if json.Unmarshal(arr[3], &bytes) == nil {
 				body = bytes
+			} else {
+				var obj struct {
+					URL        string `json:"url"`
+					Content    string `json:"content"`
+					Body       string `json:"body"`
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if json.Unmarshal(arr[3], &obj) == nil {
+					if strings.TrimSpace(obj.URL) != "" {
+						if err := ValidateOutboundURL(ctx, obj.URL); err != nil {
+							return nil, err
+						}
+						return &PlayResult{URL: obj.URL, Headers: headers}, nil
+					}
+					body = []byte(obj.Content)
+					if obj.Body != "" {
+						body = []byte(obj.Body)
+					}
+					if obj.BodyBase64 != "" {
+						if decoded, err := base64.StdEncoding.DecodeString(obj.BodyBase64); err == nil {
+							body = decoded
+						}
+					}
+				}
 			}
 		}
 	}
