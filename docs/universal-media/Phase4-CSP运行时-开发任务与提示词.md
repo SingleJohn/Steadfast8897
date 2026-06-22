@@ -230,6 +230,9 @@ POST /SourceRuntime/TestCSP
    OCR/WebView/深度 API 留桩归一化"不支持"。
 4. 宿主桥：网络 req/OkHttp 出站回调 Go（ValidateOutboundURL + per-provider limiter，单一真相）；
    proxy() 宿主代理入口（见 T23）；siteKey 写入 spider 供 Proxy.getUrl 生成稳定地址。
+   **【T21 实测必修】字符集**：大量站是 GBK（如 SixV/xb6v.com）——req 桥必须按站点 charset（Content-Type charset / HTML meta / 自动探测）正确转 UTF-8，
+   像 CatVod 的 OkHttp 那样。T21 实测 SixV home 的 type_name 乱码、category list 为空，根因就是 GBK 当 UTF-8 处理；
+   修后 type_name 应正常、category 列表应非空。
 5. 生命周期：FYMS 启动拉起 sidecar 并监督（崩溃自愈）；spider 实例按 (providerKey + jar md5) 缓存、空闲销毁、
    md5 变更重建；单次调用超时 kill；并发上限；实例隔离不跨 provider 共享 extend/cookie。
 6. 沙箱（§A 安全补充）：低权限进程、不挂媒体库、工作目录隔离 data/source-runtime/csp/{providerKey}、
@@ -287,6 +290,45 @@ POST /SourceRuntime/TestCSP
 完成判定（go build + npm run build + 我验证）：来源中心可管 csp 源与 jar 信任；csp 调用入审计；
 不支持类有清晰标注。停下告诉我"T24 完成待验"。
 ```
+
+---
+
+### T22/T23/T24 实际落点（2026-06-22）
+
+**commit 范围**
+- T22 runtime 安全边界：`45f69ae`（正式化 CSP JVM runtime 安全边界）。
+- T23 Provider 接入：`5cb92a8`（接入 CSP Provider 统一来源链路）。
+- T24 前端信任 UI：`28ffbd2`（补充 CSP artifact 信任管理界面）。
+- T21/T22 路径防御补强：`5ced6a9`（修复 CSP sidecar 工作目录创建）。
+- T23 proxy 播放桥接补齐：`5f2f827`（补齐 CSP proxy 播放桥接）。
+
+**T22 落点**
+- CSP runtime kind 正式定为 `csp_dex`，继续采用独立 JVM worker 形态；每次调用由 `exec.CommandContext` 拉起，单次超时由上下文 kill，崩溃/卡死不拖垮 FYMS Core。
+- 工作目录从全局 `data/source-runtime/csp/work` 下沉为按 providerKey/providerID 隔离的子目录；artifact/workDir 继续传绝对路径。
+- sidecar 启动前显式创建 provider 隔离工作目录，避免 `cmd.Dir` 指向未创建目录导致 Windows/相对路径类失败。
+- Go HTTP bridge 在 SSRF 校验与 per-provider limiter 后读取响应，并按 `Content-Type charset` / HTML meta 自动转 UTF-8 后传给 sidecar，修复 SixV/xb6v.com 等 GBK 站点乱码问题。
+- artifact 信任门槛收紧：`trust_status=verified|trusted` 才允许加载；无 hash 的 `unverified` 默认拒绝，管理员可通过信任接口确认。
+- sidecar 补 `proxy` 方法入口和 unsupported API 清单；为 fan.txt/Bili proxy 类加载补齐轻量签名桩（Activity/AlertDialog/Intent/PackageManager/Handler/View/ImageView 等）与纯 Java Gson 依赖。WebView/OCR/深度 Android/App 签名仍按不支持类归一化，不引入 Android 模拟器。
+
+**T23 落点**
+- 新增 `internal/source/csp_provider.go`，实现 `CSPProvider` 的 Categories/Search/Category/Detail/ResolvePlay，调用正式 CSP runtime。
+- `ProviderRuntimeManager` 增加 `WithCSPRuntime`，按 `provider_kind=tvbox_site + runtime_kind=csp_dex` 分派 CSP Provider。
+- TVBox 导入识别 `api=csp_*` 的站点为可用 CSP provider；仍由 runtime artifact 信任门槛阻止未校验 jar 真正加载。
+- 搜索、详情、分集/线路入库继续复用 `normalize.go` / `ingest.go` / `splitCMSPlaySources`，在线内容仍只写 `source_items/source_play_sources`，不写 `items`。
+- `/SourcePlay` 与按需详情加载注入 CSP runtime；`playerContent` 的 direct HTTP 线路可走 Go 字节代理，`parse=1` 交解析器，magnet/cloud_share/不支持类清晰报错不崩。
+- CSP proxy 线路闭环：识别 `parse_mode=proxy`、`proxy://`、`fyms-csp-proxy://` 与本地宿主 proxy URL 后，不直连本地地址，而是回调 sidecar `proxy()`；Go 侧支持 CatVod 常见 `Object[]{status, contentType, headers, body}`、JSON `{url,headers}` 与内联 body 结果，再统一经 `/SourcePlay` 输出。
+- 本地 sidecar 诊断确认 Bili proxy 已进入 Go 网络桥协议并发出 `http_request`，后续由 FYMS 运行期 bridge 回写 `http_response` 继续执行；未启动 FYMS 服务做端到端 API 验证。
+
+**T24 落点**
+- 新增管理员接口 `POST /SourceRuntime/Artifacts/:id/Trust`，将 artifact 置为 `trusted` 并写 `verified_at`；路由继续按根分组与 `/emby` 双注册。
+- 来源中心 Provider 表展示 `csp_dex` 为 `CSP JAR`；运行时审计表展示 runtime kind、artifact 类型与信任状态。
+- 来源中心 artifact 表提供“确认信任”操作，调用信任接口后刷新 artifacts/invocations；审计仍只展示 hash/错误类型/耗时，不展示敏感 URL 明文。
+
+**验证**
+- `runtime/csp-sidecar/build.ps1` 通过。
+- `go build ./...` 通过。
+- `cd web && npm run build` 通过（保留既有 ArtPlayer CommonJS warning）。
+- 未启动 FYMS 服务，未跑测试，未写测试，未写 `items`，未进入 AList/网盘范围。
 
 ---
 
