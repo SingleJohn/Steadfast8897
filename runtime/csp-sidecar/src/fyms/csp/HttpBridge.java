@@ -25,7 +25,11 @@ public final class HttpBridge {
         Map<String, Object> req = new LinkedHashMap<>();
         req.put("url", request.url());
         req.put("method", request.method());
-        req.put("headers", request.headers().toMap());
+        Map<String, String> headers = request.headers().toMap();
+        if (request.body() != null && request.body().contentType() != null && !hasHeader(headers, "Content-Type")) {
+            headers.put("Content-Type", request.body().contentType().toString());
+        }
+        req.put("headers", headers);
         req.put("body", request.body() == null ? "" : request.body().body());
         payload.put("type", "http_request");
         payload.put("id", id);
@@ -44,10 +48,10 @@ public final class HttpBridge {
             }
             int status = intValue(resp.get("status"), 200);
             @SuppressWarnings("unchecked")
-            Map<String, String> headers = resp.get("headers") instanceof Map ? (Map<String, String>) resp.get("headers") : new LinkedHashMap<>();
+            Map<String, String> responseHeaders = resp.get("headers") instanceof Map ? (Map<String, String>) resp.get("headers") : new LinkedHashMap<>();
             String encoded = String.valueOf(resp.get("bodyBase64"));
             String body = new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
-            return new Response(status, Headers.of(headers), new ResponseBody(body));
+            return new Response(status, Headers.of(responseHeaders), new ResponseBody(body));
         }
         throw new IOException("Go HTTP bridge 无响应");
     }
@@ -61,5 +65,14 @@ public final class HttpBridge {
         } catch (Exception ignored) {
             return fallback;
         }
+    }
+
+    private static boolean hasHeader(Map<String, String> headers, String name) {
+        for (String key : headers.keySet()) {
+            if (key.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

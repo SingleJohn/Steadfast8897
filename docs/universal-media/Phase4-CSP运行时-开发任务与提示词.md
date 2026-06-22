@@ -94,9 +94,11 @@ PoC 步骤：
 - 停下告诉我"CSP PoC 完成，待形态确认"，不进 T22。
 ```
 
-### T21 实际落点（2026-06-22）
+### T21 第一次尝试落点（2026-06-22，已被自包含重做覆盖）
 
 **commit 范围**：`d3b4a7e`（实现 CSP JVM PoC 临时入口）~ `51791e0`（调整 CSP PoC 工具探测顺序）。
+
+> 该版本依赖外部 dex2jar CLI 与运行期 javac，未真正通过 T21 闸门；保留为失败记录。当前有效结论见下方「T21 自包含重做实际落点」。
 
 **代码落点**
 - 管理员临时入口：`POST /SourceRuntime/TestCSP`，通过既有 `RegisterSourceRoutes` 自动双注册到根分组与 `/emby` 前缀。
@@ -142,9 +144,9 @@ POST /SourceRuntime/TestCSP
 - 若 spider 直接依赖自带 `okhttp3` 或深度 Android API，PoC 无法强制接管网络，可能返回 `missing_stub` / `runtime_error`；这正是 T21 用于确认 T22 宿主桥范围的证伪点。
 - WebView、OCR、深度 Android API、App 加密签名类仍按原计划标记不支持，不在 T21 扩展。
 
-**阶段结论**
-- 形态仍确认走 JVM sidecar：dex/jar 属不可信代码，JVM 内沙箱不可靠，必须继续按独立进程 + 工作目录隔离 + 超时 kill + 容器/低权限用户 + Go 网络回调的模型推进。
-- JRE/JDK 镜像影响：正式 T22 预计至少需要精简 JRE；若仍保留运行时自动编译 classes 或 dex2jar 依赖 Java 工具链，则需额外评估 JDK/dex-tools 层。更推荐 T22 把 sidecar classes 作为构建产物随镜像打包，运行期只需 JRE + dex2jar。
+**第一次尝试结论**
+- 不通过 T21 闸门：运行期依赖 `javac` 和外部 `d2j-dex2jar`，且无法证明 spider 已真实加载执行。
+- 已在 `2d99b1d` / `76a2005f` 改为自包含 fat jar + sidecar 内 dex2jar 库 API + Go 网络桥。
 
 ### T21 自包含重做实际落点（2026-06-22）
 
