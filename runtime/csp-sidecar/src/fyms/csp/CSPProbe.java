@@ -2,18 +2,24 @@ package fyms.csp;
 
 import android.content.Context;
 import com.github.catvod.crawler.Spider;
+import com.googlecode.d2j.dex.Dex2jar;
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 public final class CSPProbe {
     private static final String[] ANDROID_STUBS = new String[] {
@@ -21,8 +27,10 @@ public final class CSPProbe {
         "android.net.Uri",
         "android.util.Base64",
         "android.util.Log",
+        "android.app.Application",
         "android.content.Context",
-        "android.content.SharedPreferences"
+        "android.content.SharedPreferences",
+        "android.view.ViewGroup.LayoutParams"
     };
     private static final String[] CATVOD_STUBS = new String[] {
         "com.github.catvod.crawler.Spider",
@@ -42,13 +50,19 @@ public final class CSPProbe {
         Map<String, Object> request = Json.parseObject(line);
         String className = stringValue(request.get("className"));
         String method = defaultString(stringValue(request.get("method")), "home");
+        String artifactPath = stringValue(request.get("artifactPath"));
+        String workDir = defaultString(stringValue(request.get("workDir")), System.getProperty("java.io.tmpdir"));
+        String extend = stringValue(request.get("extend"));
         @SuppressWarnings("unchecked")
         Map<String, Object> callArgs = request.get("args") instanceof Map ? (Map<String, Object>) request.get("args") : new HashMap<>();
         try {
-            Object spider = createSpider(className);
+            DexResult dex = convertDex(artifactPath, workDir);
+            emitLog("dex2jar 转换完成: " + dex.outputPath);
+            Object spider = createSpider(className, dex.outputPath, extend);
             Object data = callSpider(spider, method, callArgs);
             Map<String, Object> out = baseResult(true, method, className, start);
             out.put("data", data);
+            out.put("dex2jar", dex.toMap(true, null, null, System.currentTimeMillis() - start));
             emitResult(out);
         } catch (Throwable t) {
             Throwable root = t.getCause() != null ? t.getCause() : t;
@@ -56,24 +70,63 @@ public final class CSPProbe {
         }
     }
 
-    private static Object createSpider(String className) throws Exception {
+    private static Object createSpider(String className, String classJarPath, String extend) throws Exception {
         if (className == null || className.trim().isEmpty()) {
             throw new IllegalArgumentException("className 为空");
         }
         ClassLoader parent = CSPProbe.class.getClassLoader();
-        URL[] urls = classpathURLs();
+        URL[] urls = new URL[] { Path.of(classJarPath).toUri().toURL() };
         URLClassLoader loader = new URLClassLoader(urls, parent);
         Class<?> clazz = Class.forName(className, true, loader);
         Object instance = clazz.getDeclaredConstructor().newInstance();
         if (instance instanceof Spider) {
-            ((Spider) instance).init(new Context(), "");
+            ((Spider) instance).init(new Context(), extend);
         } else {
             Method init = findMethod(clazz, "init", Context.class, String.class);
             if (init != null) {
-                init.invoke(instance, new Context(), "");
+                init.invoke(instance, new Context(), extend);
             }
         }
         return instance;
+    }
+
+    private static DexResult convertDex(String artifactPath, String workDir) throws Exception {
+        if (artifactPath == null || artifactPath.trim().isEmpty()) {
+            throw new IllegalArgumentException("artifactPath 为空");
+        }
+        long start = System.currentTimeMillis();
+        Path artifact = Path.of(artifactPath);
+        String artifactName = artifact.getFileName() == null ? "spider" : artifact.getFileName().toString();
+        Path root = Path.of(workDir).toAbsolutePath().normalize();
+        Files.createDirectories(root);
+        Path dexPath = root.resolve(safeName(artifactName) + ".classes.dex");
+        Path output = root.resolve(safeName(artifactName) + ".classes.jar");
+        try (JarFile jar = new JarFile(artifact.toFile())) {
+            JarEntry dex = jar.getJarEntry("classes.dex");
+            if (dex == null) {
+                Enumeration<JarEntry> entries = jar.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    if (!entry.isDirectory() && entry.getName().endsWith(".dex")) {
+                        dex = entry;
+                        break;
+                    }
+                }
+            }
+            if (dex == null) {
+                throw new IllegalArgumentException("spider jar 未包含 classes.dex");
+            }
+            try (InputStream in = jar.getInputStream(dex)) {
+                Files.copy(in, dexPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        Dex2jar.from(dexPath.toFile()).skipDebug(true).reUseReg(true).to(output);
+        DexResult result = new DexResult();
+        result.inputPath = dexPath.toString();
+        result.outputPath = output.toString();
+        result.tool = "de.femtopedia.dex2jar:dex-translator";
+        result.durationMs = System.currentTimeMillis() - start;
+        return result;
     }
 
     private static Object callSpider(Object spider, String method, Map<String, Object> args) throws Exception {
@@ -133,17 +186,6 @@ public final class CSPProbe {
         }
     }
 
-    private static URL[] classpathURLs() throws Exception {
-        String[] entries = System.getProperty("java.class.path", "").split(java.io.File.pathSeparator);
-        List<URL> urls = new ArrayList<>();
-        for (String entry : entries) {
-            if (entry != null && !entry.trim().isEmpty()) {
-                urls.add(new java.io.File(entry).toURI().toURL());
-            }
-        }
-        return urls.toArray(new URL[0]);
-    }
-
     private static Map<String, Object> baseResult(boolean ok, String method, String className, long start) {
         Map<String, Object> out = new HashMap<>();
         out.put("ok", ok);
@@ -160,7 +202,22 @@ public final class CSPProbe {
         Map<String, Object> out = baseResult(false, method, className, start);
         out.put("error", message);
         out.put("errorType", type);
+        Map<String, Object> dex = new HashMap<>();
+        dex.put("ok", false);
+        dex.put("tool", "de.femtopedia.dex2jar:dex-translator");
+        dex.put("error", message);
+        dex.put("errorType", type);
+        dex.put("durationMs", System.currentTimeMillis() - start);
+        out.put("dex2jar", dex);
         return out;
+    }
+
+    private static void emitLog(String message) {
+        Map<String, Object> wrapper = new HashMap<>();
+        wrapper.put("type", "log");
+        wrapper.put("message", message);
+        System.out.println(Json.stringify(wrapper));
+        System.out.flush();
     }
 
     private static void emitResult(Map<String, Object> result) {
@@ -222,6 +279,9 @@ public final class CSPProbe {
                 out.add(single);
             }
         }
+        if (out.isEmpty() && "flag".equals(singleKey)) {
+            out.add("");
+        }
         return out;
     }
 
@@ -231,5 +291,32 @@ public final class CSPProbe {
 
     private static String stringValue(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private static String safeName(String value) {
+        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private static final class DexResult {
+        String tool;
+        String inputPath;
+        String outputPath;
+        long durationMs;
+
+        Map<String, Object> toMap(boolean ok, String error, String errorType, long fallbackDurationMs) {
+            Map<String, Object> out = new HashMap<>();
+            out.put("ok", ok);
+            out.put("tool", tool);
+            out.put("inputPath", inputPath);
+            out.put("outputPath", outputPath);
+            out.put("durationMs", durationMs > 0 ? durationMs : fallbackDurationMs);
+            if (error != null && !error.isEmpty()) {
+                out.put("error", error);
+            }
+            if (errorType != null && !errorType.isEmpty()) {
+                out.put("errorType", errorType);
+            }
+            return out;
+        }
     }
 }

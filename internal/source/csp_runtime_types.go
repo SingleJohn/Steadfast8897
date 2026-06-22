@@ -18,6 +18,7 @@ type CSPRuntimeRequest struct {
 	Spider        string         `json:"spider"`
 	MD5           string         `json:"md5"`
 	API           string         `json:"api"`
+	Ext           string         `json:"ext"`
 	Method        string         `json:"method"`
 	Args          map[string]any `json:"args"`
 	ProviderID    *int64         `json:"providerId"`

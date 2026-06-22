@@ -2,18 +2,23 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$src = Join-Path $root "src"
-$out = Join-Path $root "classes"
+$jdk = "D:\services\jdks\ms-21.0.7"
 
-if (-not (Get-Command javac -ErrorAction SilentlyContinue)) {
-    throw "未找到 javac，无法编译 CSP sidecar classes"
+if (-not $env:JAVA_HOME -and (Test-Path $jdk)) {
+    $env:JAVA_HOME = $jdk
+}
+if ($env:JAVA_HOME) {
+    $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 }
 
-New-Item -ItemType Directory -Force -Path $out | Out-Null
-$sources = Get-ChildItem -Path $src -Recurse -Filter *.java | ForEach-Object { $_.FullName }
-if (-not $sources -or $sources.Count -eq 0) {
-    throw "CSP sidecar 源码为空"
+Push-Location $root
+try {
+    & .\gradlew.bat --no-daemon clean shadowJar
+    $jar = Join-Path $root "build\libs\fyms-csp-sidecar-all.jar"
+    if (-not (Test-Path $jar)) {
+        throw "CSP sidecar fat jar 未生成: $jar"
+    }
+    Write-Host "CSP sidecar fat jar 已生成: $jar"
+} finally {
+    Pop-Location
 }
-
-& javac -encoding UTF-8 -d $out @sources
-Write-Host "CSP sidecar classes 已生成: $out"

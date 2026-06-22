@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +36,6 @@ type CSPRuntimeManager struct {
 	artifacts *CSPArtifactManager
 	dataDir   string
 	javaPath  string
-	dex2jar   string
 	sidecar   string
 	workDir   string
 	sem       chan struct{}
@@ -73,11 +71,7 @@ func (m *CSPRuntimeManager) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("未找到 java 可执行文件: %w", err)
 	}
-	dex2jar, err := resolveDex2JarTool()
-	if err != nil {
-		return err
-	}
-	sidecar, err := resolveCSPSidecarClasses(ctx)
+	sidecar, err := resolveCSPSidecarJar()
 	if err != nil {
 		return err
 	}
@@ -85,9 +79,8 @@ func (m *CSPRuntimeManager) Start(ctx context.Context) error {
 		return err
 	}
 	m.javaPath = javaPath
-	m.dex2jar = dex2jar
 	m.sidecar = sidecar
-	m.logger.InfoContext(ctx, "CSP runtime PoC ready", "log_target", "provider", "java", javaPath, "dex2jar", dex2jar, "sidecar", sidecar)
+	m.logger.InfoContext(ctx, "CSP runtime PoC ready", "log_target", "provider", "java", javaPath, "sidecar", sidecar)
 	return nil
 }
 
@@ -118,7 +111,7 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 		return nil, err
 	}
-	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.dex2jar) == "" || strings.TrimSpace(m.sidecar) == "" {
+	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
 		if err := m.Start(runCtx); err != nil {
 			resp := m.errorResponse(start, req, err, "runtime_unavailable")
 			resp.Artifact = artifact
@@ -126,26 +119,15 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 			return resp, nil
 		}
 	}
-	converted, dexLogs := m.convertDexJar(runCtx, artifact)
-	logs := append([]string{}, dexLogs...)
 	resp := &CSPRuntimeResponse{
 		RuntimeKind: CSPRuntimeKindJVMPoC,
 		BaseURL:     req.ConfigBaseURL,
 		API:         req.API,
 		Method:      req.Method,
 		Artifact:    artifact,
-		Dex2Jar:     converted,
 		DurationMs:  time.Since(start).Milliseconds(),
 	}
-	if !converted.OK {
-		resp.OK = false
-		resp.Result = CSPSidecarResult{OK: false, Method: req.Method, ClassName: cspClassName(req.API), Error: converted.Error, ErrorType: converted.ErrorType}
-		resp.Logs = logs
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
-		return resp, nil
-	}
-	result, sidecarLogs, pid, err := m.runSidecar(runCtx, req, converted.OutputPath)
-	logs = append(logs, sidecarLogs...)
+	result, dex2jar, logs, pid, err := m.runSidecar(runCtx, req, artifact)
 	if err != nil {
 		result.OK = false
 		result.Method = req.Method
@@ -158,6 +140,7 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		result.Error = "CSP runtime 调用超时，worker 已终止"
 		result.ErrorType = "timeout"
 	}
+	resp.Dex2Jar = dex2jar
 	resp.OK = result.OK
 	resp.Result = result
 	resp.Data = result.Data
@@ -168,82 +151,42 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 	return resp, nil
 }
 
-func (m *CSPRuntimeManager) convertDexJar(ctx context.Context, artifact CSPRuntimeArtifact) (CSPDex2JarResult, []string) {
-	start := time.Now()
-	output := filepath.Join(m.workDir, artifact.SHA256[:16]+"-classes.jar")
-	result := CSPDex2JarResult{
-		OK:         false,
-		Tool:       m.dex2jar,
-		InputPath:  artifact.Path,
-		OutputPath: output,
-	}
-	if _, err := os.Stat(output); err == nil {
-		result.OK = true
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, []string{"dex2jar 命中已转换缓存"}
-	}
-	if err := os.MkdirAll(m.workDir, 0755); err != nil {
-		result.Error = err.Error()
-		result.ErrorType = ErrorType(err)
-		result.DurationMs = time.Since(start).Milliseconds()
-		return result, nil
-	}
-	args := dex2jarArgs(m.dex2jar, artifact.Path, output)
-	cmd := exec.CommandContext(ctx, m.dex2jar, args...)
-	cmd.Dir = m.workDir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &stdout, limit: cspRuntimeOutputMaxBytes}
-	cmd.Stderr = &limitWriter{w: &stderr, limit: cspRuntimeOutputMaxBytes}
-	err := cmd.Run()
-	logs := splitRuntimeLogs(stdout.String(), stderr.String())
-	result.DurationMs = time.Since(start).Milliseconds()
-	if err != nil {
-		result.Error = "dex2jar 转换失败: " + err.Error()
-		result.ErrorType = ErrorType(err)
-		return result, logs
-	}
-	if _, err := os.Stat(output); err != nil {
-		result.Error = "dex2jar 未生成输出 jar: " + err.Error()
-		result.ErrorType = "missing_output"
-		return result, logs
-	}
-	result.OK = true
-	return result, logs
-}
-
-func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeRequest, classJar string) (CSPSidecarResult, []string, int, error) {
-	classpath := m.sidecar + string(os.PathListSeparator) + classJar
+func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeRequest, artifact CSPRuntimeArtifact) (CSPSidecarResult, CSPDex2JarResult, []string, int, error) {
 	payload := map[string]any{
-		"type":      "run",
-		"className": cspClassName(req.API),
-		"method":    req.Method,
-		"args":      req.Args,
-		"baseUrl":   req.ConfigBaseURL,
+		"type":         "run",
+		"className":    cspClassName(req.API),
+		"method":       req.Method,
+		"args":         req.Args,
+		"baseUrl":      req.ConfigBaseURL,
+		"extend":       req.Ext,
+		"artifactPath": artifact.Path,
+		"workDir":      m.workDir,
 	}
-	cmd := exec.CommandContext(ctx, m.javaPath, "-cp", classpath, "fyms.csp.CSPProbe")
+	cmd := exec.CommandContext(ctx, m.javaPath, "-jar", m.sidecar)
 	cmd.Dir = m.workDir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return CSPSidecarResult{}, nil, 0, err
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return CSPSidecarResult{}, nil, 0, err
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitWriter{w: &stderr, limit: cspRuntimeOutputMaxBytes}
 	if err := cmd.Start(); err != nil {
-		return CSPSidecarResult{}, nil, 0, err
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, 0, err
 	}
 	pid := cmd.Process.Pid
 	writer := &jsonLineWriter{w: stdin}
 	if err := writer.Write(payload); err != nil {
-		return CSPSidecarResult{}, nil, pid, err
+		return CSPSidecarResult{}, CSPDex2JarResult{}, nil, pid, err
 	}
 	reader := bufio.NewScanner(stdout)
 	reader.Buffer(make([]byte, 64*1024), cspRuntimeOutputMaxBytes)
 	logs := []string{}
 	var result *CSPSidecarResult
+	var dex2jar CSPDex2JarResult
 	resultReceived := false
 	for reader.Scan() {
 		line := bytes.TrimSpace(reader.Bytes())
@@ -266,15 +209,16 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		case "http_request":
 			resp := m.handleBridgeHTTP(ctx, req.ProviderID, msg.ID, msg.Request)
 			if err := writer.Write(resp); err != nil {
-				return CSPSidecarResult{}, logs, pid, err
+				return CSPSidecarResult{}, dex2jar, logs, pid, err
 			}
 		case "log":
 			if strings.TrimSpace(msg.Message) != "" {
 				logs = append(logs, msg.Message)
 			}
 		case "result":
-			parsed := parseCSPSidecarResult(req.Method, msg.Result, msg.DurationMs)
+			parsed, parsedDex := parseCSPSidecarResult(req.Method, msg.Result, msg.DurationMs)
 			result = &parsed
+			dex2jar = parsedDex
 			resultReceived = true
 		}
 		if resultReceived {
@@ -282,7 +226,7 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		}
 	}
 	if err := reader.Err(); err != nil {
-		return CSPSidecarResult{}, logs, pid, err
+		return CSPSidecarResult{}, dex2jar, logs, pid, err
 	}
 	if resultReceived {
 		_ = stdin.Close()
@@ -292,12 +236,12 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		logs = append(logs, splitRuntimeLogs(stderr.String())...)
 	}
 	if result == nil && waitErr != nil {
-		return CSPSidecarResult{}, logs, pid, waitErr
+		return CSPSidecarResult{}, dex2jar, logs, pid, waitErr
 	}
 	if result == nil {
-		return CSPSidecarResult{}, logs, pid, fmt.Errorf("CSP runtime worker 无结果")
+		return CSPSidecarResult{}, dex2jar, logs, pid, fmt.Errorf("CSP runtime worker 无结果")
 	}
-	return *result, logs, pid, waitErr
+	return *result, dex2jar, logs, pid, waitErr
 }
 
 func (m *CSPRuntimeManager) handleBridgeHTTP(ctx context.Context, providerID *int64, id string, in jsHTTPBridgeReq) map[string]any {
@@ -458,6 +402,9 @@ func normalizeCSPRuntimeRequest(req CSPRuntimeRequest) CSPRuntimeRequest {
 	if strings.TrimSpace(req.API) == "" {
 		req.API = "csp_SixV"
 	}
+	if strings.TrimSpace(req.Ext) == "" && strings.EqualFold(strings.TrimSpace(req.API), "csp_SixV") {
+		req.Ext = "https://www.xb6v.com/"
+	}
 	if strings.TrimSpace(req.Method) == "" {
 		req.Method = CSPRuntimeMethodHome
 	}
@@ -477,12 +424,15 @@ func cspClassName(api string) string {
 	return "com.github.catvod.spider." + api
 }
 
-func parseCSPSidecarResult(fallbackMethod string, raw json.RawMessage, durationMs int64) CSPSidecarResult {
+func parseCSPSidecarResult(fallbackMethod string, raw json.RawMessage, durationMs int64) (CSPSidecarResult, CSPDex2JarResult) {
 	result := CSPSidecarResult{Method: fallbackMethod, DurationMs: durationMs}
+	dex2jar := CSPDex2JarResult{Tool: "de.femtopedia.dex2jar:dex-translator"}
 	if len(raw) == 0 {
 		result.Error = "CSP runtime 空结果"
 		result.ErrorType = "empty_result"
-		return result
+		dex2jar.Error = result.Error
+		dex2jar.ErrorType = result.ErrorType
+		return result, dex2jar
 	}
 	var wrapper struct {
 		OK             bool            `json:"ok"`
@@ -496,12 +446,23 @@ func parseCSPSidecarResult(fallbackMethod string, raw json.RawMessage, durationM
 		CatVodStubs    []string        `json:"catVodStubs"`
 		NetworkBridge  string          `json:"networkBridge"`
 		UnsupportedAPI []string        `json:"unsupportedApi"`
+		Dex2Jar        struct {
+			OK         bool   `json:"ok"`
+			Tool       string `json:"tool"`
+			InputPath  string `json:"inputPath"`
+			OutputPath string `json:"outputPath"`
+			DurationMs int64  `json:"durationMs"`
+			Error      string `json:"error"`
+			ErrorType  string `json:"errorType"`
+		} `json:"dex2jar"`
 	}
 	if err := json.Unmarshal(raw, &wrapper); err != nil {
 		result.Error = "解析 CSP runtime 输出失败: " + err.Error()
 		result.ErrorType = "decode_failed"
 		result.Data = raw
-		return result
+		dex2jar.Error = result.Error
+		dex2jar.ErrorType = result.ErrorType
+		return result, dex2jar
 	}
 	result.OK = wrapper.OK
 	result.Method = cspDefaultString(wrapper.Method, fallbackMethod)
@@ -514,26 +475,29 @@ func parseCSPSidecarResult(fallbackMethod string, raw json.RawMessage, durationM
 	result.CatVodStubs = wrapper.CatVodStubs
 	result.NetworkBridge = wrapper.NetworkBridge
 	result.UnsupportedAPI = wrapper.UnsupportedAPI
+	dex2jar = CSPDex2JarResult{
+		OK:         wrapper.Dex2Jar.OK,
+		Tool:       cspDefaultString(wrapper.Dex2Jar.Tool, "de.femtopedia.dex2jar:dex-translator"),
+		InputPath:  wrapper.Dex2Jar.InputPath,
+		OutputPath: wrapper.Dex2Jar.OutputPath,
+		DurationMs: wrapper.Dex2Jar.DurationMs,
+		Error:      wrapper.Dex2Jar.Error,
+		ErrorType:  wrapper.Dex2Jar.ErrorType,
+	}
 	if result.DurationMs == 0 {
 		result.DurationMs = durationMs
 	}
-	return result
+	return result, dex2jar
 }
 
-func resolveDex2JarTool() (string, error) {
+func resolveCSPSidecarJar() (string, error) {
 	candidates := []string{
-		"d2j-dex2jar",
-		"d2j-dex2jar.sh",
-		"d2j-dex2jar.bat",
-		filepath.Join("tools", "dex2jar", "d2j-dex2jar.bat"),
-		filepath.Join("tools", "dex2jar", "d2j-dex2jar.sh"),
-		filepath.Join("runtime", "csp-sidecar", "tools", "d2j-dex2jar.bat"),
-		filepath.Join("runtime", "csp-sidecar", "tools", "d2j-dex2jar.sh"),
+		filepath.Join("runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),
+		filepath.Join("..", "runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),
+		filepath.Join("/app", "runtime", "csp-sidecar", "fyms-csp-sidecar-all.jar"),
+		filepath.Join("/app", "runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),
 	}
 	for _, candidate := range candidates {
-		if path, err := exec.LookPath(candidate); err == nil {
-			return path, nil
-		}
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			abs, err := filepath.Abs(candidate)
 			if err != nil {
@@ -542,78 +506,7 @@ func resolveDex2JarTool() (string, error) {
 			return abs, nil
 		}
 	}
-	return "", fmt.Errorf("未找到 dex2jar 工具 d2j-dex2jar")
-}
-
-func dex2jarArgs(tool, input, output string) []string {
-	args := []string{"--force", "--output", output, input}
-	if runtime.GOOS == "windows" && strings.HasSuffix(strings.ToLower(tool), ".bat") {
-		args = []string{"--force", "--output", output, input}
-	}
-	return args
-}
-
-func resolveCSPSidecarClasses(ctx context.Context) (string, error) {
-	candidates := []string{
-		filepath.Join("runtime", "csp-sidecar", "classes"),
-		filepath.Join("..", "runtime", "csp-sidecar", "classes"),
-		filepath.Join("/app", "runtime", "csp-sidecar", "classes"),
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			abs, err := filepath.Abs(candidate)
-			if err != nil {
-				return candidate, nil
-			}
-			return abs, nil
-		}
-	}
-	if compiled, err := compileCSPSidecarClasses(ctx); err == nil {
-		return compiled, nil
-	}
-	return "", fmt.Errorf("未找到 CSP sidecar classes runtime/csp-sidecar/classes")
-}
-
-func compileCSPSidecarClasses(ctx context.Context) (string, error) {
-	srcDir := filepath.Join("runtime", "csp-sidecar", "src")
-	if info, err := os.Stat(srcDir); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("未找到 CSP sidecar 源码目录")
-	}
-	javac, err := exec.LookPath("javac")
-	if err != nil {
-		return "", fmt.Errorf("未找到 javac，无法编译 CSP sidecar classes")
-	}
-	outDir := filepath.Join("runtime", "csp-sidecar", "classes")
-	sources := []string{}
-	if err := filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && strings.HasSuffix(path, ".java") {
-			sources = append(sources, path)
-		}
-		return nil
-	}); err != nil {
-		return "", err
-	}
-	if len(sources) == 0 {
-		return "", fmt.Errorf("CSP sidecar 源码为空")
-	}
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return "", err
-	}
-	args := append([]string{"-encoding", "UTF-8", "-d", outDir}, sources...)
-	cmd := exec.CommandContext(ctx, javac, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &limitWriter{w: &stderr, limit: cspRuntimeOutputMaxBytes}
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("编译 CSP sidecar classes 失败: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	abs, err := filepath.Abs(outDir)
-	if err != nil {
-		return outDir, nil
-	}
-	return abs, nil
+	return "", fmt.Errorf("未找到 CSP sidecar fat jar，请先运行 runtime/csp-sidecar/build.ps1")
 }
 
 func splitRuntimeLogs(parts ...string) []string {
