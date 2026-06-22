@@ -303,6 +303,7 @@ POST /SourceRuntime/TestCSP
 - T21/T22 路径防御补强：`5ced6a9`（修复 CSP sidecar 工作目录创建）。
 - T23 proxy 播放桥接补齐：`5f2f827`（补齐 CSP proxy 播放桥接）。
 - T21/T22 artifact 路径防御：`60c2b5f`（补强 CSP sidecar 绝对路径防御）。
+- T23 proxy 字节体处理：`808b837`（补强 CSP proxy 字节体处理）。
 
 **T22 落点**
 - CSP runtime kind 正式定为 `csp_dex`，继续采用独立 JVM worker 形态；每次调用由 `exec.CommandContext` 拉起，单次超时由上下文 kill，崩溃/卡死不拖垮 FYMS Core。
