@@ -304,6 +304,7 @@ POST /SourceRuntime/TestCSP
 - T23 proxy 播放桥接补齐：`5f2f827`（补齐 CSP proxy 播放桥接）。
 - T21/T22 artifact 路径防御：`60c2b5f`（补强 CSP sidecar 绝对路径防御）。
 - T23 proxy 字节体处理：`808b837`（补强 CSP proxy 字节体处理）。
+- T24 artifact 信任 UI：已补强 `verified|trusted` 可信状态展示，仅 `unverified` 保留确认信任操作。
 
 **T22 落点**
 - CSP runtime kind 正式定为 `csp_dex`，继续采用独立 JVM worker 形态；每次调用由 `exec.CommandContext` 拉起，单次超时由上下文 kill，崩溃/卡死不拖垮 FYMS Core。
@@ -327,6 +328,7 @@ POST /SourceRuntime/TestCSP
 - 新增管理员接口 `POST /SourceRuntime/Artifacts/:id/Trust`，将 artifact 置为 `trusted` 并写 `verified_at`；路由继续按根分组与 `/emby` 双注册。
 - 来源中心 Provider 表展示 `csp_dex` 为 `CSP JAR`；运行时审计表展示 runtime kind、artifact 类型与信任状态。
 - 来源中心 artifact 表提供“确认信任”操作，调用信任接口后刷新 artifacts/invocations；审计仍只展示 hash/错误类型/耗时，不展示敏感 URL 明文。
+- 来源中心 artifact 表将 `verified` 与 `trusted` 都展示为可信状态；已通过 MD5/SHA256 校验的 jar 不再误显示为仍需人工确认。
 
 **验证**
 - `runtime/csp-sidecar/build.ps1` 通过。

@@ -44,7 +44,7 @@ const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
     key: 'TrustStatus',
     width: 110,
     render(row) {
-      return h(NTag, { size: 'small', type: row.TrustStatus === 'trusted' ? 'success' : undefined }, { default: () => row.TrustStatus || 'unverified' })
+      return h(NTag, { size: 'small', type: artifactTrustType(row.TrustStatus) }, { default: () => row.TrustStatus || 'unverified' })
     },
   },
   { title: '大小', key: 'ByteSize', width: 100, render: (row) => formatBytes(row.ByteSize) },
@@ -54,7 +54,7 @@ const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
     key: 'actions',
     width: 110,
     render(row) {
-      if (row.TrustStatus === 'trusted') return '-'
+      if (isArtifactTrusted(row.TrustStatus)) return '-'
       return h(NButton, {
         size: 'small',
         quaternary: true,
@@ -88,6 +88,15 @@ function artifactLabel(value: string) {
   if (value === 'drpy_rule') return 'DRPY 规则'
   if (value === 'drpy_engine') return 'DRPY 引擎'
   return value || '-'
+}
+
+function isArtifactTrusted(value: string) {
+  const trust = (value || '').toLowerCase()
+  return trust === 'verified' || trust === 'trusted'
+}
+
+function artifactTrustType(value: string) {
+  return isArtifactTrusted(value) ? 'success' : undefined
 }
 </script>
 
