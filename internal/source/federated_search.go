@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	defaultFederatedSearchLimit       = 50
-	maxFederatedSearchLimit           = 100
-	defaultFederatedSearchGrace       = 3 * time.Second
-	defaultFederatedProviderTimeoutMS = 8000
+	defaultFederatedSearchLimit        = 50
+	maxFederatedSearchLimit            = 100
+	defaultFederatedSearchGrace        = 3 * time.Second
+	maxFederatedProviderDefaultTimeout = 15 * time.Second
 )
 
 type FederatedSearchRequest struct {
@@ -265,7 +265,7 @@ func applyFederatedProviderResult(response *FederatedSearchResponse, groups map[
 }
 
 func federatedSearchBudget(providers []repository.SourceProvider) time.Duration {
-	maxTimeout := defaultFederatedProviderTimeoutMS * time.Millisecond
+	maxTimeout := defaultCMSTimeout
 	for _, provider := range providers {
 		if timeout := federatedProviderTimeout(provider); timeout > maxTimeout {
 			maxTimeout = timeout
@@ -275,11 +275,30 @@ func federatedSearchBudget(providers []repository.SourceProvider) time.Duration 
 }
 
 func federatedProviderTimeout(provider repository.SourceProvider) time.Duration {
-	timeout := time.Duration(provider.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		return defaultFederatedProviderTimeoutMS * time.Millisecond
+	if provider.TimeoutMS > 0 {
+		return time.Duration(provider.TimeoutMS) * time.Millisecond
+	}
+
+	timeout := federatedProviderRuntimeDefaultTimeout(provider)
+	// 聚合搜索需要与单站运行时默认超时保持同一语义，但不能让单个 25~30s 慢站拖住整次聚合。
+	// 15s 足够覆盖“慢但活着”的 JS/CSP 站点，同时整体 budget 仍由 max provider timeout + grace 有界控制。
+	if timeout > maxFederatedProviderDefaultTimeout {
+		return maxFederatedProviderDefaultTimeout
 	}
 	return timeout
+}
+
+func federatedProviderRuntimeDefaultTimeout(provider repository.SourceProvider) time.Duration {
+	switch {
+	case provider.ProviderKind == "cms_vod" && provider.RuntimeKind == "native_cms":
+		return defaultCMSTimeout
+	case provider.RuntimeKind == JSRuntimeKindNodeDRPY:
+		return jsRuntimeDefaultTimeout
+	case provider.RuntimeKind == CSPRuntimeKindJVM:
+		return cspRuntimeDefaultTimeout
+	default:
+		return defaultCMSTimeout
+	}
 }
 
 func addFederatedItem(groups map[string]*FederatedSearchItem, keyword string, provider repository.SourceProvider, item repository.SourceItem) {
