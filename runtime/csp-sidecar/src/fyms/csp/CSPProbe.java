@@ -4,9 +4,7 @@ import android.app.Application;
 import android.content.Context;
 import com.github.catvod.crawler.Spider;
 import com.googlecode.d2j.dex.Dex2jar;
-import java.io.BufferedReader;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -15,7 +13,6 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -69,8 +66,7 @@ public final class CSPProbe {
     private CSPProbe() {}
 
     public static void main(String[] args) throws Exception {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        String line = reader.readLine();
+        String line = RpcIO.readLine();
         long start = System.currentTimeMillis();
         if (line == null || line.trim().isEmpty()) {
             emitResult(error("unknown", "", "空请求", "empty_request", start));
@@ -344,8 +340,7 @@ public final class CSPProbe {
         Map<String, Object> wrapper = new HashMap<>();
         wrapper.put("type", "log");
         wrapper.put("message", message);
-        System.out.println(Json.stringify(wrapper));
-        System.out.flush();
+        RpcIO.writeJsonLine(wrapper);
     }
 
     private static void emitResult(Map<String, Object> result) {
@@ -353,8 +348,7 @@ public final class CSPProbe {
         wrapper.put("type", "result");
         wrapper.put("result", result);
         wrapper.put("durationMs", result.get("durationMs"));
-        System.out.println(Json.stringify(wrapper));
-        System.out.flush();
+        RpcIO.writeJsonLine(wrapper);
     }
 
     private static String errorType(Throwable t) {

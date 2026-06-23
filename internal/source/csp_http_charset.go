@@ -10,8 +10,6 @@ import (
 
 	"golang.org/x/net/html/charset"
 	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/encoding/unicode"
 )
 
@@ -26,6 +24,9 @@ func decodeCSPHTTPText(raw []byte, contentType string) (string, string, bool) {
 	}
 	if !isCSPTextContentType(contentType) && !looksLikeCSPText(raw) {
 		return "", "", false
+	}
+	if utf8.Valid(raw) && charsetFromContentType(contentType) == "" && charsetFromHTMLMeta(raw) == "" && !hasCSPBOM(raw) {
+		return string(raw), "utf-8", true
 	}
 	enc, name := detectCSPHTTPEncoding(raw, contentType)
 	if enc == nil {
@@ -55,11 +56,6 @@ func detectCSPHTTPEncoding(raw []byte, contentType string) (encoding.Encoding, s
 	}
 	if enc, name := charsetFromBOM(raw); enc != nil {
 		return enc, name
-	}
-	if !utf8.Valid(raw) {
-		if enc, name, ok := detectCSPChineseEncoding(raw); ok {
-			return enc, name
-		}
 	}
 	enc, name, _ := charset.DetermineEncoding(raw, contentType)
 	return enc, name
@@ -106,6 +102,11 @@ func charsetFromBOM(raw []byte) (encoding.Encoding, string) {
 	}
 }
 
+func hasCSPBOM(raw []byte) bool {
+	enc, _ := charsetFromBOM(raw)
+	return enc != nil
+}
+
 func isCSPTextContentType(contentType string) bool {
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err != nil {
@@ -139,44 +140,4 @@ func looksLikeCSPText(raw []byte) bool {
 		bytes.HasPrefix(lower, []byte("<?xml")) ||
 		bytes.HasPrefix(lower, []byte("{")) ||
 		bytes.HasPrefix(lower, []byte("["))
-}
-
-func detectCSPChineseEncoding(raw []byte) (encoding.Encoding, string, bool) {
-	candidates := []struct {
-		name string
-		enc  encoding.Encoding
-	}{
-		{name: "gb18030", enc: simplifiedchinese.GB18030},
-		{name: "big5", enc: traditionalchinese.Big5},
-	}
-	bestName := ""
-	var bestEnc encoding.Encoding
-	bestScore := 0
-	for _, candidate := range candidates {
-		reader := candidate.enc.NewDecoder().Reader(bytes.NewReader(raw))
-		data, err := io.ReadAll(io.LimitReader(reader, int64(len(raw))*4+4096))
-		if err != nil || !utf8.Valid(data) {
-			continue
-		}
-		score := scoreCSPChineseText(string(data))
-		if score > bestScore {
-			bestName = candidate.name
-			bestEnc = candidate.enc
-			bestScore = score
-		}
-	}
-	if bestScore <= 0 {
-		return nil, "", false
-	}
-	return bestEnc, bestName, true
-}
-
-func scoreCSPChineseText(text string) int {
-	score := 0
-	for _, r := range text {
-		if r >= '\u4e00' && r <= '\u9fff' {
-			score++
-		}
-	}
-	return score
 }

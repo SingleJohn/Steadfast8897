@@ -1,8 +1,7 @@
 package com.github.catvod.net;
 
 import fyms.csp.Json;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import fyms.csp.RpcIO;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -34,12 +33,10 @@ public final class OkHttp {
         msg.put("type", "http_request");
         msg.put("id", id);
         msg.put("request", req);
-        System.out.println(Json.stringify(msg));
-        System.out.flush();
+        RpcIO.writeJsonLine(msg);
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String line;
-        while ((line = reader.readLine()) != null) {
+        while ((line = RpcIO.readLine()) != null) {
             Map<String, Object> resp = Json.parseObject(line);
             if (!id.equals(String.valueOf(resp.get("id")))) {
                 continue;

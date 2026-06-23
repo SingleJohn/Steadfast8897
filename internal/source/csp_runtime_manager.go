@@ -192,7 +192,11 @@ func (m *CSPRuntimeManager) runSidecar(ctx context.Context, req CSPRuntimeReques
 		"artifactPath": artifactPath,
 		"workDir":      workDir,
 	}
-	cmd := exec.CommandContext(ctx, m.javaPath, "-jar", m.sidecar)
+	cmd := exec.CommandContext(ctx, m.javaPath,
+		"-Dfile.encoding=UTF-8",
+		"-Dsun.stdout.encoding=UTF-8",
+		"-Dsun.stderr.encoding=UTF-8",
+		"-jar", m.sidecar)
 	cmd.Dir = workDir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

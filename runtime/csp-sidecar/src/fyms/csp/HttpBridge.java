@@ -1,8 +1,6 @@
 package fyms.csp;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
@@ -15,8 +13,6 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class HttpBridge {
-    private static final BufferedReader READER = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-
     private HttpBridge() {}
 
     public static synchronized Response execute(Request request) throws IOException {
@@ -34,11 +30,10 @@ public final class HttpBridge {
         payload.put("type", "http_request");
         payload.put("id", id);
         payload.put("request", req);
-        System.out.println(Json.stringify(payload));
-        System.out.flush();
+        RpcIO.writeJsonLine(payload);
 
         String line;
-        while ((line = READER.readLine()) != null) {
+        while ((line = RpcIO.readLine()) != null) {
             Map<String, Object> resp = Json.parseObject(line);
             if (!id.equals(String.valueOf(resp.get("id")))) {
                 continue;
