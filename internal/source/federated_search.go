@@ -351,25 +351,12 @@ func flattenFederatedItems(groups map[string]*FederatedSearchItem) []FederatedSe
 }
 
 func federatedItemKey(item repository.SourceItem) string {
-	title := normalizeFederatedTitle(item.Title)
-	if title == "" {
-		return fmt.Sprintf("provider:%d:%s", item.ProviderID, item.SourceItemID)
-	}
-	if item.Year != nil && *item.Year > 0 {
-		return fmt.Sprintf("%s:%d", title, *item.Year)
-	}
-	return title
-}
-
-func normalizeFederatedTitle(title string) string {
-	title = strings.ToLower(cleanCMSValue(title))
-	replacer := strings.NewReplacer(" ", "", "　", "", "-", "", "_", "", ":", "", "：", "", "·", "")
-	return replacer.Replace(title)
+	return SourceItemSearchKey(item)
 }
 
 func federatedItemScore(keyword string, provider repository.SourceProvider, item repository.SourceItem) int {
-	keyword = normalizeFederatedTitle(keyword)
-	title := normalizeFederatedTitle(item.Title)
+	keyword = NormalizeSourceSearchTitle(keyword)
+	title := NormalizeSourceSearchTitle(item.Title)
 	score := 0
 	switch {
 	case keyword != "" && title == keyword:

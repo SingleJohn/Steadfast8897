@@ -761,7 +761,7 @@ func searchHints(c *gin.Context, state *AppState) {
 	}
 	total := result.Total
 	if shouldAppendSourceSearchResults(c, state, searchTerm, "", "") {
-		rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(ctx, repository.SourceItemSearchOptions{
+		rows, _, err := state.Repo.Source.SearchSourceItems(ctx, repository.SourceItemSearchOptions{
 			SearchTerm:   searchTerm,
 			IncludeTypes: compatSourceIncludeTypes(includeTypes),
 			Limit:        limitVal,
@@ -771,37 +771,17 @@ func searchHints(c *gin.Context, state *AppState) {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
+		rows, err = dedupeCompatSourceSearchHintRows(ctx, state, rows)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
 		for i := range rows {
 			hints = append(hints, compatSourceSearchHint(state, rows[i]))
 		}
-		total += sourceTotal
+		total += int64(len(rows))
 	}
 	c.JSON(http.StatusOK, gin.H{"SearchHints": hints, "TotalRecordCount": total})
-}
-
-func compatSourceSearchHint(state *AppState, item repository.SourceItem) gin.H {
-	itemType := compatSourceItemType(item.ItemType)
-	hint := gin.H{
-		"Id":        item.PublicUUID,
-		"ItemId":    item.PublicUUID,
-		"Name":      item.Title,
-		"Type":      itemType,
-		"MediaType": "Video",
-		"ServerId":  state.Config.ServerID,
-		"IsFolder":  itemType == "Series" || itemType == "Folder",
-	}
-	if item.Year != nil {
-		hint["ProductionYear"] = *item.Year
-	}
-	if item.PosterURL != nil && strings.TrimSpace(*item.PosterURL) != "" {
-		tag := compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.PosterURL)
-		hint["PrimaryImageTag"] = tag
-		hint["ThumbImageTag"] = tag
-	}
-	if item.BackdropURL != nil && strings.TrimSpace(*item.BackdropURL) != "" {
-		hint["BackdropImageTag"] = compatSourceImageTag(item.ProviderID, item.PublicUUID, *item.BackdropURL)
-	}
-	return hint
 }
 
 // hideMediaSourceSizeForInfuse 暂不隐藏 MediaSource.Size,用于验证 Infuse 在
