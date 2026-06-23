@@ -206,7 +206,11 @@ func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out 
 	if len(body) == 0 {
 		return fmt.Errorf("%w: CMS 响应为空", ErrCMSUnavailableResponse)
 	}
-	switch detectCMSResponseFormat(body) {
+	format := detectCMSResponseFormat(body)
+	if format == "" {
+		return cmsUnavailableResponseError(body)
+	}
+	switch format {
 	case "xml":
 		if err := parseCMSXML(body, out); err != nil {
 			return fmt.Errorf("解析 CMS XML 失败: %w", err)
@@ -220,7 +224,7 @@ func (p *CMSProvider) getCMS(ctx context.Context, params map[string]string, out 
 	case "html":
 		return fmt.Errorf("%w: CMS 返回 HTML 页面，站点当前不可用", ErrCMSHTMLResponse)
 	default:
-		return fmt.Errorf("%w: CMS 响应格式无法识别", ErrCMSUnavailableResponse)
+		return cmsUnavailableResponseError(body)
 	}
 }
 
@@ -251,6 +255,13 @@ func trimCMSResponsePrefix(body []byte) []byte {
 	body = bytes.TrimSpace(body)
 	body = bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf})
 	return bytes.TrimSpace(body)
+}
+
+func cmsUnavailableResponseError(body []byte) error {
+	if strings.TrimSpace(string(body[:min(len(body), 64)])) == "" {
+		return fmt.Errorf("%w: CMS 响应为空", ErrCMSUnavailableResponse)
+	}
+	return fmt.Errorf("%w: CMS 返回非标准响应，站点当前不可用", ErrCMSUnavailableResponse)
 }
 
 func mergeCMSQuery(rawURL string, params map[string]string) (string, error) {
