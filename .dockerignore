@@ -2,6 +2,8 @@
 data
 web/node_modules
 web/.vite
+runtime/csp-sidecar/.gradle
+runtime/csp-sidecar/build
 *.DS_Store
 .env
 .air.toml

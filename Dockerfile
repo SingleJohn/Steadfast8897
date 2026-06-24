@@ -49,14 +49,20 @@ WORKDIR /build/runtime/csp-sidecar
 COPY runtime/csp-sidecar/ ./
 RUN gradle --no-daemon clean shadowJar
 
-# ====== Stage 4: Runtime ======
+# ====== Stage 4: Java Runtime ======
+FROM eclipse-temurin:21-jre AS java-runtime
+
+# ====== Stage 5: Runtime ======
 FROM debian:12-slim
 
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
     sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null; \
     apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates ffmpeg libstdc++6 openjdk-21-jre-headless \
+    ca-certificates ffmpeg libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:/usr/local/bin:${PATH}"
 
 RUN useradd -m -u 1000 fyms
 
@@ -64,6 +70,7 @@ WORKDIR /app
 
 COPY --from=backend-builder /build/fyms /app/fyms
 COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
 COPY runtime/ /app/runtime/
 COPY --from=csp-sidecar-builder /build/runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar /app/runtime/csp-sidecar/fyms-csp-sidecar-all.jar
 COPY migrations /app/migrations

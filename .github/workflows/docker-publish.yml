@@ -59,8 +59,38 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  csp-sidecar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build CSP sidecar
+        run: |
+          cd runtime/csp-sidecar
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean shadowJar
+
+      - name: Upload CSP sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: csp-sidecar
+          path: runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar
+          if-no-files-found: error
+          retention-days: 1
+
   binaries:
     needs:
+      - csp-sidecar
       - web-assets
       - version
     runs-on: ubuntu-latest
@@ -127,6 +157,12 @@ jobs:
           mkdir -p web
           tar -xzf web-dist.tgz -C web
 
+      - name: Download CSP sidecar
+        uses: actions/download-artifact@v4
+        with:
+          name: csp-sidecar
+          path: csp-sidecar-artifact
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -154,8 +190,13 @@ jobs:
           ARCHIVE_BASENAME="fyms_${{ needs.version.outputs.value }}_${{ matrix.target }}"
           PACKAGE_DIR="package/${ARCHIVE_BASENAME}"
           mkdir -p "${PACKAGE_DIR}/migrations"
+          mkdir -p "${PACKAGE_DIR}/runtime/js-sidecar"
+          mkdir -p "${PACKAGE_DIR}/runtime/csp-sidecar"
           cp "dist/${{ matrix.binary_name }}" "${PACKAGE_DIR}/${{ matrix.binary_name }}"
           cp migrations/*.sql "${PACKAGE_DIR}/migrations/"
+          cp runtime/js-sidecar/package.json "${PACKAGE_DIR}/runtime/js-sidecar/"
+          cp runtime/js-sidecar/sidecar.mjs "${PACKAGE_DIR}/runtime/js-sidecar/"
+          cp csp-sidecar-artifact/fyms-csp-sidecar-all.jar "${PACKAGE_DIR}/runtime/csp-sidecar/"
           cp README.md "${PACKAGE_DIR}/README.md"
 
           if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
@@ -292,6 +333,7 @@ jobs:
             echo "- Docker image: \`eianz/fyms:${GITHUB_REF_NAME}\`"
             echo "- Docker image: \`eianz/fyms:latest\`"
             echo "- Binary packages and \`checksums.txt\` are attached below"
+            echo "- Docker images include the TVBox JS/CSP runtimes. Binary packages include sidecar files; JS runtime needs Node.js 22+, CSP runtime needs Java 21+ on PATH."
             echo
             echo "## Included Platforms"
             echo
@@ -359,6 +401,7 @@ jobs:
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Build time (UTC): \`${BUILD_TIME}\`"
             echo "- Docker image: \`eianz/fyms:nightly\`"
+            echo "- Docker images include the TVBox JS/CSP runtimes. Binary packages include sidecar files; JS runtime needs Node.js 22+, CSP runtime needs Java 21+ on PATH."
             echo
             echo "## Included Platforms"
             echo

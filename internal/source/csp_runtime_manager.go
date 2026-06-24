@@ -574,7 +574,9 @@ func parseCSPSidecarResult(fallbackMethod string, raw json.RawMessage, durationM
 
 func resolveCSPSidecarJar() (string, error) {
 	candidates := []string{
+		filepath.Join("runtime", "csp-sidecar", "fyms-csp-sidecar-all.jar"),
 		filepath.Join("runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),
+		filepath.Join("..", "runtime", "csp-sidecar", "fyms-csp-sidecar-all.jar"),
 		filepath.Join("..", "runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),
 		filepath.Join("/app", "runtime", "csp-sidecar", "fyms-csp-sidecar-all.jar"),
 		filepath.Join("/app", "runtime", "csp-sidecar", "build", "libs", "fyms-csp-sidecar-all.jar"),

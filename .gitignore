@@ -33,6 +33,10 @@ web/dist/*
 web/node_modules/
 web/.vite/
 
+# Runtime sidecar local build output
+runtime/csp-sidecar/.gradle/
+runtime/csp-sidecar/build/
+
 # Logs & coverage
 *.log
 coverage/
