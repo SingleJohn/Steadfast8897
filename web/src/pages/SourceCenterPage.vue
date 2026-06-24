@@ -26,6 +26,8 @@ const {
   importName,
   importUrl,
   importJson,
+  importKind,
+  importFormat,
   lastImport,
   activeProviderId,
   providerSearchKeyword,
@@ -74,6 +76,8 @@ onMounted(() => {
           v-model:name="importName"
           v-model:url="importUrl"
           v-model:json="importJson"
+          v-model:kind="importKind"
+          v-model:format="importFormat"
           :importing="importing"
           :last-import="lastImport"
           @submit="source.submitImport"

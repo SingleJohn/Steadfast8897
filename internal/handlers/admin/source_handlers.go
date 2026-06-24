@@ -20,6 +20,15 @@ type importTVBoxRequest struct {
 	JSON      json.RawMessage `json:"json"`
 }
 
+type importCMSListRequest struct {
+	Name           string          `json:"name"`
+	SourceURL      string          `json:"source_url"`
+	RawText        string          `json:"raw_text"`
+	Format         string          `json:"format"`
+	DefaultEnabled bool            `json:"default_enabled"`
+	JSON           json.RawMessage `json:"json"`
+}
+
 func importTVBoxConfig(c *gin.Context, state *AppState) {
 	var req importTVBoxRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -38,6 +47,37 @@ func importTVBoxConfig(c *gin.Context, state *AppState) {
 		Name:      req.Name,
 		SourceURL: req.SourceURL,
 		RawJSON:   raw,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func importCMSListConfig(c *gin.Context, state *AppState) {
+	var req importCMSListRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	raw := []byte(req.JSON)
+	if len(raw) == 0 && strings.TrimSpace(req.RawText) != "" {
+		raw = []byte(strings.TrimSpace(req.RawText))
+		if decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.RawText)); err == nil && len(decoded) > 0 {
+			trimmed := strings.TrimSpace(string(decoded))
+			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(strings.ToLower(trimmed), "type:") {
+				raw = decoded
+			}
+		}
+	}
+	importer := sourcebridge.NewCMSListImporter(state.Repo.Source)
+	result, err := importer.Import(c.Request.Context(), sourcebridge.ImportCMSListInput{
+		Name:           req.Name,
+		SourceURL:      req.SourceURL,
+		RawText:        raw,
+		Format:         req.Format,
+		DefaultEnabled: req.DefaultEnabled,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})

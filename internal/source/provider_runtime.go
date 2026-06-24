@@ -276,6 +276,9 @@ func (m *ProviderRuntimeManager) nativeCMSProvider(row *repository.SourceProvide
 		return nil, fmt.Errorf("provider 需要后续 runtime: %s/%s", row.ProviderKind, row.RuntimeKind)
 	}
 	headers := map[string]string{}
+	searchAC := ""
+	detailAC := ""
+	categoryAC := ""
 	if len(row.Headers) > 0 {
 		var raw map[string]any
 		if err := json.Unmarshal(row.Headers, &raw); err == nil {
@@ -286,17 +289,33 @@ func (m *ProviderRuntimeManager) nativeCMSProvider(row *repository.SourceProvide
 			}
 		}
 	}
+	if len(row.Ext) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal(row.Ext, &raw); err == nil {
+			searchAC = stringExt(raw, "search_ac")
+			detailAC = stringExt(raw, "detail_ac")
+			categoryAC = stringExt(raw, "category_ac")
+		}
+	}
 	provider, err := NewCMSProvider(
 		row.SourceKey,
 		row.API,
 		WithCMSHTTPClient(m.client),
 		WithCMSTimeout(time.Duration(row.TimeoutMS)*time.Millisecond),
 		WithCMSHeaders(headers),
+		WithCMSActions(searchAC, detailAC, categoryAC),
 	)
 	if err != nil {
 		return nil, err
 	}
 	return provider, nil
+}
+
+func stringExt(raw map[string]any, key string) string {
+	if value, ok := raw[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func (m *ProviderRuntimeManager) jsProvider(ctx context.Context, row *repository.SourceProvider) (*JSProvider, error) {

@@ -8,6 +8,7 @@ import {
   federatedSourceSearch,
   generateSourceViewCover,
   healthCheckSourceProvider,
+  importCMSListConfig,
   importTVBoxConfig,
   listSourceConfigs,
   listSourceParsers,
@@ -49,6 +50,8 @@ export function useSourceCenter(showToast: ToastFn) {
   const importName = shallowRef('')
   const importUrl = shallowRef('')
   const importJson = shallowRef('')
+  const importKind = shallowRef<'tvbox' | 'cms_list'>('tvbox')
+  const importFormat = shallowRef<'auto' | 'libretv_settings' | 'csv' | 'txt' | 'json'>('auto')
   const lastImport = shallowRef<any>(null)
   const activeProviderId = shallowRef<number | null>(null)
   const providerSearchKeyword = shallowRef('')
@@ -142,17 +145,30 @@ export function useSourceCenter(showToast: ToastFn) {
 
   async function submitImport() {
     if (!importUrl.value.trim() && !importJson.value.trim()) {
-      showToast('请填写配置 URL 或粘贴 JSON', 'info')
+      showToast('请填写配置 URL 或粘贴内容', 'info')
       return
     }
     importing.value = true
     try {
-      lastImport.value = await importTVBoxConfig({
+      const basePayload = {
         name: importName.value.trim() || undefined,
         source_url: importUrl.value.trim() || undefined,
-        raw_json: importJson.value.trim() || undefined,
-      })
-      showToast(`导入完成：可用 ${lastImport.value.accepted}，暂不可用 ${lastImport.value.skipped}`, 'success')
+      }
+      if (importKind.value === 'cms_list') {
+        lastImport.value = await importCMSListConfig({
+          ...basePayload,
+          raw_text: importJson.value.trim() || undefined,
+          format: importFormat.value,
+          default_enabled: false,
+        })
+        showToast(`导入完成：Provider ${lastImport.value.accepted} 个，默认禁用`, 'success')
+      } else {
+        lastImport.value = await importTVBoxConfig({
+          ...basePayload,
+          raw_json: importJson.value.trim() || undefined,
+        })
+        showToast(`导入完成：可用 ${lastImport.value.accepted}，暂不可用 ${lastImport.value.skipped}`, 'success')
+      }
       await refreshAll()
     } catch (e: any) {
       showToast(e?.message || '导入失败', 'error')
@@ -378,6 +394,8 @@ export function useSourceCenter(showToast: ToastFn) {
     importName,
     importUrl,
     importJson,
+    importKind,
+    importFormat,
     lastImport,
     activeProviderId,
     selectedProvider,

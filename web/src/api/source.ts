@@ -174,6 +174,22 @@ export async function importTVBoxConfig(payload: { name?: string; source_url?: s
   })
 }
 
+export type ImportCMSListPayload = {
+  name?: string
+  source_url?: string
+  raw_text?: string
+  format?: 'auto' | 'libretv_settings' | 'csv' | 'txt' | 'json'
+  default_enabled?: boolean
+}
+
+export async function importCMSListConfig(payload: ImportCMSListPayload) {
+  return requestJson<ImportTVBoxResult>('/SourceConfigs/ImportCMSList', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+  })
+}
+
 export async function listSourceConfigs() {
   const res = await requestJson<{ items: SourceConfig[] }>('/SourceConfigs')
   return res.items || []

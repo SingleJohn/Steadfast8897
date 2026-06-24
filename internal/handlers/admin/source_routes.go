@@ -14,6 +14,7 @@ func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.POST("/SourceParsers/:id/Disable", adminMW, func(c *gin.Context) { setSourceParserEnabled(c, state, false) })
 
 	group.POST("/SourceConfigs/ImportTVBox", adminMW, func(c *gin.Context) { importTVBoxConfig(c, state) })
+	group.POST("/SourceConfigs/ImportCMSList", adminMW, func(c *gin.Context) { importCMSListConfig(c, state) })
 	group.GET("/SourceConfigs", adminMW, func(c *gin.Context) { listSourceConfigs(c, state) })
 	group.POST("/SourceConfigs/:id/Enable", adminMW, func(c *gin.Context) { setSourceConfigEnabled(c, state, true) })
 	group.POST("/SourceConfigs/:id/Disable", adminMW, func(c *gin.Context) { setSourceConfigEnabled(c, state, false) })

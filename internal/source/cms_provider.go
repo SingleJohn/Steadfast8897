@@ -24,11 +24,14 @@ var (
 type CMSProviderOption func(*CMSProvider)
 
 type CMSProvider struct {
-	siteKey string
-	api     string
-	client  *http.Client
-	headers map[string]string
-	timeout time.Duration
+	siteKey    string
+	api        string
+	client     *http.Client
+	headers    map[string]string
+	timeout    time.Duration
+	searchAC   string
+	detailAC   string
+	categoryAC string
 }
 
 func NewCMSProvider(siteKey, api string, opts ...CMSProviderOption) (*CMSProvider, error) {
@@ -44,11 +47,14 @@ func NewCMSProvider(siteKey, api string, opts ...CMSProviderOption) (*CMSProvide
 		return nil, fmt.Errorf("CMS Provider api 无效: %w", err)
 	}
 	p := &CMSProvider{
-		siteKey: siteKey,
-		api:     api,
-		client:  http.DefaultClient,
-		headers: map[string]string{},
-		timeout: defaultCMSTimeout,
+		siteKey:    siteKey,
+		api:        api,
+		client:     http.DefaultClient,
+		headers:    map[string]string{},
+		timeout:    defaultCMSTimeout,
+		searchAC:   "list",
+		detailAC:   "detail",
+		categoryAC: "list",
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -90,9 +96,26 @@ func WithCMSHeaders(headers map[string]string) CMSProviderOption {
 	}
 }
 
+func WithCMSActions(searchAC, detailAC, categoryAC string) CMSProviderOption {
+	return func(p *CMSProvider) {
+		if s := strings.TrimSpace(searchAC); s != "" {
+			p.searchAC = s
+		}
+		if s := strings.TrimSpace(detailAC); s != "" {
+			p.detailAC = s
+		}
+		if s := strings.TrimSpace(categoryAC); s != "" {
+			p.categoryAC = s
+		}
+	}
+}
+
 func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error) {
 	var payload cmsResponse
-	if err := p.getCMS(ctx, nil, &payload); err != nil {
+	params := map[string]string{
+		"ac": p.categoryAC,
+	}
+	if err := p.getCMS(ctx, params, &payload); err != nil {
 		return nil, err
 	}
 	categories := make([]ProviderCategory, 0, len(payload.Class))
@@ -110,7 +133,7 @@ func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error
 func (p *CMSProvider) Search(ctx context.Context, req SearchRequest) (*ProviderPage, error) {
 	var payload cmsResponse
 	params := map[string]string{
-		"ac": "list",
+		"ac": p.searchAC,
 		"wd": strings.TrimSpace(req.Keyword),
 		"pg": strconv.Itoa(normalizePage(req.Page)),
 	}
@@ -123,7 +146,7 @@ func (p *CMSProvider) Search(ctx context.Context, req SearchRequest) (*ProviderP
 func (p *CMSProvider) Category(ctx context.Context, req CategoryRequest) (*ProviderPage, error) {
 	var payload cmsResponse
 	params := map[string]string{
-		"ac": "list",
+		"ac": p.categoryAC,
 		"t":  strings.TrimSpace(req.CategoryID),
 		"pg": strconv.Itoa(normalizePage(req.Page)),
 	}
@@ -140,7 +163,7 @@ func (p *CMSProvider) Detail(ctx context.Context, sourceItemID string) (*Provide
 	}
 	var payload cmsResponse
 	params := map[string]string{
-		"ac":  "detail",
+		"ac":  p.detailAC,
 		"ids": sourceItemID,
 	}
 	if err := p.getCMS(ctx, params, &payload); err != nil {
