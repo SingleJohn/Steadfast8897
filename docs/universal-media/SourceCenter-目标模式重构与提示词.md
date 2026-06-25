@@ -452,7 +452,13 @@ SC6 前端体验与可访问性收口
 - 按后端预览 API、前端构建器、保存联调小步中文 commit。
 ```
 
-**实际落点**：待执行时填写。
+**实际落点**：
+- 文件：`internal/repository/source_types.go`、`internal/repository/source_view_repository.go`、`internal/handlers/library/source_views.go`、`internal/handlers/library/library.go`、`web/src/api/source.ts`、`web/src/composables/useSourceViews.ts`、`web/src/composables/useSourceCenter.ts`、`web/src/pages/SourceCenterPage.vue`、`web/src/components/source-center/SourceViewsPanel.vue`。
+- API：新增只读预览接口 `POST /Library/SourceViews/Preview`，输入复用在线库构建字段 `dimension/match_value/match_values/provider_ids/filter`，返回 `item_count/providers/items`。
+- 行为：预览接口仅查询 `source_items` 命中，不写入数据，不写入 `items`；前端在线库页改为构建器，支持维度选择、维度值发现、Provider 多选与健康状态展示、保存前命中预览、`enabled/expose_to_emby/sort_order` 编辑与封面操作入口。
+- 边界：在线库文案明确其为 Emby 可见组织视图，不是配置包或单个 Provider；Provider 选择仅限制该库收录的来源数据；Parser 本轮仍是全局播放解析器，未引入库级解析器运行时上下文，未改 JS/CSP/CMS 运行时核心逻辑。
+- 构建：`go build ./...` 通过；`cd web && npm run build` 通过（保留既有 ArtPlayer CommonJS warning）。
+- Commit：`270c5af5` 在线库新增命中预览接口；`9f95c6d3` 在线库构建器支持预览与Provider多选。
 
 ---
 
