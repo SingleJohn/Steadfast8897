@@ -115,28 +115,6 @@ func setSourceConfigEnabled(c *gin.Context, state *AppState, enabled bool) {
 	c.JSON(http.StatusOK, item)
 }
 
-func listSourceProviders(c *gin.Context, state *AppState) {
-	var configID *int64
-	if raw := strings.TrimSpace(c.Query("config_id")); raw != "" {
-		id, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "invalid config_id"})
-			return
-		}
-		configID = &id
-	}
-	rows, err := state.Repo.Source.ListProviders(c.Request.Context(), repository.SourceProviderListOptions{
-		Limit:    int64(queryInt(c, "limit", 100)),
-		Offset:   int64(queryInt(c, "offset", 0)),
-		ConfigID: configID,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"items": rows})
-}
-
 func listSourceParsers(c *gin.Context, state *AppState) {
 	var configID *int64
 	if raw := strings.TrimSpace(c.Query("config_id")); raw != "" {
@@ -176,37 +154,6 @@ func setSourceParserEnabled(c *gin.Context, state *AppState, enabled bool) {
 	c.JSON(http.StatusOK, item)
 }
 
-func setSourceProviderEnabled(c *gin.Context, state *AppState, enabled bool) {
-	id, ok := pathInt64(c, "id")
-	if !ok {
-		return
-	}
-	item, err := state.Repo.Source.SetProviderEnabled(c.Request.Context(), id, enabled)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
-	if item == nil {
-		c.JSON(http.StatusNotFound, gin.H{"message": "source provider not found"})
-		return
-	}
-	c.JSON(http.StatusOK, item)
-}
-
-func healthCheckSourceProvider(c *gin.Context, state *AppState) {
-	id, ok := pathInt64(c, "id")
-	if !ok {
-		return
-	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
-	item, err := manager.HealthCheck(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, item)
-}
-
 type providerSearchRequest struct {
 	Keyword string `json:"keyword"`
 	Page    int    `json:"page"`
@@ -235,72 +182,9 @@ func federatedSourceSearch(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, result)
 }
 
-func searchSourceProvider(c *gin.Context, state *AppState) {
-	id, ok := pathInt64(c, "id")
-	if !ok {
-		return
-	}
-	var req providerSearchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
-	page, items, err := manager.Search(c.Request.Context(), id, sourcebridge.SearchRequest{
-		Keyword: req.Keyword,
-		Page:    req.Page,
-	})
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"page": page, "items": items})
-}
-
 type providerDetailRequest struct {
 	SourceItemID string `json:"source_item_id"`
 	ID           string `json:"id"`
-}
-
-func detailSourceProvider(c *gin.Context, state *AppState) {
-	id, ok := pathInt64(c, "id")
-	if !ok {
-		return
-	}
-	var req providerDetailRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	sourceItemID := strings.TrimSpace(req.SourceItemID)
-	if sourceItemID == "" {
-		sourceItemID = strings.TrimSpace(req.ID)
-	}
-	if sourceItemID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "source_item_id required"})
-		return
-	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
-	detail, item, playSources, err := manager.Detail(c.Request.Context(), id, sourceItemID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"detail": detail, "item": item, "play_sources": playSources})
-}
-
-func listSourceProviderCategories(c *gin.Context, state *AppState) {
-	id, ok := pathInt64(c, "id")
-	if !ok {
-		return
-	}
-	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
-	items, err := manager.Categories(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
 func pathInt64(c *gin.Context, name string) (int64, bool) {
