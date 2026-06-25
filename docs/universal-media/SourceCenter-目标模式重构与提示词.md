@@ -308,7 +308,13 @@ SC6 前端体验与可访问性收口
 - 按 repository、handler/API、DTO 小步中文 commit。
 ```
 
-**实际落点**：待执行时填写。
+**实际落点**：
+- 文件：`internal/repository/source_provider_repository.go`、`internal/repository/source_types.go`、`internal/repository/source_scan_repository.go`、`internal/handlers/admin/source_provider_handlers.go`、`internal/handlers/admin/source_handlers.go`、`internal/handlers/admin/source_routes.go`。
+- API：扩展 `GET /SourceProviders` 查询参数 `config_id/enabled/health_status/runtime_kind/provider_kind/keyword/limit/offset`；新增 `POST /SourceProviders/BatchEnable`、`POST /SourceProviders/BatchDisable`、`POST /SourceProviders/BatchHealthCheck`。
+- 行为：批量启停按 `provider_ids` 更新并返回脱敏 Provider DTO；批量探活并发限制为 4，单 Provider 失败不影响整批，返回 `provider_id/provider_name/status/error_type/message/latency_ms/categories_count`；分类接口返回稳定 `id/name/count/source` DTO，并附带“上游站点栏目，可用于站点浏览与在线库组织辅助”说明。
+- 安全：Provider 管理响应不返回 `headers/ext/raw_site`，`api` 去除 query/user/fragment，额外返回 `APIHash` 便于定位。
+- 构建：`go build ./...` 通过；本任务未改 `web/`，未运行 `cd web && npm run build`。
+- Commit：`6673c5cf` 来源Provider支持筛选与批量启停；`247fbc8f` 来源Provider开放批量管理接口。
 
 ---
 
