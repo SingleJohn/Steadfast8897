@@ -79,6 +79,8 @@ const {
   coverStyle,
   coverStyleOptions,
   generatingCover,
+  viewPreview,
+  previewLoading,
 } = source
 
 async function switchTab(tab: SourceCenterTab) {
@@ -219,7 +221,10 @@ watch(federatedKeyword, (value) => {
           <div v-else-if="activeTab === 'views'" class="tab-stack">
             <SourceViewsPanel
               :views="views"
+              :providers="providers"
               :draft="viewDraft"
+              :preview="viewPreview"
+              :preview-loading="previewLoading"
               :discover-dimension="discoverDimension"
               :discover-search="discoverSearch"
               :discover-values="discoverValues"
@@ -233,7 +238,9 @@ watch(federatedKeyword, (value) => {
               @update:draft-display-name="viewDraft.DisplayName = $event"
               @update:draft-dimension="viewDraft.Dimension = $event"
               @update:draft-match-value="viewDraft.MatchValue = $event"
+              @update:draft-provider-ids="viewDraft.ProviderIds = $event"
               @update:draft-collection-type="viewDraft.CollectionType = $event"
+              @update:draft-sort-order="viewDraft.SortOrder = $event"
               @update:draft-enabled="viewDraft.Enabled = $event"
               @update:draft-expose="viewDraft.ExposeToEmby = $event"
               @update:discover-dimension="discoverDimension = $event"
@@ -242,6 +249,7 @@ watch(federatedKeyword, (value) => {
               @update:cover-style="coverStyle = $event"
               @edit="source.editView"
               @save="source.saveView"
+              @preview="source.previewView"
               @remove="source.removeView"
               @discover="source.runDiscover"
               @apply-discover="source.applyDiscoverSelection"

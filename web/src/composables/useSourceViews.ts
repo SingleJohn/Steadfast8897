@@ -7,10 +7,12 @@ import {
   discoverSourceViewValues,
   generateSourceViewCover,
   listSourceViews,
+  previewSourceView,
   renameSourceView,
   updateSourceView,
   updateSourceViewDisplayOrder,
   type DimensionValue,
+  type SourceViewPreview,
   type SourceView,
 } from '@/api/source'
 
@@ -28,6 +30,8 @@ export function useSourceViews(showToast: ToastFn) {
     MatchValue: '',
     MatchValues: [] as string[],
     CollectionType: 'mixed',
+    ProviderIds: [] as number[],
+    SortOrder: 0,
     Enabled: true,
     ExposeToEmby: false,
   })
@@ -39,6 +43,8 @@ export function useSourceViews(showToast: ToastFn) {
   const coverTargetId = shallowRef<number | null>(null)
   const coverStyle = shallowRef('')
   const generatingCover = shallowRef(false)
+  const viewPreview = shallowRef<SourceViewPreview | null>(null)
+  const previewLoading = shallowRef(false)
 
   const coverStyleOptions = computed(() => coverStyles.value.map((s) => ({ label: s.label, value: s.name })))
 
@@ -60,30 +66,58 @@ export function useSourceViews(showToast: ToastFn) {
     viewDraft.MatchValue = view?.MatchValue || ''
     viewDraft.MatchValues = [...(view?.MatchValues || [])]
     viewDraft.CollectionType = view?.CollectionType || 'mixed'
+    viewDraft.ProviderIds = [...(view?.ProviderIds || [])]
+    viewDraft.SortOrder = view?.SortOrder || 0
     viewDraft.Enabled = view?.Enabled ?? true
     viewDraft.ExposeToEmby = view?.ExposeToEmby ?? false
+    viewPreview.value = null
   }
 
-  async function saveView() {
+  function buildViewPayload() {
     if (!viewDraft.MatchValue.trim()) {
-      showToast('请填写匹配值', 'info')
-      return
+      return null
     }
-    const payload = {
+    return {
       Name: viewDraft.Name || viewDraft.MatchValue,
       DisplayName: viewDraft.DisplayName || undefined,
       Dimension: viewDraft.Dimension,
       MatchValue: viewDraft.MatchValue,
       MatchValues: viewDraft.MatchValues.length > 0 ? viewDraft.MatchValues : [viewDraft.MatchValue],
       CollectionType: viewDraft.CollectionType,
+      ProviderIds: viewDraft.ProviderIds,
+      SortOrder: viewDraft.SortOrder,
       Enabled: viewDraft.Enabled,
       ExposeToEmby: viewDraft.ExposeToEmby,
+    }
+  }
+
+  async function saveView() {
+    const payload = buildViewPayload()
+    if (!payload) {
+      showToast('请填写匹配值', 'info')
+      return
     }
     if (viewDraft.id) await updateSourceView(viewDraft.id, payload)
     else await createSourceView(payload)
     showToast('在线库已保存', 'success')
     editView()
     await refreshViews()
+  }
+
+  async function previewView() {
+    const payload = buildViewPayload()
+    if (!payload) {
+      showToast('请填写匹配值后再预览', 'info')
+      return
+    }
+    previewLoading.value = true
+    try {
+      viewPreview.value = await previewSourceView(payload)
+    } catch (e: any) {
+      showToast(e?.message || '在线库预览失败', 'error')
+    } finally {
+      previewLoading.value = false
+    }
   }
 
   async function removeView(id: number) {
@@ -115,6 +149,7 @@ export function useSourceViews(showToast: ToastFn) {
     viewDraft.MatchValue = discoverSelected.value[0]
     viewDraft.MatchValues = [...discoverSelected.value]
     if (!viewDraft.Name) viewDraft.Name = discoverSelected.value[0]
+    viewPreview.value = null
   }
 
   async function moveView(index: number, delta: number) {
@@ -163,9 +198,12 @@ export function useSourceViews(showToast: ToastFn) {
     coverStyle,
     coverStyleOptions,
     generatingCover,
+    viewPreview,
+    previewLoading,
     refreshViews,
     editView,
     saveView,
+    previewView,
     removeView,
     renameView,
     runDiscover,

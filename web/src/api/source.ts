@@ -95,6 +95,32 @@ export type SourceView = {
   CoverUrl?: string
 }
 
+export type SourceViewPreviewProvider = {
+  provider_id: number
+  provider_name: string
+  source_key: string
+  health_status: string
+  item_count: number
+}
+
+export type SourceViewPreviewItem = {
+  public_uuid: string
+  provider_id: number
+  provider_name: string
+  title: string
+  item_type: string
+  year?: number
+  normalized_kind?: string
+  region?: string
+  poster_url?: string
+}
+
+export type SourceViewPreview = {
+  item_count: number
+  providers: SourceViewPreviewProvider[]
+  items: SourceViewPreviewItem[]
+}
+
 export type DimensionValue = {
   Value: string
   Count: number
@@ -276,6 +302,10 @@ export async function createSourceView(payload: Record<string, unknown>) {
 
 export async function updateSourceView(id: number, payload: Record<string, unknown>) {
   return requestJson<SourceView>(`/Library/SourceViews/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export async function previewSourceView(payload: Record<string, unknown>) {
+  return requestJson<SourceViewPreview>('/Library/SourceViews/Preview', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export async function deleteSourceView(id: number) {
