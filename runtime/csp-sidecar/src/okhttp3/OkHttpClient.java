@@ -12,6 +12,7 @@ public class OkHttpClient {
     private final Dispatcher dispatcher;
     private final boolean followRedirects;
     private final boolean followSslRedirects;
+    private final boolean retryOnConnectionFailure;
 
     public OkHttpClient() {
         this(new Builder());
@@ -21,6 +22,7 @@ public class OkHttpClient {
         this.dispatcher = builder.dispatcher;
         this.followRedirects = builder.followRedirects;
         this.followSslRedirects = builder.followSslRedirects;
+        this.retryOnConnectionFailure = builder.retryOnConnectionFailure;
     }
 
     public Call newCall(Request request) {
@@ -33,17 +35,23 @@ public class OkHttpClient {
         return new Builder()
             .dispatcher(dispatcher)
             .followRedirects(followRedirects)
-            .followSslRedirects(followSslRedirects);
+            .followSslRedirects(followSslRedirects)
+            .retryOnConnectionFailure(retryOnConnectionFailure);
     }
 
     public Dispatcher dispatcher() {
         return dispatcher;
     }
 
+    public boolean retryOnConnectionFailure() {
+        return retryOnConnectionFailure;
+    }
+
     public static class Builder {
         private Dispatcher dispatcher = new Dispatcher();
         private boolean followRedirects = true;
         private boolean followSslRedirects = true;
+        private boolean retryOnConnectionFailure = true;
 
         public Builder dns(Dns dns) {
             return this;
@@ -76,6 +84,11 @@ public class OkHttpClient {
 
         public Builder followSslRedirects(boolean followSslRedirects) {
             this.followSslRedirects = followSslRedirects;
+            return this;
+        }
+
+        public Builder retryOnConnectionFailure(boolean retryOnConnectionFailure) {
+            this.retryOnConnectionFailure = retryOnConnectionFailure;
             return this;
         }
 
