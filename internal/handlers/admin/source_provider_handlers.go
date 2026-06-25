@@ -61,6 +61,15 @@ type sourceProviderBatchHealthResult struct {
 	CategoriesCount int    `json:"categories_count"`
 }
 
+type sourceProviderDiagnoseRequest struct {
+	Methods      []string `json:"methods"`
+	CategoryID   string   `json:"category_id"`
+	Keyword      string   `json:"keyword"`
+	SourceItemID string   `json:"source_item_id"`
+	DetailID     string   `json:"detail_id"`
+	TimeoutMS    int      `json:"timeout_ms"`
+}
+
 func listSourceProviders(c *gin.Context, state *AppState) {
 	configID, ok := queryInt64Ptr(c, "config_id")
 	if !ok {
@@ -164,6 +173,32 @@ func healthCheckSourceProvider(c *gin.Context, state *AppState) {
 		return
 	}
 	c.JSON(http.StatusOK, sourceProviderDTOFromRepository(*item))
+}
+
+func diagnoseSourceProvider(c *gin.Context, state *AppState) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	var req sourceProviderDiagnoseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	manager := newSourceProviderRuntimeManager(state)
+	result, err := manager.Diagnose(c.Request.Context(), id, sourcebridge.ProviderDiagnoseRequest{
+		Methods:      req.Methods,
+		CategoryID:   req.CategoryID,
+		Keyword:      req.Keyword,
+		SourceItemID: req.SourceItemID,
+		DetailID:     req.DetailID,
+		TimeoutMS:    req.TimeoutMS,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 func batchHealthCheckSourceProviders(c *gin.Context, state *AppState) {
