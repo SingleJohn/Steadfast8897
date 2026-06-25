@@ -144,7 +144,8 @@ const columns: DataTableColumns<SourceView> = [
       <NButton @click="emit('applyDiscover')">填入表单</NButton>
     </div>
 
-    <NDataTable :columns="columns" :data="views" size="small" :bordered="false" />
+    <NDataTable v-if="views.length > 0" :columns="columns" :data="views" size="small" :bordered="false" />
+    <div v-else class="empty-state">暂无在线虚拟库；可用维度发现后创建后台库，是否暴露给 Emby 由开关控制。</div>
 
     <div v-if="coverTargetId" class="cover-bar">
       <NSelect :value="coverStyle" :options="coverStyleOptions" placeholder="封面风格" @update:value="emit('update:coverStyle', $event)" />
@@ -192,6 +193,13 @@ const columns: DataTableColumns<SourceView> = [
   grid-template-columns: minmax(200px, 320px) auto auto;
   margin-top: 14px;
   margin-bottom: 0;
+}
+.empty-state {
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--app-text-muted);
+  font-size: 13px;
 }
 @media (max-width: 900px) {
   .view-editor,

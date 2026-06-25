@@ -96,7 +96,8 @@ function runtimeLabel(value: string) {
       </div>
     </div>
 
-    <NDataTable :columns="columns" :data="providers" size="small" :bordered="false" />
+    <NDataTable v-if="providers.length > 0" :columns="columns" :data="providers" size="small" :bordered="false" />
+    <div v-else class="empty-state">暂无 Provider，先在配置页导入来源配置。</div>
 
     <div class="test-grid">
       <NSelect
@@ -158,6 +159,13 @@ function runtimeLabel(value: string) {
   display: flex;
   gap: 16px;
   margin-top: 12px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+.empty-state {
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  padding: 18px;
   color: var(--app-text-muted);
   font-size: 13px;
 }

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NButton, NSpin } from 'naive-ui'
 import PageShell from '@/components/PageShell.vue'
 import SourceCenterOverview from '@/components/source-center/SourceCenterOverview.vue'
+import SourceConfigListPanel from '@/components/source-center/SourceConfigListPanel.vue'
 import SourceFederatedSearchPanel from '@/components/source-center/SourceFederatedSearchPanel.vue'
 import SourceImportPanel from '@/components/source-center/SourceImportPanel.vue'
 import SourceParserPanel from '@/components/source-center/SourceParserPanel.vue'
@@ -58,6 +59,7 @@ const {
   providerSearchResult,
   providerCategories,
   providerAction,
+  configAction,
   parserAction,
   runtimeAction,
   runtimeAuditLoading,
@@ -165,6 +167,13 @@ watch(federatedKeyword, (value) => {
           />
 
           <div v-else-if="activeTab === 'configs'" class="tab-stack">
+            <SourceConfigListPanel
+              :configs="configs"
+              :action="configAction"
+              @toggle="source.toggleConfig"
+              @refresh="source.refreshAll"
+            />
+
             <SourceImportPanel
               v-model:name="importName"
               v-model:url="importUrl"

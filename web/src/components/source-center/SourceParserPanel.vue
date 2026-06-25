@@ -78,7 +78,8 @@ const columns: DataTableColumns<SourceParser> = [
       <NButton quaternary size="small" @click="emit('refresh')">刷新</NButton>
     </div>
 
-    <NDataTable :columns="columns" :data="parsers" size="small" :bordered="false" />
+    <NDataTable v-if="parsers.length > 0" :columns="columns" :data="parsers" size="small" :bordered="false" />
+    <div v-else class="empty-state">暂无解析器；当前播放解析仍按全局启用解析器策略执行。</div>
   </section>
 </template>
 
@@ -103,6 +104,13 @@ const columns: DataTableColumns<SourceParser> = [
 }
 .panel-subtitle {
   margin: 4px 0 0;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+.empty-state {
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  padding: 18px;
   color: var(--app-text-muted);
   font-size: 13px;
 }

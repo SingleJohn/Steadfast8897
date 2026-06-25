@@ -12,6 +12,7 @@ export function useSourceCenter(showToast: ToastFn) {
   const runtimeAudit = useSourceRuntimeAudit(showToast)
   const views = useSourceViews(showToast)
   const loading = shallowRef(false)
+  const configAction = shallowRef('')
 
   async function refreshAll() {
     loading.value = true
@@ -35,8 +36,16 @@ export function useSourceCenter(showToast: ToastFn) {
   }
 
   async function toggleConfig(id: number, enabled: boolean) {
-    await configs.toggleConfig(id, enabled)
-    await providers.refreshProviders()
+    configAction.value = `toggle:${id}`
+    try {
+      await configs.toggleConfig(id, enabled)
+      await providers.refreshProviders()
+      showToast(enabled ? '配置已启用' : '配置已停用', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '配置启停失败', 'error')
+    } finally {
+      configAction.value = ''
+    }
   }
 
   async function toggleProvider(id: number, enabled: boolean) {
@@ -82,6 +91,7 @@ export function useSourceCenter(showToast: ToastFn) {
     providerSearchResult: providers.providerSearchResult,
     providerCategories: providers.providerCategories,
     providerAction: providers.providerAction,
+    configAction,
     parserAction: runtimeAudit.parserAction,
     runtimeAction: runtimeAudit.runtimeAction,
     runtimeAuditLoading: runtimeAudit.runtimeAuditLoading,

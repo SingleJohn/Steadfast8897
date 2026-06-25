@@ -113,11 +113,13 @@ function artifactTrustType(value: string) {
     <div class="audit-grid">
       <div class="audit-section">
         <div class="section-title">调用记录</div>
-        <NDataTable :columns="invocationColumns" :data="invocations" size="small" :bordered="false" />
+        <NDataTable v-if="invocations.length > 0" :columns="invocationColumns" :data="invocations" size="small" :bordered="false" />
+        <div v-else class="empty-state">暂无运行时调用记录。</div>
       </div>
       <div class="audit-section">
         <div class="section-title">Artifacts</div>
-        <NDataTable :columns="artifactColumns" :data="artifacts" size="small" :bordered="false" />
+        <NDataTable v-if="artifacts.length > 0" :columns="artifactColumns" :data="artifacts" size="small" :bordered="false" />
+        <div v-else class="empty-state">暂无 runtime artifact。</div>
       </div>
     </div>
   </section>
@@ -157,6 +159,13 @@ function artifactTrustType(value: string) {
 }
 .section-title {
   margin-bottom: 8px;
+  font-size: 13px;
+}
+.empty-state {
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--app-text-muted);
   font-size: 13px;
 }
 @media (max-width: 760px) {
