@@ -62,6 +62,7 @@ const {
   providerSearchKeyword,
   providerSearchResult,
   providerCategories,
+  providerDiagnosis,
   providerAction,
   configAction,
   parserAction,
@@ -206,6 +207,7 @@ watch(federatedKeyword, (value) => {
               :keyword="providerSearchKeyword"
               :search-result="providerSearchResult"
               :categories="providerCategories"
+              :diagnosis="providerDiagnosis"
               :action="providerAction"
               :selected-ids="selectedProviderIds"
               @update:active-provider-id="activeProviderId = $event"
@@ -220,6 +222,7 @@ watch(federatedKeyword, (value) => {
               @batch-health-ids="source.batchHealthProviders($event)"
               @batch-delete="source.batchDeleteProviders"
               @health="source.runProviderHealth"
+              @diagnose="source.runProviderDiagnose"
               @categories="source.loadProviderCategories"
               @search="source.runProviderSearch"
             />

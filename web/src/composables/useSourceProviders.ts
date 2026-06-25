@@ -4,6 +4,7 @@ import {
   batchDeleteSourceProviders,
   batchHealthCheckSourceProviders,
   batchSetSourceProvidersEnabled,
+  diagnoseSourceProvider,
   federatedSourceSearch,
   healthCheckSourceProvider,
   listSourceProviderCategories,
@@ -12,6 +13,7 @@ import {
   setSourceProviderEnabled,
   type FederatedSearchResponse,
   type SourceProviderDeleteResult,
+  type SourceProviderDiagnoseResult,
   type SourceProvider,
 } from '@/api/source'
 
@@ -23,6 +25,7 @@ export function useSourceProviders(showToast: ToastFn) {
   const providerSearchKeyword = shallowRef('')
   const providerSearchResult = shallowRef<any>(null)
   const providerCategories = ref<Array<{ id: string; name: string }>>([])
+  const providerDiagnosis = shallowRef<SourceProviderDiagnoseResult | null>(null)
   const providerAction = shallowRef('')
   const federatedKeyword = shallowRef('')
   const federatedLimit = shallowRef(50)
@@ -131,6 +134,22 @@ export function useSourceProviders(showToast: ToastFn) {
     }
   }
 
+  async function runProviderDiagnose(id: number) {
+    providerAction.value = `diagnose:${id}`
+    try {
+      providerDiagnosis.value = await diagnoseSourceProvider(id, {
+        methods: ['home', 'homeVideo', 'category', 'search'],
+        keyword: providerSearchKeyword.value.trim() || 'test',
+      })
+      activeProviderId.value = id
+      showToast('兼容诊断完成；结果不会改变探活状态', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '兼容诊断失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
   async function runProviderSearch() {
     if (!activeProviderId.value) return
     providerAction.value = `search:${activeProviderId.value}`
@@ -199,6 +218,7 @@ export function useSourceProviders(showToast: ToastFn) {
     providerSearchKeyword,
     providerSearchResult,
     providerCategories,
+    providerDiagnosis,
     providerAction,
     federatedKeyword,
     federatedLimit,
@@ -213,6 +233,7 @@ export function useSourceProviders(showToast: ToastFn) {
     batchHealthProviders,
     batchDeleteProviders,
     runProviderHealth,
+    runProviderDiagnose,
     runProviderSearch,
     loadProviderCategories,
     runFederatedSearch,

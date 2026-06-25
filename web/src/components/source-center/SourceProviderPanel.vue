@@ -2,7 +2,7 @@
 import { computed, h, shallowRef } from 'vue'
 import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import type { SourceProvider } from '@/api/source'
+import type { SourceProvider, SourceProviderDiagnoseResult } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
@@ -11,6 +11,7 @@ const props = defineProps<{
   keyword: string
   searchResult: any
   categories: Array<{ id: string; name: string }>
+  diagnosis: SourceProviderDiagnoseResult | null
   action: string
   selectedIds: number[]
 }>()
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
   health: [id: number]
+  diagnose: [id: number]
   categories: [id: number]
   search: []
 }>()
@@ -141,7 +143,7 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '操作',
     key: 'actions',
-    width: 180,
+    width: 230,
     render(row) {
       return hActions(row)
     },
@@ -160,6 +162,7 @@ function hActions(row: SourceProvider) {
   return h(NSpace, { size: 4 }, {
     default: () => [
       h(NButton, { size: 'small', loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }, { default: () => '探活' }),
+      h(NButton, { size: 'small', quaternary: true, loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }, { default: () => '诊断' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
       h(NPopconfirm, {
         positiveText: '删除',
@@ -194,6 +197,22 @@ function runtimeLabel(value: string) {
 
 function normalizeHealth(value: string) {
   return value || 'unknown'
+}
+
+function diagnoseStatusType(status: string) {
+  if (status === 'ok') return 'success'
+  if (status === 'error') return 'error'
+  if (status === 'unsupported') return 'warning'
+  return undefined
+}
+
+function diagnoseMethodLabel(method: string) {
+  if (method === 'home') return 'homeContent'
+  if (method === 'homeVideo') return 'homeVideoContent'
+  if (method === 'category') return '分类'
+  if (method === 'search') return '搜索'
+  if (method === 'detail') return '详情'
+  return method
 }
 
 function selectFilteredProviders() {
@@ -410,6 +429,44 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
       <span>结果 {{ searchResult.page.items?.length || 0 }}</span>
       <span>入库 {{ searchResult.items?.length || 0 }}</span>
     </div>
+
+    <section v-if="diagnosis" class="diagnosis-panel" aria-live="polite">
+      <div class="diagnosis-head">
+        <div>
+          <h3 class="diagnosis-title">FongMi 兼容诊断</h3>
+          <p class="panel-subtitle">
+            {{ diagnosis.provider_name }} · {{ runtimeLabel(diagnosis.runtime_kind) }} · {{ diagnosis.duration_ms }} ms
+          </p>
+        </div>
+        <NTag size="small" :type="diagnoseStatusType(diagnosis.overall_status)">
+          {{ diagnosis.overall_status }}
+        </NTag>
+      </div>
+      <div class="diagnosis-note">
+        FongMi 首页海报墙可能来自 homeVideoContent；homeContent 为空不一定代表源坏。分类、首页与搜索应分开判断，本诊断不会改变探活状态或写入在线缓存。
+      </div>
+      <div class="diagnosis-grid">
+        <article v-for="item in diagnosis.results" :key="item.method" class="diagnosis-card">
+          <div class="diagnosis-card-head">
+            <strong>{{ diagnoseMethodLabel(item.method) }}</strong>
+            <NTag size="small" :type="diagnoseStatusType(item.status)">{{ item.status }}</NTag>
+          </div>
+          <div class="diagnosis-metrics">
+            <span>{{ item.latency_ms }} ms</span>
+            <span>class {{ item.categories_count }}</span>
+            <span>filters {{ item.filters_count }}</span>
+            <span>list {{ item.items_count }}</span>
+          </div>
+          <p v-if="item.message" class="diagnosis-message">{{ item.error_type ? `${item.error_type}: ` : '' }}{{ item.message }}</p>
+          <div v-if="item.sample_items?.length" class="sample-list">
+            <div v-for="sample in item.sample_items" :key="`${item.method}:${sample.source_item_id || sample.title}`" class="sample-row">
+              <span class="sample-title">{{ sample.title || sample.source_item_id || '-' }}</span>
+              <span class="sample-meta">{{ sample.item_type || '-' }}<template v-if="sample.year"> · {{ sample.year }}</template></span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -498,6 +555,78 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   color: var(--app-text-muted);
   font-size: 13px;
 }
+.diagnosis-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  padding: 14px;
+  margin-top: 14px;
+}
+.diagnosis-head,
+.diagnosis-card-head,
+.sample-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.diagnosis-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.diagnosis-note,
+.diagnosis-message,
+.sample-meta {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.diagnosis-note {
+  border-left: 3px solid rgba(59, 130, 246, 0.45);
+  padding-left: 10px;
+}
+.diagnosis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.diagnosis-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-1);
+  padding: 10px;
+}
+.diagnosis-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.diagnosis-message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.sample-list {
+  display: grid;
+  gap: 5px;
+}
+.sample-row {
+  min-width: 0;
+  border-top: 1px solid var(--app-border);
+  padding-top: 5px;
+  font-size: 12px;
+}
+.sample-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .error-cell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -532,6 +661,13 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
     flex-direction: column;
   }
   .test-grid {
+    grid-template-columns: 1fr;
+  }
+  .diagnosis-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .diagnosis-grid {
     grid-template-columns: 1fr;
   }
 }

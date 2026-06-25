@@ -64,6 +64,46 @@ export type SourceProviderBatchHealthResult = {
   categories_count: number
 }
 
+export type SourceProviderDiagnoseMethod = {
+  method: string
+  status: 'ok' | 'empty' | 'error' | 'unsupported' | 'skipped'
+  error_type?: string
+  message?: string
+  latency_ms: number
+  categories_count: number
+  filters_count: number
+  items_count: number
+  sample_items?: Array<{
+    source_item_id?: string
+    title?: string
+    item_type?: string
+    year?: number
+    poster_hash?: string
+    remarks?: string
+  }>
+  metrics?: Record<string, unknown>
+}
+
+export type SourceProviderDiagnoseResult = {
+  provider_id: number
+  provider_name: string
+  source_key: string
+  runtime_kind: string
+  provider_kind: string
+  overall_status: string
+  results: SourceProviderDiagnoseMethod[]
+  duration_ms: number
+}
+
+export type SourceProviderDiagnosePayload = {
+  methods?: string[]
+  category_id?: string
+  keyword?: string
+  source_item_id?: string
+  detail_id?: string
+  timeout_ms?: number
+}
+
 export type SourceProviderDeleteImpact = Omit<SourceConfigImpact, 'ConfigID' | 'ParserCount'>
 
 export type SourceProviderDeleteResult = {
@@ -344,6 +384,14 @@ export async function batchDeleteSourceProviders(ids: number[]) {
 
 export async function healthCheckSourceProvider(id: number) {
   return requestJson<SourceProvider>(`/SourceProviders/${id}/HealthCheck`, { method: 'POST', timeoutMs: 120_000 })
+}
+
+export async function diagnoseSourceProvider(id: number, payload: SourceProviderDiagnosePayload = {}) {
+  return requestJson<SourceProviderDiagnoseResult>(`/SourceProviders/${id}/Diagnose`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+  })
 }
 
 export async function searchSourceProvider(id: number, keyword: string, page = 1) {
