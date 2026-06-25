@@ -112,6 +112,9 @@ func (r *SourceRepository) ListProviders(ctx context.Context, opts SourceProvide
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
+	if opts.Limit > 500 {
+		opts.Limit = 500
+	}
 	clauses := []string{"TRUE"}
 	args := []any{}
 	addArg := func(v any) string {
@@ -120,6 +123,22 @@ func (r *SourceRepository) ListProviders(ctx context.Context, opts SourceProvide
 	}
 	if opts.ConfigID != nil {
 		clauses = append(clauses, "sp.config_id = "+addArg(*opts.ConfigID))
+	}
+	if opts.Enabled != nil {
+		clauses = append(clauses, "sp.enabled = "+addArg(*opts.Enabled))
+	}
+	if value := strings.TrimSpace(opts.HealthStatus); value != "" {
+		clauses = append(clauses, "sp.health_status = "+addArg(value))
+	}
+	if value := strings.TrimSpace(opts.RuntimeKind); value != "" {
+		clauses = append(clauses, "sp.runtime_kind = "+addArg(value))
+	}
+	if value := strings.TrimSpace(opts.ProviderKind); value != "" {
+		clauses = append(clauses, "sp.provider_kind = "+addArg(value))
+	}
+	if value := strings.TrimSpace(opts.Keyword); value != "" {
+		keywordArg := addArg("%" + value + "%")
+		clauses = append(clauses, "(sp.name ILIKE "+keywordArg+" OR sp.source_key ILIKE "+keywordArg+" OR sp.api ILIKE "+keywordArg+")")
 	}
 	if opts.OnlyUsable {
 		clauses = append(clauses, "sp.enabled = TRUE", "COALESCE(sci.enabled, TRUE) = TRUE", "COALESCE(sci.import_status, 'active') = 'active'")
@@ -140,6 +159,34 @@ func (r *SourceRepository) ListProviders(ctx context.Context, opts SourceProvide
 	}
 	defer rows.Close()
 	var out []SourceProvider
+	for rows.Next() {
+		provider, err := scanSourceProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *provider)
+	}
+	return out, rows.Err()
+}
+
+func (r *SourceRepository) SetProvidersEnabled(ctx context.Context, ids []int64, enabled bool) ([]SourceProvider, error) {
+	ids = compactInt64s(ids)
+	if len(ids) == 0 {
+		return []SourceProvider{}, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		UPDATE source_providers
+		   SET enabled = $2,
+		       updated_at = NOW()
+		 WHERE id = ANY($1::bigint[])
+		RETURNING id, config_id, source_key, name, provider_kind, runtime_kind, tvbox_type, api,
+		          ext, categories, headers, capabilities, timeout_ms, enabled, visible, searchable,
+		          health_status, last_check_at, last_error, raw_site, created_at, updated_at`, ids, enabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SourceProvider{}
 	for rows.Next() {
 		provider, err := scanSourceProvider(rows)
 		if err != nil {

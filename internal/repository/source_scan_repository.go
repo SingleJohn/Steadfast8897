@@ -150,6 +150,22 @@ func compactStrings(values []string) []string {
 	return out
 }
 
+func compactInt64s(values []int64) []int64 {
+	out := make([]int64, 0, len(values))
+	seen := map[int64]struct{}{}
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func defaultString(v, fallback string) string {
 	if v == "" {
 		return fallback

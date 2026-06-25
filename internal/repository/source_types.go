@@ -437,10 +437,15 @@ type SourceConfigListOptions struct {
 }
 
 type SourceProviderListOptions struct {
-	Limit      int64
-	Offset     int64
-	ConfigID   *int64
-	OnlyUsable bool
+	Limit        int64
+	Offset       int64
+	ConfigID     *int64
+	Enabled      *bool
+	HealthStatus string
+	RuntimeKind  string
+	ProviderKind string
+	Keyword      string
+	OnlyUsable   bool
 }
 
 type SourceParserListOptions struct {
