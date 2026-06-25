@@ -53,14 +53,22 @@ export function useSourceCenter(showToast: ToastFn) {
     await views.refreshViews()
   }
 
-  async function batchToggleProviders(enabled: boolean) {
-    await providers.batchToggleProviders(enabled)
+  async function batchToggleProviders(enabled: boolean, ids?: number[]) {
+    await providers.batchToggleProviders(enabled, ids)
     await views.refreshViews()
   }
 
-  async function batchHealthProviders() {
-    await providers.batchHealthProviders()
+  async function batchHealthProviders(ids?: number[]) {
+    await providers.batchHealthProviders(ids)
     await views.refreshViews()
+  }
+
+  async function batchDeleteProviders(ids?: number[]) {
+    await providers.batchDeleteProviders(ids)
+    await Promise.all([
+      runtimeAudit.refreshRuntimeData(),
+      views.refreshViews(),
+    ])
   }
 
   async function confirmDeleteConfig() {
@@ -149,6 +157,7 @@ export function useSourceCenter(showToast: ToastFn) {
     toggleProvider,
     batchToggleProviders,
     batchHealthProviders,
+    batchDeleteProviders,
     toggleParser: runtimeAudit.toggleParser,
     trustRuntimeArtifact: runtimeAudit.trustRuntimeArtifact,
     runProviderHealth,

@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { getSystemConfig, updateSystemConfig } from '@/api/client'
 import {
+  batchDeleteSourceProviders,
   batchHealthCheckSourceProviders,
   batchSetSourceProvidersEnabled,
   federatedSourceSearch,
@@ -10,6 +11,7 @@ import {
   searchSourceProvider,
   setSourceProviderEnabled,
   type FederatedSearchResponse,
+  type SourceProviderDeleteResult,
   type SourceProvider,
 } from '@/api/source'
 
@@ -57,17 +59,17 @@ export function useSourceProviders(showToast: ToastFn) {
     await refreshProviders()
   }
 
-  async function batchToggleProviders(enabled: boolean) {
-    if (selectedProviderIds.value.length === 0) {
+  async function batchToggleProviders(enabled: boolean, ids = selectedProviderIds.value) {
+    const targetIds = [...ids]
+    if (targetIds.length === 0) {
       showToast('请先选择 Provider', 'info')
       return
     }
     providerAction.value = enabled ? 'batch-enable' : 'batch-disable'
     try {
-      const ids = [...selectedProviderIds.value]
-      const result = await batchSetSourceProvidersEnabled(ids, enabled)
+      const result = await batchSetSourceProvidersEnabled(targetIds, enabled)
       showToast(`${enabled ? '启用' : '停用'}完成：${result.count} 个 Provider`, 'success')
-      selectedProviderIds.value = []
+      selectedProviderIds.value = selectedProviderIds.value.filter((id) => !targetIds.includes(id))
       await refreshProviders()
     } catch (e: any) {
       showToast(e?.message || '批量启停失败', 'error')
@@ -76,20 +78,41 @@ export function useSourceProviders(showToast: ToastFn) {
     }
   }
 
-  async function batchHealthProviders() {
-    if (selectedProviderIds.value.length === 0) {
+  async function batchHealthProviders(ids = selectedProviderIds.value) {
+    const targetIds = [...ids]
+    if (targetIds.length === 0) {
       showToast('请先选择 Provider', 'info')
       return
     }
     providerAction.value = 'batch-health'
     try {
-      const ids = [...selectedProviderIds.value]
-      const result = await batchHealthCheckSourceProviders(ids)
+      const result = await batchHealthCheckSourceProviders(targetIds)
       const failed = result.items.filter((item) => item.status !== 'ok').length
       showToast(`批量探活完成：${result.count - failed} 成功 / ${failed} 失败`, failed > 0 ? 'info' : 'success')
       await refreshProviders()
     } catch (e: any) {
       showToast(e?.message || '批量探活失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
+  async function batchDeleteProviders(ids = selectedProviderIds.value): Promise<SourceProviderDeleteResult | null> {
+    const targetIds = [...ids]
+    if (targetIds.length === 0) {
+      showToast('请先选择 Provider', 'info')
+      return null
+    }
+    providerAction.value = 'batch-delete'
+    try {
+      const result = await batchDeleteSourceProviders(targetIds)
+      showToast(`删除完成：${result.count} 个 Provider`, 'success')
+      selectedProviderIds.value = selectedProviderIds.value.filter((id) => !targetIds.includes(id))
+      await refreshProviders()
+      return result
+    } catch (e: any) {
+      showToast(e?.message || '批量删除失败', 'error')
+      return null
     } finally {
       providerAction.value = ''
     }
@@ -188,6 +211,7 @@ export function useSourceProviders(showToast: ToastFn) {
     toggleProvider,
     batchToggleProviders,
     batchHealthProviders,
+    batchDeleteProviders,
     runProviderHealth,
     runProviderSearch,
     loadProviderCategories,

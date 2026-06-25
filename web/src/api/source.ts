@@ -64,6 +64,14 @@ export type SourceProviderBatchHealthResult = {
   categories_count: number
 }
 
+export type SourceProviderDeleteImpact = Omit<SourceConfigImpact, 'ConfigID' | 'ParserCount'>
+
+export type SourceProviderDeleteResult = {
+  items: SourceProvider[]
+  impact: SourceProviderDeleteImpact
+  count: number
+}
+
 export type SourceParser = {
   ID: number
   ConfigID?: number
@@ -271,8 +279,16 @@ export async function deleteSourceConfig(id: number) {
 }
 
 export async function listSourceProviders() {
-  const res = await requestJson<{ items: SourceProvider[] }>('/SourceProviders')
-  return res.items || []
+  const pageSize = 500
+  const items: SourceProvider[] = []
+  for (let offset = 0; ; offset += pageSize) {
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset) })
+    const res = await requestJson<{ items: SourceProvider[] }>(`/SourceProviders?${params.toString()}`)
+    const pageItems = res.items || []
+    items.push(...pageItems)
+    if (pageItems.length < pageSize) break
+  }
+  return items
 }
 
 export async function listSourceParsers() {
@@ -316,6 +332,13 @@ export async function batchHealthCheckSourceProviders(ids: number[]) {
     method: 'POST',
     body: JSON.stringify({ provider_ids: ids }),
     timeoutMs: 120_000,
+  })
+}
+
+export async function batchDeleteSourceProviders(ids: number[]) {
+  return requestJson<SourceProviderDeleteResult>('/SourceProviders/BatchDelete', {
+    method: 'POST',
+    body: JSON.stringify({ provider_ids: ids }),
   })
 }
 

@@ -26,6 +26,7 @@ func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.GET("/SourceProviders", adminMW, func(c *gin.Context) { listSourceProviders(c, state) })
 	group.POST("/SourceProviders/BatchEnable", adminMW, func(c *gin.Context) { batchEnableSourceProviders(c, state) })
 	group.POST("/SourceProviders/BatchDisable", adminMW, func(c *gin.Context) { batchDisableSourceProviders(c, state) })
+	group.POST("/SourceProviders/BatchDelete", adminMW, func(c *gin.Context) { batchDeleteSourceProviders(c, state) })
 	group.POST("/SourceProviders/BatchHealthCheck", adminMW, func(c *gin.Context) { batchHealthCheckSourceProviders(c, state) })
 	group.POST("/SourceProviders/:id/Enable", adminMW, func(c *gin.Context) { setSourceProviderEnabled(c, state, true) })
 	group.POST("/SourceProviders/:id/Disable", adminMW, func(c *gin.Context) { setSourceProviderEnabled(c, state, false) })

@@ -64,6 +64,23 @@ type SourceConfigDeleteResult struct {
 	Impact SourceConfigImpact
 }
 
+type SourceProviderDeleteImpact struct {
+	ProviderCount              int64
+	SourceItemCount            int64
+	PlaySourceCount            int64
+	RuntimeArtifactCount       int64
+	RuntimeInvocationCount     int64
+	AffectedLibraryViewCount   int64
+	AffectedLibraryViews       []SourceConfigImpactLibraryView
+	ProviderIDs                []int64
+	RuntimeInvocationsRetained bool
+}
+
+type SourceProviderDeleteResult struct {
+	Providers []SourceProvider
+	Impact    SourceProviderDeleteImpact
+}
+
 type SourceProvider struct {
 	ID           int64
 	ConfigID     *int64

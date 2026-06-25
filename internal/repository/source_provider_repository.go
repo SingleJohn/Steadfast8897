@@ -209,6 +209,115 @@ func (r *SourceRepository) SetProviderEnabled(ctx context.Context, id int64, ena
 	return scanSourceProvider(row)
 }
 
+func (r *SourceRepository) DeleteProvidersCascade(ctx context.Context, ids []int64) (*SourceProviderDeleteResult, error) {
+	ids = compactInt64s(ids)
+	if len(ids) == 0 {
+		return &SourceProviderDeleteResult{
+			Providers: []SourceProvider{},
+			Impact: SourceProviderDeleteImpact{
+				ProviderIDs:                []int64{},
+				RuntimeInvocationsRetained: true,
+			},
+		}, nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	providers, err := lockSourceProviders(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	actualIDs := make([]int64, 0, len(providers))
+	for _, provider := range providers {
+		actualIDs = append(actualIDs, provider.ID)
+	}
+	impact, err := buildSourceProviderDeleteImpact(ctx, tx, actualIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(actualIDs) > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE source_library_views
+			   SET provider_ids = ARRAY(
+			         SELECT pid
+			           FROM unnest(provider_ids) AS pid
+			          WHERE NOT (pid = ANY($1::bigint[]))
+			       ),
+			       updated_at = NOW()
+			 WHERE provider_ids && $1::bigint[]`, actualIDs); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM source_providers WHERE id = ANY($1::bigint[])`, actualIDs); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &SourceProviderDeleteResult{Providers: providers, Impact: *impact}, nil
+}
+
+func lockSourceProviders(ctx context.Context, q sourceConfigQuerier, ids []int64) ([]SourceProvider, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, config_id, source_key, name, provider_kind, runtime_kind, tvbox_type, api,
+		       ext, categories, headers, capabilities, timeout_ms, enabled, visible, searchable,
+		       health_status, last_check_at, last_error, raw_site, created_at, updated_at
+		  FROM source_providers
+		 WHERE id = ANY($1::bigint[])
+		 ORDER BY updated_at DESC, id DESC
+		 FOR UPDATE`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SourceProvider{}
+	for rows.Next() {
+		provider, err := scanSourceProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *provider)
+	}
+	return out, rows.Err()
+}
+
+func buildSourceProviderDeleteImpact(ctx context.Context, q sourceConfigQuerier, providerIDs []int64) (*SourceProviderDeleteImpact, error) {
+	impact := &SourceProviderDeleteImpact{
+		ProviderIDs:                providerIDs,
+		RuntimeInvocationsRetained: true,
+	}
+	if len(providerIDs) == 0 {
+		return impact, nil
+	}
+	var err error
+	if err = q.QueryRow(ctx, `SELECT COUNT(*) FROM source_providers WHERE id = ANY($1::bigint[])`, providerIDs).Scan(&impact.ProviderCount); err != nil {
+		return nil, err
+	}
+	if err = q.QueryRow(ctx, `SELECT COUNT(*) FROM source_items WHERE provider_id = ANY($1::bigint[])`, providerIDs).Scan(&impact.SourceItemCount); err != nil {
+		return nil, err
+	}
+	if err = q.QueryRow(ctx, `SELECT COUNT(*) FROM source_play_sources WHERE provider_id = ANY($1::bigint[])`, providerIDs).Scan(&impact.PlaySourceCount); err != nil {
+		return nil, err
+	}
+	if err = q.QueryRow(ctx, `SELECT COUNT(*) FROM source_runtime_artifacts WHERE provider_id = ANY($1::bigint[])`, providerIDs).Scan(&impact.RuntimeArtifactCount); err != nil {
+		return nil, err
+	}
+	if err = q.QueryRow(ctx, `SELECT COUNT(*) FROM source_runtime_invocations WHERE provider_id = ANY($1::bigint[])`, providerIDs).Scan(&impact.RuntimeInvocationCount); err != nil {
+		return nil, err
+	}
+	views, err := listConfigImpactLibraryViews(ctx, q, providerIDs)
+	if err != nil {
+		return nil, err
+	}
+	impact.AffectedLibraryViews = views
+	impact.AffectedLibraryViewCount = int64(len(views))
+	return impact, nil
+}
+
 func (r *SourceRepository) UpdateProviderHealth(ctx context.Context, id int64, status string, lastError *string, categories []byte) (*SourceProvider, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE source_providers

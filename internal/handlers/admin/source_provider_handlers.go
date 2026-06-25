@@ -112,6 +112,29 @@ func batchDisableSourceProviders(c *gin.Context, state *AppState) {
 	batchSetSourceProvidersEnabled(c, state, false)
 }
 
+func batchDeleteSourceProviders(c *gin.Context, state *AppState) {
+	var req sourceProviderBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	ids := compactRequestInt64s(req.ProviderIDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "provider_ids required"})
+		return
+	}
+	result, err := state.Repo.Source.DeleteProvidersCascade(c.Request.Context(), ids)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items":  sourceProviderDTOs(result.Providers),
+		"impact": sourceProviderDeleteImpactDTOFromRepository(result.Impact),
+		"count":  len(result.Providers),
+	})
+}
+
 func batchSetSourceProvidersEnabled(c *gin.Context, state *AppState, enabled bool) {
 	var req sourceProviderBatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -310,6 +333,34 @@ func sourceProviderDTOFromRepository(row repository.SourceProvider) sourceProvid
 		Categories:      categories,
 		CategoriesCount: categoriesCount(row.Categories),
 	}
+}
+
+func sourceProviderDeleteImpactDTOFromRepository(row repository.SourceProviderDeleteImpact) gin.H {
+	return gin.H{
+		"ProviderCount":              row.ProviderCount,
+		"SourceItemCount":            row.SourceItemCount,
+		"PlaySourceCount":            row.PlaySourceCount,
+		"RuntimeArtifactCount":       row.RuntimeArtifactCount,
+		"RuntimeInvocationCount":     row.RuntimeInvocationCount,
+		"AffectedLibraryViewCount":   row.AffectedLibraryViewCount,
+		"AffectedLibraryViews":       sourceConfigImpactLibraryViewDTOs(row.AffectedLibraryViews),
+		"ProviderIDs":                row.ProviderIDs,
+		"RuntimeInvocationsRetained": row.RuntimeInvocationsRetained,
+	}
+}
+
+func sourceConfigImpactLibraryViewDTOs(rows []repository.SourceConfigImpactLibraryView) []gin.H {
+	out := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, gin.H{
+			"ID":                 row.ID,
+			"Name":               row.Name,
+			"DisplayName":        row.DisplayName,
+			"ProviderIDs":        row.ProviderIDs,
+			"RemovedProviderIDs": row.RemovedProviderIDs,
+		})
+	}
+	return out
 }
 
 func sourceProviderCategoryDTOs(items []sourcebridge.ProviderCategory) []sourceProviderCategoryDTO {

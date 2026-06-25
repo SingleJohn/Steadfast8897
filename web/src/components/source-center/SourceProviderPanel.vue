@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
+import { computed, h, shallowRef } from 'vue'
 import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { SourceProvider } from '@/api/source'
@@ -24,6 +24,10 @@ const emit = defineEmits<{
   batchEnable: []
   batchDisable: []
   batchHealth: []
+  batchDelete: [ids?: number[]]
+  batchEnableIds: [ids: number[]]
+  batchDisableIds: [ids: number[]]
+  batchHealthIds: [ids: number[]]
   health: [id: number]
   categories: [id: number]
   search: []
@@ -33,6 +37,48 @@ const providerOptions = computed(() => props.providers.map((p) => ({ label: `${p
 const selectedProviders = computed(() => props.providers.filter((provider) => props.selectedIds.includes(provider.ID)))
 const selectedEnabledCount = computed(() => selectedProviders.value.filter((provider) => provider.Enabled).length)
 const selectedRuntimeCount = computed(() => selectedProviders.value.filter((provider) => provider.RuntimeKind !== 'native_cms').length)
+const healthFilter = shallowRef<string | null>(null)
+const enabledFilter = shallowRef<string | null>(null)
+const runtimeFilter = shallowRef<string | null>(null)
+const keywordFilter = shallowRef('')
+const filteredProviders = computed(() => {
+  const keyword = keywordFilter.value.trim().toLowerCase()
+  return props.providers.filter((provider) => {
+    if (healthFilter.value && normalizeHealth(provider.HealthStatus) !== healthFilter.value) return false
+    if (enabledFilter.value === 'enabled' && !provider.Enabled) return false
+    if (enabledFilter.value === 'disabled' && provider.Enabled) return false
+    if (runtimeFilter.value && provider.RuntimeKind !== runtimeFilter.value) return false
+    if (keyword) {
+      const haystack = `${provider.Name} ${provider.SourceKey} ${provider.API || ''}`.toLowerCase()
+      if (!haystack.includes(keyword)) return false
+    }
+    return true
+  })
+})
+const filteredProviderIds = computed(() => filteredProviders.value.map((provider) => provider.ID))
+const filteredSelectedCount = computed(() => filteredProviderIds.value.filter((id) => props.selectedIds.includes(id)).length)
+const filteredChangeCounts = computed(() => {
+  const disabled = filteredProviders.value.filter((provider) => !provider.Enabled).length
+  const enabled = filteredProviders.value.length - disabled
+  return { enabled, disabled }
+})
+const healthFilterOptions = [
+  { label: '全部探活状态', value: '' },
+  { label: '探活正常', value: 'ok' },
+  { label: '探活失败', value: 'error' },
+  { label: '未探活', value: 'unknown' },
+]
+const enabledFilterOptions = [
+  { label: '全部启用状态', value: '' },
+  { label: '已启用', value: 'enabled' },
+  { label: '已停用', value: 'disabled' },
+]
+const runtimeFilterOptions = [
+  { label: '全部运行态', value: '' },
+  { label: 'JSON CMS', value: 'native_cms' },
+  { label: 'DRPY JS', value: 'js_node_drpy' },
+  { label: 'CSP JAR', value: 'csp_dex' },
+]
 const tablePagination = {
   pageSize: 20,
   showSizePicker: true,
@@ -115,6 +161,14 @@ function hActions(row: SourceProvider) {
     default: () => [
       h(NButton, { size: 'small', loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }, { default: () => '探活' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
+      h(NPopconfirm, {
+        positiveText: '删除',
+        negativeText: '取消',
+        onPositiveClick: () => emit('batchDelete', [row.ID]),
+      }, {
+        trigger: () => h(NButton, { size: 'small', type: 'error', quaternary: true, loading: props.action === 'batch-delete' }, { default: () => '删除' }),
+        default: () => `删除 Provider “${row.Name}”？在线缓存条目会级联删除，运行时审计保留脱敏记录。`,
+      }),
     ],
   })
 }
@@ -137,6 +191,44 @@ function runtimeLabel(value: string) {
   if (value === 'csp_dex') return 'CSP JAR'
   return value
 }
+
+function normalizeHealth(value: string) {
+  return value || 'unknown'
+}
+
+function selectFilteredProviders() {
+  const ids = new Set([...props.selectedIds, ...filteredProviderIds.value])
+  emit('update:selectedIds', Array.from(ids))
+}
+
+function clearSelectedProviders() {
+  emit('update:selectedIds', [])
+}
+
+function clearFilteredSelection() {
+  const filtered = new Set(filteredProviderIds.value)
+  emit('update:selectedIds', props.selectedIds.filter((id) => !filtered.has(id)))
+}
+
+function updateHealthFilter(value: string | null) {
+  healthFilter.value = value || null
+}
+
+function updateEnabledFilter(value: string | null) {
+  enabledFilter.value = value || null
+}
+
+function updateRuntimeFilter(value: string | null) {
+  runtimeFilter.value = value || null
+}
+
+function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
+  const ids = filteredProviderIds.value
+  if (action === 'enable') emit('batchEnableIds', ids)
+  else if (action === 'disable') emit('batchDisableIds', ids)
+  else if (action === 'health') emit('batchHealthIds', ids)
+  else emit('batchDelete', ids)
+}
 </script>
 
 <template>
@@ -151,9 +243,15 @@ function runtimeLabel(value: string) {
     <div v-if="providers.length > 0" class="bulk-bar" aria-live="polite">
       <div>
         <strong>已选择 {{ selectedIds.length }} 个 Provider</strong>
-        <p class="panel-subtitle">其中 {{ selectedEnabledCount }} 个启用，{{ selectedRuntimeCount }} 个依赖 JS/CSP 运行时；批量操作会影响在线库收录范围。</p>
+        <p class="panel-subtitle">
+          其中 {{ selectedEnabledCount }} 个启用，{{ selectedRuntimeCount }} 个依赖 JS/CSP 运行时；当前筛选命中
+          {{ filteredProviders.length }} 个，已选 {{ filteredSelectedCount }} 个。
+        </p>
       </div>
       <div class="bulk-actions">
+        <NButton size="small" :disabled="filteredProviders.length === 0" @click="selectFilteredProviders">选择筛选结果</NButton>
+        <NButton size="small" quaternary :disabled="filteredSelectedCount === 0" @click="clearFilteredSelection">取消筛选选择</NButton>
+        <NButton size="small" quaternary :disabled="selectedIds.length === 0" @click="clearSelectedProviders">清空选择</NButton>
         <NPopconfirm
           positive-text="批量启用"
           negative-text="取消"
@@ -187,13 +285,95 @@ function runtimeLabel(value: string) {
           </template>
           将并发探活 {{ selectedIds.length }} 个 Provider，单站失败不会中断整批。
         </NPopconfirm>
+        <NPopconfirm
+          positive-text="删除"
+          negative-text="取消"
+          :disabled="selectedIds.length === 0"
+          @positive-click="emit('batchDelete')"
+        >
+          <template #trigger>
+            <NButton size="small" type="error" :disabled="selectedIds.length === 0" :loading="action === 'batch-delete'">删除所选</NButton>
+          </template>
+          将删除 {{ selectedIds.length }} 个 Provider，并清理在线库 Provider 引用；在线缓存条目会随 Provider 级联删除，运行时审计保留脱敏记录。
+        </NPopconfirm>
+      </div>
+    </div>
+
+    <div v-if="providers.length > 0" class="filter-bar">
+      <label class="field">
+        <span class="field-label">探活状态</span>
+        <NSelect :value="healthFilter || ''" :options="healthFilterOptions" @update:value="updateHealthFilter" />
+      </label>
+      <label class="field">
+        <span class="field-label">启用状态</span>
+        <NSelect :value="enabledFilter || ''" :options="enabledFilterOptions" @update:value="updateEnabledFilter" />
+      </label>
+      <label class="field">
+        <span class="field-label">运行态</span>
+        <NSelect :value="runtimeFilter || ''" :options="runtimeFilterOptions" @update:value="updateRuntimeFilter" />
+      </label>
+      <label class="field keyword-field">
+        <span class="field-label">关键词</span>
+        <NInput :value="keywordFilter" placeholder="名称 / SourceKey / API" clearable @update:value="keywordFilter = $event" />
+      </label>
+    </div>
+
+    <div v-if="providers.length > 0" class="filtered-actions">
+      <span class="panel-subtitle">
+        筛选结果 {{ filteredProviders.length }} 个；启用筛选结果会实际启用 {{ filteredChangeCounts.disabled }} 个停用项，停用筛选结果会实际停用 {{ filteredChangeCounts.enabled }} 个启用项。
+      </span>
+      <div class="bulk-actions">
+        <NPopconfirm
+          positive-text="启用筛选结果"
+          negative-text="取消"
+          :disabled="filteredProviders.length === 0"
+          @positive-click="emitFilteredBatch('enable')"
+        >
+          <template #trigger>
+            <NButton size="small" :disabled="filteredProviders.length === 0" :loading="action === 'batch-enable'">启用筛选结果</NButton>
+          </template>
+          将启用当前筛选命中的 {{ filteredProviders.length }} 个 Provider，其中 {{ filteredChangeCounts.disabled }} 个会从停用变为启用。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="停用筛选结果"
+          negative-text="取消"
+          :disabled="filteredProviders.length === 0"
+          @positive-click="emitFilteredBatch('disable')"
+        >
+          <template #trigger>
+            <NButton size="small" type="error" ghost :disabled="filteredProviders.length === 0" :loading="action === 'batch-disable'">停用筛选结果</NButton>
+          </template>
+          将停用当前筛选命中的 {{ filteredProviders.length }} 个 Provider，其中 {{ filteredChangeCounts.enabled }} 个会从启用变为停用。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="探活筛选结果"
+          negative-text="取消"
+          :disabled="filteredProviders.length === 0"
+          @positive-click="emitFilteredBatch('health')"
+        >
+          <template #trigger>
+            <NButton size="small" :disabled="filteredProviders.length === 0" :loading="action === 'batch-health'">探活筛选结果</NButton>
+          </template>
+          将并发探活当前筛选命中的 {{ filteredProviders.length }} 个 Provider。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="删除筛选结果"
+          negative-text="取消"
+          :disabled="filteredProviders.length === 0"
+          @positive-click="emitFilteredBatch('delete')"
+        >
+          <template #trigger>
+            <NButton size="small" type="error" :disabled="filteredProviders.length === 0" :loading="action === 'batch-delete'">删除筛选结果</NButton>
+          </template>
+          将删除当前筛选命中的 {{ filteredProviders.length }} 个 Provider，并清理在线库 Provider 引用；在线缓存条目会随 Provider 级联删除。
+        </NPopconfirm>
       </div>
     </div>
 
     <NDataTable
       v-if="providers.length > 0"
       :columns="columns"
-      :data="providers"
+      :data="filteredProviders"
       :checked-row-keys="selectedIds"
       :pagination="tablePagination"
       :row-key="(row: SourceProvider) => row.ID"
@@ -287,6 +467,24 @@ function runtimeLabel(value: string) {
   gap: 8px;
   justify-content: flex-end;
 }
+.filter-bar {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(220px, 1.4fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.filtered-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--app-border);
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+}
+.keyword-field {
+  min-width: 220px;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -325,6 +523,13 @@ function runtimeLabel(value: string) {
   }
   .bulk-actions {
     justify-content: flex-start;
+  }
+  .filter-bar {
+    grid-template-columns: 1fr;
+  }
+  .filtered-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
   .test-grid {
     grid-template-columns: 1fr;
