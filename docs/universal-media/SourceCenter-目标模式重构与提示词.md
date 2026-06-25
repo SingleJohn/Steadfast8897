@@ -354,7 +354,13 @@ SC6 前端体验与可访问性收口
 - 按查询扩展、DTO/handler 小步中文 commit。
 ```
 
-**实际落点**：待执行时填写。
+**实际落点**：
+- 文件：`internal/repository/source_runtime_invocation_repository.go`、`internal/repository/source_types.go`、`internal/handlers/admin/source_runtime_handlers.go`、`internal/handlers/admin/source_routes.go`。
+- API：扩展 `GET /SourceRuntime/Invocations` 查询参数 `provider_id/method/status/error_type/runtime_kind/start_time/end_time/limit/offset`；新增 `GET /SourceRuntime/Invocations/:id`。
+- 行为：调用列表返回 summary-first DTO，仅包含 `id/provider_id/provider_name/runtime_kind/method/status/error_type/duration_ms/invoked_at/url_hash`；详情接口单独返回 `error_message/engine_ok/worker_pid/artifact_ids/raw`。
+- Artifact：`GET /SourceRuntime/Artifacts` 与信任返回改为审计 DTO，保留信任操作所需字段，不返回 `local_path/raw`，`source_url/base_url` 脱敏并提供 `SourceURLHash`。
+- 构建：`go build ./...` 通过；本任务未改 `web/`，未运行 `cd web && npm run build`。
+- Commit：`be86c1cb` 来源审计调用记录支持筛选与详情查询；`6f9299f5` 来源审计接口返回摘要并补详情。
 
 ---
 
