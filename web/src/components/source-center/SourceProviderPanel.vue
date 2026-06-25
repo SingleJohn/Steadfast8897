@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NDataTable, NInput, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { SourceProvider } from '@/api/source'
 
@@ -11,20 +11,29 @@ const props = defineProps<{
   searchResult: any
   categories: Array<{ id: string; name: string }>
   action: string
+  selectedIds: number[]
 }>()
 
 const emit = defineEmits<{
   'update:activeProviderId': [value: number | null]
   'update:keyword': [value: string]
+  'update:selectedIds': [value: number[]]
   toggle: [id: number, enabled: boolean]
+  batchEnable: []
+  batchDisable: []
+  batchHealth: []
   health: [id: number]
   categories: [id: number]
   search: []
 }>()
 
 const providerOptions = computed(() => props.providers.map((p) => ({ label: `${p.Name} (${p.SourceKey})`, value: p.ID })))
+const selectedProviders = computed(() => props.providers.filter((provider) => props.selectedIds.includes(provider.ID)))
+const selectedEnabledCount = computed(() => selectedProviders.value.filter((provider) => provider.Enabled).length)
+const selectedRuntimeCount = computed(() => selectedProviders.value.filter((provider) => provider.RuntimeKind !== 'native_cms').length)
 
 const columns: DataTableColumns<SourceProvider> = [
+  { type: 'selection', width: 42 },
   { title: '名称', key: 'Name', minWidth: 150 },
   { title: 'Key', key: 'SourceKey', width: 120 },
   {
@@ -49,7 +58,14 @@ const columns: DataTableColumns<SourceProvider> = [
     key: 'Enabled',
     width: 110,
     render(row) {
-      return hButton(row.Enabled ? '停用' : '启用', () => emit('toggle', row.ID, !row.Enabled))
+      return h(NPopconfirm, {
+        positiveText: row.Enabled ? '停用' : '启用',
+        negativeText: '取消',
+        onPositiveClick: () => emit('toggle', row.ID, !row.Enabled),
+      }, {
+        trigger: () => hButton(row.Enabled ? '停用' : '启用'),
+        default: () => `${row.Enabled ? '停用' : '启用'} Provider “${row.Name}”？在线库命中范围会随之变化。`,
+      })
     },
   },
   {
@@ -66,8 +82,8 @@ function hTag(label: string, type: 'success' | 'error' | 'default') {
   return h(NTag, { size: 'small', type: type === 'default' ? undefined : type }, { default: () => label })
 }
 
-function hButton(label: string, onClick: () => void) {
-  return h(NButton, { size: 'small', quaternary: true, onClick }, { default: () => label })
+function hButton(label: string) {
+  return h(NButton, { size: 'small', quaternary: true }, { default: () => label })
 }
 
 function hActions(row: SourceProvider) {
@@ -96,7 +112,58 @@ function runtimeLabel(value: string) {
       </div>
     </div>
 
-    <NDataTable v-if="providers.length > 0" :columns="columns" :data="providers" size="small" :bordered="false" />
+    <div v-if="providers.length > 0" class="bulk-bar" aria-live="polite">
+      <div>
+        <strong>已选择 {{ selectedIds.length }} 个 Provider</strong>
+        <p class="panel-subtitle">其中 {{ selectedEnabledCount }} 个启用，{{ selectedRuntimeCount }} 个依赖 JS/CSP 运行时；批量操作会影响在线库收录范围。</p>
+      </div>
+      <div class="bulk-actions">
+        <NPopconfirm
+          positive-text="批量启用"
+          negative-text="取消"
+          :disabled="selectedIds.length === 0"
+          @positive-click="emit('batchEnable')"
+        >
+          <template #trigger>
+            <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-enable'">批量启用</NButton>
+          </template>
+          将启用 {{ selectedIds.length }} 个 Provider；相关在线库可能开始收录这些站点的数据。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="批量停用"
+          negative-text="取消"
+          :disabled="selectedIds.length === 0"
+          @positive-click="emit('batchDisable')"
+        >
+          <template #trigger>
+            <NButton size="small" type="error" ghost :disabled="selectedIds.length === 0" :loading="action === 'batch-disable'">批量停用</NButton>
+          </template>
+          将停用 {{ selectedIds.length }} 个 Provider；依赖这些 Provider 的在线库命中会减少。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="开始探活"
+          negative-text="取消"
+          :disabled="selectedIds.length === 0"
+          @positive-click="emit('batchHealth')"
+        >
+          <template #trigger>
+            <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-health'">批量探活</NButton>
+          </template>
+          将并发探活 {{ selectedIds.length }} 个 Provider，单站失败不会中断整批。
+        </NPopconfirm>
+      </div>
+    </div>
+
+    <NDataTable
+      v-if="providers.length > 0"
+      :columns="columns"
+      :data="providers"
+      :checked-row-keys="selectedIds"
+      :row-key="(row: SourceProvider) => row.ID"
+      size="small"
+      :bordered="false"
+      @update:checked-row-keys="emit('update:selectedIds', $event as number[])"
+    />
     <div v-else class="empty-state">暂无 Provider，先在配置页导入来源配置。</div>
 
     <div class="test-grid">
@@ -149,6 +216,23 @@ function runtimeLabel(value: string) {
   gap: 10px;
   margin-top: 14px;
 }
+.bulk-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -170,6 +254,12 @@ function runtimeLabel(value: string) {
   font-size: 13px;
 }
 @media (max-width: 760px) {
+  .bulk-bar {
+    flex-direction: column;
+  }
+  .bulk-actions {
+    justify-content: flex-start;
+  }
   .test-grid {
     grid-template-columns: 1fr;
   }

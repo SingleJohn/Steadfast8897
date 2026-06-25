@@ -53,6 +53,25 @@ export function useSourceCenter(showToast: ToastFn) {
     await views.refreshViews()
   }
 
+  async function batchToggleProviders(enabled: boolean) {
+    await providers.batchToggleProviders(enabled)
+    await views.refreshViews()
+  }
+
+  async function batchHealthProviders() {
+    await providers.batchHealthProviders()
+    await views.refreshViews()
+  }
+
+  async function confirmDeleteConfig() {
+    await configs.confirmDeleteConfig()
+    await Promise.all([
+      providers.refreshProviders(),
+      runtimeAudit.refreshRuntimeData(),
+      views.refreshViews(),
+    ])
+  }
+
   async function runProviderHealth(id: number) {
     await providers.runProviderHealth(id)
     await views.refreshViews()
@@ -83,8 +102,13 @@ export function useSourceCenter(showToast: ToastFn) {
     importKind: configs.importKind,
     importFormat: configs.importFormat,
     lastImport: configs.lastImport,
+    configDeleteTarget: configs.deleteTarget,
+    configDeleteImpact: configs.deleteImpact,
+    configDeleteLoading: configs.deleteLoading,
     activeProviderId: providers.activeProviderId,
     selectedProvider: providers.selectedProvider,
+    selectedProviderIds: providers.selectedProviderIds,
+    selectedProviders: providers.selectedProviders,
     nativeProviders: providers.nativeProviders,
     runtimeRequiredProviders: providers.runtimeRequiredProviders,
     providerSearchKeyword: providers.providerSearchKeyword,
@@ -118,7 +142,12 @@ export function useSourceCenter(showToast: ToastFn) {
     loadSourceSearchConfig: providers.loadSourceSearchConfig,
     submitImport,
     toggleConfig,
+    inspectDeleteConfig: configs.inspectDeleteConfig,
+    cancelDeleteConfig: configs.cancelDeleteConfig,
+    confirmDeleteConfig,
     toggleProvider,
+    batchToggleProviders,
+    batchHealthProviders,
     toggleParser: runtimeAudit.toggleParser,
     trustRuntimeArtifact: runtimeAudit.trustRuntimeArtifact,
     runProviderHealth,

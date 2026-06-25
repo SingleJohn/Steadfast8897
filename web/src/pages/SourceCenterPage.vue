@@ -54,7 +54,11 @@ const {
   importKind,
   importFormat,
   lastImport,
+  configDeleteTarget,
+  configDeleteImpact,
+  configDeleteLoading,
   activeProviderId,
+  selectedProviderIds,
   providerSearchKeyword,
   providerSearchResult,
   providerCategories,
@@ -172,7 +176,13 @@ watch(federatedKeyword, (value) => {
             <SourceConfigListPanel
               :configs="configs"
               :action="configAction"
+              :delete-target="configDeleteTarget"
+              :delete-impact="configDeleteImpact"
+              :delete-loading="configDeleteLoading"
               @toggle="source.toggleConfig"
+              @inspect-delete="source.inspectDeleteConfig"
+              @cancel-delete="source.cancelDeleteConfig"
+              @confirm-delete="source.confirmDeleteConfig"
               @refresh="source.refreshAll"
             />
 
@@ -196,9 +206,14 @@ watch(federatedKeyword, (value) => {
               :search-result="providerSearchResult"
               :categories="providerCategories"
               :action="providerAction"
+              :selected-ids="selectedProviderIds"
               @update:active-provider-id="activeProviderId = $event"
               @update:keyword="providerSearchKeyword = $event"
+              @update:selected-ids="selectedProviderIds = $event"
               @toggle="source.toggleProvider"
+              @batch-enable="source.batchToggleProviders(true)"
+              @batch-disable="source.batchToggleProviders(false)"
+              @batch-health="source.batchHealthProviders"
               @health="source.runProviderHealth"
               @categories="source.loadProviderCategories"
               @search="source.runProviderSearch"

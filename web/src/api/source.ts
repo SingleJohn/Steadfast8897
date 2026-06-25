@@ -10,6 +10,33 @@ export type SourceConfig = {
   UpdatedAt: string
 }
 
+export type SourceConfigImpactLibraryView = {
+  ID: number
+  Name: string
+  DisplayName?: string
+  ProviderIDs: number[]
+  RemovedProviderIDs: number[]
+}
+
+export type SourceConfigImpact = {
+  ConfigID: number
+  ProviderCount: number
+  ParserCount: number
+  SourceItemCount: number
+  PlaySourceCount: number
+  RuntimeArtifactCount: number
+  RuntimeInvocationCount: number
+  AffectedLibraryViewCount: number
+  AffectedLibraryViews: SourceConfigImpactLibraryView[]
+  ProviderIDs: number[]
+  RuntimeInvocationsRetained: boolean
+}
+
+export type SourceConfigDeleteResult = {
+  Config: SourceConfig
+  Impact: SourceConfigImpact
+}
+
 export type SourceProvider = {
   ID: number
   ConfigID?: number
@@ -25,6 +52,16 @@ export type SourceProvider = {
   LastCheckAt?: string
   LastError?: string
   Categories?: unknown[]
+}
+
+export type SourceProviderBatchHealthResult = {
+  provider_id: number
+  provider_name: string
+  status: string
+  error_type?: string
+  message?: string
+  latency_ms: number
+  categories_count: number
 }
 
 export type SourceParser = {
@@ -225,6 +262,14 @@ export async function setSourceConfigEnabled(id: number, enabled: boolean) {
   return requestJson<SourceConfig>(`/SourceConfigs/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' })
 }
 
+export async function getSourceConfigImpact(id: number) {
+  return requestJson<SourceConfigImpact>(`/SourceConfigs/${id}/Impact`)
+}
+
+export async function deleteSourceConfig(id: number) {
+  return requestJson<SourceConfigDeleteResult>(`/SourceConfigs/${id}?confirm=true`, { method: 'DELETE' })
+}
+
 export async function listSourceProviders() {
   const res = await requestJson<{ items: SourceProvider[] }>('/SourceProviders')
   return res.items || []
@@ -256,6 +301,22 @@ export async function trustSourceRuntimeArtifact(id: number) {
 
 export async function setSourceProviderEnabled(id: number, enabled: boolean) {
   return requestJson<SourceProvider>(`/SourceProviders/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' })
+}
+
+export async function batchSetSourceProvidersEnabled(ids: number[], enabled: boolean) {
+  const path = enabled ? '/SourceProviders/BatchEnable' : '/SourceProviders/BatchDisable'
+  return requestJson<{ items: SourceProvider[]; count: number }>(path, {
+    method: 'POST',
+    body: JSON.stringify({ provider_ids: ids }),
+  })
+}
+
+export async function batchHealthCheckSourceProviders(ids: number[]) {
+  return requestJson<{ items: SourceProviderBatchHealthResult[]; count: number }>('/SourceProviders/BatchHealthCheck', {
+    method: 'POST',
+    body: JSON.stringify({ provider_ids: ids }),
+    timeoutMs: 120_000,
+  })
 }
 
 export async function healthCheckSourceProvider(id: number) {

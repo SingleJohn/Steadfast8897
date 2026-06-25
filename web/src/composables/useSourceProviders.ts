@@ -1,6 +1,8 @@
 import { computed, ref, shallowRef } from 'vue'
 import { getSystemConfig, updateSystemConfig } from '@/api/client'
 import {
+  batchHealthCheckSourceProviders,
+  batchSetSourceProvidersEnabled,
   federatedSourceSearch,
   healthCheckSourceProvider,
   listSourceProviderCategories,
@@ -26,14 +28,18 @@ export function useSourceProviders(showToast: ToastFn) {
   const federatedResult = shallowRef<FederatedSearchResponse | null>(null)
   const embySourceSearchEnabled = shallowRef(true)
   const savingEmbySourceSearch = shallowRef(false)
+  const selectedProviderIds = ref<number[]>([])
 
   const nativeProviders = computed(() => providers.value.filter((p) => p.ProviderKind === 'cms_vod' && p.RuntimeKind === 'native_cms'))
   const runtimeRequiredProviders = computed(() => providers.value.filter((p) => p.RuntimeKind !== 'native_cms'))
   const selectedProvider = computed(() => providers.value.find((p) => p.ID === activeProviderId.value) || null)
+  const selectedProviders = computed(() => providers.value.filter((p) => selectedProviderIds.value.includes(p.ID)))
 
   async function refreshProviders() {
     const nextProviders = await listSourceProviders()
     providers.value = nextProviders
+    const available = new Set(nextProviders.map((provider) => provider.ID))
+    selectedProviderIds.value = selectedProviderIds.value.filter((id) => available.has(id))
     if (!activeProviderId.value && nextProviders.length > 0) activeProviderId.value = nextProviders[0].ID
   }
 
@@ -49,6 +55,44 @@ export function useSourceProviders(showToast: ToastFn) {
   async function toggleProvider(id: number, enabled: boolean) {
     await setSourceProviderEnabled(id, enabled)
     await refreshProviders()
+  }
+
+  async function batchToggleProviders(enabled: boolean) {
+    if (selectedProviderIds.value.length === 0) {
+      showToast('请先选择 Provider', 'info')
+      return
+    }
+    providerAction.value = enabled ? 'batch-enable' : 'batch-disable'
+    try {
+      const ids = [...selectedProviderIds.value]
+      const result = await batchSetSourceProvidersEnabled(ids, enabled)
+      showToast(`${enabled ? '启用' : '停用'}完成：${result.count} 个 Provider`, 'success')
+      selectedProviderIds.value = []
+      await refreshProviders()
+    } catch (e: any) {
+      showToast(e?.message || '批量启停失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
+  async function batchHealthProviders() {
+    if (selectedProviderIds.value.length === 0) {
+      showToast('请先选择 Provider', 'info')
+      return
+    }
+    providerAction.value = 'batch-health'
+    try {
+      const ids = [...selectedProviderIds.value]
+      const result = await batchHealthCheckSourceProviders(ids)
+      const failed = result.items.filter((item) => item.status !== 'ok').length
+      showToast(`批量探活完成：${result.count - failed} 成功 / ${failed} 失败`, failed > 0 ? 'info' : 'success')
+      await refreshProviders()
+    } catch (e: any) {
+      showToast(e?.message || '批量探活失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
   }
 
   async function runProviderHealth(id: number) {
@@ -125,6 +169,8 @@ export function useSourceProviders(showToast: ToastFn) {
     providers,
     activeProviderId,
     selectedProvider,
+    selectedProviderIds,
+    selectedProviders,
     nativeProviders,
     runtimeRequiredProviders,
     providerSearchKeyword,
@@ -140,6 +186,8 @@ export function useSourceProviders(showToast: ToastFn) {
     refreshProviders,
     loadSourceSearchConfig,
     toggleProvider,
+    batchToggleProviders,
+    batchHealthProviders,
     runProviderHealth,
     runProviderSearch,
     loadProviderCategories,

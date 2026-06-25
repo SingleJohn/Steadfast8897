@@ -1,10 +1,13 @@
 import { ref, shallowRef } from 'vue'
 import {
+  deleteSourceConfig,
+  getSourceConfigImpact,
   importCMSListConfig,
   importTVBoxConfig,
   listSourceConfigs,
   setSourceConfigEnabled,
   type SourceConfig,
+  type SourceConfigImpact,
 } from '@/api/source'
 
 type ToastFn = (message: string, type?: any) => void
@@ -19,6 +22,9 @@ export function useSourceConfigs(showToast: ToastFn) {
   const importKind = shallowRef<'tvbox' | 'cms_list'>('tvbox')
   const importFormat = shallowRef<'auto' | 'libretv_settings' | 'csv' | 'txt' | 'json'>('auto')
   const lastImport = shallowRef<any>(null)
+  const deleteTarget = shallowRef<SourceConfig | null>(null)
+  const deleteImpact = shallowRef<SourceConfigImpact | null>(null)
+  const deleteLoading = shallowRef(false)
 
   async function refreshConfigs() {
     configs.value = await listSourceConfigs()
@@ -63,6 +69,41 @@ export function useSourceConfigs(showToast: ToastFn) {
     await refreshConfigs()
   }
 
+  async function inspectDeleteConfig(config: SourceConfig) {
+    deleteTarget.value = config
+    deleteImpact.value = null
+    deleteLoading.value = true
+    try {
+      deleteImpact.value = await getSourceConfigImpact(config.ID)
+    } catch (e: any) {
+      deleteTarget.value = null
+      showToast(e?.message || '影响预览加载失败', 'error')
+    } finally {
+      deleteLoading.value = false
+    }
+  }
+
+  function cancelDeleteConfig() {
+    deleteTarget.value = null
+    deleteImpact.value = null
+    deleteLoading.value = false
+  }
+
+  async function confirmDeleteConfig() {
+    if (!deleteTarget.value) return
+    deleteLoading.value = true
+    try {
+      await deleteSourceConfig(deleteTarget.value.ID)
+      showToast('配置已删除，关联 Provider/Parser 已清理', 'success')
+      cancelDeleteConfig()
+      await refreshConfigs()
+    } catch (e: any) {
+      showToast(e?.message || '删除配置失败', 'error')
+    } finally {
+      deleteLoading.value = false
+    }
+  }
+
   return {
     configs,
     loading,
@@ -73,8 +114,14 @@ export function useSourceConfigs(showToast: ToastFn) {
     importKind,
     importFormat,
     lastImport,
+    deleteTarget,
+    deleteImpact,
+    deleteLoading,
     refreshConfigs,
     submitImport,
     toggleConfig,
+    inspectDeleteConfig,
+    cancelDeleteConfig,
+    confirmDeleteConfig,
   }
 }
