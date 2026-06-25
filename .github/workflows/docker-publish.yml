@@ -232,6 +232,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
 
     steps:
       - name: Checkout
@@ -265,6 +266,23 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check GHCR config
+        id: ghcr
+        shell: bash
+        env:
+          PUBLISH_GHCR: ${{ vars.PUBLISH_GHCR }}
+          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+        run: |
+          image="${GHCR_IMAGE:-ghcr.io/novaforgestack/fyms}"
+          image="$(echo "${image}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${PUBLISH_GHCR,,}" == "true" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request' && steps.dockerhub.outputs.enabled == 'true'
         uses: docker/login-action@v3
@@ -272,11 +290,44 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && steps.ghcr.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Docker metadata images
+        id: images
+        shell: bash
+        env:
+          DOCKERHUB_ENABLED: ${{ steps.dockerhub.outputs.enabled }}
+          GHCR_ENABLED: ${{ steps.ghcr.outputs.enabled }}
+          GHCR_IMAGE: ${{ steps.ghcr.outputs.image }}
+        run: |
+          images=()
+          if [[ "${DOCKERHUB_ENABLED}" == "true" ]]; then
+            images+=("eianz/fyms")
+          fi
+          if [[ "${GHCR_ENABLED}" == "true" ]]; then
+            images+=("${GHCR_IMAGE}")
+          fi
+          if [ "${#images[@]}" -eq 0 ]; then
+            images+=("eianz/fyms")
+          fi
+
+          {
+            echo "value<<EOF"
+            printf '%s\n' "${images[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: eianz/fyms
+          images: ${{ steps.images.outputs.value }}
           tags: |
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=nightly,enable=${{ github.ref == 'refs/heads/main' }}
@@ -290,7 +341,7 @@ jobs:
           context: .
           file: ./Dockerfile.release
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && steps.dockerhub.outputs.enabled == 'true' }}
+          push: ${{ github.event_name != 'pull_request' && (steps.dockerhub.outputs.enabled == 'true' || steps.ghcr.outputs.enabled == 'true') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=inline
@@ -323,15 +374,25 @@ jobs:
 
       - name: Generate release notes
         shell: bash
+        env:
+          PUBLISH_GHCR: ${{ vars.PUBLISH_GHCR }}
+          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
         run: |
           set -euo pipefail
           git fetch --force --tags
           prev_tag="$(git tag --list 'v*' --sort=-v:refname | awk -v cur="${GITHUB_REF_NAME}" '$0 != cur {print; exit}')"
+          docker_images=("eianz/fyms:${GITHUB_REF_NAME}" "eianz/fyms:latest")
+          if [[ "${PUBLISH_GHCR,,}" == "true" ]]; then
+            ghcr_image="${GHCR_IMAGE:-ghcr.io/novaforgestack/fyms}"
+            ghcr_image="$(echo "${ghcr_image}" | tr '[:upper:]' '[:lower:]')"
+            docker_images+=("${ghcr_image}:${GITHUB_REF_NAME}" "${ghcr_image}:latest")
+          fi
           {
             echo "## Release Assets"
             echo
-            echo "- Docker image: \`eianz/fyms:${GITHUB_REF_NAME}\`"
-            echo "- Docker image: \`eianz/fyms:latest\`"
+            for image in "${docker_images[@]}"; do
+              echo "- Docker image: \`${image}\`"
+            done
             echo "- Binary packages and \`checksums.txt\` are attached below"
             echo "- Docker images include the TVBox JS/CSP runtimes. Binary packages include sidecar files; JS runtime needs Node.js 22+, CSP runtime needs Java 21+ on PATH."
             echo
@@ -390,9 +451,18 @@ jobs:
 
       - name: Generate nightly release notes
         shell: bash
+        env:
+          PUBLISH_GHCR: ${{ vars.PUBLISH_GHCR }}
+          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
         run: |
           set -euo pipefail
           BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          docker_images=("eianz/fyms:nightly")
+          if [[ "${PUBLISH_GHCR,,}" == "true" ]]; then
+            ghcr_image="${GHCR_IMAGE:-ghcr.io/novaforgestack/fyms}"
+            ghcr_image="$(echo "${ghcr_image}" | tr '[:upper:]' '[:lower:]')"
+            docker_images+=("${ghcr_image}:nightly")
+          fi
           {
             echo "## Nightly Build"
             echo
@@ -400,7 +470,9 @@ jobs:
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Build time (UTC): \`${BUILD_TIME}\`"
-            echo "- Docker image: \`eianz/fyms:nightly\`"
+            for image in "${docker_images[@]}"; do
+              echo "- Docker image: \`${image}\`"
+            done
             echo "- Docker images include the TVBox JS/CSP runtimes. Binary packages include sidecar files; JS runtime needs Node.js 22+, CSP runtime needs Java 21+ on PATH."
             echo
             echo "## Included Platforms"
