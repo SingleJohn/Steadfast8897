@@ -22,6 +22,48 @@ type SourceConfigImport struct {
 	UpdatedAt     time.Time
 }
 
+type SourceConfigDetail struct {
+	Config        SourceConfigImport
+	ProviderCount int64
+	ParserCount   int64
+	Stats         SourceConfigStats
+}
+
+type SourceConfigStats struct {
+	SourceItemCount          int64
+	PlaySourceCount          int64
+	RuntimeArtifactCount     int64
+	RuntimeInvocationCount   int64
+	AffectedLibraryViewCount int64
+}
+
+type SourceConfigImpact struct {
+	ConfigID                   int64
+	ProviderCount              int64
+	ParserCount                int64
+	SourceItemCount            int64
+	PlaySourceCount            int64
+	RuntimeArtifactCount       int64
+	RuntimeInvocationCount     int64
+	AffectedLibraryViewCount   int64
+	AffectedLibraryViews       []SourceConfigImpactLibraryView
+	ProviderIDs                []int64
+	RuntimeInvocationsRetained bool
+}
+
+type SourceConfigImpactLibraryView struct {
+	ID                 int64
+	Name               string
+	DisplayName        *string
+	ProviderIDs        []int64
+	RemovedProviderIDs []int64
+}
+
+type SourceConfigDeleteResult struct {
+	Config SourceConfigImport
+	Impact SourceConfigImpact
+}
+
 type SourceProvider struct {
 	ID           int64
 	ConfigID     *int64
