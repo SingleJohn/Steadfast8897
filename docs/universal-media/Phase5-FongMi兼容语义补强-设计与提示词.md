@@ -450,6 +450,46 @@ source_provider_health_checks
 ```
 
 **实际落点**：
+- 文件：
+  - `internal/source/provider_home_profile.go`
+  - `internal/source/provider_runtime.go`
+  - `internal/source/csp_runtime_types.go`
+  - `internal/source/csp_provider.go`
+  - `internal/source/js_provider.go`
+  - `internal/source/cms_provider.go`
+  - `internal/source/provider_diagnose.go`
+  - `runtime/csp-sidecar/src/fyms/csp/CSPProbe.java`
+  - `internal/handlers/admin/source_provider_handlers.go`
+  - `internal/handlers/admin/source_routes.go`
+  - `web/src/api/source.ts`
+  - `web/src/composables/useSourceProviders.ts`
+  - `web/src/composables/useSourceCenter.ts`
+  - `web/src/components/source-center/SourceProviderPanel.vue`
+  - `web/src/pages/SourceCenterPage.vue`
+- API：
+  - 新增 `GET /SourceProviders/:id/HomeProfile`。
+  - 返回 `provider_id/runtime_kind/categories/filters/filters_count/home_items/home_item_source/sources`。
+  - `sources.home_content` 与 `sources.home_video_content` 分开返回 `method/status/ok/error_type/error_message/categories_count/filters_count/items_count/duration_ms`。
+  - API 为只读运行画像，不走 `SourceIngestor`，不写 `source_items`，不写 `items`。
+- runtime method / adapter：
+  - 新增 `CSPRuntimeMethodHomeVideo = "homeVideo"`。
+  - CSP sidecar `CSPProbe.callSpider` 支持 `homeVideo` / `homeVideoContent` alias，调用 `Spider.homeVideoContent()`。
+  - `CSPProvider.HomeProfile` 分别调用 `homeContent(true)` 与 `homeVideoContent()`；`class/filters` 以 `homeContent` 为准；若 `homeVideoContent.list` 非空，则按 FongMi 规则作为最终 `home_items`，否则使用 `homeContent.list`。两个分项独立记录失败，只有两者都失败时整体返回错误。
+  - `JSProvider.HomeProfile` 将现有 `home` 返回映射为 `homeContent`，不伪造独立 `homeVideoContent`。
+  - `CMSProvider.HomeProfile` 使用 native CMS `ac=list` 口径保守映射 `class/list`，`homeVideoContent` 标记为 unsupported。
+  - `ProviderRuntimeManager.HomeProfile` 使用可选接口 `HomeProfiler` 编排，只读调用 Provider，不改变 `HealthCheck/Search/Detail/Categories` 生产语义。
+  - FM1 诊断中的 `homeVideo/homeVideoContent` 已随 FM2 对 CSP 正式接入；JS/CMS 仍返回 unsupported 说明。
+- 前端：
+  - Source Center Provider 表新增“首页”操作。
+  - 首页画像区展示运行态、最终首页列表来源、class/filter/home items 数量、`homeContent` / `homeVideoContent` 分项状态与样例条目。
+  - UI 明确该操作为 read-only，不写在线缓存。
+- 构建：
+  - `go build ./...` 通过。
+  - `cd web && npm run build` 通过；保留既有 ArtPlayer CommonJS warning。
+- Commit：
+  - `c376cdc1` 接入CSP首页视频诊断。
+  - `c3bc3ef3` 新增Provider首页画像抽象。
+  - `7693ee35` 来源中心展示首页画像。
 
 ---
 
