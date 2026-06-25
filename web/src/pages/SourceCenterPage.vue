@@ -63,6 +63,7 @@ const {
   providerSearchResult,
   providerCategories,
   providerDiagnosis,
+  providerHomeProfile,
   providerAction,
   configAction,
   parserAction,
@@ -208,6 +209,7 @@ watch(federatedKeyword, (value) => {
               :search-result="providerSearchResult"
               :categories="providerCategories"
               :diagnosis="providerDiagnosis"
+              :home-profile="providerHomeProfile"
               :action="providerAction"
               :selected-ids="selectedProviderIds"
               @update:active-provider-id="activeProviderId = $event"
@@ -223,6 +225,7 @@ watch(federatedKeyword, (value) => {
               @batch-delete="source.batchDeleteProviders"
               @health="source.runProviderHealth"
               @diagnose="source.runProviderDiagnose"
+              @home-profile="source.loadProviderHomeProfile"
               @categories="source.loadProviderCategories"
               @search="source.runProviderSearch"
             />

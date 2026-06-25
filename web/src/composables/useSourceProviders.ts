@@ -6,6 +6,7 @@ import {
   batchSetSourceProvidersEnabled,
   diagnoseSourceProvider,
   federatedSourceSearch,
+  getSourceProviderHomeProfile,
   healthCheckSourceProvider,
   listSourceProviderCategories,
   listSourceProviders,
@@ -14,6 +15,7 @@ import {
   type FederatedSearchResponse,
   type SourceProviderDeleteResult,
   type SourceProviderDiagnoseResult,
+  type SourceProviderHomeProfile,
   type SourceProvider,
 } from '@/api/source'
 
@@ -26,6 +28,7 @@ export function useSourceProviders(showToast: ToastFn) {
   const providerSearchResult = shallowRef<any>(null)
   const providerCategories = ref<Array<{ id: string; name: string }>>([])
   const providerDiagnosis = shallowRef<SourceProviderDiagnoseResult | null>(null)
+  const providerHomeProfile = shallowRef<SourceProviderHomeProfile | null>(null)
   const providerAction = shallowRef('')
   const federatedKeyword = shallowRef('')
   const federatedLimit = shallowRef(50)
@@ -150,6 +153,19 @@ export function useSourceProviders(showToast: ToastFn) {
     }
   }
 
+  async function loadProviderHomeProfile(id: number) {
+    providerAction.value = `home-profile:${id}`
+    try {
+      providerHomeProfile.value = await getSourceProviderHomeProfile(id)
+      activeProviderId.value = id
+      showToast('首页画像已加载；不会写入在线缓存', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '首页画像加载失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
   async function runProviderSearch() {
     if (!activeProviderId.value) return
     providerAction.value = `search:${activeProviderId.value}`
@@ -219,6 +235,7 @@ export function useSourceProviders(showToast: ToastFn) {
     providerSearchResult,
     providerCategories,
     providerDiagnosis,
+    providerHomeProfile,
     providerAction,
     federatedKeyword,
     federatedLimit,
@@ -234,6 +251,7 @@ export function useSourceProviders(showToast: ToastFn) {
     batchDeleteProviders,
     runProviderHealth,
     runProviderDiagnose,
+    loadProviderHomeProfile,
     runProviderSearch,
     loadProviderCategories,
     runFederatedSearch,

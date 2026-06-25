@@ -2,7 +2,7 @@
 import { computed, h, shallowRef } from 'vue'
 import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import type { SourceProvider, SourceProviderDiagnoseResult } from '@/api/source'
+import type { SourceProvider, SourceProviderDiagnoseResult, SourceProviderHomeProfile, SourceProviderHomeProfileSlice } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
@@ -12,6 +12,7 @@ const props = defineProps<{
   searchResult: any
   categories: Array<{ id: string; name: string }>
   diagnosis: SourceProviderDiagnoseResult | null
+  homeProfile: SourceProviderHomeProfile | null
   action: string
   selectedIds: number[]
 }>()
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   batchHealthIds: [ids: number[]]
   health: [id: number]
   diagnose: [id: number]
+  homeProfile: [id: number]
   categories: [id: number]
   search: []
 }>()
@@ -163,6 +165,7 @@ function hActions(row: SourceProvider) {
     default: () => [
       h(NButton, { size: 'small', loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }, { default: () => '探活' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }, { default: () => '诊断' }),
+      h(NButton, { size: 'small', quaternary: true, loading: props.action === `home-profile:${row.ID}`, onClick: () => emit('homeProfile', row.ID) }, { default: () => '首页' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
       h(NPopconfirm, {
         positiveText: '删除',
@@ -213,6 +216,25 @@ function diagnoseMethodLabel(method: string) {
   if (method === 'search') return '搜索'
   if (method === 'detail') return '详情'
   return method
+}
+
+function homeProfileSourceLabel(value: string) {
+  if (value === 'homeVideoContent') return 'homeVideoContent'
+  if (value === 'homeContent') return 'homeContent'
+  return value || '-'
+}
+
+function homeProfileSliceLabel(slice: SourceProviderHomeProfileSlice) {
+  if (slice.method === 'homeVideo') return 'homeVideoContent'
+  if (slice.method === 'home') return 'homeContent'
+  return slice.method
+}
+
+function homeProfileMessage(slice: SourceProviderHomeProfileSlice) {
+  const parts = []
+  if (slice.error_type) parts.push(slice.error_type)
+  if (slice.error_message) parts.push(slice.error_message)
+  return parts.join(': ')
 }
 
 function selectFilteredProviders() {
@@ -467,6 +489,55 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
         </article>
       </div>
     </section>
+
+    <section v-if="homeProfile" class="home-profile-panel" aria-live="polite">
+      <div class="diagnosis-head">
+        <div>
+          <h3 class="diagnosis-title">首页画像</h3>
+          <p class="panel-subtitle">
+            {{ runtimeLabel(homeProfile.runtime_kind) }} · 首页列表来源 {{ homeProfileSourceLabel(homeProfile.home_item_source) }}
+          </p>
+        </div>
+        <NTag size="small" type="info">read-only</NTag>
+      </div>
+      <div class="home-metrics">
+        <span>class {{ homeProfile.categories.length }}</span>
+        <span>filters {{ homeProfile.filters_count }}</span>
+        <span>home items {{ homeProfile.home_items.length }}</span>
+      </div>
+      <div class="diagnosis-grid">
+        <article
+          v-for="slice in [homeProfile.sources.home_content, homeProfile.sources.home_video_content]"
+          :key="slice.method"
+          class="diagnosis-card"
+        >
+          <div class="diagnosis-card-head">
+            <strong>{{ homeProfileSliceLabel(slice) }}</strong>
+            <NTag size="small" :type="diagnoseStatusType(slice.status)">{{ slice.status }}</NTag>
+          </div>
+          <div class="diagnosis-metrics">
+            <span>{{ slice.duration_ms }} ms</span>
+            <span>class {{ slice.categories_count }}</span>
+            <span>filters {{ slice.filters_count }}</span>
+            <span>list {{ slice.items_count }}</span>
+          </div>
+          <p v-if="homeProfileMessage(slice)" class="diagnosis-message">{{ homeProfileMessage(slice) }}</p>
+        </article>
+      </div>
+      <div v-if="homeProfile.categories.length" class="chips">
+        <NTag v-for="cat in homeProfile.categories.slice(0, 24)" :key="cat.id" size="small">{{ cat.name }}</NTag>
+      </div>
+      <div v-if="homeProfile.home_items.length" class="sample-list">
+        <div
+          v-for="item in homeProfile.home_items.slice(0, 8)"
+          :key="item.source_item_id || item.title"
+          class="sample-row"
+        >
+          <span class="sample-title">{{ item.title || item.source_item_id || '-' }}</span>
+          <span class="sample-meta">{{ item.item_type || '-' }}<template v-if="item.year"> · {{ item.year }}</template></span>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -563,6 +634,22 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   background: var(--app-surface-2);
   padding: 14px;
   margin-top: 14px;
+}
+.home-profile-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  padding: 14px;
+  margin-top: 14px;
+}
+.home-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--app-text-muted);
+  font-size: 13px;
 }
 .diagnosis-head,
 .diagnosis-card-head,

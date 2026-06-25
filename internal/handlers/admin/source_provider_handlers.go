@@ -201,6 +201,20 @@ func diagnoseSourceProvider(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, result)
 }
 
+func getSourceProviderHomeProfile(c *gin.Context, state *AppState) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	manager := newSourceProviderRuntimeManager(state)
+	result, err := manager.HomeProfile(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func batchHealthCheckSourceProviders(c *gin.Context, state *AppState) {
 	var req sourceProviderBatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

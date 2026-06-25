@@ -32,6 +32,7 @@ func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.POST("/SourceProviders/:id/Disable", adminMW, func(c *gin.Context) { setSourceProviderEnabled(c, state, false) })
 	group.POST("/SourceProviders/:id/HealthCheck", adminMW, func(c *gin.Context) { healthCheckSourceProvider(c, state) })
 	group.POST("/SourceProviders/:id/Diagnose", adminMW, func(c *gin.Context) { diagnoseSourceProvider(c, state) })
+	group.GET("/SourceProviders/:id/HomeProfile", adminMW, func(c *gin.Context) { getSourceProviderHomeProfile(c, state) })
 	group.POST("/SourceProviders/:id/Search", adminMW, func(c *gin.Context) { searchSourceProvider(c, state) })
 	group.POST("/SourceProviders/:id/Detail", adminMW, func(c *gin.Context) { detailSourceProvider(c, state) })
 	group.GET("/SourceProviders/:id/Categories", adminMW, func(c *gin.Context) { listSourceProviderCategories(c, state) })

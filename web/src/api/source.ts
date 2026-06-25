@@ -104,6 +104,39 @@ export type SourceProviderDiagnosePayload = {
   timeout_ms?: number
 }
 
+export type SourceProviderHomeProfileSlice = {
+  method: string
+  status: 'ok' | 'empty' | 'error' | 'unsupported' | 'skipped'
+  ok: boolean
+  error_type?: string
+  error_message?: string
+  categories_count: number
+  filters_count: number
+  items_count: number
+  duration_ms: number
+}
+
+export type SourceProviderHomeProfile = {
+  provider_id: number
+  runtime_kind: string
+  categories: Array<{ id: string; name: string }>
+  filters?: unknown
+  filters_count: number
+  home_items: Array<{
+    source_item_id?: string
+    title?: string
+    item_type?: string
+    year?: number
+    poster_url?: string
+    remarks?: string
+  }>
+  home_item_source: string
+  sources: {
+    home_content: SourceProviderHomeProfileSlice
+    home_video_content: SourceProviderHomeProfileSlice
+  }
+}
+
 export type SourceProviderDeleteImpact = Omit<SourceConfigImpact, 'ConfigID' | 'ParserCount'>
 
 export type SourceProviderDeleteResult = {
@@ -390,6 +423,12 @@ export async function diagnoseSourceProvider(id: number, payload: SourceProvider
   return requestJson<SourceProviderDiagnoseResult>(`/SourceProviders/${id}/Diagnose`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+  })
+}
+
+export async function getSourceProviderHomeProfile(id: number) {
+  return requestJson<SourceProviderHomeProfile>(`/SourceProviders/${id}/HomeProfile`, {
     timeoutMs: 120_000,
   })
 }
