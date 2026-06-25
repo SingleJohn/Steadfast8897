@@ -456,11 +456,15 @@ type SourceParserListOptions struct {
 }
 
 type SourceRuntimeInvocationListOptions struct {
-	Limit      int64
-	Offset     int64
-	ProviderID *int64
-	Method     string
-	Status     string
+	Limit       int64
+	Offset      int64
+	ProviderID  *int64
+	Method      string
+	Status      string
+	ErrorType   string
+	RuntimeKind string
+	StartTime   *time.Time
+	EndTime     *time.Time
 }
 
 type SourceDimensionValue struct {

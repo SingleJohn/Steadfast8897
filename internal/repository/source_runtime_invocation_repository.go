@@ -50,6 +50,18 @@ func (r *SourceRepository) ListRuntimeInvocations(ctx context.Context, opts Sour
 	if strings.TrimSpace(opts.Status) != "" {
 		clauses = append(clauses, "status = "+addArg(strings.TrimSpace(opts.Status)))
 	}
+	if strings.TrimSpace(opts.ErrorType) != "" {
+		clauses = append(clauses, "error_type = "+addArg(strings.TrimSpace(opts.ErrorType)))
+	}
+	if strings.TrimSpace(opts.RuntimeKind) != "" {
+		clauses = append(clauses, "runtime_kind = "+addArg(strings.TrimSpace(opts.RuntimeKind)))
+	}
+	if opts.StartTime != nil {
+		clauses = append(clauses, "invoked_at >= "+addArg(*opts.StartTime))
+	}
+	if opts.EndTime != nil {
+		clauses = append(clauses, "invoked_at <= "+addArg(*opts.EndTime))
+	}
 	limitArg := addArg(opts.Limit)
 	offsetArg := addArg(opts.Offset)
 	rows, err := r.pool.Query(ctx, `
@@ -72,6 +84,21 @@ func (r *SourceRepository) ListRuntimeInvocations(ctx context.Context, opts Sour
 		out = append(out, *item)
 	}
 	return out, rows.Err()
+}
+
+func (r *SourceRepository) GetRuntimeInvocationByID(ctx context.Context, id int64) (*SourceRuntimeInvocation, error) {
+	if r == nil || r.pool == nil {
+		return nil, fmt.Errorf("source repository 未初始化")
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("runtime invocation id 无效")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, provider_id, runtime_kind, method, status, error_type, error_message,
+		       duration_ms, engine_ok, worker_pid, artifact_ids, url_hash, raw, invoked_at
+		  FROM source_runtime_invocations
+		 WHERE id = $1`, id)
+	return scanSourceRuntimeInvocation(row)
 }
 
 func nonNilInt64s(values []int64) []int64 {
