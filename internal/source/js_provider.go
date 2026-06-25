@@ -85,6 +85,41 @@ func (p *JSProvider) Categories(ctx context.Context) ([]ProviderCategory, error)
 	return out, nil
 }
 
+func (p *JSProvider) HomeProfile(ctx context.Context) (*ProviderHomeProfile, error) {
+	start := time.Now()
+	raw, err := p.runData(ctx, JSRuntimeMethodHome, nil)
+	if err != nil {
+		return &ProviderHomeProfile{
+			ProviderID:  p.providerID,
+			RuntimeKind: JSRuntimeKindNodeDRPY,
+			Sources: ProviderHomeSources{
+				HomeContent:      providerRuntimeSliceError(JSRuntimeMethodHome, start, err),
+				HomeVideoContent: providerRuntimeSliceUnsupported("homeVideoContent", "JS runtime 当前未提供独立 homeVideoContent，首页列表来自 home。"),
+			},
+		}, err
+	}
+	payload, err := decodeProviderHomePayload(raw, "JS")
+	if err != nil {
+		return nil, err
+	}
+	categories := providerHomeCategories(payload)
+	filters, filtersCount := providerHomeFilters(payload.Filters)
+	items := providerHomeItems(p.baseForImages(), payload, "drpy_js")
+	return &ProviderHomeProfile{
+		ProviderID:     p.providerID,
+		RuntimeKind:    JSRuntimeKindNodeDRPY,
+		Categories:     categories,
+		Filters:        filters,
+		FiltersCount:   filtersCount,
+		HomeItems:      items,
+		HomeItemSource: "homeContent",
+		Sources: ProviderHomeSources{
+			HomeContent:      newProviderRuntimeSlice(JSRuntimeMethodHome, start, len(categories), filtersCount, len(items)),
+			HomeVideoContent: providerRuntimeSliceUnsupported("homeVideoContent", "JS runtime 当前未提供独立 homeVideoContent，首页列表来自 home。"),
+		},
+	}, nil
+}
+
 func (p *JSProvider) Search(ctx context.Context, req SearchRequest) (*ProviderPage, error) {
 	raw, err := p.runData(ctx, JSRuntimeMethodSearch, map[string]any{
 		"keyword": strings.TrimSpace(req.Keyword),

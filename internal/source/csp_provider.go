@@ -88,6 +88,71 @@ func (p *CSPProvider) Categories(ctx context.Context) ([]ProviderCategory, error
 	return out, nil
 }
 
+func (p *CSPProvider) HomeProfile(ctx context.Context) (*ProviderHomeProfile, error) {
+	homeStart := time.Now()
+	rawHome, err := p.runData(ctx, CSPRuntimeMethodHome, map[string]any{"filter": true})
+	categories := []ProviderCategory{}
+	filters := json.RawMessage(nil)
+	filtersCount := 0
+	homeItems := []SourceItemSnapshot{}
+	homeSlice := ProviderRuntimeSlice{}
+	var homeErr error
+	if err != nil {
+		homeErr = err
+		homeSlice = providerRuntimeSliceError(CSPRuntimeMethodHome, homeStart, err)
+	} else {
+		homePayload, err := decodeProviderHomePayload(rawHome, "CSP")
+		if err != nil {
+			homeErr = err
+			homeSlice = providerRuntimeSliceError(CSPRuntimeMethodHome, homeStart, err)
+		} else {
+			categories = providerHomeCategories(homePayload)
+			filters, filtersCount = providerHomeFilters(homePayload.Filters)
+			homeItems = providerHomeItems(p.baseForImages(), homePayload, "csp_dex")
+			homeSlice = newProviderRuntimeSlice(CSPRuntimeMethodHome, homeStart, len(categories), filtersCount, len(homeItems))
+		}
+	}
+
+	videoStart := time.Now()
+	rawVideo, videoErr := p.runData(ctx, CSPRuntimeMethodHomeVideo, nil)
+	videoItems := []SourceItemSnapshot{}
+	videoSlice := ProviderRuntimeSlice{}
+	if videoErr != nil {
+		videoSlice = providerRuntimeSliceError(CSPRuntimeMethodHomeVideo, videoStart, videoErr)
+	} else {
+		videoPayload, err := decodeProviderHomePayload(rawVideo, "CSP")
+		if err != nil {
+			videoSlice = providerRuntimeSliceError(CSPRuntimeMethodHomeVideo, videoStart, err)
+		} else {
+			videoItems = providerHomeItems(p.baseForImages(), videoPayload, "csp_dex")
+			videoSlice = newProviderRuntimeSlice(CSPRuntimeMethodHomeVideo, videoStart, 0, 0, len(videoItems))
+		}
+	}
+	items := homeItems
+	itemSource := "homeContent"
+	if len(videoItems) > 0 {
+		items = videoItems
+		itemSource = "homeVideoContent"
+	}
+	profile := &ProviderHomeProfile{
+		ProviderID:     p.providerID,
+		RuntimeKind:    CSPRuntimeKindJVM,
+		Categories:     categories,
+		Filters:        filters,
+		FiltersCount:   filtersCount,
+		HomeItems:      items,
+		HomeItemSource: itemSource,
+		Sources: ProviderHomeSources{
+			HomeContent:      homeSlice,
+			HomeVideoContent: videoSlice,
+		},
+	}
+	if homeErr != nil && videoErr != nil {
+		return profile, fmt.Errorf("CSP 首页画像失败: homeContent=%v; homeVideoContent=%v", homeErr, videoErr)
+	}
+	return profile, nil
+}
+
 func (p *CSPProvider) Search(ctx context.Context, req SearchRequest) (*ProviderPage, error) {
 	keyword := strings.TrimSpace(req.Keyword)
 	raw, err := p.runData(ctx, CSPRuntimeMethodSearch, map[string]any{

@@ -72,6 +72,35 @@ func (m *ProviderRuntimeManager) Categories(ctx context.Context, providerID int6
 	return items, err
 }
 
+func (m *ProviderRuntimeManager) HomeProfile(ctx context.Context, providerID int64) (*ProviderHomeProfile, error) {
+	start := time.Now()
+	provider, row, err := m.enabledProvider(ctx, providerID)
+	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "home_profile", err)
+		return nil, err
+	}
+	profiler, ok := provider.(HomeProfiler)
+	if !ok {
+		err := fmt.Errorf("provider 不支持 HomeProfile")
+		LogProviderAction(m.logger, start, row.ID, "home_profile", err)
+		return nil, err
+	}
+	if err := m.wait(row.ID).Wait(ctx); err != nil {
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "home_profile", err)
+		return nil, err
+	}
+	profile, err := profiler.HomeProfile(ctx)
+	if profile != nil {
+		profile.ProviderID = row.ID
+		profile.RuntimeKind = row.RuntimeKind
+	}
+	LogProviderAction(m.logger, start, row.ID, "home_profile", err,
+		"categories", providerHomeProfileCategoryCount(profile),
+		"items", providerHomeProfileItemCount(profile))
+	return profile, err
+}
+
 func (m *ProviderRuntimeManager) Search(ctx context.Context, providerID int64, req SearchRequest) (*ProviderPage, []repository.SourceItem, error) {
 	start := time.Now()
 	provider, row, err := m.enabledProvider(ctx, providerID)
@@ -158,6 +187,20 @@ func (m *ProviderRuntimeManager) ResolvePlay(ctx context.Context, playSource rep
 	result, err := provider.ResolvePlay(ctx, snapshot)
 	LogProviderAction(m.logger, start, row.ID, "resolve_play", err, "parse_mode", playSource.ParseMode, "url_hash", URLHash(playSource.RawURL))
 	return result, err
+}
+
+func providerHomeProfileCategoryCount(profile *ProviderHomeProfile) int {
+	if profile == nil {
+		return 0
+	}
+	return len(profile.Categories)
+}
+
+func providerHomeProfileItemCount(profile *ProviderHomeProfile) int {
+	if profile == nil {
+		return 0
+	}
+	return len(profile.HomeItems)
 }
 
 func (m *ProviderRuntimeManager) HealthCheck(ctx context.Context, providerID int64) (*repository.SourceProvider, error) {

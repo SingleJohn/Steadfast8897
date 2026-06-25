@@ -130,6 +130,40 @@ func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error
 	return categories, nil
 }
 
+func (p *CMSProvider) HomeProfile(ctx context.Context) (*ProviderHomeProfile, error) {
+	start := time.Now()
+	var payload cmsResponse
+	if err := p.getCMS(ctx, map[string]string{"ac": p.categoryAC}, &payload); err != nil {
+		return &ProviderHomeProfile{
+			RuntimeKind: "native_cms",
+			Sources: ProviderHomeSources{
+				HomeContent:      providerRuntimeSliceError("home", start, err),
+				HomeVideoContent: providerRuntimeSliceUnsupported("homeVideoContent", "native CMS 没有独立 homeVideoContent，首页列表来自 CMS ac=list。"),
+			},
+		}, err
+	}
+	categories := make([]ProviderCategory, 0, len(payload.Class))
+	for _, item := range payload.Class {
+		id := cleanCMSValue(item.TypeID.String())
+		name := cleanCMSValue(item.TypeName)
+		if id == "" || name == "" {
+			continue
+		}
+		categories = append(categories, ProviderCategory{ID: id, Name: name})
+	}
+	items := parseCMSPage(p.api, payload, false).Items
+	return &ProviderHomeProfile{
+		RuntimeKind:    "native_cms",
+		Categories:     categories,
+		HomeItems:      items,
+		HomeItemSource: "homeContent",
+		Sources: ProviderHomeSources{
+			HomeContent:      newProviderRuntimeSlice("home", start, len(categories), 0, len(items)),
+			HomeVideoContent: providerRuntimeSliceUnsupported("homeVideoContent", "native CMS 没有独立 homeVideoContent，首页列表来自 CMS ac=list。"),
+		},
+	}, nil
+}
+
 func (p *CMSProvider) Search(ctx context.Context, req SearchRequest) (*ProviderPage, error) {
 	var payload cmsResponse
 	params := map[string]string{
