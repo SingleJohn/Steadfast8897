@@ -220,6 +220,83 @@ func (r *SourceRepository) CountItemsForLibraryView(ctx context.Context, view So
 	return count, err
 }
 
+func (r *SourceRepository) PreviewLibraryView(ctx context.Context, view SourceLibraryView, sampleLimit int64) (*SourceLibraryViewPreview, error) {
+	where, args, err := sourceViewWhere(view, nil)
+	if err != nil {
+		return nil, err
+	}
+	if sampleLimit <= 0 {
+		sampleLimit = 12
+	}
+	if sampleLimit > 50 {
+		sampleLimit = 50
+	}
+
+	var out SourceLibraryViewPreview
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM source_items si WHERE `+where, args...).Scan(&out.ItemCount); err != nil {
+		return nil, err
+	}
+
+	providerRows, err := r.pool.Query(ctx, `
+		SELECT si.provider_id,
+		       COALESCE(sp.name, '') AS provider_name,
+		       COALESCE(sp.source_key, '') AS source_key,
+		       COALESCE(sp.health_status, 'unknown') AS health_status,
+		       COUNT(*) AS item_count
+		  FROM source_items si
+		  LEFT JOIN source_providers sp ON sp.id = si.provider_id
+		 WHERE `+where+`
+		 GROUP BY si.provider_id, sp.name, sp.source_key, sp.health_status
+		 ORDER BY item_count DESC, provider_name ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	for providerRows.Next() {
+		var item SourceLibraryViewProviderPreview
+		if err := providerRows.Scan(&item.ProviderID, &item.ProviderName, &item.SourceKey, &item.HealthStatus, &item.ItemCount); err != nil {
+			providerRows.Close()
+			return nil, err
+		}
+		out.Providers = append(out.Providers, item)
+	}
+	if err := providerRows.Err(); err != nil {
+		providerRows.Close()
+		return nil, err
+	}
+	providerRows.Close()
+
+	limitIdx := len(args) + 1
+	sampleArgs := append(append([]any{}, args...), sampleLimit)
+	itemRows, err := r.pool.Query(ctx, `
+		SELECT si.public_uuid::text,
+		       si.provider_id,
+		       COALESCE(sp.name, '') AS provider_name,
+		       si.title,
+		       si.item_type,
+		       si.year,
+		       si.normalized_kind,
+		       si.region,
+		       si.poster_url
+		  FROM source_items si
+		  LEFT JOIN source_providers sp ON sp.id = si.provider_id
+		 WHERE `+where+`
+		 ORDER BY si.last_seen_at DESC, si.id DESC
+		 LIMIT $`+fmt.Sprint(limitIdx), sampleArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var item SourceLibraryViewItemPreview
+		if err := itemRows.Scan(&item.PublicUUID, &item.ProviderID, &item.ProviderName, &item.Title,
+			&item.ItemType, &item.Year, &item.NormalizedKind, &item.Region, &item.PosterURL); err != nil {
+			return nil, err
+		}
+		out.Items = append(out.Items, item)
+	}
+	return &out, itemRows.Err()
+}
+
 func (r *SourceRepository) ListPosterURLsForLibraryView(ctx context.Context, view SourceLibraryView, limit int64) ([]string, error) {
 	where, args, err := sourceViewWhere(view, nil)
 	if err != nil {

@@ -472,3 +472,29 @@ type SourceDimensionValue struct {
 	Count        int64
 	AlreadyAdded bool
 }
+
+type SourceLibraryViewProviderPreview struct {
+	ProviderID   int64
+	ProviderName string
+	SourceKey    string
+	HealthStatus string
+	ItemCount    int64
+}
+
+type SourceLibraryViewItemPreview struct {
+	PublicUUID     string
+	ProviderID     int64
+	ProviderName   string
+	Title          string
+	ItemType       string
+	Year           *int32
+	NormalizedKind *string
+	Region         *string
+	PosterURL      *string
+}
+
+type SourceLibraryViewPreview struct {
+	ItemCount int64
+	Providers []SourceLibraryViewProviderPreview
+	Items     []SourceLibraryViewItemPreview
+}

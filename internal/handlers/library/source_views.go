@@ -175,6 +175,35 @@ func discoverSourceViewValues(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"dimension": dimension, "values": values})
 }
 
+func previewSourceView(c *gin.Context, state *AppState) {
+	var req sourceViewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	view := sourceViewUpsertFromRequest(req, nil)
+	preview, err := state.Repo.Source.PreviewLibraryView(c.Request.Context(), repository.SourceLibraryView{
+		PublicUUID:     view.PublicUUID,
+		Name:           view.Name,
+		DisplayName:    view.DisplayName,
+		Dimension:      view.Dimension,
+		MatchValue:     view.MatchValue,
+		MatchValues:    view.MatchValues,
+		CollectionType: view.CollectionType,
+		ProviderIDs:    view.ProviderIDs,
+		Filter:         view.Filter,
+		Enabled:        view.Enabled,
+		ExposeToEmby:   view.ExposeToEmby,
+		SortOrder:      view.SortOrder,
+		Config:         view.Config,
+	}, 12)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sourceViewPreviewDTO(preview))
+}
+
 func generateSourceViewCover(c *gin.Context, state *AppState) {
 	id, ok := parseSourceViewID(c)
 	if !ok {
@@ -364,6 +393,38 @@ func sourceViewAdminDTO(view repository.SourceLibraryView) gin.H {
 		"ItemCount":      view.ItemCount,
 		"HasCover":       coverURL != "",
 		"CoverUrl":       coverURL,
+	}
+}
+
+func sourceViewPreviewDTO(preview *repository.SourceLibraryViewPreview) gin.H {
+	providers := make([]gin.H, 0, len(preview.Providers))
+	for _, provider := range preview.Providers {
+		providers = append(providers, gin.H{
+			"provider_id":   provider.ProviderID,
+			"provider_name": provider.ProviderName,
+			"source_key":    provider.SourceKey,
+			"health_status": provider.HealthStatus,
+			"item_count":    provider.ItemCount,
+		})
+	}
+	items := make([]gin.H, 0, len(preview.Items))
+	for _, item := range preview.Items {
+		items = append(items, gin.H{
+			"public_uuid":     item.PublicUUID,
+			"provider_id":     item.ProviderID,
+			"provider_name":   item.ProviderName,
+			"title":           item.Title,
+			"item_type":       item.ItemType,
+			"year":            item.Year,
+			"normalized_kind": item.NormalizedKind,
+			"region":          item.Region,
+			"poster_url":      item.PosterURL,
+		})
+	}
+	return gin.H{
+		"item_count": preview.ItemCount,
+		"providers":  providers,
+		"items":      items,
 	}
 }
 
