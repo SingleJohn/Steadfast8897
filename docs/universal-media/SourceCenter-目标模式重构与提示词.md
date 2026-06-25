@@ -493,4 +493,36 @@ SC6 前端体验与可访问性收口
 - 按交互修复、视觉 polish、审查修复小步中文 commit。
 ```
 
-**实际落点**：待执行时填写。
+**实际落点**：
+
+- 文件：
+  - `web/src/api/source.ts`
+  - `web/src/pages/SourceCenterPage.vue`
+  - `web/src/composables/useSourceCenter.ts`
+  - `web/src/composables/useSourceConfigs.ts`
+  - `web/src/composables/useSourceProviders.ts`
+  - `web/src/composables/useSourceViews.ts`
+  - `web/src/components/source-center/SourceConfigListPanel.vue`
+  - `web/src/components/source-center/SourceProviderPanel.vue`
+  - `web/src/components/source-center/SourceFederatedSearchPanel.vue`
+  - `web/src/components/source-center/SourceImportPanel.vue`
+  - `web/src/components/source-center/SourceParserPanel.vue`
+  - `web/src/components/source-center/SourceRuntimeAuditPanel.vue`
+  - `web/src/components/source-center/SourceViewsPanel.vue`
+- API：
+  - 前端接入既有后端接口 `GET /SourceConfigs/:id/Impact`、`DELETE /SourceConfigs/:id?confirm=true`。
+  - 前端接入既有后端接口 `POST /SourceProviders/BatchEnable`、`POST /SourceProviders/BatchDisable`、`POST /SourceProviders/BatchHealthCheck`。
+  - SC6 未新增后端 API，未改 JS/CSP/CMS 运行时核心逻辑，未改播放解析链路语义。
+- UI/UX 收口：
+  - Source Config 删除前展示 Impact 摘要，用户二次确认后才提交删除。
+  - Provider 列表支持行选择、选择计数、批量影响说明、批量启用/禁用/健康检查二次确认。
+  - Source Config、Provider、Parser、Runtime Audit、Source Views 等长表补充分页，降低长列表阻塞。
+  - 导入、Provider 搜索、Federated Search、Source View 表单补充显式 label，Source View 匹配值补字段级错误提示。
+  - Provider 错误、联邦搜索错误、运行时调用错误、URL Hash、Artifact SHA256 支持复制；复制内容限定为错误摘要、hash、sha 等脱敏值，不明文暴露敏感 URL。
+  - Source View 删除和清空封面增加二次确认；窄屏下批量工具栏与表单操作改为可换行布局，避免按钮挤压。
+- 构建：
+  - `go build ./...` 通过。
+  - `cd web && npm run build` 通过；仍有既有 ArtPlayer CommonJS `module` 变量警告，不影响构建结果。
+- commit：
+  - `ccc09f25` 来源中心补齐批量与删除确认交互
+  - `586dcd7f` 来源中心完善审计与表单可用性
