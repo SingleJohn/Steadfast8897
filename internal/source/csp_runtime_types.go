@@ -5,13 +5,14 @@ import "encoding/json"
 const (
 	CSPRuntimeKindJVM = "csp_dex"
 
-	CSPRuntimeMethodInit     = "init"
-	CSPRuntimeMethodHome     = "home"
-	CSPRuntimeMethodCategory = "category"
-	CSPRuntimeMethodDetail   = "detail"
-	CSPRuntimeMethodSearch   = "search"
-	CSPRuntimeMethodPlay     = "play"
-	CSPRuntimeMethodProxy    = "proxy"
+	CSPRuntimeMethodInit      = "init"
+	CSPRuntimeMethodHome      = "home"
+	CSPRuntimeMethodHomeVideo = "homeVideo"
+	CSPRuntimeMethodCategory  = "category"
+	CSPRuntimeMethodDetail    = "detail"
+	CSPRuntimeMethodSearch    = "search"
+	CSPRuntimeMethodPlay      = "play"
+	CSPRuntimeMethodProxy     = "proxy"
 )
 
 type CSPRuntimeRequest struct {

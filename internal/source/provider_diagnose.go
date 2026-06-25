@@ -114,12 +114,7 @@ func (m *ProviderRuntimeManager) diagnoseMethod(ctx context.Context, provider Pr
 	case "home":
 		return diagnoseProviderHome(callCtx, provider, start)
 	case "homeVideo":
-		return ProviderDiagnoseMethodResult{
-			Method:    method,
-			Status:    ProviderDiagnoseStatusUnsupported,
-			Message:   "FM1 仅诊断现有 runtime method；homeVideoContent 将在 FM2 正式接入。",
-			LatencyMS: time.Since(start).Milliseconds(),
-		}
+		return diagnoseProviderHomeVideo(callCtx, provider, start)
 	case "category":
 		categoryID := strings.TrimSpace(req.CategoryID)
 		if categoryID == "" {
@@ -192,6 +187,42 @@ func (m *ProviderRuntimeManager) diagnoseMethod(ctx context.Context, provider Pr
 			Method:    method,
 			Status:    ProviderDiagnoseStatusUnsupported,
 			Message:   "暂不支持的诊断 method。",
+			LatencyMS: time.Since(start).Milliseconds(),
+		}
+	}
+}
+
+func diagnoseProviderHomeVideo(ctx context.Context, provider Provider, start time.Time) ProviderDiagnoseMethodResult {
+	switch p := provider.(type) {
+	case *CSPProvider:
+		raw, err := p.runData(ctx, CSPRuntimeMethodHomeVideo, nil)
+		if err != nil {
+			return providerDiagnoseErrorResult("homeVideo", start, err)
+		}
+		result := providerDiagnoseHomeResult("homeVideo", start, raw, p.baseForImages())
+		result.CategoriesCount = 0
+		result.FiltersCount = 0
+		result.Status = providerDiagnoseStatus(0, 0, result.ItemsCount)
+		return result
+	case *JSProvider:
+		return ProviderDiagnoseMethodResult{
+			Method:    "homeVideo",
+			Status:    ProviderDiagnoseStatusUnsupported,
+			Message:   "JS runtime 当前未提供独立 homeVideoContent，首页列表来自 home。",
+			LatencyMS: time.Since(start).Milliseconds(),
+		}
+	case *CMSProvider:
+		return ProviderDiagnoseMethodResult{
+			Method:    "homeVideo",
+			Status:    ProviderDiagnoseStatusUnsupported,
+			Message:   "native CMS 没有独立 homeVideoContent，首页列表来自 CMS ac=list。",
+			LatencyMS: time.Since(start).Milliseconds(),
+		}
+	default:
+		return ProviderDiagnoseMethodResult{
+			Method:    "homeVideo",
+			Status:    ProviderDiagnoseStatusUnsupported,
+			Message:   "当前 Provider 不支持 homeVideoContent。",
 			LatencyMS: time.Since(start).Milliseconds(),
 		}
 	}

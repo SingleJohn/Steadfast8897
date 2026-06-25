@@ -200,6 +200,9 @@ public final class CSPProbe {
             case "home":
             case "homeContent":
                 return invoke(clazz, spider, "homeContent", new Class<?>[] { boolean.class }, new Object[] { booleanValue(args.get("filter")) });
+            case "homeVideo":
+            case "homeVideoContent":
+                return invoke(clazz, spider, "homeVideoContent", new Class<?>[] {}, new Object[] {});
             case "category":
             case "categoryContent":
                 return invoke(clazz, spider, "categoryContent",
