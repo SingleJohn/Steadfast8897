@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { DimensionValue, SourceProvider, SourceView, SourceViewPreview } from '@/api/source'
 
@@ -9,6 +9,7 @@ const props = defineProps<{
   providers: SourceProvider[]
   preview: SourceViewPreview | null
   previewLoading: boolean
+  matchValueError: string
   draft: {
     id: number | null
     Name: string
@@ -83,6 +84,11 @@ const discoverOptions = computed(() => props.discoverValues.map((v) => ({
 })))
 const selectedProviders = computed(() => props.providers.filter((provider) => props.draft.ProviderIds.includes(provider.ID)))
 const parserPolicyNote = 'Parser 本轮仍是全局播放解析器；在线库只限制组织视图与 Provider 范围，不让库级解析器进入播放上下文。'
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [20, 50, 100],
+}
 
 const columns: DataTableColumns<SourceView> = [
   { title: '名称', key: 'DisplayName', minWidth: 160 },
@@ -123,7 +129,14 @@ const columns: DataTableColumns<SourceView> = [
           h(NButton, { size: 'small', quaternary: true, onClick: () => emit('move', index, -1) }, { default: () => '上移' }),
           h(NButton, { size: 'small', quaternary: true, onClick: () => emit('move', index, 1) }, { default: () => '下移' }),
           h(NButton, { size: 'small', quaternary: true, onClick: () => emit('openCover', row.Id) }, { default: () => '封面' }),
-          h(NButton, { size: 'small', quaternary: true, type: 'error', onClick: () => emit('remove', row.Id) }, { default: () => '删除' }),
+          h(NPopconfirm, {
+            positiveText: '删除',
+            negativeText: '取消',
+            onPositiveClick: () => emit('remove', row.Id),
+          }, {
+            trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, { default: () => '删除' }),
+            default: () => `删除在线库“${row.DisplayName || row.Name}”？只删除组织视图，不删除 source_items。`,
+          }),
         ],
       })
     },
@@ -164,7 +177,13 @@ function healthType(status: string) {
           </label>
           <label class="field">
             <span class="field-label">主匹配值</span>
-            <NInput :value="draft.MatchValue" placeholder="movie/CN、anime、CN 或 Provider ID" @update:value="emit('update:draftMatchValue', $event)" />
+            <NInput
+              :value="draft.MatchValue"
+              placeholder="movie/CN、anime、CN 或 Provider ID"
+              :status="matchValueError ? 'error' : undefined"
+              @update:value="emit('update:draftMatchValue', $event)"
+            />
+            <span v-if="matchValueError" class="field-error">{{ matchValueError }}</span>
           </label>
           <label class="field">
             <span class="field-label">库类型</span>
@@ -264,13 +283,18 @@ function healthType(status: string) {
       </aside>
     </div>
 
-    <NDataTable v-if="views.length > 0" :columns="columns" :data="views" size="small" :bordered="false" />
+    <NDataTable v-if="views.length > 0" :columns="columns" :data="views" :pagination="tablePagination" size="small" :bordered="false" />
     <div v-else class="empty-state">暂无在线虚拟库；可用维度发现后创建后台库，是否暴露给 Emby 由开关控制。</div>
 
     <div v-if="coverTargetId" class="cover-bar">
       <NSelect :value="coverStyle" :options="coverStyleOptions" placeholder="封面风格" @update:value="emit('update:coverStyle', $event)" />
       <NButton type="primary" :loading="generatingCover" @click="emit('confirmCover')">生成封面</NButton>
-      <NButton quaternary @click="emit('restoreCover', coverTargetId)">清除封面</NButton>
+      <NPopconfirm positive-text="清除" negative-text="取消" @positive-click="emit('restoreCover', coverTargetId)">
+        <template #trigger>
+          <NButton quaternary>清除封面</NButton>
+        </template>
+        清除后会恢复在线库默认封面。
+      </NPopconfirm>
     </div>
   </section>
 </template>
@@ -364,6 +388,11 @@ function healthType(status: string) {
 
 .field-label {
   font-weight: 700;
+}
+
+.field-error {
+  color: #d03050;
+  font-size: 12px;
 }
 
 .provider-health {

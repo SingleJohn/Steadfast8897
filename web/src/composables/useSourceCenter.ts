@@ -137,6 +137,7 @@ export function useSourceCenter(showToast: ToastFn) {
     generatingCover: views.generatingCover,
     viewPreview: views.viewPreview,
     previewLoading: views.previewLoading,
+    viewMatchValueError: views.matchValueError,
     refreshAll,
     refreshRuntimeData: runtimeAudit.refreshRuntimeData,
     loadSourceSearchConfig: providers.loadSourceSearchConfig,

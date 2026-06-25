@@ -21,6 +21,11 @@ const emit = defineEmits<{
 }>()
 
 const enabledCount = computed(() => props.configs.filter((config) => config.Enabled).length)
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [20, 50, 100],
+}
 const impactMetrics = computed(() => {
   const impact = props.deleteImpact
   if (!impact) return []
@@ -95,7 +100,7 @@ function formatTime(value?: string) {
       <NButton quaternary size="small" @click="emit('refresh')">刷新</NButton>
     </div>
 
-    <NDataTable v-if="configs.length > 0" :columns="columns" :data="configs" size="small" :bordered="false" />
+    <NDataTable v-if="configs.length > 0" :columns="columns" :data="configs" :pagination="tablePagination" size="small" :bordered="false" />
     <div v-else class="empty-state">暂无来源配置，先导入 TVBox 或 CMS 源清单。</div>
 
     <section v-if="deleteTarget" class="impact-panel" aria-live="polite">

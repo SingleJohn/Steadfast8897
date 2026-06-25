@@ -45,6 +45,7 @@ export function useSourceViews(showToast: ToastFn) {
   const generatingCover = shallowRef(false)
   const viewPreview = shallowRef<SourceViewPreview | null>(null)
   const previewLoading = shallowRef(false)
+  const matchValueError = shallowRef('')
 
   const coverStyleOptions = computed(() => coverStyles.value.map((s) => ({ label: s.label, value: s.name })))
 
@@ -71,12 +72,15 @@ export function useSourceViews(showToast: ToastFn) {
     viewDraft.Enabled = view?.Enabled ?? true
     viewDraft.ExposeToEmby = view?.ExposeToEmby ?? false
     viewPreview.value = null
+    matchValueError.value = ''
   }
 
   function buildViewPayload() {
     if (!viewDraft.MatchValue.trim()) {
+      matchValueError.value = '请填写主匹配值'
       return null
     }
+    matchValueError.value = ''
     return {
       Name: viewDraft.Name || viewDraft.MatchValue,
       DisplayName: viewDraft.DisplayName || undefined,
@@ -150,6 +154,7 @@ export function useSourceViews(showToast: ToastFn) {
     viewDraft.MatchValues = [...discoverSelected.value]
     if (!viewDraft.Name) viewDraft.Name = discoverSelected.value[0]
     viewPreview.value = null
+    matchValueError.value = ''
   }
 
   async function moveView(index: number, delta: number) {
@@ -200,6 +205,7 @@ export function useSourceViews(showToast: ToastFn) {
     generatingCover,
     viewPreview,
     previewLoading,
+    matchValueError,
     refreshViews,
     editView,
     saveView,

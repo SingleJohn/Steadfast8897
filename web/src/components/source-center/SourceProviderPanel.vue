@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { SourceProvider } from '@/api/source'
+import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
   providers: SourceProvider[]
@@ -13,6 +14,7 @@ const props = defineProps<{
   action: string
   selectedIds: number[]
 }>()
+const message = useMessage()
 
 const emit = defineEmits<{
   'update:activeProviderId': [value: number | null]
@@ -31,6 +33,11 @@ const providerOptions = computed(() => props.providers.map((p) => ({ label: `${p
 const selectedProviders = computed(() => props.providers.filter((provider) => props.selectedIds.includes(provider.ID)))
 const selectedEnabledCount = computed(() => selectedProviders.value.filter((provider) => provider.Enabled).length)
 const selectedRuntimeCount = computed(() => selectedProviders.value.filter((provider) => provider.RuntimeKind !== 'native_cms').length)
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [20, 50, 100],
+}
 
 const columns: DataTableColumns<SourceProvider> = [
   { type: 'selection', width: 42 },
@@ -51,6 +58,23 @@ const columns: DataTableColumns<SourceProvider> = [
     render(row) {
       const type = row.HealthStatus === 'ok' ? 'success' : row.HealthStatus === 'error' ? 'error' : 'default'
       return hTag(row.HealthStatus || 'unknown', type)
+    },
+  },
+  {
+    title: '最近错误',
+    key: 'LastError',
+    minWidth: 160,
+    ellipsis: { tooltip: true },
+    render(row) {
+      if (!row.LastError) return '-'
+      return h('div', { class: 'error-cell' }, [
+        h('span', row.LastError),
+        h(NButton, {
+          size: 'tiny',
+          quaternary: true,
+          onClick: () => copyProviderError(row),
+        }, { default: () => '复制' }),
+      ])
     },
   },
   {
@@ -93,6 +117,18 @@ function hActions(row: SourceProvider) {
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
     ],
   })
+}
+
+async function copyProviderError(row: SourceProvider) {
+  const text = [
+    `Provider: ${row.Name}`,
+    `SourceKey: ${row.SourceKey}`,
+    `HealthStatus: ${row.HealthStatus || 'unknown'}`,
+    `Error: ${row.LastError || '-'}`,
+  ].join('\n')
+  const ok = await copyText(text)
+  if (ok) message.success('Provider 错误已复制')
+  else message.error('复制失败，请手动选中')
 }
 
 function runtimeLabel(value: string) {
@@ -159,6 +195,7 @@ function runtimeLabel(value: string) {
       :columns="columns"
       :data="providers"
       :checked-row-keys="selectedIds"
+      :pagination="tablePagination"
       :row-key="(row: SourceProvider) => row.ID"
       size="small"
       :bordered="false"
@@ -167,14 +204,20 @@ function runtimeLabel(value: string) {
     <div v-else class="empty-state">暂无 Provider，先在配置页导入来源配置。</div>
 
     <div class="test-grid">
-      <NSelect
-        :value="activeProviderId"
-        :options="providerOptions"
-        placeholder="选择 Provider"
-        clearable
-        @update:value="emit('update:activeProviderId', $event)"
-      />
-      <NInput :value="keyword" placeholder="搜索关键词" clearable @update:value="emit('update:keyword', $event)" />
+      <label class="field">
+        <span class="field-label">测试 Provider</span>
+        <NSelect
+          :value="activeProviderId"
+          :options="providerOptions"
+          placeholder="选择 Provider"
+          clearable
+          @update:value="emit('update:activeProviderId', $event)"
+        />
+      </label>
+      <label class="field">
+        <span class="field-label">搜索关键词</span>
+        <NInput :value="keyword" placeholder="搜索关键词" clearable @update:value="emit('update:keyword', $event)" />
+      </label>
       <NButton type="primary" :loading="!!activeProviderId && action === `search:${activeProviderId}`" @click="emit('search')">搜索测试</NButton>
     </div>
 
@@ -213,8 +256,19 @@ function runtimeLabel(value: string) {
 .test-grid {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
   gap: 10px;
   margin-top: 14px;
+}
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.field-label {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 .bulk-bar {
   display: flex;
@@ -245,6 +299,18 @@ function runtimeLabel(value: string) {
   margin-top: 12px;
   color: var(--app-text-muted);
   font-size: 13px;
+}
+.error-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.error-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .empty-state {
   border: 1px dashed var(--app-border);

@@ -85,6 +85,7 @@ const {
   generatingCover,
   viewPreview,
   previewLoading,
+  viewMatchValueError,
 } = source
 
 async function switchTab(tab: SourceCenterTab) {
@@ -240,6 +241,7 @@ watch(federatedKeyword, (value) => {
               :draft="viewDraft"
               :preview="viewPreview"
               :preview-loading="previewLoading"
+              :match-value-error="viewMatchValueError"
               :discover-dimension="discoverDimension"
               :discover-search="discoverSearch"
               :discover-values="discoverValues"

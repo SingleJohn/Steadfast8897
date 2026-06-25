@@ -47,16 +47,31 @@ const skippedLabel = computed(() => importKind.value === 'cms_list' ? '跳过' :
     </div>
 
     <div class="import-grid">
-      <NSelect v-model:value="importKind" :options="kindOptions" />
-      <NSelect v-if="importKind === 'cms_list'" v-model:value="importFormat" :options="formatOptions" />
-      <NInput v-model:value="importName" placeholder="配置名称" clearable />
-      <NInput v-model:value="importUrl" :placeholder="urlPlaceholder" clearable />
-      <NInput
-        v-model:value="importJson"
-        type="textarea"
-        :placeholder="textPlaceholder"
-        :autosize="{ minRows: 4, maxRows: 10 }"
-      />
+      <label class="field">
+        <span class="field-label">配置类型</span>
+        <NSelect v-model:value="importKind" :options="kindOptions" />
+      </label>
+      <label v-if="importKind === 'cms_list'" class="field">
+        <span class="field-label">清单格式</span>
+        <NSelect v-model:value="importFormat" :options="formatOptions" />
+      </label>
+      <label class="field">
+        <span class="field-label">配置名称</span>
+        <NInput v-model:value="importName" placeholder="配置名称" clearable />
+      </label>
+      <label class="field">
+        <span class="field-label">配置 URL</span>
+        <NInput v-model:value="importUrl" :placeholder="urlPlaceholder" clearable />
+      </label>
+      <label class="field full-field">
+        <span class="field-label">配置内容</span>
+        <NInput
+          v-model:value="importJson"
+          type="textarea"
+          :placeholder="textPlaceholder"
+          :autosize="{ minRows: 4, maxRows: 10 }"
+        />
+      </label>
     </div>
 
     <div v-if="lastImport" class="import-result">
@@ -98,7 +113,17 @@ const skippedLabel = computed(() => importKind.value === 'cms_list' ? '跳过' :
   grid-template-columns: minmax(160px, 0.6fr) minmax(240px, 1.4fr);
   gap: 10px;
 }
-.import-grid :deep(.n-input--textarea) {
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.field-label {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.full-field {
   grid-column: 1 / -1;
 }
 .import-result {

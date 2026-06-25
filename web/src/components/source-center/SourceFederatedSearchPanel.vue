@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NInput, NInputNumber, NSwitch, NTag } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NSwitch, NTag, useMessage } from 'naive-ui'
 import type { FederatedSearchError, FederatedSearchItem, FederatedSearchResponse } from '@/api/source'
+import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
   keyword: string
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   search: []
 }>()
 
+const message = useMessage()
 const items = computed(() => props.result?.items || [])
 const errors = computed(() => props.result?.errors || [])
 const successCount = computed(() => props.result?.provider.success || 0)
@@ -57,6 +59,19 @@ function errorType(error: FederatedSearchError) {
       return 'default'
   }
 }
+
+async function copySearchError(error: FederatedSearchError) {
+  const text = [
+    `Provider: ${error.provider_name}`,
+    `SourceKey: ${error.source_key}`,
+    `ErrorType: ${error.error_type}`,
+    `LatencyMS: ${error.latency_ms}`,
+    `Message: ${error.message}`,
+  ].join('\n')
+  const ok = await copyText(text)
+  if (ok) message.success('Provider 错误已复制')
+  else message.error('复制失败，请手动选中')
+}
 </script>
 
 <template>
@@ -72,31 +87,38 @@ function errorType(error: FederatedSearchError) {
         <span>{{ successCount }}/{{ totalProviders }} 源成功</span>
       </div>
       <div class="emby-switch">
-        <span>Emby</span>
+        <span id="source-emby-switch-label">Emby</span>
         <NSwitch
           :value="embyEnabled"
           :loading="savingEmbyEnabled"
           size="small"
+          aria-labelledby="source-emby-switch-label"
           @update:value="emit('update:embyEnabled', $event)"
         />
       </div>
     </div>
 
     <div class="search-row">
-      <NInput
-        :value="keyword"
-        placeholder="关键词"
-        clearable
-        @keyup.enter="emit('search')"
-        @update:value="emit('update:keyword', $event)"
-      />
-      <NInputNumber
-        :value="limit"
-        :min="1"
-        :max="100"
-        :step="10"
-        @update:value="emit('update:limit', Number($event || 50))"
-      />
+      <label class="field">
+        <span class="field-label">关键词</span>
+        <NInput
+          :value="keyword"
+          placeholder="关键词"
+          clearable
+          @keyup.enter="emit('search')"
+          @update:value="emit('update:keyword', $event)"
+        />
+      </label>
+      <label class="field">
+        <span class="field-label">返回上限</span>
+        <NInputNumber
+          :value="limit"
+          :min="1"
+          :max="100"
+          :step="10"
+          @update:value="emit('update:limit', Number($event || 50))"
+        />
+      </label>
       <NButton type="primary" :loading="loading" @click="emit('search')">搜索</NButton>
     </div>
 
@@ -149,6 +171,7 @@ function errorType(error: FederatedSearchError) {
             </div>
             <div class="error-meta">{{ error.source_key }} · {{ error.latency_ms }} ms</div>
             <div class="error-message">{{ error.message }}</div>
+            <NButton size="tiny" quaternary class="copy-error" @click="copySearchError(error)">复制错误</NButton>
           </div>
         </div>
         <div v-else class="empty-state">全部 Provider 正常返回</div>
@@ -197,7 +220,18 @@ function errorType(error: FederatedSearchError) {
 .search-row {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 120px auto;
+  align-items: end;
   gap: 10px;
+}
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.field-label {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 .federated-grid {
   display: grid;
@@ -338,6 +372,9 @@ function errorType(error: FederatedSearchError) {
 }
 .error-message {
   overflow-wrap: anywhere;
+}
+.copy-error {
+  margin-top: 6px;
 }
 .empty-state {
   padding: 18px 0;

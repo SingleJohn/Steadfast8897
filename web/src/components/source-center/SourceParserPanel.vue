@@ -15,6 +15,11 @@ const emit = defineEmits<{
 }>()
 
 const enabledCount = computed(() => props.parsers.filter((parser) => parser.Enabled).length)
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [20, 50, 100],
+}
 
 const columns: DataTableColumns<SourceParser> = [
   { title: '名称', key: 'Name', minWidth: 150 },
@@ -78,7 +83,7 @@ const columns: DataTableColumns<SourceParser> = [
       <NButton quaternary size="small" @click="emit('refresh')">刷新</NButton>
     </div>
 
-    <NDataTable v-if="parsers.length > 0" :columns="columns" :data="parsers" size="small" :bordered="false" />
+    <NDataTable v-if="parsers.length > 0" :columns="columns" :data="parsers" :pagination="tablePagination" size="small" :bordered="false" />
     <div v-else class="empty-state">暂无解析器；当前播放解析仍按全局启用解析器策略执行。</div>
   </section>
 </template>

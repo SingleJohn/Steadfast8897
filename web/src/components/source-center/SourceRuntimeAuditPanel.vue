@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NDataTable, NTag } from 'naive-ui'
+import { NButton, NDataTable, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { SourceRuntimeArtifact, SourceRuntimeInvocation } from '@/api/source'
+import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
   invocations: SourceRuntimeInvocation[]
@@ -16,7 +17,13 @@ const emit = defineEmits<{
   trust: [id: number]
 }>()
 
+const message = useMessage()
 const errorCount = computed(() => props.invocations.filter((item) => item.Status === 'error').length)
+const tablePagination = {
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [20, 50, 100],
+}
 
 const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
   { title: '时间', key: 'InvokedAt', width: 170, render: (row) => formatTime(row.InvokedAt) },
@@ -32,8 +39,40 @@ const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
     },
   },
   { title: '耗时', key: 'DurationMS', width: 90, render: (row) => `${row.DurationMS} ms` },
-  { title: '错误', key: 'ErrorType', minWidth: 150, ellipsis: { tooltip: true }, render: (row) => row.ErrorType || row.ErrorMessage || '-' },
-  { title: 'URL Hash', key: 'URLHash', width: 120, render: (row) => row.URLHash || '-' },
+  {
+    title: '错误',
+    key: 'ErrorType',
+    minWidth: 190,
+    ellipsis: { tooltip: true },
+    render(row) {
+      const text = row.ErrorType || row.ErrorMessage || ''
+      if (!text) return '-'
+      return h('div', { class: 'copy-cell' }, [
+        h('span', text),
+        h(NButton, {
+          size: 'tiny',
+          quaternary: true,
+          onClick: () => copyInvocation(row),
+        }, { default: () => '复制' }),
+      ])
+    },
+  },
+  {
+    title: 'URL Hash',
+    key: 'URLHash',
+    width: 130,
+    render(row) {
+      if (!row.URLHash) return '-'
+      return h('div', { class: 'copy-cell' }, [
+        h('span', row.URLHash),
+        h(NButton, {
+          size: 'tiny',
+          quaternary: true,
+          onClick: () => copyValue('URL Hash 已复制', row.URLHash || ''),
+        }, { default: () => '复制' }),
+      ])
+    },
+  },
 ]
 
 const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
@@ -48,7 +87,23 @@ const artifactColumns: DataTableColumns<SourceRuntimeArtifact> = [
     },
   },
   { title: '大小', key: 'ByteSize', width: 100, render: (row) => formatBytes(row.ByteSize) },
-  { title: 'SHA256', key: 'SHA256', minWidth: 180, ellipsis: { tooltip: true } },
+  {
+    title: 'SHA256',
+    key: 'SHA256',
+    minWidth: 210,
+    ellipsis: { tooltip: true },
+    render(row) {
+      return h('div', { class: 'copy-cell' }, [
+        h('span', row.SHA256 || '-'),
+        h(NButton, {
+          size: 'tiny',
+          quaternary: true,
+          disabled: !row.SHA256,
+          onClick: () => copyValue('SHA256 已复制', row.SHA256),
+        }, { default: () => '复制' }),
+      ])
+    },
+  },
   {
     title: '操作',
     key: 'actions',
@@ -98,6 +153,28 @@ function isArtifactTrusted(value: string) {
 function artifactTrustType(value: string) {
   return isArtifactTrusted(value) ? 'success' : undefined
 }
+
+async function copyValue(successMessage: string, value: string) {
+  const ok = await copyText(value)
+  if (ok) message.success(successMessage)
+  else message.error('复制失败，请手动选中')
+}
+
+async function copyInvocation(row: SourceRuntimeInvocation) {
+  const text = [
+    `Time: ${formatTime(row.InvokedAt)}`,
+    `Runtime: ${runtimeLabel(row.RuntimeKind)}`,
+    `ProviderID: ${row.ProviderID || '-'}`,
+    `Method: ${row.Method}`,
+    `Status: ${row.Status}`,
+    `ErrorType: ${row.ErrorType || '-'}`,
+    `ErrorMessage: ${row.ErrorMessage || '-'}`,
+    `URLHash: ${row.URLHash || '-'}`,
+  ].join('\n')
+  const ok = await copyText(text)
+  if (ok) message.success('调用错误已复制')
+  else message.error('复制失败，请手动选中')
+}
 </script>
 
 <template>
@@ -113,12 +190,12 @@ function artifactTrustType(value: string) {
     <div class="audit-grid">
       <div class="audit-section">
         <div class="section-title">调用记录</div>
-        <NDataTable v-if="invocations.length > 0" :columns="invocationColumns" :data="invocations" size="small" :bordered="false" />
+        <NDataTable v-if="invocations.length > 0" :columns="invocationColumns" :data="invocations" :pagination="tablePagination" size="small" :bordered="false" />
         <div v-else class="empty-state">暂无运行时调用记录。</div>
       </div>
       <div class="audit-section">
         <div class="section-title">Artifacts</div>
-        <NDataTable v-if="artifacts.length > 0" :columns="artifactColumns" :data="artifacts" size="small" :bordered="false" />
+        <NDataTable v-if="artifacts.length > 0" :columns="artifactColumns" :data="artifacts" :pagination="tablePagination" size="small" :bordered="false" />
         <div v-else class="empty-state">暂无 runtime artifact。</div>
       </div>
     </div>
@@ -160,6 +237,17 @@ function artifactTrustType(value: string) {
 .section-title {
   margin-bottom: 8px;
   font-size: 13px;
+}
+.copy-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.copy-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .empty-state {
   border: 1px dashed var(--app-border);
