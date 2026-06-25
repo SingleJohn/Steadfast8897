@@ -405,7 +405,13 @@ SC6 前端体验与可访问性收口
 - 至少按页面骨架、composable 拆分、旧功能迁移分别中文 commit。
 ```
 
-**实际落点**：待执行时填写。
+**实际落点**：
+- 文件：`web/src/pages/SourceCenterPage.vue`、`web/src/components/source-center/SourceCenterOverview.vue`、`web/src/components/source-center/SourceConfigListPanel.vue`、`web/src/components/source-center/SourceProviderPanel.vue`、`web/src/components/source-center/SourceParserPanel.vue`、`web/src/components/source-center/SourceRuntimeAuditPanel.vue`、`web/src/components/source-center/SourceViewsPanel.vue`、`web/src/composables/useSourceCenter.ts`、`web/src/composables/useSourceConfigs.ts`、`web/src/composables/useSourceProviders.ts`、`web/src/composables/useSourceViews.ts`、`web/src/composables/useSourceRuntimeAudit.ts`。
+- 页面：来源中心改为后台工作台子导航，包含 `overview/configs/providers/views/parsers/audit` 六个工作区；总览展示配置、Provider、健康、在线库、解析器与最近错误摘要；配置页补配置包列表，旧导入、Provider、聚合搜索、在线库、解析器、审计功能迁移到对应 tab。
+- URL 状态：`tab`、`provider`、`provider_keyword`、`search` 写入 query，刷新后保留当前工作上下文。
+- 组件状态：Provider、在线库、解析器、审计与配置列表补空状态；页面仍不改变 JS/CSP/CMS 运行时语义，不新增后端 API。
+- 构建：`go build ./...` 通过；`cd web && npm run build` 通过（保留既有 ArtPlayer CommonJS warning）。
+- Commit：`2664b6d8` 来源中心改为子导航工作台；`942bf961` 来源中心拆分领域状态组合器；`068b12fa` 来源中心补齐配置列表与工作区空态。
 
 ---
 
