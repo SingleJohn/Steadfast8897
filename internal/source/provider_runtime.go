@@ -495,11 +495,60 @@ func (m *ProviderRuntimeManager) nativeCMSProvider(row *repository.SourceProvide
 		WithCMSTimeout(time.Duration(row.TimeoutMS)*time.Millisecond),
 		WithCMSHeaders(headers),
 		WithCMSActions(searchAC, detailAC, categoryAC),
+		WithCMSCategoryWhitelist(cmsCategoryWhitelistFromProvider(row)),
 	)
 	if err != nil {
 		return nil, err
 	}
 	return provider, nil
+}
+
+func cmsCategoryWhitelistFromProvider(row *repository.SourceProvider) []string {
+	if row == nil {
+		return nil
+	}
+	categories := stringListFromJSON(row.Categories)
+	if len(categories) > 0 {
+		return categories
+	}
+	if len(row.Capabilities) == 0 || string(row.Capabilities) == "null" {
+		return nil
+	}
+	var capabilities map[string]any
+	if err := json.Unmarshal(row.Capabilities, &capabilities); err != nil {
+		return nil
+	}
+	source, _ := capabilities["category_source"].(string)
+	if !strings.EqualFold(strings.TrimSpace(source), "tvbox_site_whitelist") {
+		return nil
+	}
+	if values, ok := capabilities["categories"].([]any); ok {
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func stringListFromJSON(raw []byte) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func stringExt(raw map[string]any, key string) string {

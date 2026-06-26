@@ -14,13 +14,14 @@ import (
 var cdataPattern = regexp.MustCompile(`(?s)^<!\[CDATA\[(.*)\]\]>$`)
 
 type cmsResponse struct {
-	Code      int           `json:"code"`
-	Msg       string        `json:"msg"`
-	Page      cmsInt        `json:"page"`
-	PageCount cmsInt        `json:"pagecount"`
-	Total     cmsInt        `json:"total"`
-	List      []cmsVOD      `json:"list"`
-	Class     []cmsCategory `json:"class"`
+	Code      int             `json:"code"`
+	Msg       string          `json:"msg"`
+	Page      cmsInt          `json:"page"`
+	PageCount cmsInt          `json:"pagecount"`
+	Total     cmsInt          `json:"total"`
+	List      []cmsVOD        `json:"list"`
+	Class     []cmsCategory   `json:"class"`
+	Filters   json.RawMessage `json:"filters"`
 }
 
 type cmsCategory struct {
@@ -123,6 +124,108 @@ func (v *cmsVOD) UnmarshalJSON(data []byte) error {
 	}
 	*v = cmsVOD(out)
 	v.Raw = cleanRawMap(raw)
+	v.applyJSONAliases(raw)
+	return nil
+}
+
+func (v *cmsVOD) applyJSONAliases(raw map[string]any) {
+	if v == nil || len(raw) == 0 {
+		return
+	}
+	if v.VodID.String() == "" {
+		v.VodID = cmsString(firstCMSRawString(raw, "id", "vid"))
+	}
+	if cleanCMSValue(v.VodName) == "" {
+		v.VodName = firstCMSRawString(raw, "name", "title")
+	}
+	if v.TypeID.String() == "" {
+		v.TypeID = cmsString(firstCMSRawString(raw, "tid", "cid", "class_id"))
+	}
+	if cleanCMSValue(v.TypeName) == "" {
+		v.TypeName = firstCMSRawString(raw, "type", "class", "category", "category_name")
+	}
+	if cleanCMSValue(v.VodPic) == "" {
+		v.VodPic = firstCMSRawString(raw, "pic", "img", "image", "cover", "poster")
+	}
+	if v.VodYear.String() == "" {
+		v.VodYear = cmsString(firstCMSRawString(raw, "year", "date", "vod_pubdate"))
+	}
+	if cleanCMSValue(v.VodArea) == "" {
+		v.VodArea = firstCMSRawString(raw, "area", "region")
+	}
+	if cleanCMSValue(v.VodLang) == "" {
+		v.VodLang = firstCMSRawString(raw, "lang", "language")
+	}
+	if cleanCMSValue(v.VodActor) == "" {
+		v.VodActor = firstCMSRawString(raw, "actor", "actors", "stars")
+	}
+	if cleanCMSValue(v.VodDirector) == "" {
+		v.VodDirector = firstCMSRawString(raw, "director", "directors")
+	}
+	if cleanCMSValue(v.VodContent) == "" {
+		v.VodContent = firstCMSRawString(raw, "content", "des", "desc", "description", "summary")
+	}
+	if cleanCMSValue(v.VodRemarks) == "" {
+		v.VodRemarks = firstCMSRawString(raw, "remarks", "remark", "note")
+	}
+	if cleanCMSValue(v.VodPlayFrom) == "" {
+		v.VodPlayFrom = firstCMSRawString(raw, "play_from", "from")
+	}
+	if cleanCMSValue(v.VodPlayURL) == "" {
+		v.VodPlayURL = firstCMSRawString(raw, "play_url", "url", "urls", "vod_url")
+	}
+}
+
+func (r *cmsResponse) UnmarshalJSON(data []byte) error {
+	type alias cmsResponse
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if out.Page.Int() == 0 {
+		out.Page = rawCMSInt(raw, "pg", "page_index")
+	}
+	if out.PageCount.Int() == 0 {
+		out.PageCount = rawCMSInt(raw, "page_count", "pagecount")
+	}
+	if out.Total.Int() == 0 {
+		out.Total = rawCMSInt(raw, "recordcount", "record_count", "count")
+	}
+	if len(out.Class) == 0 {
+		out.Class = rawCMSCategories(raw, "classes", "types")
+	}
+	if len(out.List) == 0 {
+		out.List = rawCMSList(raw, "vod", "videos")
+	}
+	if len(out.Filters) == 0 {
+		out.Filters = rawCMSMessage(raw, "filter")
+	}
+	*r = cmsResponse(out)
+	return nil
+}
+
+func (c *cmsCategory) UnmarshalJSON(data []byte) error {
+	type alias cmsCategory
+	var out alias
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	c.TypeID = out.TypeID
+	c.TypeName = out.TypeName
+	if c.TypeID.String() == "" {
+		c.TypeID = cmsString(firstCMSRawString(raw, "id", "tid", "cid", "class_id"))
+	}
+	if cleanCMSValue(c.TypeName) == "" {
+		c.TypeName = firstCMSRawString(raw, "name", "title", "type", "type_name")
+	}
 	return nil
 }
 
@@ -169,6 +272,87 @@ func (i cmsInt) Int() int {
 	return int(i)
 }
 
+func rawCMSInt(raw map[string]json.RawMessage, keys ...string) cmsInt {
+	for _, key := range keys {
+		data, ok := raw[key]
+		if !ok || len(data) == 0 {
+			continue
+		}
+		var value cmsInt
+		if err := json.Unmarshal(data, &value); err == nil && value.Int() != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func rawCMSCategories(raw map[string]json.RawMessage, keys ...string) []cmsCategory {
+	for _, key := range keys {
+		data, ok := raw[key]
+		if !ok || len(data) == 0 {
+			continue
+		}
+		var rows []cmsCategory
+		if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+			return rows
+		}
+	}
+	return nil
+}
+
+func rawCMSList(raw map[string]json.RawMessage, keys ...string) []cmsVOD {
+	for _, key := range keys {
+		data, ok := raw[key]
+		if !ok || len(data) == 0 {
+			continue
+		}
+		var rows []cmsVOD
+		if err := json.Unmarshal(data, &rows); err == nil && len(rows) > 0 {
+			return rows
+		}
+	}
+	return nil
+}
+
+func rawCMSMessage(raw map[string]json.RawMessage, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		data, ok := raw[key]
+		if !ok || len(data) == 0 || string(data) == "null" {
+			continue
+		}
+		return append(json.RawMessage(nil), data...)
+	}
+	return nil
+}
+
+func firstCMSRawString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if s := cleanCMSValue(v); s != "" {
+				return s
+			}
+		case json.Number:
+			if s := cleanCMSValue(v.String()); s != "" {
+				return s
+			}
+		case float64:
+			if v != 0 {
+				return strconv.FormatFloat(v, 'f', -1, 64)
+			}
+		case int:
+			if v != 0 {
+				return strconv.Itoa(v)
+			}
+		}
+	}
+	return ""
+}
+
 func parseCMSXML(data []byte, out *cmsResponse) error {
 	var payload cmsXMLRSS
 	if err := xml.Unmarshal(data, &payload); err != nil {
@@ -183,6 +367,7 @@ func parseCMSXML(data []byte, out *cmsResponse) error {
 		total = payload.List.RecordCount.Int()
 	}
 	out.Total = cmsInt(total)
+	out.Filters = nil
 	out.Class = make([]cmsCategory, 0, len(payload.Class.Items))
 	for _, item := range payload.Class.Items {
 		id := cleanCMSValue(item.ID)

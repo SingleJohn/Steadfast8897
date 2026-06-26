@@ -15,6 +15,7 @@ import (
 )
 
 const defaultCMSTimeout = 8 * time.Second
+const cmsHomePosterFillLimit = 6
 
 var (
 	ErrCMSHTMLResponse        = errors.New("cms html response")
@@ -24,14 +25,15 @@ var (
 type CMSProviderOption func(*CMSProvider)
 
 type CMSProvider struct {
-	siteKey    string
-	api        string
-	client     *http.Client
-	headers    map[string]string
-	timeout    time.Duration
-	searchAC   string
-	detailAC   string
-	categoryAC string
+	siteKey           string
+	api               string
+	client            *http.Client
+	headers           map[string]string
+	timeout           time.Duration
+	searchAC          string
+	detailAC          string
+	categoryAC        string
+	categoryWhitelist map[string]struct{}
 }
 
 func NewCMSProvider(siteKey, api string, opts ...CMSProviderOption) (*CMSProvider, error) {
@@ -110,6 +112,12 @@ func WithCMSActions(searchAC, detailAC, categoryAC string) CMSProviderOption {
 	}
 }
 
+func WithCMSCategoryWhitelist(categories []string) CMSProviderOption {
+	return func(p *CMSProvider) {
+		p.categoryWhitelist = categoryWhitelist(categories)
+	}
+}
+
 func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error) {
 	var payload cmsResponse
 	params := map[string]string{
@@ -118,15 +126,7 @@ func (p *CMSProvider) Categories(ctx context.Context) ([]ProviderCategory, error
 	if err := p.getCMS(ctx, params, &payload); err != nil {
 		return nil, err
 	}
-	categories := make([]ProviderCategory, 0, len(payload.Class))
-	for _, item := range payload.Class {
-		id := cleanCMSValue(item.TypeID.String())
-		name := cleanCMSValue(item.TypeName)
-		if id == "" || name == "" {
-			continue
-		}
-		categories = append(categories, ProviderCategory{ID: id, Name: name})
-	}
+	categories := p.providerCategories(payload.Class)
 	return categories, nil
 }
 
@@ -142,23 +142,19 @@ func (p *CMSProvider) HomeProfile(ctx context.Context) (*ProviderHomeProfile, er
 			},
 		}, err
 	}
-	categories := make([]ProviderCategory, 0, len(payload.Class))
-	for _, item := range payload.Class {
-		id := cleanCMSValue(item.TypeID.String())
-		name := cleanCMSValue(item.TypeName)
-		if id == "" || name == "" {
-			continue
-		}
-		categories = append(categories, ProviderCategory{ID: id, Name: name})
-	}
+	categories := p.providerCategories(payload.Class)
+	filters, filtersCount := providerHomeFilters(payload.Filters)
 	items := parseCMSPage(p.api, payload, false).Items
+	items = p.fillHomePosters(ctx, items)
 	return &ProviderHomeProfile{
 		RuntimeKind:    "native_cms",
 		Categories:     categories,
+		Filters:        filters,
+		FiltersCount:   filtersCount,
 		HomeItems:      items,
 		HomeItemSource: "homeContent",
 		Sources: ProviderHomeSources{
-			HomeContent:      newProviderRuntimeSlice("home", start, len(categories), 0, len(items)),
+			HomeContent:      newProviderRuntimeSlice("home", start, len(categories), filtersCount, len(items)),
 			HomeVideoContent: providerRuntimeSliceUnsupported("homeVideoContent", "native CMS 没有独立 homeVideoContent，首页列表来自 CMS ac=list。"),
 		},
 	}, nil
@@ -211,6 +207,63 @@ func (p *CMSProvider) Detail(ctx context.Context, sourceItemID string) (*Provide
 		Item:        item,
 		PlaySources: splitCMSPlaySources(payload.List[0].VodPlayFrom, payload.List[0].VodPlayURL),
 	}, nil
+}
+
+func (p *CMSProvider) providerCategories(rows []cmsCategory) []ProviderCategory {
+	categories := make([]ProviderCategory, 0, len(rows))
+	for _, item := range rows {
+		id := cleanCMSValue(item.TypeID.String())
+		name := cleanCMSValue(item.TypeName)
+		if id == "" || name == "" || !p.categoryAllowed(name) {
+			continue
+		}
+		categories = append(categories, ProviderCategory{ID: id, Name: name})
+	}
+	return categories
+}
+
+func (p *CMSProvider) categoryAllowed(name string) bool {
+	if len(p.categoryWhitelist) == 0 {
+		return true
+	}
+	_, ok := p.categoryWhitelist[categoryWhitelistKey(name)]
+	return ok
+}
+
+func (p *CMSProvider) fillHomePosters(ctx context.Context, items []SourceItemSnapshot) []SourceItemSnapshot {
+	if len(items) == 0 || p.detailAC == "" {
+		return items
+	}
+	limit := cmsHomePosterFillLimit
+	for idx := range items {
+		if limit <= 0 {
+			break
+		}
+		if items[idx].PosterURL != nil || strings.TrimSpace(items[idx].SourceItemID) == "" {
+			continue
+		}
+		detailCtx, cancel := context.WithTimeout(ctx, p.posterFillTimeout())
+		detail, err := p.Detail(detailCtx, items[idx].SourceItemID)
+		cancel()
+		if err != nil || detail == nil || detail.Item.PosterURL == nil {
+			limit--
+			continue
+		}
+		items[idx] = mergeCMSHomeSnapshot(items[idx], detail.Item)
+		limit--
+	}
+	return items
+}
+
+func (p *CMSProvider) posterFillTimeout() time.Duration {
+	timeout := p.timeout / 2
+	if timeout <= 0 || timeout > 3*time.Second {
+		return 3 * time.Second
+	}
+	if timeout < time.Second {
+		return time.Second
+	}
+	return timeout
 }
 
 func (p *CMSProvider) ResolvePlay(ctx context.Context, play PlaySourceSnapshot) (*PlayResult, error) {
@@ -343,4 +396,55 @@ func normalizePage(page int) int {
 		return 1
 	}
 	return page
+}
+
+func categoryWhitelist(categories []string) map[string]struct{} {
+	if len(categories) == 0 {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, item := range categories {
+		key := categoryWhitelistKey(item)
+		if key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func categoryWhitelistKey(value string) string {
+	value = cleanCMSValue(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToLower(value)
+}
+
+func mergeCMSHomeSnapshot(base, detail SourceItemSnapshot) SourceItemSnapshot {
+	base.PosterURL = preferStringPtr(base.PosterURL, detail.PosterURL)
+	base.BackdropURL = preferStringPtr(base.BackdropURL, detail.BackdropURL)
+	base.Summary = preferStringPtr(base.Summary, detail.Summary)
+	base.Remarks = preferStringPtr(base.Remarks, detail.Remarks)
+	base.Year = preferInt32Ptr(base.Year, detail.Year)
+	base.Area = preferStringPtr(base.Area, detail.Area)
+	base.Language = preferStringPtr(base.Language, detail.Language)
+	base.CategoryName = preferStringPtr(base.CategoryName, detail.CategoryName)
+	if len(base.Directors) == 0 {
+		base.Directors = detail.Directors
+	}
+	if len(base.Actors) == 0 {
+		base.Actors = detail.Actors
+	}
+	base.Raw = mergeJSONObjects(jsonObjectBytes(base.Raw), map[string]any{
+		"home_fetch_pic": true,
+	})
+	for key, value := range detail.Raw {
+		if _, ok := base.Raw[key]; !ok {
+			base.Raw[key] = value
+		}
+	}
+	return base
 }
