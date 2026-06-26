@@ -21,6 +21,7 @@ type ToastFn = (message: string, type?: any) => void
 export function useSourceViews(showToast: ToastFn) {
   const views = ref<SourceView[]>([])
   const coverStyles = ref<CoverStyle[]>([])
+  const coverStylesLoaded = shallowRef(false)
 
   const viewDraft = reactive({
     id: null as number | null,
@@ -42,21 +43,43 @@ export function useSourceViews(showToast: ToastFn) {
   const discoverLoading = shallowRef(false)
   const coverTargetId = shallowRef<number | null>(null)
   const coverStyle = shallowRef('')
+  const showcaseIcon = shallowRef('auto')
+  const showcaseShowPosterTitles = shallowRef(true)
+  const showcaseShowCount = shallowRef(true)
   const generatingCover = shallowRef(false)
   const viewPreview = shallowRef<SourceViewPreview | null>(null)
   const previewLoading = shallowRef(false)
   const matchValueError = shallowRef('')
 
   const coverStyleOptions = computed(() => coverStyles.value.map((s) => ({ label: s.label, value: s.name })))
+  const coverIsShowcase = computed(() => coverStyle.value === 'showcase')
+  const showcaseIconOptions = [
+    { label: '自动', value: 'auto' },
+    { label: '电影', value: 'movie' },
+    { label: '电视', value: 'tv' },
+    { label: '音乐', value: 'music' },
+    { label: '动漫', value: 'anime' },
+    { label: '纪录片', value: 'documentary' },
+    { label: '少儿', value: 'kids' },
+    { label: '媒体', value: 'media' },
+  ]
 
   async function refreshViews() {
     views.value = await listSourceViews()
   }
 
   async function ensureCoverStyles() {
-    if (coverStyles.value.length > 0) return
-    coverStyles.value = await listCoverStyles()
-    coverStyle.value = coverStyles.value.find((s) => s.name === 'showcase')?.name || coverStyles.value[0]?.name || ''
+    if (coverStylesLoaded.value) return
+    try {
+      coverStyles.value = await listCoverStyles()
+      coverStyle.value = coverStyles.value.find((s) => s.name === 'showcase')?.name || coverStyles.value[0]?.name || ''
+    } catch {
+      coverStylesLoaded.value = false
+      showToast('加载封面风格失败', 'error')
+      return
+    } finally {
+      if (coverStyles.value.length > 0) coverStylesLoaded.value = true
+    }
   }
 
   function editView(view?: SourceView) {
@@ -103,7 +126,7 @@ export function useSourceViews(showToast: ToastFn) {
     }
     if (viewDraft.id) await updateSourceView(viewDraft.id, payload)
     else await createSourceView(payload)
-      showToast('在线虚拟库已保存', 'success')
+    showToast('在线虚拟库已保存', 'success')
     editView()
     await refreshViews()
   }
@@ -126,7 +149,7 @@ export function useSourceViews(showToast: ToastFn) {
 
   async function removeView(id: number) {
     await deleteSourceView(id)
-      showToast('在线虚拟库已删除', 'success')
+    showToast('在线虚拟库已删除', 'success')
     await refreshViews()
   }
 
@@ -171,11 +194,28 @@ export function useSourceViews(showToast: ToastFn) {
     await ensureCoverStyles()
   }
 
+  function closeCover() {
+    if (generatingCover.value) return
+    coverTargetId.value = null
+  }
+
+  function coverOptions() {
+    if (!coverIsShowcase.value) return undefined
+    const options: Record<string, any> = {
+      ShowPosterTitles: showcaseShowPosterTitles.value,
+      ShowCount: showcaseShowCount.value,
+    }
+    if (showcaseIcon.value !== 'auto') {
+      options.Icon = showcaseIcon.value
+    }
+    return options
+  }
+
   async function confirmCover() {
     if (!coverTargetId.value || !coverStyle.value) return
     generatingCover.value = true
     try {
-      await generateSourceViewCover(coverTargetId.value, coverStyle.value)
+      await generateSourceViewCover(coverTargetId.value, coverStyle.value, coverOptions())
       coverTargetId.value = null
       showToast('封面已生成', 'success')
       await refreshViews()
@@ -188,6 +228,8 @@ export function useSourceViews(showToast: ToastFn) {
 
   async function restoreCover(id: number) {
     await deleteSourceViewCover(id)
+    coverTargetId.value = null
+    showToast('已恢复默认封面', 'success')
     await refreshViews()
   }
 
@@ -202,6 +244,11 @@ export function useSourceViews(showToast: ToastFn) {
     coverTargetId,
     coverStyle,
     coverStyleOptions,
+    coverStylesLoaded,
+    showcaseIconOptions,
+    showcaseIcon,
+    showcaseShowPosterTitles,
+    showcaseShowCount,
     generatingCover,
     viewPreview,
     previewLoading,
@@ -216,6 +263,7 @@ export function useSourceViews(showToast: ToastFn) {
     applyDiscoverSelection,
     moveView,
     openCover,
+    closeCover,
     confirmCover,
     restoreCover,
   }

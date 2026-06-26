@@ -87,11 +87,25 @@ const {
   coverTargetId,
   coverStyle,
   coverStyleOptions,
+  coverStylesLoaded,
+  showcaseIconOptions,
+  showcaseIcon,
+  showcaseShowPosterTitles,
+  showcaseShowCount,
   generatingCover,
   viewPreview,
   previewLoading,
   viewMatchValueError,
 } = source
+
+const solidModalMenuProps = { class: 'solid-modal-menu' }
+const forceSolidModalStyle = {
+  '--n-color': 'var(--app-modal-solid-card)',
+  '--n-color-modal': 'var(--app-modal-solid-card)',
+  '--n-border-color': 'var(--app-modal-solid-border)',
+  '--n-box-shadow': 'var(--app-shadow-card)',
+  '--n-action-color': 'var(--app-modal-solid-soft)',
+}
 
 async function switchTab(tab: SourceCenterTab) {
   await router.replace({
@@ -267,7 +281,14 @@ watch(federatedKeyword, (value) => {
               :cover-target-id="coverTargetId"
               :cover-style="coverStyle"
               :cover-style-options="coverStyleOptions"
+              :cover-styles-loaded="coverStylesLoaded"
+              :showcase-icon-options="showcaseIconOptions"
+              :showcase-icon="showcaseIcon"
+              :showcase-show-poster-titles="showcaseShowPosterTitles"
+              :showcase-show-count="showcaseShowCount"
               :generating-cover="generatingCover"
+              :solid-modal-menu-props="solidModalMenuProps"
+              :force-solid-modal-style="forceSolidModalStyle"
               @update:draft-name="viewDraft.Name = $event"
               @update:draft-display-name="viewDraft.DisplayName = $event"
               @update:draft-dimension="viewDraft.Dimension = $event"
@@ -281,6 +302,9 @@ watch(federatedKeyword, (value) => {
               @update:discover-search="discoverSearch = $event"
               @update:discover-selected="discoverSelected = $event"
               @update:cover-style="coverStyle = $event"
+              @update:showcase-icon="showcaseIcon = $event"
+              @update:showcase-show-poster-titles="showcaseShowPosterTitles = $event"
+              @update:showcase-show-count="showcaseShowCount = $event"
               @edit="source.editView"
               @save="source.saveView"
               @preview="source.previewView"
@@ -289,6 +313,7 @@ watch(federatedKeyword, (value) => {
               @apply-discover="source.applyDiscoverSelection"
               @move="source.moveView"
               @open-cover="source.openCover"
+              @close-cover="source.closeCover"
               @confirm-cover="source.confirmCover"
               @restore-cover="source.restoreCover"
             />

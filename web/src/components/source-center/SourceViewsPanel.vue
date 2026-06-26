@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { DimensionValue, SourceProvider, SourceView, SourceViewPreview } from '@/api/source'
 
@@ -31,7 +31,14 @@ const props = defineProps<{
   coverTargetId: number | null
   coverStyle: string
   coverStyleOptions: Array<{ label: string; value: string }>
+  coverStylesLoaded: boolean
+  showcaseIconOptions: Array<{ label: string; value: string }>
+  showcaseIcon: string
+  showcaseShowPosterTitles: boolean
+  showcaseShowCount: boolean
   generatingCover: boolean
+  solidModalMenuProps: Record<string, any>
+  forceSolidModalStyle: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -48,6 +55,9 @@ const emit = defineEmits<{
   'update:discoverSearch': [value: string]
   'update:discoverSelected': [value: string[]]
   'update:coverStyle': [value: string]
+  'update:showcaseIcon': [value: string]
+  'update:showcaseShowPosterTitles': [value: boolean]
+  'update:showcaseShowCount': [value: boolean]
   edit: [view?: SourceView]
   save: []
   preview: []
@@ -56,6 +66,7 @@ const emit = defineEmits<{
   applyDiscover: []
   move: [index: number, delta: number]
   openCover: [id: number]
+  closeCover: []
   confirmCover: []
   restoreCover: [id: number]
 }>()
@@ -83,6 +94,7 @@ const discoverOptions = computed(() => props.discoverValues.map((v) => ({
   disabled: v.AlreadyAdded,
 })))
 const selectedProviders = computed(() => props.providers.filter((provider) => props.draft.ProviderIds.includes(provider.ID)))
+const coverTargetView = computed(() => props.views.find((view) => view.Id === props.coverTargetId) || null)
 const parserPolicyNote = 'Parser 本轮仍是全局播放解析器；在线虚拟库只限制组织视图与站点范围，不让库级解析器进入播放上下文。'
 const tablePagination = {
   pageSize: 20,
@@ -90,7 +102,25 @@ const tablePagination = {
   pageSizes: [20, 50, 100],
 }
 
+function coverPreviewUrl(url?: string, maxWidth = 180) {
+  if (!url) return ''
+  return `${url}${url.includes('?') ? '&' : '?'}maxWidth=${maxWidth}&format=jpg&quality=85`
+}
+
 const columns: DataTableColumns<SourceView> = [
+  {
+    title: '封面',
+    key: 'CoverUrl',
+    width: 92,
+    render(row) {
+      return h('div', {
+        class: ['source-cover-thumb', row.CoverUrl ? '' : 'is-empty'],
+        title: row.CoverUrl ? '已生成封面' : '尚未生成封面',
+      }, row.CoverUrl
+        ? [h('img', { src: coverPreviewUrl(row.CoverUrl, 180), alt: `${row.DisplayName || row.Name} 封面`, loading: 'lazy' })]
+        : [h('span', {}, '未生成')])
+    },
+  },
   { title: '名称', key: 'DisplayName', minWidth: 160 },
   {
     title: '组织规则',
@@ -286,16 +316,77 @@ function healthType(status: string) {
     <NDataTable v-if="views.length > 0" :columns="columns" :data="views" :pagination="tablePagination" size="small" :bordered="false" />
     <div v-else class="empty-state">暂无在线虚拟库；可用维度发现后创建虚拟库，是否暴露给 Emby 由开关控制。</div>
 
-    <div v-if="coverTargetId" class="cover-bar">
-      <NSelect :value="coverStyle" :options="coverStyleOptions" placeholder="封面风格" @update:value="emit('update:coverStyle', $event)" />
-      <NButton type="primary" :loading="generatingCover" @click="emit('confirmCover')">生成封面</NButton>
-      <NPopconfirm positive-text="清除" negative-text="取消" @positive-click="emit('restoreCover', coverTargetId)">
-        <template #trigger>
-          <NButton quaternary>清除封面</NButton>
-        </template>
-        清除后会恢复在线虚拟库默认封面。
-      </NPopconfirm>
-    </div>
+    <NModal
+      :show="!!coverTargetId"
+      preset="card"
+      title="生成虚拟库封面"
+      :style="[forceSolidModalStyle, { width: '480px', maxWidth: '92vw' }]"
+      class="solid-modal-card force-solid-modal"
+      @update:show="!$event && emit('closeCover')"
+    >
+      <div class="cover-preview-block">
+        <div v-if="coverTargetView?.CoverUrl" class="cover-preview-frame">
+          <img :src="coverPreviewUrl(coverTargetView.CoverUrl, 520)" :alt="`${coverTargetView.DisplayName || coverTargetView.Name} 封面预览`" />
+        </div>
+        <div v-else class="cover-preview-empty">当前在线虚拟库尚未生成封面</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">封面风格</label>
+        <NSelect
+          :value="coverStyle"
+          :options="coverStyleOptions"
+          :loading="!coverStylesLoaded"
+          :menu-props="solidModalMenuProps"
+          placeholder="选择风格"
+          @update:value="emit('update:coverStyle', $event)"
+        />
+      </div>
+
+      <div v-if="coverStyle === 'showcase'" class="batch-cover-options">
+        <div class="form-group">
+          <label class="form-label">预制图标</label>
+          <NSelect
+            :value="showcaseIcon"
+            :options="showcaseIconOptions"
+            :menu-props="solidModalMenuProps"
+            @update:value="emit('update:showcaseIcon', $event)"
+          />
+        </div>
+        <div class="batch-cover-checks">
+          <NCheckbox :checked="showcaseShowPosterTitles" @update:checked="emit('update:showcaseShowPosterTitles', $event)">显示海报标题</NCheckbox>
+          <NCheckbox :checked="showcaseShowCount" @update:checked="emit('update:showcaseShowCount', $event)">显示媒体数量</NCheckbox>
+        </div>
+      </div>
+
+      <div class="setting-desc">
+        只替换当前在线虚拟库的展示封面，不会修改 source_items，也不会影响站点配置。
+      </div>
+
+      <template #footer>
+        <NSpace justify="space-between">
+          <NPopconfirm
+            v-if="coverTargetId"
+            positive-text="清除"
+            negative-text="取消"
+            @positive-click="emit('restoreCover', coverTargetId)"
+          >
+            <template #trigger>
+              <NButton quaternary>清除封面</NButton>
+            </template>
+            清除后会恢复在线虚拟库默认封面。
+          </NPopconfirm>
+          <span v-else></span>
+
+          <NSpace>
+            <NButton @click="emit('closeCover')">取消</NButton>
+            <NButton type="primary" :loading="generatingCover" :disabled="!coverStyle || generatingCover" @click="emit('confirmCover')">
+              生成
+            </NButton>
+          </NSpace>
+        </NSpace>
+      </template>
+    </NModal>
   </section>
 </template>
 
@@ -404,8 +495,7 @@ function healthType(status: string) {
   align-items: center;
 }
 
-.discover-row,
-.cover-bar {
+.discover-row {
   display: grid;
   gap: 10px;
 }
@@ -414,12 +504,87 @@ function healthType(status: string) {
   grid-template-columns: 180px minmax(140px, 1fr) auto minmax(180px, 1fr) auto;
 }
 
-.cover-bar {
-  grid-template-columns: minmax(200px, 320px) auto auto;
-}
-
 .builder-actions {
   justify-content: flex-end;
+}
+
+.source-cover-thumb,
+.cover-preview-frame {
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-2, rgba(255,255,255,0.04));
+}
+
+.source-cover-thumb {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 40px;
+  border-radius: 6px;
+  color: var(--app-text-muted);
+  font-size: 11px;
+}
+
+.source-cover-thumb img,
+.cover-preview-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.source-cover-thumb.is-empty {
+  border-style: dashed;
+}
+
+.cover-preview-block {
+  margin-bottom: 18px;
+}
+
+.cover-preview-frame {
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+}
+
+.cover-preview-empty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-label {
+  display: block;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.setting-desc {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.batch-cover-options {
+  padding-top: 4px;
+}
+
+.batch-cover-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
 }
 
 .preview-pane {
@@ -491,8 +656,7 @@ function healthType(status: string) {
 @media (max-width: 1100px) {
   .builder-layout,
   .form-grid,
-  .discover-row,
-  .cover-bar {
+  .discover-row {
     grid-template-columns: 1fr;
   }
 }
