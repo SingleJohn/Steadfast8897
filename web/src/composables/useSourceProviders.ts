@@ -16,6 +16,7 @@ import {
   type SourceProviderDeleteResult,
   type SourceProviderDiagnoseResult,
   type SourceProviderHomeProfile,
+  type SourceProviderListOptions,
   type SourceProvider,
 } from '@/api/source'
 
@@ -37,6 +38,7 @@ export function useSourceProviders(showToast: ToastFn) {
   const embySourceSearchEnabled = shallowRef(true)
   const savingEmbySourceSearch = shallowRef(false)
   const selectedProviderIds = ref<number[]>([])
+  const providerHealthFilters = ref<SourceProviderListOptions>({})
 
   const nativeProviders = computed(() => providers.value.filter((p) => p.ProviderKind === 'cms_vod' && p.RuntimeKind === 'native_cms'))
   const runtimeRequiredProviders = computed(() => providers.value.filter((p) => p.RuntimeKind !== 'native_cms'))
@@ -44,7 +46,7 @@ export function useSourceProviders(showToast: ToastFn) {
   const selectedProviders = computed(() => providers.value.filter((p) => selectedProviderIds.value.includes(p.ID)))
 
   async function refreshProviders() {
-    const nextProviders = await listSourceProviders()
+    const nextProviders = await listSourceProviders(providerHealthFilters.value)
     providers.value = nextProviders
     const available = new Set(nextProviders.map((provider) => provider.ID))
     selectedProviderIds.value = selectedProviderIds.value.filter((id) => available.has(id))
@@ -122,6 +124,16 @@ export function useSourceProviders(showToast: ToastFn) {
     } finally {
       providerAction.value = ''
     }
+  }
+
+  async function updateProviderHealthFilters(filters: SourceProviderListOptions) {
+    providerHealthFilters.value = {
+      runtime_status: filters.runtime_status || undefined,
+      home_status: filters.home_status || undefined,
+      category_status: filters.category_status || undefined,
+    }
+    selectedProviderIds.value = []
+    await refreshProviders()
   }
 
   async function runProviderHealth(id: number) {
@@ -229,6 +241,7 @@ export function useSourceProviders(showToast: ToastFn) {
     selectedProvider,
     selectedProviderIds,
     selectedProviders,
+    providerHealthFilters,
     nativeProviders,
     runtimeRequiredProviders,
     providerSearchKeyword,
@@ -249,6 +262,7 @@ export function useSourceProviders(showToast: ToastFn) {
     batchToggleProviders,
     batchHealthProviders,
     batchDeleteProviders,
+    updateProviderHealthFilters,
     runProviderHealth,
     runProviderDiagnose,
     loadProviderHomeProfile,

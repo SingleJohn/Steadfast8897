@@ -2,7 +2,14 @@
 import { computed, h, shallowRef } from 'vue'
 import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import type { SourceProvider, SourceProviderDiagnoseResult, SourceProviderHomeProfile, SourceProviderHomeProfileSlice } from '@/api/source'
+import type {
+  SourceProvider,
+  SourceProviderDiagnoseResult,
+  SourceProviderHealthSummary,
+  SourceProviderHomeProfile,
+  SourceProviderHomeProfileSlice,
+  SourceProviderListOptions,
+} from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
@@ -15,6 +22,7 @@ const props = defineProps<{
   homeProfile: SourceProviderHomeProfile | null
   action: string
   selectedIds: number[]
+  healthFilters: SourceProviderListOptions
 }>()
 const message = useMessage()
 
@@ -30,6 +38,7 @@ const emit = defineEmits<{
   batchEnableIds: [ids: number[]]
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
+  updateHealthFilters: [filters: SourceProviderListOptions]
   health: [id: number]
   diagnose: [id: number]
   homeProfile: [id: number]
@@ -42,6 +51,9 @@ const selectedProviders = computed(() => props.providers.filter((provider) => pr
 const selectedEnabledCount = computed(() => selectedProviders.value.filter((provider) => provider.Enabled).length)
 const selectedRuntimeCount = computed(() => selectedProviders.value.filter((provider) => provider.RuntimeKind !== 'native_cms').length)
 const healthFilter = shallowRef<string | null>(null)
+const runtimeHealthFilter = shallowRef<string | null>(props.healthFilters.runtime_status || null)
+const homeHealthFilter = shallowRef<string | null>(props.healthFilters.home_status || null)
+const categoryHealthFilter = shallowRef<string | null>(props.healthFilters.category_status || null)
 const enabledFilter = shallowRef<string | null>(null)
 const runtimeFilter = shallowRef<string | null>(null)
 const keywordFilter = shallowRef('')
@@ -66,11 +78,24 @@ const filteredChangeCounts = computed(() => {
   const enabled = filteredProviders.value.length - disabled
   return { enabled, disabled }
 })
+const homeUsableProviders = computed(() => props.providers.filter((provider) => isProviderHomeUsable(provider)))
+const failedHealthProviders = computed(() => props.providers.filter((provider) => hasProviderBlockingHealthFailure(provider)))
+const failedHealthEnabledCount = computed(() => failedHealthProviders.value.filter((provider) => provider.Enabled).length)
 const healthFilterOptions = [
   { label: '全部探活状态', value: '' },
   { label: '探活正常', value: 'ok' },
+  { label: '部分可用', value: 'partial' },
   { label: '探活失败', value: 'error' },
   { label: '未探活', value: 'unknown' },
+]
+const methodStatusOptions = [
+  { label: '全部', value: '' },
+  { label: 'ok', value: 'ok' },
+  { label: 'partial', value: 'partial' },
+  { label: 'error', value: 'error' },
+  { label: 'unhealthy', value: 'unhealthy' },
+  { label: 'unknown', value: 'unknown' },
+  { label: 'skipped', value: 'skipped' },
 ]
 const enabledFilterOptions = [
   { label: '全部启用状态', value: '' },
@@ -104,10 +129,14 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '状态',
     key: 'HealthStatus',
-    width: 120,
+    width: 190,
     render(row) {
-      const type = row.HealthStatus === 'ok' ? 'success' : row.HealthStatus === 'error' ? 'error' : 'default'
-      return hTag(row.HealthStatus || 'unknown', type)
+      return h(NSpace, { size: 4, vertical: true }, {
+        default: () => [
+          hTag(row.HealthStatus || 'unknown', healthTagType(row.HealthStatus)),
+          hHealthTags(row.Health),
+        ],
+      })
     },
   },
   {
@@ -152,8 +181,24 @@ const columns: DataTableColumns<SourceProvider> = [
   },
 ]
 
-function hTag(label: string, type: 'success' | 'error' | 'default') {
+function hTag(label: string, type?: 'success' | 'error' | 'default' | 'warning' | 'info') {
   return h(NTag, { size: 'small', type: type === 'default' ? undefined : type }, { default: () => label })
+}
+
+function hHealthTags(health?: SourceProviderHealthSummary) {
+  const tags = [
+    ['R', health?.runtime_status],
+    ['H', health?.home_status],
+    ['C', health?.category_status],
+    ['S', health?.search_status],
+    ['P', health?.play_ready_status],
+  ].filter((item): item is [string, string] => !!item[1])
+  if (tags.length === 0) {
+    return h('span', { class: 'health-empty' }, '未分项')
+  }
+  return h(NSpace, { size: 3 }, {
+    default: () => tags.map(([label, status]) => hTag(`${label}:${status}`, healthTagType(status))),
+  })
 }
 
 function hButton(label: string) {
@@ -200,6 +245,25 @@ function runtimeLabel(value: string) {
 
 function normalizeHealth(value: string) {
   return value || 'unknown'
+}
+
+function healthTagType(status?: string) {
+  if (status === 'ok') return 'success'
+  if (status === 'error' || status === 'unhealthy') return 'error'
+  if (status === 'partial') return 'warning'
+  if (status === 'skipped' || status === 'unknown') return 'default'
+  return 'info'
+}
+
+function isProviderHomeUsable(provider: SourceProvider) {
+  return provider.Health?.home_status === 'ok' || provider.Health?.home_status === 'partial'
+}
+
+function hasProviderBlockingHealthFailure(provider: SourceProvider) {
+  const failed = new Set(['error', 'unhealthy'])
+  return failed.has(provider.Health?.runtime_status || '')
+    || failed.has(provider.Health?.home_status || '')
+    || failed.has(provider.Health?.category_status || '')
 }
 
 function diagnoseStatusType(status: string) {
@@ -255,6 +319,29 @@ function updateHealthFilter(value: string | null) {
   healthFilter.value = value || null
 }
 
+function updateRuntimeHealthFilter(value: string | null) {
+  runtimeHealthFilter.value = value || null
+  emitHealthFilters()
+}
+
+function updateHomeHealthFilter(value: string | null) {
+  homeHealthFilter.value = value || null
+  emitHealthFilters()
+}
+
+function updateCategoryHealthFilter(value: string | null) {
+  categoryHealthFilter.value = value || null
+  emitHealthFilters()
+}
+
+function emitHealthFilters() {
+  emit('updateHealthFilters', {
+    runtime_status: runtimeHealthFilter.value || undefined,
+    home_status: homeHealthFilter.value || undefined,
+    category_status: categoryHealthFilter.value || undefined,
+  })
+}
+
 function updateEnabledFilter(value: string | null) {
   enabledFilter.value = value || null
 }
@@ -269,6 +356,14 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   else if (action === 'disable') emit('batchDisableIds', ids)
   else if (action === 'health') emit('batchHealthIds', ids)
   else emit('batchDelete', ids)
+}
+
+function emitHomeUsableEnable() {
+  emit('batchEnableIds', homeUsableProviders.value.map((provider) => provider.ID))
+}
+
+function emitFailedHealthDisable() {
+  emit('batchDisableIds', failedHealthProviders.value.map((provider) => provider.ID))
 }
 </script>
 
@@ -340,6 +435,39 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
       </div>
     </div>
 
+    <div v-if="providers.length > 0" class="fm3-actions">
+      <div>
+        <strong>分项健康批量操作</strong>
+        <p class="panel-subtitle">
+          首页可用按 home_status=ok/partial 判断；明确失败按 runtime/home/category 为 error 或 unhealthy 判断。
+        </p>
+      </div>
+      <div class="bulk-actions">
+        <NPopconfirm
+          positive-text="启用首页可用"
+          negative-text="取消"
+          :disabled="homeUsableProviders.length === 0"
+          @positive-click="emitHomeUsableEnable"
+        >
+          <template #trigger>
+            <NButton size="small" :disabled="homeUsableProviders.length === 0" :loading="action === 'batch-enable'">启用首页可用</NButton>
+          </template>
+          将启用 home_status 为 ok/partial 的 {{ homeUsableProviders.length }} 个 Provider；筛选来自已加载的分项健康摘要。
+        </NPopconfirm>
+        <NPopconfirm
+          positive-text="停用明确失败"
+          negative-text="取消"
+          :disabled="failedHealthProviders.length === 0"
+          @positive-click="emitFailedHealthDisable"
+        >
+          <template #trigger>
+            <NButton size="small" type="error" ghost :disabled="failedHealthProviders.length === 0" :loading="action === 'batch-disable'">停用明确失败</NButton>
+          </template>
+          将停用 runtime/home/category 明确失败的 {{ failedHealthProviders.length }} 个 Provider，其中 {{ failedHealthEnabledCount }} 个当前已启用。
+        </NPopconfirm>
+      </div>
+    </div>
+
     <div v-if="providers.length > 0" class="filter-bar">
       <label class="field">
         <span class="field-label">探活状态</span>
@@ -350,12 +478,27 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
         <NSelect :value="enabledFilter || ''" :options="enabledFilterOptions" @update:value="updateEnabledFilter" />
       </label>
       <label class="field">
-        <span class="field-label">运行态</span>
+        <span class="field-label">运行类型</span>
         <NSelect :value="runtimeFilter || ''" :options="runtimeFilterOptions" @update:value="updateRuntimeFilter" />
       </label>
       <label class="field keyword-field">
         <span class="field-label">关键词</span>
         <NInput :value="keywordFilter" placeholder="名称 / SourceKey / API" clearable @update:value="keywordFilter = $event" />
+      </label>
+    </div>
+
+    <div v-if="providers.length > 0" class="health-filter-bar">
+      <label class="field">
+        <span class="field-label">Runtime 健康</span>
+        <NSelect :value="runtimeHealthFilter || ''" :options="methodStatusOptions" @update:value="updateRuntimeHealthFilter" />
+      </label>
+      <label class="field">
+        <span class="field-label">首页健康</span>
+        <NSelect :value="homeHealthFilter || ''" :options="methodStatusOptions" @update:value="updateHomeHealthFilter" />
+      </label>
+      <label class="field">
+        <span class="field-label">分类健康</span>
+        <NSelect :value="categoryHealthFilter || ''" :options="methodStatusOptions" @update:value="updateCategoryHealthFilter" />
       </label>
     </div>
 
@@ -589,6 +732,16 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   padding: 12px;
   margin-bottom: 12px;
 }
+.fm3-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
 .bulk-actions {
   display: flex;
   flex-wrap: wrap;
@@ -600,6 +753,16 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   grid-template-columns: minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(150px, 0.7fr) minmax(220px, 1.4fr);
   gap: 10px;
   margin-bottom: 12px;
+}
+.health-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.health-empty {
+  color: var(--app-text-muted);
+  font-size: 12px;
 }
 .filtered-actions {
   display: flex;
@@ -737,10 +900,16 @@ function emitFilteredBatch(action: 'enable' | 'disable' | 'health' | 'delete') {
   .bulk-bar {
     flex-direction: column;
   }
+  .fm3-actions {
+    flex-direction: column;
+  }
   .bulk-actions {
     justify-content: flex-start;
   }
   .filter-bar {
+    grid-template-columns: 1fr;
+  }
+  .health-filter-bar {
     grid-template-columns: 1fr;
   }
   .filtered-actions {

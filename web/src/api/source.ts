@@ -52,16 +52,56 @@ export type SourceProvider = {
   LastCheckAt?: string
   LastError?: string
   Categories?: unknown[]
+  Health?: SourceProviderHealthSummary
 }
 
 export type SourceProviderBatchHealthResult = {
   provider_id: number
   provider_name: string
   status: string
+  runtime_status?: string
+  home_status?: string
+  category_status?: string
+  search_status?: string
+  play_ready_status?: string
   error_type?: string
   message?: string
   latency_ms: number
   categories_count: number
+}
+
+export type SourceProviderHealthMethodSummary = {
+  status: string
+  error_type?: string
+  message?: string
+  categories_count?: number
+  filters_count?: number
+  items_count?: number
+  latency_ms?: number
+}
+
+export type SourceProviderHealthSummary = {
+  runtime_status?: string
+  home_status?: string
+  category_status?: string
+  search_status?: string
+  play_ready_status?: string
+  overall_status?: string
+  message?: string
+  checked_at?: string
+  home?: SourceProviderHealthMethodSummary
+  category?: SourceProviderHealthMethodSummary
+  search?: SourceProviderHealthMethodSummary
+}
+
+export type SourceProviderListOptions = {
+  health_status?: string
+  runtime_status?: string
+  home_status?: string
+  category_status?: string
+  runtime_kind?: string
+  provider_kind?: string
+  keyword?: string
 }
 
 export type SourceProviderDiagnoseMethod = {
@@ -351,11 +391,15 @@ export async function deleteSourceConfig(id: number) {
   return requestJson<SourceConfigDeleteResult>(`/SourceConfigs/${id}?confirm=true`, { method: 'DELETE' })
 }
 
-export async function listSourceProviders() {
+export async function listSourceProviders(options: SourceProviderListOptions = {}) {
   const pageSize = 500
   const items: SourceProvider[] = []
   for (let offset = 0; ; offset += pageSize) {
     const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset) })
+    for (const [key, value] of Object.entries(options)) {
+      const text = String(value || '').trim()
+      if (text) params.set(key, text)
+    }
     const res = await requestJson<{ items: SourceProvider[] }>(`/SourceProviders?${params.toString()}`)
     const pageItems = res.items || []
     items.push(...pageItems)
