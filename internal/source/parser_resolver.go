@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -88,7 +89,7 @@ func (r *ParserResolver) Resolve(ctx context.Context, playSource repository.Sour
 
 func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repository.SourceParser, playSource repository.SourcePlaySource) (*PlayResult, error) {
 	if parser.ParserType != 1 {
-		return nil, fmt.Errorf(parserUnsupportedReason(parser.ParserType))
+		return nil, errors.New(parserUnsupportedReason(parser.ParserType))
 	}
 	rawURL := strings.TrimSpace(playSource.RawURL)
 	if rawURL == "" {
