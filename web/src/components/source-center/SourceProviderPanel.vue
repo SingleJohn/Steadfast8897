@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, shallowRef } from 'vue'
-import { NButton, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
+import { NButton, NCheckbox, NDataTable, NInput, NPopconfirm, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type {
   SourceProvider,
@@ -23,6 +23,7 @@ const props = defineProps<{
   action: string
   selectedIds: number[]
   healthFilters: SourceProviderListOptions
+  includeHidden: boolean
 }>()
 const message = useMessage()
 
@@ -39,6 +40,7 @@ const emit = defineEmits<{
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
   updateHealthFilters: [filters: SourceProviderListOptions]
+  updateIncludeHidden: [value: boolean]
   health: [id: number]
   diagnose: [id: number]
   homeProfile: [id: number]
@@ -50,6 +52,7 @@ const providerOptions = computed(() => props.providers.map((p) => ({ label: `${p
 const selectedProviders = computed(() => props.providers.filter((provider) => props.selectedIds.includes(provider.ID)))
 const selectedEnabledCount = computed(() => selectedProviders.value.filter((provider) => provider.Enabled).length)
 const selectedRuntimeCount = computed(() => selectedProviders.value.filter((provider) => provider.RuntimeKind !== 'native_cms').length)
+const hiddenProviderCount = computed(() => props.providers.filter((provider) => !provider.Visible).length)
 const healthFilter = shallowRef<string | null>(null)
 const runtimeHealthFilter = shallowRef<string | null>(props.healthFilters.runtime_status || null)
 const homeHealthFilter = shallowRef<string | null>(props.healthFilters.home_status || null)
@@ -140,6 +143,14 @@ const columns: DataTableColumns<SourceProvider> = [
     },
   },
   {
+    title: '能力',
+    key: 'Capabilities',
+    minWidth: 220,
+    render(row) {
+      return hCapabilityTags(row)
+    },
+  },
+  {
     title: '最近错误',
     key: 'LastError',
     minWidth: 160,
@@ -198,6 +209,24 @@ function hHealthTags(health?: SourceProviderHealthSummary) {
   }
   return h(NSpace, { size: 3 }, {
     default: () => tags.map(([label, status]) => hTag(`${label}:${status}`, healthTagType(status))),
+  })
+}
+
+function hCapabilityTags(row: SourceProvider) {
+  const caps = row.Capabilities
+  if (!caps) return '-'
+  const tags = [
+    caps.quick_search === true ? ['快搜', 'success'] : caps.quick_search === false ? ['禁快搜', 'warning'] : null,
+    caps.filter ? ['筛选', 'info'] : null,
+    row.Visible ? null : ['隐藏', 'warning'],
+    caps.header_present ? [`Header:${(caps.header_keys || []).join(',') || 'yes'}`, 'info'] : null,
+    caps.play_url_present ? ['playUrl', 'default'] : null,
+    caps.click_present ? ['click', 'default'] : null,
+    Array.isArray(caps.categories) && caps.categories.length > 0 ? [`白名单:${caps.categories.length}`, 'default'] : null,
+  ].filter((item): item is [string, 'success' | 'error' | 'default' | 'warning' | 'info'] => !!item)
+  if (tags.length === 0) return '-'
+  return h(NSpace, { size: 4 }, {
+    default: () => tags.map(([label, type]) => hTag(label, type)),
   })
 }
 
@@ -340,6 +369,10 @@ function emitHealthFilters() {
     home_status: homeHealthFilter.value || undefined,
     category_status: categoryHealthFilter.value || undefined,
   })
+}
+
+function updateIncludeHidden(value: boolean | 'mixed') {
+  emit('updateIncludeHidden', value === true)
 }
 
 function updateEnabledFilter(value: string | null) {
@@ -485,6 +518,15 @@ function emitFailedHealthDisable() {
         <span class="field-label">关键词</span>
         <NInput :value="keywordFilter" placeholder="名称 / SourceKey / API" clearable @update:value="keywordFilter = $event" />
       </label>
+    </div>
+
+    <div class="visibility-row">
+      <NCheckbox :checked="includeHidden" @update:checked="updateIncludeHidden">
+        显示隐藏站点
+      </NCheckbox>
+      <span class="panel-subtitle">
+        默认隐藏 TVBox hide=1 的站点；当前已加载隐藏站点 {{ hiddenProviderCount }} 个。
+      </span>
     </div>
 
     <div v-if="providers.length > 0" class="health-filter-bar">
@@ -760,6 +802,12 @@ function emitFailedHealthDisable() {
   gap: 10px;
   margin-bottom: 12px;
 }
+.visibility-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
 .health-empty {
   color: var(--app-text-muted);
   font-size: 12px;
@@ -911,6 +959,10 @@ function emitFailedHealthDisable() {
   }
   .health-filter-bar {
     grid-template-columns: 1fr;
+  }
+  .visibility-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
   .filtered-actions {
     align-items: flex-start;

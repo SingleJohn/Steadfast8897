@@ -53,6 +53,7 @@ export type SourceProvider = {
   LastError?: string
   Categories?: unknown[]
   Health?: SourceProviderHealthSummary
+  Capabilities?: SourceProviderCapabilities
 }
 
 export type SourceProviderBatchHealthResult = {
@@ -94,6 +95,24 @@ export type SourceProviderHealthSummary = {
   search?: SourceProviderHealthMethodSummary
 }
 
+export type SourceProviderCapabilities = {
+  search?: boolean
+  quick_search?: boolean
+  filter?: boolean
+  hide?: number
+  indexs?: string[]
+  changeable?: boolean
+  player_type?: number
+  categories?: string[]
+  category_source?: string
+  header_present?: boolean
+  header_keys?: string[]
+  style?: Record<string, unknown>
+  play_url_present?: boolean
+  click_present?: boolean
+  timeout_ms?: number
+}
+
 export type SourceProviderListOptions = {
   health_status?: string
   runtime_status?: string
@@ -102,6 +121,7 @@ export type SourceProviderListOptions = {
   runtime_kind?: string
   provider_kind?: string
   keyword?: string
+  include_hidden?: boolean
 }
 
 export type SourceProviderDiagnoseMethod = {

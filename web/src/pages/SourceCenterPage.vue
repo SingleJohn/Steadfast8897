@@ -66,6 +66,7 @@ const {
   providerHomeProfile,
   providerAction,
   providerHealthFilters,
+  includeHiddenProviders,
   configAction,
   parserAction,
   runtimeAction,
@@ -214,10 +215,12 @@ watch(federatedKeyword, (value) => {
               :action="providerAction"
               :selected-ids="selectedProviderIds"
               :health-filters="providerHealthFilters"
+              :include-hidden="includeHiddenProviders"
               @update:active-provider-id="activeProviderId = $event"
               @update:keyword="providerSearchKeyword = $event"
               @update:selected-ids="selectedProviderIds = $event"
               @update-health-filters="source.updateProviderHealthFilters"
+              @update-include-hidden="source.updateIncludeHiddenProviders"
               @toggle="source.toggleProvider"
               @batch-enable="source.batchToggleProviders(true)"
               @batch-disable="source.batchToggleProviders(false)"

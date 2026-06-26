@@ -39,6 +39,7 @@ export function useSourceProviders(showToast: ToastFn) {
   const savingEmbySourceSearch = shallowRef(false)
   const selectedProviderIds = ref<number[]>([])
   const providerHealthFilters = ref<SourceProviderListOptions>({})
+  const includeHiddenProviders = shallowRef(false)
 
   const nativeProviders = computed(() => providers.value.filter((p) => p.ProviderKind === 'cms_vod' && p.RuntimeKind === 'native_cms'))
   const runtimeRequiredProviders = computed(() => providers.value.filter((p) => p.RuntimeKind !== 'native_cms'))
@@ -46,7 +47,10 @@ export function useSourceProviders(showToast: ToastFn) {
   const selectedProviders = computed(() => providers.value.filter((p) => selectedProviderIds.value.includes(p.ID)))
 
   async function refreshProviders() {
-    const nextProviders = await listSourceProviders(providerHealthFilters.value)
+    const nextProviders = await listSourceProviders({
+      ...providerHealthFilters.value,
+      include_hidden: includeHiddenProviders.value,
+    })
     providers.value = nextProviders
     const available = new Set(nextProviders.map((provider) => provider.ID))
     selectedProviderIds.value = selectedProviderIds.value.filter((id) => available.has(id))
@@ -132,6 +136,12 @@ export function useSourceProviders(showToast: ToastFn) {
       home_status: filters.home_status || undefined,
       category_status: filters.category_status || undefined,
     }
+    selectedProviderIds.value = []
+    await refreshProviders()
+  }
+
+  async function updateIncludeHiddenProviders(value: boolean) {
+    includeHiddenProviders.value = value
     selectedProviderIds.value = []
     await refreshProviders()
   }
@@ -242,6 +252,7 @@ export function useSourceProviders(showToast: ToastFn) {
     selectedProviderIds,
     selectedProviders,
     providerHealthFilters,
+    includeHiddenProviders,
     nativeProviders,
     runtimeRequiredProviders,
     providerSearchKeyword,
@@ -263,6 +274,7 @@ export function useSourceProviders(showToast: ToastFn) {
     batchHealthProviders,
     batchDeleteProviders,
     updateProviderHealthFilters,
+    updateIncludeHiddenProviders,
     runProviderHealth,
     runProviderDiagnose,
     loadProviderHomeProfile,
