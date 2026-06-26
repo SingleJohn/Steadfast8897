@@ -318,6 +318,15 @@ export type DimensionValue = {
   AlreadyAdded: boolean
 }
 
+export type SourceViewDimensionMeta = {
+  value: string
+  label: string
+  desc: string
+  placeholder: string
+  hint: string
+  examples: string[]
+}
+
 export type ImportTVBoxResult = {
   config: SourceConfig
   providers: SourceProvider[]
@@ -547,6 +556,11 @@ export async function discoverSourceViewValues(dimension: string, search = '', m
   const params = new URLSearchParams({ dimension, search, minCount: String(minCount) })
   const res = await requestJson<{ values: DimensionValue[] }>(`/Library/SourceViews/Discover?${params.toString()}`)
   return res.values || []
+}
+
+export async function fetchSourceViewDimensionMeta() {
+  const res = await requestJson<{ dimensions: SourceViewDimensionMeta[] }>('/Library/SourceViews/DimensionMeta')
+  return res.dimensions || []
 }
 
 export async function createSourceView(payload: Record<string, unknown>) {

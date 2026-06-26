@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NCheckbox, NDataTable, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import type { DimensionValue, SourceProvider, SourceView, SourceViewPreview } from '@/api/source'
+import type { DimensionValue, SourceProvider, SourceView, SourceViewDimensionMeta, SourceViewPreview } from '@/api/source'
 
 const props = defineProps<{
   views: SourceView[]
@@ -10,6 +10,7 @@ const props = defineProps<{
   preview: SourceViewPreview | null
   previewLoading: boolean
   matchValueError: string
+  activeDimensionMeta: SourceViewDimensionMeta | null
   draft: {
     id: number | null
     Name: string
@@ -202,25 +203,59 @@ function healthType(status: string) {
             <NInput :value="draft.DisplayName" placeholder="可选，自定义 Emby 展示名" @update:value="emit('update:draftDisplayName', $event)" />
           </label>
           <label class="field">
-            <span class="field-label">维度</span>
+            <span class="field-label">
+              维度
+              <NTooltip>
+                <template #trigger><span class="lbl-info" aria-label="维度说明">?</span></template>
+                选择聚合方式：内容类型 / 地区 / 类型+地区 / 站点 / 自定义。维度决定“主匹配值”该怎么填。
+              </NTooltip>
+            </span>
             <NSelect :value="draft.Dimension" :options="dimensionOptions" @update:value="emit('update:draftDimension', $event)" />
           </label>
           <label class="field">
-            <span class="field-label">主匹配值</span>
+            <span class="field-label">
+              主匹配值
+              <NTooltip v-if="activeDimensionMeta">
+                <template #trigger><span class="lbl-info" aria-label="主匹配值说明">?</span></template>
+                {{ activeDimensionMeta.desc }}。{{ activeDimensionMeta.hint }}
+              </NTooltip>
+            </span>
             <NInput
               :value="draft.MatchValue"
-              placeholder="movie/CN、anime、CN 或 Provider ID"
+              :placeholder="activeDimensionMeta?.placeholder || 'movie/CN、anime、CN 或 Provider ID'"
               :status="matchValueError ? 'error' : undefined"
               @update:value="emit('update:draftMatchValue', $event)"
             />
             <span v-if="matchValueError" class="field-error">{{ matchValueError }}</span>
+            <div v-if="activeDimensionMeta?.examples?.length" class="example-chips">
+              <span class="example-label">示例（点击填入）</span>
+              <NTag
+                v-for="ex in activeDimensionMeta.examples"
+                :key="ex"
+                size="small"
+                class="example-chip"
+                @click="emit('update:draftMatchValue', ex)"
+              >{{ ex }}</NTag>
+            </div>
           </label>
           <label class="field">
-            <span class="field-label">库类型</span>
+            <span class="field-label">
+              库类型
+              <NTooltip>
+                <template #trigger><span class="lbl-info" aria-label="库类型说明">?</span></template>
+                决定 Emby 客户端把该库识别为电影库、剧集库还是混合库，影响展示与刮削规则。
+              </NTooltip>
+            </span>
             <NSelect :value="draft.CollectionType" :options="collectionOptions" @update:value="emit('update:draftCollectionType', $event)" />
           </label>
           <label class="field">
-            <span class="field-label">排序</span>
+            <span class="field-label">
+              排序
+              <NTooltip>
+                <template #trigger><span class="lbl-info" aria-label="排序说明">?</span></template>
+                数字越小越靠前，用于多个库在 Emby 首页/侧栏的展示顺序。也可在列表里用“上移/下移”调整。
+              </NTooltip>
+            </span>
             <NInputNumber :value="draft.SortOrder" :min="0" :step="1" @update:value="emit('update:draftSortOrder', Number($event || 0))" />
           </label>
         </div>
@@ -250,8 +285,18 @@ function healthType(status: string) {
         </div>
 
         <div class="toggle-row">
-          <NCheckbox :checked="draft.Enabled" @update:checked="emit('update:draftEnabled', $event)">启用</NCheckbox>
-          <NCheckbox :checked="draft.ExposeToEmby" @update:checked="emit('update:draftExpose', $event)">暴露到 Emby</NCheckbox>
+          <NTooltip>
+            <template #trigger>
+              <NCheckbox :checked="draft.Enabled" @update:checked="emit('update:draftEnabled', $event)">启用</NCheckbox>
+            </template>
+            启用后该在线虚拟库在后台生效并参与聚合；停用则保留配置但不收录。
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NCheckbox :checked="draft.ExposeToEmby" @update:checked="emit('update:draftExpose', $event)">暴露到 Emby</NCheckbox>
+            </template>
+            开启后 Emby/Infuse 等客户端可见此库；关闭则仅后台可见，不下发给客户端。
+          </NTooltip>
         </div>
         <p class="helper-text">站点选择会限制这个在线虚拟库收录哪些来源数据。{{ parserPolicyNote }}</p>
 
@@ -484,6 +529,47 @@ function healthType(status: string) {
 .field-error {
   color: #d03050;
   font-size: 12px;
+}
+
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.lbl-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  color: var(--app-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: help;
+}
+
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.example-label {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.example-chip {
+  cursor: pointer;
+}
+
+.example-chip:hover {
+  filter: brightness(1.08);
 }
 
 .provider-health {

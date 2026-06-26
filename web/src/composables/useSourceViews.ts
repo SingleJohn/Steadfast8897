@@ -5,6 +5,7 @@ import {
   deleteSourceView,
   deleteSourceViewCover,
   discoverSourceViewValues,
+  fetchSourceViewDimensionMeta,
   generateSourceViewCover,
   listSourceViews,
   previewSourceView,
@@ -12,6 +13,7 @@ import {
   updateSourceView,
   updateSourceViewDisplayOrder,
   type DimensionValue,
+  type SourceViewDimensionMeta,
   type SourceViewPreview,
   type SourceView,
 } from '@/api/source'
@@ -50,6 +52,10 @@ export function useSourceViews(showToast: ToastFn) {
   const viewPreview = shallowRef<SourceViewPreview | null>(null)
   const previewLoading = shallowRef(false)
   const matchValueError = shallowRef('')
+  const dimensionMeta = ref<SourceViewDimensionMeta[]>([])
+  const dimensionMetaLoaded = shallowRef(false)
+
+  const activeDimensionMeta = computed(() => dimensionMeta.value.find((m) => m.value === viewDraft.Dimension) || null)
 
   const coverStyleOptions = computed(() => coverStyles.value.map((s) => ({ label: s.label, value: s.name })))
   const coverIsShowcase = computed(() => coverStyle.value === 'showcase')
@@ -66,6 +72,23 @@ export function useSourceViews(showToast: ToastFn) {
 
   async function refreshViews() {
     views.value = await listSourceViews()
+  }
+
+  async function loadDimensionMeta() {
+    if (dimensionMetaLoaded.value) return
+    try {
+      dimensionMeta.value = await fetchSourceViewDimensionMeta()
+      dimensionMetaLoaded.value = true
+    } catch {
+      // 静默失败：前端面板仍有兜底示例
+    }
+  }
+
+  function fillMatchValue(value: string) {
+    viewDraft.MatchValue = value
+    if (!viewDraft.Name) viewDraft.Name = value
+    matchValueError.value = ''
+    viewPreview.value = null
   }
 
   async function ensureCoverStyles() {
@@ -253,7 +276,11 @@ export function useSourceViews(showToast: ToastFn) {
     viewPreview,
     previewLoading,
     matchValueError,
+    dimensionMeta,
+    activeDimensionMeta,
     refreshViews,
+    loadDimensionMeta,
+    fillMatchValue,
     editView,
     saveView,
     previewView,

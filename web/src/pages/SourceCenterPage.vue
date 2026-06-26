@@ -96,6 +96,7 @@ const {
   viewPreview,
   previewLoading,
   viewMatchValueError,
+  viewActiveDimensionMeta,
 } = source
 
 const solidModalMenuProps = { class: 'solid-modal-menu' }
@@ -273,6 +274,7 @@ watch(federatedKeyword, (value) => {
               :preview="viewPreview"
               :preview-loading="previewLoading"
               :match-value-error="viewMatchValueError"
+              :active-dimension-meta="viewActiveDimensionMeta"
               :discover-dimension="discoverDimension"
               :discover-search="discoverSearch"
               :discover-values="discoverValues"

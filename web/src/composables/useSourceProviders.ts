@@ -207,6 +207,7 @@ export function useSourceProviders(showToast: ToastFn) {
     try {
       providerCategories.value = await listSourceProviderCategories(id)
       activeProviderId.value = id
+      showToast(`分类已加载：${providerCategories.value.length} 个`, 'success')
     } catch (e: any) {
       showToast(e?.message || '分类加载失败', 'error')
     } finally {

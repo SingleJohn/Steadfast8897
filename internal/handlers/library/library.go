@@ -138,6 +138,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	u.GET("/Library/SourceViews", adminMW, func(c *gin.Context) { listSourceViews(c, state) })
 	u.POST("/Library/SourceViews", adminMW, func(c *gin.Context) { createSourceView(c, state) })
 	u.GET("/Library/SourceViews/Discover", adminMW, func(c *gin.Context) { discoverSourceViewValues(c, state) })
+	u.GET("/Library/SourceViews/DimensionMeta", adminMW, func(c *gin.Context) { sourceViewDimensionMeta(c, state) })
 	u.POST("/Library/SourceViews/Preview", adminMW, func(c *gin.Context) { previewSourceView(c, state) })
 	u.PUT("/Library/SourceViews/:id", adminMW, func(c *gin.Context) { updateSourceView(c, state) })
 	u.DELETE("/Library/SourceViews/:id", adminMW, func(c *gin.Context) { deleteSourceView(c, state) })

@@ -175,6 +175,49 @@ func discoverSourceViewValues(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, gin.H{"dimension": dimension, "values": values})
 }
 
+// sourceViewDimensionMeta 返回在线虚拟库各维度的说明、占位符与示例值，
+// 供前端字段提示与“点击填入”使用；示例在静态基础上叠加真实发现值（Top 6）。
+func sourceViewDimensionMeta(c *gin.Context, state *AppState) {
+	type dimMeta struct {
+		Value       string   `json:"value"`
+		Label       string   `json:"label"`
+		Desc        string   `json:"desc"`
+		Placeholder string   `json:"placeholder"`
+		Hint        string   `json:"hint"`
+		Examples    []string `json:"examples"`
+	}
+	metas := []dimMeta{
+		{Value: "normalized_kind", Label: "内容类型", Desc: "按规整后的内容类型聚合", Placeholder: "movie / tv / anime", Hint: "填单个内容类型值", Examples: []string{"movie", "tv", "anime", "documentary", "variety"}},
+		{Value: "region", Label: "地区", Desc: "按内容地区聚合；Foreign 表示非中国大陆", Placeholder: "CN / JP / US / KR", Hint: "填地区代码；Foreign = 非 CN", Examples: []string{"CN", "JP", "US", "KR", "Foreign"}},
+		{Value: "kind_region", Label: "类型/地区", Desc: "类型与地区组合，写法 kind/region", Placeholder: "movie/CN、tv/JP", Hint: "必须是 kind/region 两段，用斜杠分隔", Examples: []string{"movie/CN", "tv/JP", "movie/US"}},
+		{Value: "provider", Label: "站点 Provider", Desc: "按来源站点聚合，主匹配值填 Provider 数字 ID", Placeholder: "如 12", Hint: "填站点列表中的 Provider ID", Examples: []string{}},
+		{Value: "custom", Label: "自定义", Desc: "把内容类型或地区的多个值并入同一个库", Placeholder: "movie 或 CN", Hint: "可在“发现值/别名”里加入多个值", Examples: []string{"movie", "CN", "anime"}},
+	}
+	for i := range metas {
+		switch metas[i].Value {
+		case "normalized_kind", "region", "kind_region":
+			values, err := state.Repo.Source.DiscoverLibraryViewValues(c.Request.Context(), metas[i].Value, "", 1)
+			if err != nil {
+				continue
+			}
+			real := make([]string, 0, 6)
+			for _, v := range values {
+				if strings.TrimSpace(v.Value) == "" {
+					continue
+				}
+				real = append(real, v.Value)
+				if len(real) >= 6 {
+					break
+				}
+			}
+			if len(real) > 0 {
+				metas[i].Examples = real
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"dimensions": metas})
+}
+
 func previewSourceView(c *gin.Context, state *AppState) {
 	var req sourceViewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

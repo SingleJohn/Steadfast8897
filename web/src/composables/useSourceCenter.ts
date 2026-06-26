@@ -21,6 +21,7 @@ export function useSourceCenter(showToast: ToastFn) {
         configs.refreshConfigs(),
         providers.refreshProviders(),
         views.refreshViews(),
+        views.loadDimensionMeta(),
       ])
     } finally {
       loading.value = false
@@ -156,6 +157,9 @@ export function useSourceCenter(showToast: ToastFn) {
     viewPreview: views.viewPreview,
     previewLoading: views.previewLoading,
     viewMatchValueError: views.matchValueError,
+    viewDimensionMeta: views.dimensionMeta,
+    viewActiveDimensionMeta: views.activeDimensionMeta,
+    fillViewMatchValue: views.fillMatchValue,
     refreshAll,
     refreshRuntimeData: runtimeAudit.refreshRuntimeData,
     updateRuntimeAuditFilters: runtimeAudit.updateRuntimeAuditFilters,
