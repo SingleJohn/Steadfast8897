@@ -601,6 +601,28 @@ source_provider_health_checks
 ```
 
 **实际落点**：
+- TVBox 配置解析与导入：
+  - `internal/source/tvbox_config.go` 补齐 `sites[]` 的 `hide`、`indexs`、`changeable`、`header`、`style`、`playUrl`、`click` 解析，保留既有 `searchable`、`quickSearch`、`categories`、`timeout` 口径。
+  - `internal/source/tvbox_importer.go` 将 `hide=1` 映射为 `source_providers.visible=false`；`quickSearch` 缺省按 FongMi 兼容口径视为 `true`；`categories` 只写入 provider capabilities 作为 `homeContent().class[]` 名称白名单，附带 `category_source=tvbox_site_whitelist`，不替代真实分类来源。
+  - `header` 写入 `source_providers.headers`，capabilities 只记录 `header_present` 和 `header_keys`，不记录或展示 header value；`style`、`playUrl`、`click` 仅作为元数据/capability 保存，不改 Emby 核心模型。
+- API 与管理端：
+  - `internal/repository/source_types.go`、`internal/repository/source_provider_repository.go` 增加 provider 列表 `Visible` 筛选。
+  - `GET /SourceProviders` 默认只返回可见站点；传 `include_hidden=true` 时返回隐藏站点。
+  - `internal/handlers/admin/source_provider_handlers.go` 在 DTO 中返回脱敏后的 `Capabilities`，只允许安全 key 进入前端。
+  - `web/src/api/source.ts` 增加 `SourceProviderCapabilities` 与 `include_hidden` 请求参数；`web/src/composables/useSourceProviders.ts`、`web/src/composables/useSourceCenter.ts` 增加隐藏站点开关状态和刷新动作；`web/src/pages/SourceCenterPage.vue`、`web/src/components/source-center/SourceProviderPanel.vue` 增加“显示隐藏站点”筛选与能力标签展示。
+- 调用语义：
+  - `internal/source/federated_search.go` 聚合搜索同时尊重 `source_providers.searchable` 与 `capabilities.quick_search`；capabilities 缺失或解析失败时保持旧兼容口径，默认允许快搜。
+  - `internal/source/provider_runtime.go` 将 provider headers 传入 JS/CSP provider 构造。
+  - `internal/source/js_runtime_types.go`、`internal/source/js_provider.go`、`runtime/js-sidecar/sidecar.mjs` 给 JS runtime 请求增加 `headers`，sidecar 在 `req/request/fetch` 默认请求头中合并站点 header。
+  - `internal/source/csp_runtime_types.go`、`internal/source/csp_provider.go` 给 CSP runtime 请求上下文携带 `headers`；当前 Java `Spider` 标准反射方法不接收 header 参数，因此没有改 Java method 签名，也没有触达播放解析链路。
+  - CMS/native provider 未改播放解析语义；本任务没有修改 `/SourcePlay`、`ParserResolver`，也没有写 `items`。
+- 构建结果：
+  - `go build ./...` 通过；首次沙箱内运行因 `D:\services\GoCache\gotmp` 权限失败，提升权限后通过。
+  - `cd web && npm run build` 通过；仅保留 Vite 对 `artplayer` 依赖 CommonJS `module` 变量的既有 warning。
+- Commits：
+  - `c411cc75` 补齐TVBox站点能力导入。
+  - `947f1ff5` 消费TVBox站点能力语义。
+  - `b2d9aa66` 来源中心展示TVBox站点能力。
 
 ---
 
