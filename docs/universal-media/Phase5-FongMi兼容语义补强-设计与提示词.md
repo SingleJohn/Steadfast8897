@@ -543,6 +543,27 @@ source_provider_health_checks
 
 **实际落点**：
 
+- 后端分项健康模型落在 `internal/source/provider_health.go` 与 `internal/source/provider_runtime.go`：
+  - 新增 `ProviderHealthSummary` / `ProviderHealthMethodSummary`，字段包含 `runtime_status`、`home_status`、`category_status`、`search_status`、`play_ready_status`、`overall_status`、`message`、`checked_at`。
+  - `ProviderRuntimeManager.HealthCheck` 不再只用 `Categories()` 判定，优先通过 `HomeProfile()` 汇总 `homeContent` / `homeVideoContent`；首页任一方法有可用首页信息则 `home_status=ok/partial`，分类单独按 `class` 非空判定，`searchable=true` 时用轻量关键词 `test` 做搜索探活且搜索失败只影响分项。
+  - `play_ready_status` 保持 `skipped`，未触达 `/SourcePlay` 或 `ParserResolver`。
+- 存储取舍：本任务未新增 `source_provider_health_checks` migration；分项摘要写入 `source_providers.capabilities.health`，避免污染上游 `raw_site`，后续如需历史趋势再单独建检查历史表。
+- Repository / API 落点：
+  - `internal/repository/source_provider_repository.go` 新增 `UpdateProviderHealthSummary()`，同步更新 `health_status`、`last_check_at`、`last_error`、`categories` 与 `capabilities.health`。
+  - `GET /SourceProviders` 支持 `health_status`、`runtime_status`、`home_status`、`category_status` 过滤。
+  - `POST /SourceProviders/BatchHealthCheck` 返回分项状态，单 Provider 失败不影响整批。
+- 前端落点：
+  - `web/src/api/source.ts` 补充分项健康类型与列表过滤参数。
+  - `web/src/composables/useSourceProviders.ts` / `useSourceCenter.ts` 接入服务端分项筛选状态。
+  - `web/src/components/source-center/SourceProviderPanel.vue` 展示 runtime/home/category/search/play_ready 标签，增加 Runtime/首页/分类健康筛选，并提供“启用首页可用”“停用明确失败”批量动作。
+  - `web/src/pages/SourceCenterPage.vue` 完成筛选状态绑定。
+- 构建结果：
+  - `go build ./...` 通过。
+  - `cd web && npm run build` 通过；仅保留 Vite 对 `artplayer` 依赖 CommonJS `module` 变量的既有 warning。
+- Commits：
+  - `82f22a50` 重定义Provider分项探活。
+  - `14839717` 来源中心支持分项健康筛选。
+
 ---
 
 ## FM4 - TVBox 站点能力字段消费
