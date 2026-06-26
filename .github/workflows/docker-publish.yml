@@ -250,6 +250,12 @@ jobs:
           name: fyms-linux-arm64
           path: dist-linux-arm64
 
+      - name: Download CSP sidecar
+        uses: actions/download-artifact@v4
+        with:
+          name: csp-sidecar
+          path: csp-sidecar-artifact
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -344,8 +350,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' && (steps.dockerhub.outputs.enabled == 'true' || steps.ghcr.outputs.enabled == 'true') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=inline
-          cache-to: type=inline
+          cache-from: type=gha,scope=fyms-release
+          cache-to: type=gha,scope=fyms-release,mode=max
 
   release-binaries:
     if: startsWith(github.ref, 'refs/tags/v')

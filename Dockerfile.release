@@ -1,12 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # CI-only Dockerfile: assumes the Linux binary for the target arch has been
 # pre-built on the runner and placed at dist-linux-${TARGETARCH}/fyms.
-# It still packages the TVBox runtimes so the published image is full-featured.
-FROM gradle:8.14.3-jdk21-alpine AS csp-sidecar-builder
-
-WORKDIR /build/runtime/csp-sidecar
-COPY runtime/csp-sidecar/ ./
-RUN gradle --no-daemon clean shadowJar
+# The CSP sidecar jar is also pre-built by CI and downloaded into
+# csp-sidecar-artifact/ before docker/build-push-action runs.
 
 FROM node:22-slim AS node-runtime
 
@@ -31,7 +27,7 @@ COPY --chmod=0755 dist-linux-${TARGETARCH}/fyms /app/fyms
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
 COPY runtime/js-sidecar/ /app/runtime/js-sidecar/
-COPY --from=csp-sidecar-builder /build/runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar /app/runtime/csp-sidecar/fyms-csp-sidecar-all.jar
+COPY csp-sidecar-artifact/fyms-csp-sidecar-all.jar /app/runtime/csp-sidecar/fyms-csp-sidecar-all.jar
 COPY migrations /app/migrations
 RUN mkdir -p /app/data/logs /app/data/cache/images && chown -R fyms:fyms /app
 
