@@ -219,6 +219,7 @@ export type SourceParser = {
   Status: string
   LastCheckAt?: string
   LastError?: string
+  Raw?: Record<string, unknown>
   UpdatedAt: string
 }
 
