@@ -215,25 +215,182 @@ func (m *ProviderRuntimeManager) HealthCheck(ctx context.Context, providerID int
 		LogProviderAction(m.logger, start, row.ID, "health", err)
 		return nil, err
 	}
-	categories, err := provider.Categories(ctx)
-	if err != nil {
-		msg := err.Error()
-		status := "error"
-		if ErrorType(err) == "site_unavailable" {
-			status = "unhealthy"
-		}
-		updated, updateErr := m.repo.UpdateProviderHealth(ctx, row.ID, status, &msg, nil)
-		if updateErr != nil {
-			LogProviderAction(m.logger, start, row.ID, "health", updateErr)
-			return updated, updateErr
-		}
-		LogProviderAction(m.logger, start, row.ID, "health", err)
-		return updated, nil
+	summary, categories := m.providerHealthSummary(ctx, provider, row)
+	categoryRaw := jsonBytes(categories, "[]")
+	summaryRaw := jsonBytes(summary, "{}")
+	var lastError *string
+	if summary.Message != "" {
+		lastError = &summary.Message
 	}
-	raw := jsonBytes(categories, "[]")
-	updated, err := m.repo.UpdateProviderHealth(ctx, row.ID, "ok", nil, raw)
-	LogProviderAction(m.logger, start, row.ID, "health", err, "count", len(categories))
-	return updated, err
+	updated, err := m.repo.UpdateProviderHealthSummary(ctx, row.ID, summary.OverallStatus, lastError, categoryRaw, summaryRaw)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "health", err)
+		return updated, err
+	}
+	LogProviderAction(m.logger, start, row.ID, "health", nil,
+		"status", summary.OverallStatus,
+		"runtime_status", summary.RuntimeStatus,
+		"home_status", summary.HomeStatus,
+		"category_status", summary.CategoryStatus,
+		"search_status", summary.SearchStatus,
+		"categories", len(categories))
+	return updated, nil
+}
+
+func (m *ProviderRuntimeManager) providerHealthSummary(ctx context.Context, provider Provider, row *repository.SourceProvider) (ProviderHealthSummary, []ProviderCategory) {
+	summary := ProviderHealthSummary{
+		RuntimeStatus:   ProviderHealthStatusOK,
+		HomeStatus:      ProviderHealthStatusUnknown,
+		CategoryStatus:  ProviderHealthStatusUnknown,
+		SearchStatus:    ProviderHealthStatusSkipped,
+		PlayReadyStatus: ProviderHealthStatusSkipped,
+		CheckedAt:       time.Now(),
+	}
+	categories := []ProviderCategory{}
+	homeStart := time.Now()
+	if profiler, ok := provider.(HomeProfiler); ok {
+		profile, err := profiler.HomeProfile(ctx)
+		summary.Home.LatencyMS = time.Since(homeStart).Milliseconds()
+		if err != nil && profile == nil {
+			if providerHealthRuntimeFailure(err) {
+				summary.RuntimeStatus = ProviderHealthStatusError
+			}
+			summary.HomeStatus = ProviderHealthStatusError
+			summary.CategoryStatus = ProviderHealthStatusError
+			summary.Home = providerHealthMethodError(err, summary.Home.LatencyMS)
+		} else {
+			if profile != nil {
+				categories = profile.Categories
+				summary.Home.CategoriesCount = len(profile.Categories)
+				summary.Home.FiltersCount = profile.FiltersCount
+				summary.Home.ItemsCount = len(profile.HomeItems)
+				summary.Home.Status = providerHealthHomeStatus(profile)
+				summary.HomeStatus = summary.Home.Status
+				summary.Category.CategoriesCount = len(profile.Categories)
+				summary.Category.Status = providerHealthCategoryStatus(profile)
+				summary.CategoryStatus = summary.Category.Status
+			}
+			if err != nil {
+				if providerHealthRuntimeFailure(err) {
+					summary.RuntimeStatus = ProviderHealthStatusPartial
+				}
+				summary.Home.Message = err.Error()
+				summary.Home.ErrorType = ErrorType(err)
+			}
+		}
+	} else {
+		categoriesStart := time.Now()
+		nextCategories, err := provider.Categories(ctx)
+		summary.Home.LatencyMS = time.Since(categoriesStart).Milliseconds()
+		if err != nil {
+			if providerHealthRuntimeFailure(err) {
+				summary.RuntimeStatus = ProviderHealthStatusError
+			}
+			summary.HomeStatus = ProviderHealthStatusError
+			summary.CategoryStatus = ProviderHealthStatusError
+			summary.Home = providerHealthMethodError(err, summary.Home.LatencyMS)
+		} else {
+			categories = nextCategories
+			summary.Home.CategoriesCount = len(categories)
+			summary.Home.Status = providerHealthCountStatus(len(categories))
+			summary.HomeStatus = summary.Home.Status
+			summary.Category.CategoriesCount = len(categories)
+			summary.Category.Status = providerHealthCountStatus(len(categories))
+			summary.CategoryStatus = summary.Category.Status
+		}
+	}
+	if row != nil && row.Searchable && summary.RuntimeStatus != ProviderHealthStatusError {
+		summary.Search = providerHealthSearch(ctx, provider)
+		summary.SearchStatus = summary.Search.Status
+	}
+	summary.OverallStatus = providerHealthOverall(summary)
+	summary.Message = providerHealthMessage(summary)
+	return summary, categories
+}
+
+func providerHealthHomeStatus(profile *ProviderHomeProfile) string {
+	if profile == nil {
+		return ProviderHealthStatusUnknown
+	}
+	homeOK := profile.Sources.HomeContent.OK
+	videoOK := profile.Sources.HomeVideoContent.OK
+	if homeOK || videoOK {
+		if homeOK && videoOK {
+			return ProviderHealthStatusOK
+		}
+		return ProviderHealthStatusPartial
+	}
+	if len(profile.Categories) > 0 || profile.FiltersCount > 0 {
+		return ProviderHealthStatusPartial
+	}
+	if profile.Sources.HomeContent.Status == ProviderHomeSourceStatusError && profile.Sources.HomeVideoContent.Status == ProviderHomeSourceStatusError {
+		return ProviderHealthStatusError
+	}
+	return ProviderHealthStatusUnknown
+}
+
+func providerHealthCategoryStatus(profile *ProviderHomeProfile) string {
+	if profile == nil {
+		return ProviderHealthStatusUnknown
+	}
+	if len(profile.Categories) > 0 {
+		return ProviderHealthStatusOK
+	}
+	if profile.Sources.HomeContent.Status == ProviderHomeSourceStatusError {
+		return ProviderHealthStatusError
+	}
+	return ProviderHealthStatusUnknown
+}
+
+func providerHealthCountStatus(count int) string {
+	if count > 0 {
+		return ProviderHealthStatusOK
+	}
+	return ProviderHealthStatusUnknown
+}
+
+func providerHealthRuntimeFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "runtime 未初始化") ||
+		strings.Contains(message, "runtime manager 未初始化") ||
+		strings.Contains(message, "sidecar") ||
+		strings.Contains(message, "worker") ||
+		strings.Contains(message, "需 runtime") ||
+		strings.Contains(message, "需要后续 runtime")
+}
+
+func providerHealthSearch(ctx context.Context, provider Provider) ProviderHealthMethodSummary {
+	start := time.Now()
+	page, err := provider.Search(ctx, SearchRequest{Keyword: "test", Page: 1})
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return providerHealthMethodError(err, latency)
+	}
+	itemsCount := 0
+	if page != nil {
+		itemsCount = len(page.Items)
+	}
+	status := ProviderHealthStatusOK
+	if itemsCount == 0 {
+		status = ProviderHealthStatusUnknown
+	}
+	return ProviderHealthMethodSummary{Status: status, ItemsCount: itemsCount, LatencyMS: latency}
+}
+
+func providerHealthMethodError(err error, latencyMS int64) ProviderHealthMethodSummary {
+	status := ProviderHealthStatusError
+	if ErrorType(err) == "site_unavailable" {
+		status = ProviderHealthStatusUnusable
+	}
+	return ProviderHealthMethodSummary{
+		Status:    status,
+		ErrorType: ErrorType(err),
+		Message:   err.Error(),
+		LatencyMS: latencyMS,
+	}
 }
 
 func playSourceSnapshotFromRepository(playSource repository.SourcePlaySource) (PlaySourceSnapshot, error) {

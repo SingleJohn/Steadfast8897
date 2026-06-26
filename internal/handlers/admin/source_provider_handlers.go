@@ -37,6 +37,7 @@ type sourceProviderDTO struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	Categories      any
+	Health          any
 	CategoriesCount int
 }
 
@@ -55,6 +56,11 @@ type sourceProviderBatchHealthResult struct {
 	ProviderID      int64  `json:"provider_id"`
 	ProviderName    string `json:"provider_name"`
 	Status          string `json:"status"`
+	RuntimeStatus   string `json:"runtime_status,omitempty"`
+	HomeStatus      string `json:"home_status,omitempty"`
+	CategoryStatus  string `json:"category_status,omitempty"`
+	SearchStatus    string `json:"search_status,omitempty"`
+	PlayReadyStatus string `json:"play_ready_status,omitempty"`
 	ErrorType       string `json:"error_type,omitempty"`
 	Message         string `json:"message,omitempty"`
 	LatencyMS       int64  `json:"latency_ms"`
@@ -80,14 +86,17 @@ func listSourceProviders(c *gin.Context, state *AppState) {
 		return
 	}
 	rows, err := state.Repo.Source.ListProviders(c.Request.Context(), repository.SourceProviderListOptions{
-		Limit:        int64(queryInt(c, "limit", 100)),
-		Offset:       int64(queryInt(c, "offset", 0)),
-		ConfigID:     configID,
-		Enabled:      enabled,
-		HealthStatus: strings.TrimSpace(c.Query("health_status")),
-		RuntimeKind:  strings.TrimSpace(c.Query("runtime_kind")),
-		ProviderKind: strings.TrimSpace(c.Query("provider_kind")),
-		Keyword:      strings.TrimSpace(c.Query("keyword")),
+		Limit:          int64(queryInt(c, "limit", 100)),
+		Offset:         int64(queryInt(c, "offset", 0)),
+		ConfigID:       configID,
+		Enabled:        enabled,
+		HealthStatus:   strings.TrimSpace(c.Query("health_status")),
+		RuntimeStatus:  strings.TrimSpace(c.Query("runtime_status")),
+		HomeStatus:     strings.TrimSpace(c.Query("home_status")),
+		CategoryStatus: strings.TrimSpace(c.Query("category_status")),
+		RuntimeKind:    strings.TrimSpace(c.Query("runtime_kind")),
+		ProviderKind:   strings.TrimSpace(c.Query("provider_kind")),
+		Keyword:        strings.TrimSpace(c.Query("keyword")),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
@@ -329,6 +338,12 @@ func runSourceProviderHealth(ctx context.Context, state *AppState, manager *sour
 		result.Status = item.HealthStatus
 		result.Message = stringValue(item.LastError)
 		result.CategoriesCount = categoriesCount(item.Categories)
+		health := providerHealthFromCapabilities(item.Capabilities)
+		result.RuntimeStatus = stringFromMap(health, "runtime_status")
+		result.HomeStatus = stringFromMap(health, "home_status")
+		result.CategoryStatus = stringFromMap(health, "category_status")
+		result.SearchStatus = stringFromMap(health, "search_status")
+		result.PlayReadyStatus = stringFromMap(health, "play_ready_status")
 	}
 	if err != nil {
 		result.ErrorType = sourcebridge.ErrorType(err)
@@ -360,6 +375,7 @@ func sourceProviderDTOFromRepository(row repository.SourceProvider) sourceProvid
 	if len(row.Categories) > 0 {
 		categories = row.Categories
 	}
+	health := providerHealthFromCapabilities(row.Capabilities)
 	return sourceProviderDTO{
 		ID:              row.ID,
 		ConfigID:        row.ConfigID,
@@ -380,6 +396,7 @@ func sourceProviderDTOFromRepository(row repository.SourceProvider) sourceProvid
 		CreatedAt:       row.CreatedAt,
 		UpdatedAt:       row.UpdatedAt,
 		Categories:      categories,
+		Health:          health,
 		CategoriesCount: categoriesCount(row.Categories),
 	}
 }
@@ -433,6 +450,29 @@ func categoriesCount(raw []byte) int {
 		return len(rows)
 	}
 	return 0
+}
+
+func providerHealthFromCapabilities(raw []byte) map[string]any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var capabilities map[string]any
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		return nil
+	}
+	health, ok := capabilities["health"].(map[string]any)
+	if !ok || len(health) == 0 {
+		return nil
+	}
+	return health
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func stringValue(value *string) string {

@@ -130,6 +130,15 @@ func (r *SourceRepository) ListProviders(ctx context.Context, opts SourceProvide
 	if value := strings.TrimSpace(opts.HealthStatus); value != "" {
 		clauses = append(clauses, "sp.health_status = "+addArg(value))
 	}
+	if value := strings.TrimSpace(opts.RuntimeStatus); value != "" {
+		clauses = append(clauses, "sp.capabilities #>> '{health,runtime_status}' = "+addArg(value))
+	}
+	if value := strings.TrimSpace(opts.HomeStatus); value != "" {
+		clauses = append(clauses, "sp.capabilities #>> '{health,home_status}' = "+addArg(value))
+	}
+	if value := strings.TrimSpace(opts.CategoryStatus); value != "" {
+		clauses = append(clauses, "sp.capabilities #>> '{health,category_status}' = "+addArg(value))
+	}
 	if value := strings.TrimSpace(opts.RuntimeKind); value != "" {
 		clauses = append(clauses, "sp.runtime_kind = "+addArg(value))
 	}
@@ -331,5 +340,25 @@ func (r *SourceRepository) UpdateProviderHealth(ctx context.Context, id int64, s
 		          ext, categories, headers, capabilities, timeout_ms, enabled, visible, searchable,
 		          health_status, last_check_at, last_error, raw_site, created_at, updated_at`,
 		id, defaultString(status, "unknown"), lastError, jsonBytesOrNull(categories))
+	return scanSourceProvider(row)
+}
+
+func (r *SourceRepository) UpdateProviderHealthSummary(ctx context.Context, id int64, status string, lastError *string, categories []byte, summary []byte) (*SourceProvider, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE source_providers
+		   SET health_status = $2,
+		       last_check_at = NOW(),
+		       last_error = $3,
+		       categories = CASE WHEN $4::jsonb = 'null'::jsonb THEN categories ELSE $4::jsonb END,
+		       capabilities = CASE
+		         WHEN $5::jsonb = 'null'::jsonb THEN capabilities
+		         ELSE jsonb_set(COALESCE(capabilities, '{}'::jsonb), '{health}', $5::jsonb, true)
+		       END,
+		       updated_at = NOW()
+		 WHERE id = $1
+		RETURNING id, config_id, source_key, name, provider_kind, runtime_kind, tvbox_type, api,
+		          ext, categories, headers, capabilities, timeout_ms, enabled, visible, searchable,
+		          health_status, last_check_at, last_error, raw_site, created_at, updated_at`,
+		id, defaultString(status, "unknown"), lastError, jsonBytesOrNull(categories), jsonBytesOrNull(summary))
 	return scanSourceProvider(row)
 }
