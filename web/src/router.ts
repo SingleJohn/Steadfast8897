@@ -4,7 +4,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  * Admin 后台路由结构（5 个一级模块 × N 个二级菜单）
  *
  *   概览（单项）       →  /admin/overview
- *   媒体内容（submenu）→  /admin/media/{libraries|metadata}
+ *   媒体内容（submenu）→  /admin/media/{libraries|metadata|online-media}
  *   网关（submenu）    →  /admin/gateway/{emby-sources|path-rules|backends}
  *   观测中心（submenu）→  /admin/observability/gateway/{traffic|redirect|ip-stats}
  *                         /admin/observability/service/{playback|stats|logs|tasks}
@@ -148,6 +148,24 @@ const router = createRouter({
 
         // ── 模块 3：网关
         {
+          path: 'media/online-media',
+          name: 'media_online_media',
+          component: () => import('./pages/SourceCenterPage.vue'),
+          meta: {
+            title: '在线媒体',
+            navLabel: '在线媒体',
+            icon: 'layers',
+            section: 'media',
+            sectionLabel: '媒体内容',
+            sectionIcon: 'media',
+            sectionOrder: 2,
+            order: 5,
+            requiresAdmin: true,
+          },
+        },
+
+        // ── 模块 2：媒体内容
+        {
           path: 'gateway/emby-sources',
           name: 'gateway_emby_sources',
           component: () => import('./pages/EmbySourcesPage.vue'),
@@ -192,22 +210,6 @@ const router = createRouter({
             sectionIcon: 'gateway',
             sectionOrder: 3,
             order: 3,
-            requiresAdmin: true,
-          },
-        },
-        {
-          path: 'gateway/source-center',
-          name: 'gateway_source_center',
-          component: () => import('./pages/SourceCenterPage.vue'),
-          meta: {
-            title: '来源中心',
-            navLabel: '来源中心',
-            icon: 'gateway',
-            section: 'gateway',
-            sectionLabel: '网关',
-            sectionIcon: 'gateway',
-            sectionOrder: 3,
-            order: 4,
             requiresAdmin: true,
           },
         },
@@ -510,6 +512,8 @@ const router = createRouter({
         { path: 'emby-sources', redirect: { name: 'gateway_emby_sources' } },
         { path: 'path-rules', redirect: { name: 'gateway_path_rules' } },
         { path: 'backends', redirect: { name: 'gateway_backends' } },
+        { path: 'gateway/source-center', redirect: { name: 'media_online_media' } },
+        { path: 'source-center', redirect: { name: 'media_online_media' } },
         { path: 'users', redirect: { name: 'system_users' } },
         { path: 'libraries', redirect: { name: 'media_libraries' } },
         { path: 'library-edit/:libraryId', redirect: { name: 'media_libraries' } },

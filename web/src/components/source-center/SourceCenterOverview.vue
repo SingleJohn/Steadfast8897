@@ -37,10 +37,10 @@ const providerHealth = computed(() => {
 })
 
 const metrics = computed(() => [
-  { key: 'configs', label: '配置', value: props.configs.length, helper: '导入包' },
-  { key: 'providers', label: 'Provider', value: props.providers.length, helper: `${enabledProviders.value} 启用` },
+  { key: 'configs', label: '配置包', value: props.configs.length, helper: 'TVBox/CMS 导入' },
+  { key: 'providers', label: '站点', value: props.providers.length, helper: `${enabledProviders.value} 启用` },
   { key: 'health', label: '健康', value: providerHealth.value.ok, helper: `${providerHealth.value.error} 失败 / ${providerHealth.value.unknown} 未探活` },
-  { key: 'views', label: '在线库', value: props.views.length, helper: `${exposedViews.value} 暴露给 Emby` },
+  { key: 'views', label: '在线虚拟库', value: props.views.length, helper: `${exposedViews.value} 暴露给 Emby` },
   { key: 'parsers', label: '解析器', value: props.parsers.length, helper: `${enabledParsers.value} 启用` },
 ])
 
@@ -51,16 +51,16 @@ function formatTime(value?: string) {
 </script>
 
 <template>
-  <section class="source-overview" aria-label="来源中心总览">
+  <section class="source-overview" aria-label="在线媒体总览">
     <div class="overview-toolbar">
       <div>
-        <h2 class="overview-title">来源中心总览</h2>
-        <p class="overview-copy">从配置包到 Provider、在线库与审计状态的当前管理视图。</p>
+        <h2 class="overview-title">在线媒体总览</h2>
+        <p class="overview-copy">从配置包到站点、在线虚拟库与运行审计的当前管理视图。</p>
       </div>
       <div class="overview-actions">
         <NButton :loading="loading" @click="emit('refresh')">刷新</NButton>
         <NButton type="primary" @click="emit('navigate', 'configs')">导入配置</NButton>
-        <NButton secondary @click="emit('navigate', 'audit')">查看审计</NButton>
+        <NButton secondary @click="emit('navigate', 'audit')">查看运行审计</NButton>
       </div>
     </div>
 
@@ -81,8 +81,8 @@ function formatTime(value?: string) {
     <div class="overview-split">
       <section class="overview-section">
         <div class="section-head">
-          <h3 class="section-title">Provider 健康</h3>
-          <NButton text size="small" @click="emit('navigate', 'providers')">进入 Provider</NButton>
+          <h3 class="section-title">站点健康</h3>
+          <NButton text size="small" @click="emit('navigate', 'providers')">进入站点</NButton>
         </div>
         <div class="health-row">
           <NTag type="success" :bordered="false">可用 {{ providerHealth.ok }}</NTag>
@@ -94,12 +94,12 @@ function formatTime(value?: string) {
       <section class="overview-section">
         <div class="section-head">
           <h3 class="section-title">最近错误</h3>
-          <NButton text size="small" @click="emit('navigate', 'audit')">进入审计</NButton>
+          <NButton text size="small" @click="emit('navigate', 'audit')">进入运行审计</NButton>
         </div>
         <div v-if="recentErrors.length > 0" class="error-list">
           <div v-for="item in recentErrors" :key="item.ID" class="error-line">
             <span class="error-method">{{ item.Method }}</span>
-            <span class="error-meta">{{ item.RuntimeKind }} / Provider {{ item.ProviderID || '-' }}</span>
+            <span class="error-meta">{{ item.RuntimeKind }} / {{ item.ProviderName || `Provider ${item.ProviderID || '-'}` }}</span>
             <span class="error-type">{{ item.ErrorType || item.Status }}</span>
             <span class="error-time">{{ formatTime(item.InvokedAt) }}</span>
           </div>

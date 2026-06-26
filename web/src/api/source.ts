@@ -226,6 +226,7 @@ export type SourceParser = {
 export type SourceRuntimeInvocation = {
   ID: number
   ProviderID?: number
+  ProviderName?: string
   RuntimeKind: string
   Method: string
   Status: string
@@ -237,6 +238,17 @@ export type SourceRuntimeInvocation = {
   ArtifactIDs: number[]
   URLHash?: string
   InvokedAt: string
+}
+
+export type SourceRuntimeInvocationListOptions = {
+  limit?: number
+  provider_id?: number
+  method?: string
+  status?: string
+  error_type?: string
+  runtime_kind?: string
+  start_time?: string
+  end_time?: string
 }
 
 export type SourceRuntimeArtifact = {
@@ -438,8 +450,13 @@ export async function setSourceParserEnabled(id: number, enabled: boolean) {
   return requestJson<SourceParser>(`/SourceParsers/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' })
 }
 
-export async function listSourceRuntimeInvocations(limit = 100) {
-  const params = new URLSearchParams({ limit: String(limit) })
+export async function listSourceRuntimeInvocations(options: SourceRuntimeInvocationListOptions = {}) {
+  const params = new URLSearchParams({ limit: String(options.limit || 100) })
+  for (const [key, value] of Object.entries(options)) {
+    if (key === 'limit') continue
+    const text = String(value || '').trim()
+    if (text) params.set(key, text)
+  }
   const res = await requestJson<{ items: SourceRuntimeInvocation[] }>(`/SourceRuntime/Invocations?${params.toString()}`)
   return res.items || []
 }

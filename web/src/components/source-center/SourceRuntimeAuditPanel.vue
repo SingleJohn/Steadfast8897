@@ -1,34 +1,69 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
-import { NButton, NDataTable, NTag, useMessage } from 'naive-ui'
+import { computed, h, shallowRef } from 'vue'
+import { NButton, NDataTable, NInput, NSelect, NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import type { SourceRuntimeArtifact, SourceRuntimeInvocation } from '@/api/source'
+import type { SourceProvider, SourceRuntimeArtifact, SourceRuntimeInvocation, SourceRuntimeInvocationListOptions } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
 const props = defineProps<{
   invocations: SourceRuntimeInvocation[]
   artifacts: SourceRuntimeArtifact[]
+  providers: SourceProvider[]
+  filters: SourceRuntimeInvocationListOptions
   loading: boolean
   action: string
 }>()
 
 const emit = defineEmits<{
   refresh: []
+  updateFilters: [filters: SourceRuntimeInvocationListOptions]
   trust: [id: number]
 }>()
 
 const message = useMessage()
 const errorCount = computed(() => props.invocations.filter((item) => item.Status === 'error').length)
+const keywordFilter = shallowRef('')
 const tablePagination = {
   pageSize: 20,
   showSizePicker: true,
   pageSizes: [20, 50, 100],
 }
+const statusOptions = computed(() => buildOptions(['ok', 'error', ...props.invocations.map((item) => item.Status)], '全部状态'))
+const runtimeOptions = computed(() => buildOptions(['native_cms', 'js_node_drpy', 'csp_dex', ...props.invocations.map((item) => item.RuntimeKind)], '全部运行时'))
+const methodOptions = computed(() => buildOptions(['home', 'homeVideo', 'category', 'search', 'detail', 'play', ...props.invocations.map((item) => item.Method)], '全部方法'))
+const errorTypeOptions = computed(() => buildOptions(props.invocations.map((item) => item.ErrorType || ''), '全部错误类型'))
+const providerOptions = computed(() => [
+  { label: '全部站点', value: 0 },
+  ...props.providers.map((provider) => ({ label: `${provider.Name} (${provider.SourceKey})`, value: provider.ID })),
+])
+const filteredInvocations = computed(() => {
+  const keyword = keywordFilter.value.trim().toLowerCase()
+  return props.invocations.filter((item) => {
+    if (!keyword) return true
+    const haystack = [
+      item.ProviderName,
+      item.ProviderID ? `provider ${item.ProviderID}` : '',
+      item.Method,
+      item.RuntimeKind,
+      item.Status,
+      item.ErrorType,
+      item.ErrorMessage,
+    ].join(' ').toLowerCase()
+    return haystack.includes(keyword)
+  })
+})
+const filteredErrorCount = computed(() => filteredInvocations.value.filter((item) => item.Status === 'error').length)
+const activeProviderFilter = computed(() => props.filters.provider_id || 0)
+const activeStatusFilter = computed(() => props.filters.status || '')
+const activeRuntimeFilter = computed(() => props.filters.runtime_kind || '')
+const activeMethodFilter = computed(() => props.filters.method || '')
+const activeErrorTypeFilter = computed(() => props.filters.error_type || '')
+const activeLimit = computed(() => props.filters.limit || 100)
 
 const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
   { title: '时间', key: 'InvokedAt', width: 170, render: (row) => formatTime(row.InvokedAt) },
   { title: '运行时', key: 'RuntimeKind', width: 110, render: (row) => runtimeLabel(row.RuntimeKind) },
-  { title: 'Provider', key: 'ProviderID', width: 90, render: (row) => row.ProviderID || '-' },
+  { title: '站点', key: 'ProviderID', minWidth: 150, render: (row) => row.ProviderName || (row.ProviderID ? `Provider ${row.ProviderID}` : '-') },
   { title: '方法', key: 'Method', width: 90 },
   {
     title: '状态',
@@ -42,7 +77,7 @@ const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
   {
     title: '错误',
     key: 'ErrorType',
-    minWidth: 190,
+    minWidth: 220,
     ellipsis: { tooltip: true },
     render(row) {
       const text = row.ErrorType || row.ErrorMessage || ''
@@ -53,22 +88,6 @@ const invocationColumns: DataTableColumns<SourceRuntimeInvocation> = [
           size: 'tiny',
           quaternary: true,
           onClick: () => copyInvocation(row),
-        }, { default: () => '复制' }),
-      ])
-    },
-  },
-  {
-    title: 'URL Hash',
-    key: 'URLHash',
-    width: 130,
-    render(row) {
-      if (!row.URLHash) return '-'
-      return h('div', { class: 'copy-cell' }, [
-        h('span', row.URLHash),
-        h(NButton, {
-          size: 'tiny',
-          quaternary: true,
-          onClick: () => copyValue('URL Hash 已复制', row.URLHash || ''),
         }, { default: () => '复制' }),
       ])
     },
@@ -154,6 +173,33 @@ function artifactTrustType(value: string) {
   return isArtifactTrusted(value) ? 'success' : undefined
 }
 
+function buildOptions(values: string[], allLabel: string) {
+  const unique = Array.from(new Set(values.filter(Boolean))).sort()
+  return [
+    { label: allLabel, value: '' },
+    ...unique.map((value) => ({ label: value, value })),
+  ]
+}
+
+function updateFilter(patch: SourceRuntimeInvocationListOptions) {
+  const next = { ...props.filters, ...patch }
+  emit('updateFilters', {
+    limit: next.limit || 100,
+    provider_id: next.provider_id || undefined,
+    method: next.method || undefined,
+    status: next.status || undefined,
+    error_type: next.error_type || undefined,
+    runtime_kind: next.runtime_kind || undefined,
+    start_time: next.start_time || undefined,
+    end_time: next.end_time || undefined,
+  })
+}
+
+function clearFilters() {
+  keywordFilter.value = ''
+  emit('updateFilters', { limit: activeLimit.value })
+}
+
 async function copyValue(successMessage: string, value: string) {
   const ok = await copyText(value)
   if (ok) message.success(successMessage)
@@ -164,15 +210,16 @@ async function copyInvocation(row: SourceRuntimeInvocation) {
   const text = [
     `Time: ${formatTime(row.InvokedAt)}`,
     `Runtime: ${runtimeLabel(row.RuntimeKind)}`,
-    `ProviderID: ${row.ProviderID || '-'}`,
+    `Provider: ${row.ProviderName || row.ProviderID || '-'}`,
     `Method: ${row.Method}`,
     `Status: ${row.Status}`,
+    `Duration: ${row.DurationMS} ms`,
     `ErrorType: ${row.ErrorType || '-'}`,
     `ErrorMessage: ${row.ErrorMessage || '-'}`,
-    `URLHash: ${row.URLHash || '-'}`,
-  ].join('\n')
+    row.URLHash ? `URLHash: ${row.URLHash}` : '',
+  ].filter(Boolean).join('\n')
   const ok = await copyText(text)
-  if (ok) message.success('调用错误已复制')
+  if (ok) message.success('排障摘要已复制')
   else message.error('复制失败，请手动选中')
 }
 </script>
@@ -182,15 +229,66 @@ async function copyInvocation(row: SourceRuntimeInvocation) {
     <div class="panel-head">
       <div>
         <h2 class="panel-title">运行时审计</h2>
-        <p class="panel-subtitle">最近 {{ invocations.length }} 次调用，{{ errorCount }} 次失败；CSP JAR 与 JS 调用均只保留敏感 URL hash。</p>
+        <p class="panel-subtitle">最近 {{ invocations.length }} 次调用，{{ errorCount }} 次失败；敏感 URL 不明文展示，必要时在复制摘要中携带脱敏关联 hash。</p>
       </div>
       <NButton quaternary size="small" :loading="loading" @click="emit('refresh')">刷新</NButton>
     </div>
 
     <div class="audit-grid">
       <div class="audit-section">
-        <div class="section-title">调用记录</div>
-        <NDataTable v-if="invocations.length > 0" :columns="invocationColumns" :data="invocations" :pagination="tablePagination" size="small" :bordered="false" />
+        <div class="section-head">
+          <div>
+            <div class="section-title">调用记录</div>
+            <p class="panel-subtitle">当前筛选 {{ filteredInvocations.length }} 条，失败 {{ filteredErrorCount }} 条。</p>
+          </div>
+        </div>
+        <div class="audit-filters">
+          <label class="field">
+            <span class="field-label">站点</span>
+            <NSelect
+              :value="activeProviderFilter"
+              :options="providerOptions"
+              filterable
+              @update:value="updateFilter({ provider_id: Number($event || 0) })"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">状态</span>
+            <NSelect :value="activeStatusFilter" :options="statusOptions" @update:value="updateFilter({ status: $event || undefined })" />
+          </label>
+          <label class="field">
+            <span class="field-label">运行时</span>
+            <NSelect :value="activeRuntimeFilter" :options="runtimeOptions" @update:value="updateFilter({ runtime_kind: $event || undefined })" />
+          </label>
+          <label class="field">
+            <span class="field-label">方法</span>
+            <NSelect :value="activeMethodFilter" :options="methodOptions" @update:value="updateFilter({ method: $event || undefined })" />
+          </label>
+          <label class="field">
+            <span class="field-label">错误类型</span>
+            <NSelect :value="activeErrorTypeFilter" :options="errorTypeOptions" @update:value="updateFilter({ error_type: $event || undefined })" />
+          </label>
+          <label class="field keyword-field">
+            <span class="field-label">关键词</span>
+            <NInput :value="keywordFilter" placeholder="站点 / 错误类型 / 错误摘要" clearable @update:value="keywordFilter = $event" />
+          </label>
+          <label class="field limit-field">
+            <span class="field-label">返回条数</span>
+            <NSelect
+              :value="activeLimit"
+              :options="[
+                { label: '100 条', value: 100 },
+                { label: '200 条', value: 200 },
+                { label: '500 条', value: 500 },
+              ]"
+              @update:value="updateFilter({ limit: Number($event || 100) })"
+            />
+          </label>
+          <div class="filter-actions">
+            <NButton size="small" quaternary @click="clearFilters">清空筛选</NButton>
+          </div>
+        </div>
+        <NDataTable v-if="filteredInvocations.length > 0" :columns="invocationColumns" :data="filteredInvocations" :pagination="tablePagination" size="small" :bordered="false" />
         <div v-else class="empty-state">暂无运行时调用记录。</div>
       </div>
       <div class="audit-section">
@@ -221,6 +319,38 @@ async function copyInvocation(row: SourceRuntimeInvocation) {
   margin: 0;
   font-size: 16px;
   font-weight: 700;
+}
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.audit-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(110px, 0.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(150px, 0.8fr) minmax(220px, 1.2fr) minmax(110px, 0.6fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-label {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.filter-actions {
+  display: flex;
+  align-items: end;
+  min-height: 34px;
 }
 .panel-subtitle {
   margin: 4px 0 0;
@@ -259,6 +389,10 @@ async function copyInvocation(row: SourceRuntimeInvocation) {
 @media (max-width: 760px) {
   .panel-head {
     flex-direction: column;
+  }
+
+  .audit-filters {
+    grid-template-columns: 1fr;
   }
 }
 </style>

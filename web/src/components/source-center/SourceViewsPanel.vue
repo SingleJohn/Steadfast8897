@@ -83,7 +83,7 @@ const discoverOptions = computed(() => props.discoverValues.map((v) => ({
   disabled: v.AlreadyAdded,
 })))
 const selectedProviders = computed(() => props.providers.filter((provider) => props.draft.ProviderIds.includes(provider.ID)))
-const parserPolicyNote = 'Parser 本轮仍是全局播放解析器；在线库只限制组织视图与 Provider 范围，不让库级解析器进入播放上下文。'
+const parserPolicyNote = 'Parser 本轮仍是全局播放解析器；在线虚拟库只限制组织视图与站点范围，不让库级解析器进入播放上下文。'
 const tablePagination = {
   pageSize: 20,
   showSizePicker: true,
@@ -135,7 +135,7 @@ const columns: DataTableColumns<SourceView> = [
             onPositiveClick: () => emit('remove', row.Id),
           }, {
             trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, { default: () => '删除' }),
-            default: () => `删除在线库“${row.DisplayName || row.Name}”？只删除组织视图，不删除 source_items。`,
+            default: () => `删除在线虚拟库“${row.DisplayName || row.Name}”？只删除组织视图，不删除 source_items。`,
           }),
         ],
       })
@@ -154,8 +154,8 @@ function healthType(status: string) {
   <section class="source-panel">
     <div class="panel-head">
       <div>
-        <h2 class="panel-title">在线库构建器</h2>
-        <p class="panel-subtitle">在线库是 Emby 可见的组织视图，不是配置包，也不是单个 Provider。</p>
+        <h2 class="panel-title">在线虚拟库构建器</h2>
+        <p class="panel-subtitle">在线虚拟库是 Emby 可见的组织视图，不是配置包，也不是单个站点。</p>
       </div>
       <NButton @click="emit('edit')">新建</NButton>
     </div>
@@ -196,19 +196,19 @@ function healthType(status: string) {
         </div>
 
         <label class="field full-field">
-          <span class="field-label">Provider 范围</span>
+          <span class="field-label">站点范围</span>
           <NSelect
             :value="draft.ProviderIds"
             multiple
             filterable
             clearable
             :options="providerOptions"
-            placeholder="不选择则包含全部 Provider"
+            placeholder="不选择则包含全部站点"
             @update:value="emit('update:draftProviderIds', $event as number[])"
           />
         </label>
         <div class="provider-health">
-          <NTag v-if="selectedProviders.length === 0" size="small">全部 Provider</NTag>
+          <NTag v-if="selectedProviders.length === 0" size="small">全部站点</NTag>
           <NTag
             v-for="provider in selectedProviders"
             :key="provider.ID"
@@ -223,7 +223,7 @@ function healthType(status: string) {
           <NCheckbox :checked="draft.Enabled" @update:checked="emit('update:draftEnabled', $event)">启用</NCheckbox>
           <NCheckbox :checked="draft.ExposeToEmby" @update:checked="emit('update:draftExpose', $event)">暴露到 Emby</NCheckbox>
         </div>
-        <p class="helper-text">Provider 选择会限制这个在线库收录哪些站点的数据。{{ parserPolicyNote }}</p>
+        <p class="helper-text">站点选择会限制这个在线虚拟库收录哪些来源数据。{{ parserPolicyNote }}</p>
 
         <div class="discover-row">
           <NSelect :value="discoverDimension" :options="dimensionOptions" @update:value="emit('update:discoverDimension', $event)" />
@@ -242,15 +242,15 @@ function healthType(status: string) {
 
         <div class="builder-actions">
           <NButton :loading="previewLoading" @click="emit('preview')">预览命中</NButton>
-          <NButton type="primary" @click="emit('save')">{{ draft.id ? '保存在线库' : '创建在线库' }}</NButton>
+          <NButton type="primary" @click="emit('save')">{{ draft.id ? '保存在线虚拟库' : '创建在线虚拟库' }}</NButton>
         </div>
       </div>
 
-      <aside class="preview-pane" aria-label="在线库预览">
+      <aside class="preview-pane" aria-label="在线虚拟库预览">
         <div class="preview-head">
           <div>
             <h3 class="section-title">命中预览</h3>
-            <p class="helper-text">保存前查看命中数量、Provider 分布和样例条目。</p>
+            <p class="helper-text">保存前查看命中数量、站点分布和样例条目。</p>
           </div>
           <strong class="preview-count">{{ preview?.item_count ?? '-' }}</strong>
         </div>
@@ -262,7 +262,7 @@ function healthType(status: string) {
               <NTag size="small" :type="healthType(provider.health_status)">{{ provider.health_status }}</NTag>
               <strong>{{ provider.item_count }}</strong>
             </div>
-            <div v-if="preview.providers.length === 0" class="empty-state compact">暂无 Provider 命中</div>
+            <div v-if="preview.providers.length === 0" class="empty-state compact">暂无站点命中</div>
           </div>
 
           <div class="sample-list">
@@ -284,7 +284,7 @@ function healthType(status: string) {
     </div>
 
     <NDataTable v-if="views.length > 0" :columns="columns" :data="views" :pagination="tablePagination" size="small" :bordered="false" />
-    <div v-else class="empty-state">暂无在线虚拟库；可用维度发现后创建后台库，是否暴露给 Emby 由开关控制。</div>
+    <div v-else class="empty-state">暂无在线虚拟库；可用维度发现后创建虚拟库，是否暴露给 Emby 由开关控制。</div>
 
     <div v-if="coverTargetId" class="cover-bar">
       <NSelect :value="coverStyle" :options="coverStyleOptions" placeholder="封面风格" @update:value="emit('update:coverStyle', $event)" />
@@ -293,7 +293,7 @@ function healthType(status: string) {
         <template #trigger>
           <NButton quaternary>清除封面</NButton>
         </template>
-        清除后会恢复在线库默认封面。
+        清除后会恢复在线虚拟库默认封面。
       </NPopconfirm>
     </div>
   </section>

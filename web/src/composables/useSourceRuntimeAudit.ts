@@ -8,6 +8,7 @@ import {
   type SourceParser,
   type SourceRuntimeArtifact,
   type SourceRuntimeInvocation,
+  type SourceRuntimeInvocationListOptions,
 } from '@/api/source'
 
 type ToastFn = (message: string, type?: any) => void
@@ -19,13 +20,14 @@ export function useSourceRuntimeAudit(showToast: ToastFn) {
   const parserAction = shallowRef('')
   const runtimeAction = shallowRef('')
   const runtimeAuditLoading = shallowRef(false)
+  const runtimeAuditFilters = ref<SourceRuntimeInvocationListOptions>({ limit: 100 })
 
   async function refreshRuntimeData() {
     runtimeAuditLoading.value = true
     try {
       const [nextParsers, nextInvocations, nextArtifacts] = await Promise.all([
         listSourceParsers(),
-        listSourceRuntimeInvocations(100),
+        listSourceRuntimeInvocations(runtimeAuditFilters.value),
         listSourceRuntimeArtifacts(),
       ])
       parsers.value = nextParsers
@@ -36,6 +38,20 @@ export function useSourceRuntimeAudit(showToast: ToastFn) {
     } finally {
       runtimeAuditLoading.value = false
     }
+  }
+
+  async function updateRuntimeAuditFilters(filters: SourceRuntimeInvocationListOptions) {
+    runtimeAuditFilters.value = {
+      limit: filters.limit || 100,
+      provider_id: filters.provider_id || undefined,
+      method: filters.method || undefined,
+      status: filters.status || undefined,
+      error_type: filters.error_type || undefined,
+      runtime_kind: filters.runtime_kind || undefined,
+      start_time: filters.start_time || undefined,
+      end_time: filters.end_time || undefined,
+    }
+    await refreshRuntimeData()
   }
 
   async function toggleParser(id: number, enabled: boolean) {
@@ -68,10 +84,12 @@ export function useSourceRuntimeAudit(showToast: ToastFn) {
     parsers,
     runtimeInvocations,
     runtimeArtifacts,
+    runtimeAuditFilters,
     parserAction,
     runtimeAction,
     runtimeAuditLoading,
     refreshRuntimeData,
+    updateRuntimeAuditFilters,
     toggleParser,
     trustRuntimeArtifact,
   }

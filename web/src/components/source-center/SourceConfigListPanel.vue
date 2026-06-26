@@ -36,7 +36,7 @@ const impactMetrics = computed(() => {
     { label: 'play_sources', value: impact.PlaySourceCount },
     { label: 'Artifacts', value: impact.RuntimeArtifactCount },
     { label: '审计保留', value: impact.RuntimeInvocationCount },
-    { label: '受影响在线库', value: impact.AffectedLibraryViewCount },
+    { label: '受影响在线虚拟库', value: impact.AffectedLibraryViewCount },
   ]
 })
 
@@ -95,7 +95,7 @@ function formatTime(value?: string) {
     <div class="panel-head">
       <div>
         <h2 class="panel-title">配置包</h2>
-        <p class="panel-subtitle">{{ enabledCount }}/{{ configs.length }} 个启用；删除前会先展示 Provider、Parser、在线库与审计影响。</p>
+        <p class="panel-subtitle">{{ enabledCount }}/{{ configs.length }} 个启用；删除前会先展示站点、Parser、在线虚拟库与审计影响。</p>
       </div>
       <NButton quaternary size="small" @click="emit('refresh')">刷新</NButton>
     </div>

@@ -24,11 +24,11 @@ const source = useSourceCenter(showToast)
 
 const tabs: Array<{ key: SourceCenterTab; label: string; helper: string }> = [
   { key: 'overview', label: '总览', helper: '状态摘要' },
-  { key: 'configs', label: '配置', helper: '导入包' },
-  { key: 'providers', label: 'Provider', helper: '站点管理' },
-  { key: 'views', label: '在线库', helper: 'Emby 视图' },
+  { key: 'configs', label: '配置包', helper: '导入与启停' },
+  { key: 'providers', label: '站点', helper: 'Provider 运行单元' },
+  { key: 'views', label: '在线虚拟库', helper: 'Emby 视图' },
   { key: 'parsers', label: '解析器', helper: '全局策略' },
-  { key: 'audit', label: '审计', helper: '调用与 artifact' },
+  { key: 'audit', label: '运行审计', helper: '调用与 artifact' },
 ]
 
 const activeTab = computed<SourceCenterTab>(() => {
@@ -70,6 +70,7 @@ const {
   configAction,
   parserAction,
   runtimeAction,
+  runtimeAuditFilters,
   runtimeAuditLoading,
   federatedKeyword,
   federatedLimit,
@@ -144,12 +145,12 @@ watch(federatedKeyword, (value) => {
 
 <template>
   <PageShell
-    title="来源中心"
-    description="导入 TVBox 配置，管理在线 Provider，并创建可暴露给 Emby 的在线虚拟库。"
-    :icon="AppIcons.gateway"
+    title="在线媒体"
+    description="导入 TVBox/CMS 配置，管理站点运行状态，并构建可暴露给 Emby 的在线虚拟库。"
+    :icon="AppIcons.layers"
   >
     <div class="source-workbench">
-      <nav class="source-nav" aria-label="来源中心子导航">
+      <nav class="source-nav" aria-label="在线媒体子导航">
         <NButton
           v-for="tab in tabs"
           :key="tab.key"
@@ -164,7 +165,7 @@ watch(federatedKeyword, (value) => {
       </nav>
 
       <NSpin :show="loading && activeTab !== 'audit'">
-        <main class="source-main" :aria-label="`来源中心${tabTitle}`">
+        <main class="source-main" :aria-label="`在线媒体${tabTitle}`">
           <SourceCenterOverview
             v-if="activeTab === 'overview'"
             :configs="configs"
@@ -306,9 +307,12 @@ watch(federatedKeyword, (value) => {
             <SourceRuntimeAuditPanel
               :invocations="runtimeInvocations"
               :artifacts="runtimeArtifacts"
+              :providers="providers"
+              :filters="runtimeAuditFilters"
               :loading="runtimeAuditLoading"
               :action="runtimeAction"
               @refresh="source.refreshRuntimeData"
+              @update-filters="source.updateRuntimeAuditFilters"
               @trust="source.trustRuntimeArtifact"
             />
           </div>

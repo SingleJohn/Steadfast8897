@@ -103,7 +103,7 @@ export function useSourceViews(showToast: ToastFn) {
     }
     if (viewDraft.id) await updateSourceView(viewDraft.id, payload)
     else await createSourceView(payload)
-    showToast('在线库已保存', 'success')
+      showToast('在线虚拟库已保存', 'success')
     editView()
     await refreshViews()
   }
@@ -118,7 +118,7 @@ export function useSourceViews(showToast: ToastFn) {
     try {
       viewPreview.value = await previewSourceView(payload)
     } catch (e: any) {
-      showToast(e?.message || '在线库预览失败', 'error')
+      showToast(e?.message || '在线虚拟库预览失败', 'error')
     } finally {
       previewLoading.value = false
     }
@@ -126,7 +126,7 @@ export function useSourceViews(showToast: ToastFn) {
 
   async function removeView(id: number) {
     await deleteSourceView(id)
-    showToast('在线库已删除', 'success')
+      showToast('在线虚拟库已删除', 'success')
     await refreshViews()
   }
 

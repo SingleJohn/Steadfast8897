@@ -119,12 +119,21 @@ const tablePagination = {
 
 const columns: DataTableColumns<SourceProvider> = [
   { type: 'selection', width: 42 },
-  { title: '名称', key: 'Name', minWidth: 150 },
-  { title: 'Key', key: 'SourceKey', width: 120 },
+  {
+    title: '站点',
+    key: 'Name',
+    minWidth: 220,
+    render(row) {
+      return h('div', { class: 'provider-name-cell' }, [
+        h('strong', row.Name),
+        h('span', row.SourceKey),
+      ])
+    },
+  },
   {
     title: '运行态',
     key: 'RuntimeKind',
-    width: 150,
+    width: 120,
     render(row) {
       return runtimeLabel(row.RuntimeKind)
     },
@@ -132,7 +141,7 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '状态',
     key: 'HealthStatus',
-    width: 190,
+    width: 170,
     render(row) {
       return h(NSpace, { size: 4, vertical: true }, {
         default: () => [
@@ -145,7 +154,7 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '能力',
     key: 'Capabilities',
-    minWidth: 220,
+    minWidth: 170,
     render(row) {
       return hCapabilityTags(row)
     },
@@ -153,7 +162,7 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '最近错误',
     key: 'LastError',
-    minWidth: 160,
+    minWidth: 180,
     ellipsis: { tooltip: true },
     render(row) {
       if (!row.LastError) return '-'
@@ -178,14 +187,14 @@ const columns: DataTableColumns<SourceProvider> = [
         onPositiveClick: () => emit('toggle', row.ID, !row.Enabled),
       }, {
         trigger: () => hButton(row.Enabled ? '停用' : '启用'),
-        default: () => `${row.Enabled ? '停用' : '启用'} Provider “${row.Name}”？在线库命中范围会随之变化。`,
+        default: () => `${row.Enabled ? '停用' : '启用'}站点“${row.Name}”？在线虚拟库命中范围会随之变化。`,
       })
     },
   },
   {
     title: '操作',
     key: 'actions',
-    width: 230,
+    width: 240,
     render(row) {
       return hActions(row)
     },
@@ -235,7 +244,7 @@ function hButton(label: string) {
 }
 
 function hActions(row: SourceProvider) {
-  return h(NSpace, { size: 4 }, {
+  return h(NSpace, { size: 4, wrap: true }, {
     default: () => [
       h(NButton, { size: 'small', loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }, { default: () => '探活' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }, { default: () => '诊断' }),
@@ -404,14 +413,14 @@ function emitFailedHealthDisable() {
   <section class="source-panel">
     <div class="panel-head">
       <div>
-        <h2 class="panel-title">Provider 管理</h2>
-        <p class="panel-subtitle">启停、健康检查、分类查看与搜索测试。</p>
+        <h2 class="panel-title">站点管理</h2>
+        <p class="panel-subtitle">站点是 TVBox/CMS 配置拆出的 Provider 运行单元，可单独启停、探活和诊断。</p>
       </div>
     </div>
 
     <div v-if="providers.length > 0" class="bulk-bar" aria-live="polite">
       <div>
-        <strong>已选择 {{ selectedIds.length }} 个 Provider</strong>
+        <strong>已选择 {{ selectedIds.length }} 个站点</strong>
         <p class="panel-subtitle">
           其中 {{ selectedEnabledCount }} 个启用，{{ selectedRuntimeCount }} 个依赖 JS/CSP 运行时；当前筛选命中
           {{ filteredProviders.length }} 个，已选 {{ filteredSelectedCount }} 个。
@@ -430,7 +439,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-enable'">批量启用</NButton>
           </template>
-          将启用 {{ selectedIds.length }} 个 Provider；相关在线库可能开始收录这些站点的数据。
+          将启用 {{ selectedIds.length }} 个站点；相关在线虚拟库可能开始收录这些站点的数据。
         </NPopconfirm>
         <NPopconfirm
           positive-text="批量停用"
@@ -441,7 +450,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" type="error" ghost :disabled="selectedIds.length === 0" :loading="action === 'batch-disable'">批量停用</NButton>
           </template>
-          将停用 {{ selectedIds.length }} 个 Provider；依赖这些 Provider 的在线库命中会减少。
+          将停用 {{ selectedIds.length }} 个站点；依赖这些站点的在线虚拟库命中会减少。
         </NPopconfirm>
         <NPopconfirm
           positive-text="开始探活"
@@ -452,7 +461,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-health'">批量探活</NButton>
           </template>
-          将并发探活 {{ selectedIds.length }} 个 Provider，单站失败不会中断整批。
+          将并发探活 {{ selectedIds.length }} 个站点，单站失败不会中断整批。
         </NPopconfirm>
         <NPopconfirm
           positive-text="删除"
@@ -463,7 +472,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" type="error" :disabled="selectedIds.length === 0" :loading="action === 'batch-delete'">删除所选</NButton>
           </template>
-          将删除 {{ selectedIds.length }} 个 Provider，并清理在线库 Provider 引用；在线缓存条目会随 Provider 级联删除，运行时审计保留脱敏记录。
+          将删除 {{ selectedIds.length }} 个站点，并清理在线虚拟库引用；在线缓存条目会随站点级联删除，运行时审计保留脱敏记录。
         </NPopconfirm>
       </div>
     </div>
@@ -558,7 +567,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" :disabled="filteredProviders.length === 0" :loading="action === 'batch-enable'">启用筛选结果</NButton>
           </template>
-          将启用当前筛选命中的 {{ filteredProviders.length }} 个 Provider，其中 {{ filteredChangeCounts.disabled }} 个会从停用变为启用。
+        将启用当前筛选命中的 {{ filteredProviders.length }} 个站点，其中 {{ filteredChangeCounts.disabled }} 个会从停用变为启用。
         </NPopconfirm>
         <NPopconfirm
           positive-text="停用筛选结果"
@@ -569,7 +578,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" type="error" ghost :disabled="filteredProviders.length === 0" :loading="action === 'batch-disable'">停用筛选结果</NButton>
           </template>
-          将停用当前筛选命中的 {{ filteredProviders.length }} 个 Provider，其中 {{ filteredChangeCounts.enabled }} 个会从启用变为停用。
+        将停用当前筛选命中的 {{ filteredProviders.length }} 个站点，其中 {{ filteredChangeCounts.enabled }} 个会从启用变为停用。
         </NPopconfirm>
         <NPopconfirm
           positive-text="探活筛选结果"
@@ -580,7 +589,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" :disabled="filteredProviders.length === 0" :loading="action === 'batch-health'">探活筛选结果</NButton>
           </template>
-          将并发探活当前筛选命中的 {{ filteredProviders.length }} 个 Provider。
+          将并发探活当前筛选命中的 {{ filteredProviders.length }} 个站点。
         </NPopconfirm>
         <NPopconfirm
           positive-text="删除筛选结果"
@@ -591,7 +600,7 @@ function emitFailedHealthDisable() {
           <template #trigger>
             <NButton size="small" type="error" :disabled="filteredProviders.length === 0" :loading="action === 'batch-delete'">删除筛选结果</NButton>
           </template>
-          将删除当前筛选命中的 {{ filteredProviders.length }} 个 Provider，并清理在线库 Provider 引用；在线缓存条目会随 Provider 级联删除。
+          将删除当前筛选命中的 {{ filteredProviders.length }} 个站点，并清理在线虚拟库引用；在线缓存条目会随站点级联删除。
         </NPopconfirm>
       </div>
     </div>
@@ -607,24 +616,32 @@ function emitFailedHealthDisable() {
       :bordered="false"
       @update:checked-row-keys="emit('update:selectedIds', $event as number[])"
     />
-    <div v-else class="empty-state">暂无 Provider，先在配置页导入来源配置。</div>
+    <div v-else class="empty-state">暂无站点，先在配置包页导入 TVBox 或 CMS 来源配置。</div>
 
-    <div class="test-grid">
-      <label class="field">
-        <span class="field-label">测试 Provider</span>
-        <NSelect
-          :value="activeProviderId"
-          :options="providerOptions"
-          placeholder="选择 Provider"
-          clearable
-          @update:value="emit('update:activeProviderId', $event)"
-        />
-      </label>
-      <label class="field">
-        <span class="field-label">搜索关键词</span>
-        <NInput :value="keyword" placeholder="搜索关键词" clearable @update:value="emit('update:keyword', $event)" />
-      </label>
-      <NButton type="primary" :loading="!!activeProviderId && action === `search:${activeProviderId}`" @click="emit('search')">搜索测试</NButton>
+    <div class="inspect-panel">
+      <div class="inspect-head">
+        <div>
+          <h3 class="diagnosis-title">站点排障</h3>
+          <p class="panel-subtitle">选择单个站点做分类查看、首页画像、FongMi 兼容诊断或搜索测试。</p>
+        </div>
+      </div>
+      <div class="test-grid">
+        <label class="field">
+          <span class="field-label">目标站点</span>
+          <NSelect
+            :value="activeProviderId"
+            :options="providerOptions"
+            placeholder="选择站点"
+            clearable
+            @update:value="emit('update:activeProviderId', $event)"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">搜索关键词</span>
+          <NInput :value="keyword" placeholder="搜索关键词" clearable @update:value="emit('update:keyword', $event)" />
+        </label>
+        <NButton type="primary" :loading="!!activeProviderId && action === `search:${activeProviderId}`" @click="emit('search')">搜索测试</NButton>
+      </div>
     </div>
 
     <div v-if="categories.length > 0" class="chips">
@@ -748,10 +765,9 @@ function emitFailedHealthDisable() {
 }
 .test-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(180px, 1fr) auto;
   align-items: end;
   gap: 10px;
-  margin-top: 14px;
 }
 .field {
   display: grid;
@@ -820,6 +836,41 @@ function emitFailedHealthDisable() {
   border-bottom: 1px solid var(--app-border);
   padding-bottom: 12px;
   margin-bottom: 12px;
+}
+.provider-name-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.provider-name-cell strong,
+.provider-name-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-name-cell span {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.inspect-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  padding: 12px;
+  margin-top: 14px;
+}
+
+.inspect-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 .keyword-field {
   min-width: 220px;
