@@ -656,6 +656,25 @@ source_provider_health_checks
 ```
 
 **实际落点**：
+- CMS 解析归一：
+  - `internal/source/cms_parse.go` 保持结构化 XML/JSON 解析，新增 `cmsResponse` / `cmsCategory` / `cmsVOD` 的保守 JSON 字段别名兼容；标准字段为空时才回填 `classes/types`、`vod/videos`、`filter`、`pg/page_index`、`page_count/recordcount/count` 以及常见 `id/name/title/pic/cover/play_url` 等别名。
+  - XML 继续走 `parseCMSXML`，保留 `class/list/page/pagecount/total` 解析；没有引入 ad hoc string parser。
+- native CMS runtime method：
+  - `internal/source/cms_provider.go` 的 `Categories` 与 `HomeProfile` 统一走 `providerCategories`，按 TVBox `sites[].categories` 白名单过滤 `class[]` 名称；白名单为空时不过滤。
+  - `HomeProfile` 增加 `filters` / `filters_count` 输出，并把 CMS `list` 转为首页 `HomeItems`，`HomeItemSource` 仍为 `homeContent`；`homeVideoContent` 继续标记 unsupported，因为 native CMS 没有独立方法。
+  - 首页 `list` 缺 `poster` 时最多对 6 个条目调用 `Detail` 做短超时补图，失败只降级；补图只回填本次 `HomeProfile` 响应快照，不调用 ingestor，不写 `items`。
+  - `Search`、`Category`、`Detail` 继续复用 `parseCMSPage` / `parseCMSItem` / `splitCMSPlaySources`，保留 `page/pagecount/total` 与详情字段回填。
+- Provider 构造与写库边界：
+  - `internal/source/provider_runtime.go` 的 `nativeCMSProvider` 从 `source_providers.categories` 或 `capabilities.categories + category_source=tvbox_site_whitelist` 读取分类白名单，并传入 `CMSProvider`。
+  - 详情写库仍只发生在既有 `ProviderRuntimeManager.Detail -> SourceIngestor.IngestDetail`，只写 `source_items` 与 `source_play_sources`；本任务未修改 `/SourcePlay`、`ParserResolver`，未引入 JS/CSP sidecar，未改 Emby 主链路。
+- API：
+  - 既有 `GET /SourceProviders/:id/HomeProfile` 可返回 native CMS 的 categories、filters、home_items 与分项状态。
+  - 既有 `POST /SourceProviders/:id/Search`、`POST /SourceProviders/:id/Detail`、`GET /SourceProviders/:id/Categories` 继续使用 native CMS provider，接口路径未新增。
+- 构建结果：
+  - `go build ./...` 通过；首次沙箱内运行因 `D:\services\GoCache\gotmp` 权限失败，提升权限后通过。
+  - 本任务未改 `web/`，未运行 `cd web && npm run build`。
+- Commits：
+  - `fc9df2c0` 补强CMS的FongMi兼容语义。
 
 ---
 
