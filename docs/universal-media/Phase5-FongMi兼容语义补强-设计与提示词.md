@@ -759,3 +759,23 @@ source_provider_health_checks
 2. `internal/source/parser_resolver.go`：只执行 type=1；增加 flag 过滤、`json:` / `parse:` / 占位符 URL 模板处理、请求 header 透传和响应 header 保留。
 3. `web/src/api/source.ts`、`web/src/components/source-center/SourceParserPanel.vue`：展示支持矩阵、parser 支持状态与 unsupported 原因。
 4. 不改 `/SourcePlay` 主流程，只增强现有 `ParserResolver.Resolve` 的内部判定；不新增 tests，不启动服务。
+
+- 后端落点：
+  - `internal/source/tvbox_importer.go` 导入 TVBox parses 时将非 type=1 parser 标记为 `status=unsupported`，写入 `last_error/raw.fyms_unsupported_reason`；type=1 保持 active 候选。
+  - `internal/source/parser_resolver.go` 的 `ParserResolver.Resolve` 只执行 type=1；非 type=1 不再作为可尝试 parser。
+  - `ParserResolver` 增加 `source_parsers.raw.flags/flag` 与 `source_play_sources.flag/line_name` 的匹配过滤，未声明 flags 的 type=1 parser 仍按全局启用顺序尝试。
+  - `parserRequestURL` 支持 `json:` / `parse:` 前缀、`{url}` / `{{url}}` / `{playUrl}` / `{{playUrl}}` 占位符，以及默认 `url=` query 注入；请求 URL、重定向 URL、最终解析结果 URL 均继续走 `ValidateOutboundURL`。
+  - 解析器请求只从播放源 headers 中保守透传 `User-Agent/Referer/Origin/Cookie`；解析器响应的 `header/headers` 继续进入 `PlayResult.Headers`。
+- 前端落点：
+  - `web/src/api/source.ts` 为 `SourceParser` 暴露 `Raw`，用于读取后端记录的 unsupported reason。
+  - `web/src/components/source-center/SourceParserPanel.vue` 展示 type=0/1/2/3/4 支持矩阵、单条 parser 支持状态与 unsupported 原因；不展示 parser URL 或 header value。
+- API / runtime method：
+  - 继续复用既有 `GET /SourceParsers`、`POST /SourceParsers/:id/Enable|Disable`。
+  - 播放链路仍由既有 `/SourcePlay` 在 `parse_mode=resolver` 时调用 `ParserResolver.Resolve`；本任务未改 `/SourcePlay` 主流程、未改 `ParserResolver` 以外的播放编排、未写 `items`。
+- 构建结果：
+  - `go build ./...` 通过；首次沙箱内运行因 `D:\services\GoCache\gotmp` 权限失败，提升权限后通过。
+  - `cd web && npm run build` 通过；仅保留 Vite 对 `artplayer` 依赖 CommonJS `module` 变量的既有 warning。
+- Commits：
+  - `35d844a3` 设计FM6解析器兼容语义。
+  - `f0208077` 落地FM6解析器安全语义。
+  - `dc4a97e5` 展示FM6解析器支持矩阵。
