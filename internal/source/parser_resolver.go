@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,8 @@ const (
 	parserResponseMaxBytes = 2 << 20
 	parserMaxRedirects     = 5
 )
+
+var parserForwardHeaders = []string{"User-Agent", "Referer", "Origin", "Cookie"}
 
 type ParserResolver struct {
 	repo   *repository.SourceRepository
@@ -62,6 +65,9 @@ func (r *ParserResolver) Resolve(ctx context.Context, playSource repository.Sour
 	var lastErr error
 	for i := range parsers {
 		parser := parsers[i]
+		if !parserSupportsPlaySource(parser, playSource) {
+			continue
+		}
 		result, err := r.resolveWithParser(ctx, parser, playSource)
 		if err != nil {
 			msg := err.Error()
@@ -75,17 +81,14 @@ func (r *ParserResolver) Resolve(ctx context.Context, playSource repository.Sour
 		return result, nil
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("启用的播放解析器均不可用")
+		lastErr = fmt.Errorf("没有匹配该线路 flag 的可用 type=1 播放解析器")
 	}
 	return nil, lastErr
 }
 
 func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repository.SourceParser, playSource repository.SourcePlaySource) (*PlayResult, error) {
-	if parser.ParserType == 3 {
-		return nil, fmt.Errorf("TVBox type=3 嗅探解析器暂不支持")
-	}
-	if parser.ParserType != 0 && parser.ParserType != 1 {
-		return nil, fmt.Errorf("不支持的解析器类型: %d", parser.ParserType)
+	if parser.ParserType != 1 {
+		return nil, fmt.Errorf(parserUnsupportedReason(parser.ParserType))
 	}
 	rawURL := strings.TrimSpace(playSource.RawURL)
 	if rawURL == "" {
@@ -94,7 +97,7 @@ func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repositor
 	if err := ValidateOutboundURL(ctx, rawURL); err != nil {
 		return nil, err
 	}
-	requestURL, err := parserRequestURL(parser.URL, rawURL, parser.BaseURL)
+	requestURL, requireJSON, err := parserRequestURL(parser.URL, rawURL, parser.BaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +116,9 @@ func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repositor
 	}
 	req.Header.Set("Accept", "application/json, text/plain;q=0.9, */*;q=0.8")
 	req.Header.Set("User-Agent", "FYMS SourceParser/1.0")
+	for key, value := range parserRequestHeaders(playSource.Headers) {
+		req.Header.Set(key, value)
+	}
 	client := *r.client
 	client.Timeout = timeout
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -133,7 +139,7 @@ func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repositor
 	if err != nil {
 		return nil, fmt.Errorf("读取解析器响应失败: %w", err)
 	}
-	result, err := extractParserResult(body)
+	result, err := extractParserResult(body, requireJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -143,45 +149,185 @@ func (r *ParserResolver) resolveWithParser(ctx context.Context, parser repositor
 	return result, nil
 }
 
-func parserRequestURL(parserURL, rawPlayURL string, baseURL *string) (string, error) {
+func parserRequestURL(parserURL, rawPlayURL string, baseURL *string) (string, bool, error) {
 	template := strings.TrimSpace(parserURL)
 	if template == "" {
-		return "", fmt.Errorf("解析器 URL 为空")
+		return "", false, fmt.Errorf("解析器 URL 为空")
+	}
+	requireJSON := false
+	if rest, ok := strings.CutPrefix(strings.ToLower(template), "json:"); ok {
+		requireJSON = true
+		template = strings.TrimSpace(template[len(template)-len(rest):])
+	} else if rest, ok := strings.CutPrefix(strings.ToLower(template), "parse:"); ok {
+		template = strings.TrimSpace(template[len(template)-len(rest):])
 	}
 	if baseURL != nil && strings.TrimSpace(*baseURL) != "" {
 		if parsed, err := url.Parse(template); err == nil && !parsed.IsAbs() {
 			base, baseErr := url.Parse(strings.TrimSpace(*baseURL))
 			if baseErr != nil {
-				return "", fmt.Errorf("解析 TVBox base URL 失败: %w", baseErr)
+				return "", requireJSON, fmt.Errorf("解析 TVBox base URL 失败: %w", baseErr)
 			}
 			template = base.ResolveReference(parsed).String()
 		}
 	}
+	if replaced := parserTemplateURL(template, rawPlayURL); replaced != template {
+		return replaced, requireJSON, nil
+	}
 	u, err := url.Parse(template)
 	if err != nil {
-		return "", fmt.Errorf("解析器 URL 无效: %w", err)
+		return "", requireJSON, fmt.Errorf("解析器 URL 无效: %w", err)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("解析器 URL 缺少 scheme 或 host")
+		return "", requireJSON, fmt.Errorf("解析器 URL 缺少 scheme 或 host")
 	}
 	if !strings.Contains(template, rawPlayURL) {
 		q := u.Query()
-		if _, ok := q["url"]; ok || strings.Contains(u.RawQuery, "=") || u.RawQuery == "" {
-			q.Set("url", rawPlayURL)
-			u.RawQuery = q.Encode()
-			return u.String(), nil
-		}
-		return template + "=" + url.QueryEscape(rawPlayURL), nil
+		q.Set("url", rawPlayURL)
+		u.RawQuery = q.Encode()
+		return u.String(), requireJSON, nil
 	}
-	return template, nil
+	return template, requireJSON, nil
 }
 
-func extractParserResult(body []byte) (*PlayResult, error) {
+func parserTemplateURL(template, rawPlayURL string) string {
+	escaped := url.QueryEscape(rawPlayURL)
+	replacer := strings.NewReplacer(
+		"{url}", escaped,
+		"{{url}}", escaped,
+		"{playUrl}", escaped,
+		"{{playUrl}}", escaped,
+	)
+	return replacer.Replace(template)
+}
+
+func parserSupportsPlaySource(parser repository.SourceParser, playSource repository.SourcePlaySource) bool {
+	if parser.ParserType != 1 {
+		return false
+	}
+	flags := parserFlags(parser.Raw)
+	if len(flags) == 0 {
+		return true
+	}
+	flag := playSourceFlag(playSource)
+	return flag != "" && slices.Contains(flags, flag)
+}
+
+func parserFlags(raw []byte) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	value := obj["flags"]
+	if value == nil {
+		value = obj["flag"]
+	}
+	out := []string{}
+	appendFlag := func(raw string) {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '，' || r == '/' || r == '|' || r == ';'
+		}) {
+			if key := parserFlagKey(part); key != "" && !slices.Contains(out, key) {
+				out = append(out, key)
+			}
+		}
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch v := value.(type) {
+		case string:
+			appendFlag(v)
+		case []any:
+			for _, item := range v {
+				walk(item)
+			}
+		case map[string]any:
+			for _, key := range []string{"flag", "name", "value"} {
+				if s, ok := v[key].(string); ok {
+					appendFlag(s)
+				}
+			}
+		}
+	}
+	walk(value)
+	return out
+}
+
+func playSourceFlag(playSource repository.SourcePlaySource) string {
+	if playSource.Flag != nil && strings.TrimSpace(*playSource.Flag) != "" {
+		return parserFlagKey(*playSource.Flag)
+	}
+	return parserFlagKey(playSource.LineName)
+}
+
+func parserFlagKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToLower(value)
+}
+
+func parserRequestHeaders(raw []byte) map[string]string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range values {
+		canonical := canonicalParserHeader(key)
+		if canonical == "" {
+			continue
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+			out[canonical] = strings.TrimSpace(s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func canonicalParserHeader(key string) string {
+	key = strings.TrimSpace(key)
+	for _, allowed := range parserForwardHeaders {
+		if strings.EqualFold(key, allowed) {
+			return allowed
+		}
+	}
+	return ""
+}
+
+func parserUnsupportedReason(parserType int32) string {
+	switch parserType {
+	case 0:
+		return "TVBox type=0 WebView/嗅探解析器依赖客户端宿主，FYMS 服务端不支持"
+	case 2:
+		return "TVBox type=2 按直连/免解析口径处理，不进入全局 ParserResolver"
+	case 3:
+		return "TVBox type=3 mix/sniffer 解析器依赖 WebView 嗅探，FYMS 服务端不支持"
+	case 4:
+		return "TVBox type=4 super parse 依赖壳私有能力，FYMS 服务端不支持"
+	default:
+		return fmt.Sprintf("不支持的解析器类型: %d", parserType)
+	}
+}
+
+func extractParserResult(body []byte, requireJSON bool) (*PlayResult, error) {
 	body = bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
 	if len(body) == 0 {
 		return nil, fmt.Errorf("解析器响应为空")
 	}
 	if body[0] != '{' && body[0] != '[' {
+		if requireJSON {
+			return nil, fmt.Errorf("解析器响应不是 JSON")
+		}
 		text := strings.Trim(strings.TrimSpace(string(body)), "\"'")
 		if strings.HasPrefix(strings.ToLower(text), "http://") || strings.HasPrefix(strings.ToLower(text), "https://") {
 			return &PlayResult{URL: text, Headers: map[string]string{}}, nil

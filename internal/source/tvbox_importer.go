@@ -216,12 +216,33 @@ func ParserDefinitionsFromTVBox(cfg TVBoxConfig, baseURL *string) []ParserDefini
 			Status:      "active",
 			Raw:         parser.Raw,
 		}
-		if parserType == 3 {
-			def.LastError = ptrString("TVBox type=3 嗅探解析器暂未接入，已导入但默认禁用")
+		if parserType != 1 {
+			def.Status = "unsupported"
+			def.LastError = ptrString(tvboxParserUnsupportedReason(parserType))
+			if def.Raw == nil {
+				def.Raw = map[string]any{}
+			}
+			def.Raw["fyms_support"] = "unsupported"
+			def.Raw["fyms_unsupported_reason"] = tvboxParserUnsupportedReason(parserType)
 		}
 		out = append(out, def)
 	}
 	return out
+}
+
+func tvboxParserUnsupportedReason(parserType int32) string {
+	switch parserType {
+	case 0:
+		return "TVBox type=0 WebView/嗅探解析器依赖客户端宿主，FYMS 服务端不支持"
+	case 2:
+		return "TVBox type=2 按直连/免解析口径处理，不进入全局 ParserResolver"
+	case 3:
+		return "TVBox type=3 mix/sniffer 解析器依赖 WebView 嗅探，FYMS 服务端不支持"
+	case 4:
+		return "TVBox type=4 super parse 依赖壳私有能力，FYMS 服务端不支持"
+	default:
+		return fmt.Sprintf("TVBox type=%d 解析器暂不支持", parserType)
+	}
 }
 
 func (d ProviderDefinition) toUpsert(configID int64) repository.SourceProviderUpsert {
