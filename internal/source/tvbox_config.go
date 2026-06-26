@@ -31,12 +31,19 @@ type TVBoxSite struct {
 	Type        *int32         `json:"-"`
 	API         string         `json:"api"`
 	Ext         map[string]any `json:"-"`
+	Hide        *int32         `json:"hide"`
+	Indexs      []string       `json:"indexs"`
 	Categories  []string       `json:"categories"`
 	Searchable  *int32         `json:"searchable"`
 	QuickSearch *int32         `json:"quickSearch"`
 	Filterable  *int32         `json:"filterable"`
+	Changeable  *int32         `json:"changeable"`
 	PlayerType  *int32         `json:"playerType"`
 	Timeout     *int32         `json:"timeout"`
+	Header      map[string]any `json:"-"`
+	Style       map[string]any `json:"-"`
+	PlayURL     string         `json:"playUrl"`
+	Click       string         `json:"click"`
 	Raw         map[string]any `json:"-"`
 }
 
@@ -86,7 +93,10 @@ func (s *TVBoxSite) UnmarshalJSON(data []byte) error {
 		Key        string   `json:"key"`
 		Name       string   `json:"name"`
 		API        string   `json:"api"`
+		Indexs     []string `json:"indexs"`
 		Categories []string `json:"categories"`
+		PlayURL    string   `json:"playUrl"`
+		Click      string   `json:"click"`
 	}
 	var out alias
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -96,9 +106,15 @@ func (s *TVBoxSite) UnmarshalJSON(data []byte) error {
 		Key:        out.Key,
 		Name:       out.Name,
 		API:        out.API,
+		Indexs:     out.Indexs,
 		Categories: out.Categories,
+		PlayURL:    out.PlayURL,
+		Click:      out.Click,
 	}
 	s.Raw = raw
+	if value, ok := raw["hide"]; ok {
+		s.Hide = normalizeTVBoxInt32(value)
+	}
 	if value, ok := raw["type"]; ok {
 		s.Type = normalizeTVBoxInt32(value)
 	}
@@ -111,11 +127,20 @@ func (s *TVBoxSite) UnmarshalJSON(data []byte) error {
 	if value, ok := raw["filterable"]; ok {
 		s.Filterable = normalizeTVBoxInt32(value)
 	}
+	if value, ok := raw["changeable"]; ok {
+		s.Changeable = normalizeTVBoxInt32(value)
+	}
 	if value, ok := raw["playerType"]; ok {
 		s.PlayerType = normalizeTVBoxInt32(value)
 	}
 	if value, ok := raw["timeout"]; ok {
 		s.Timeout = normalizeTVBoxInt32(value)
+	}
+	if value, ok := raw["header"]; ok {
+		s.Header = normalizeTVBoxObject(value)
+	}
+	if value, ok := raw["style"]; ok {
+		s.Style = normalizeTVBoxObject(value)
 	}
 	if ext, ok := raw["ext"]; ok {
 		s.Ext = normalizeTVBoxExt(ext)
@@ -214,6 +239,16 @@ func normalizeTVBoxExt(value any) map[string]any {
 	default:
 		return map[string]any{"_raw": v}
 	}
+}
+
+func normalizeTVBoxObject(value any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	if obj, ok := value.(map[string]any); ok {
+		return obj
+	}
+	return map[string]any{"_raw": value}
 }
 
 func normalizeTVBoxInt32(value any) *int32 {

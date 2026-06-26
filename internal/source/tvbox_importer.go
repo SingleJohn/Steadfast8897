@@ -2,7 +2,9 @@ package source
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"fyms/internal/repository"
@@ -145,11 +147,11 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			API:          strings.TrimSpace(site.API),
 			Ext:          site.Ext,
 			Categories:   site.Categories,
-			Headers:      map[string]any{},
+			Headers:      tvboxHeaders(site.Header),
 			Capabilities: tvboxCapabilities(site),
 			TimeoutMS:    tvboxTimeoutMS(site.Timeout),
 			Enabled:      false,
-			Visible:      false,
+			Visible:      tvboxVisible(site),
 			Searchable:   false,
 			HealthStatus: "runtime_required",
 			LastError:    ptrString("该 TVBox site 需要后续 runtime，Phase 1 暂不可用"),
@@ -160,7 +162,7 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			def.ProviderKind = "cms_vod"
 			def.RuntimeKind = "native_cms"
 			def.Enabled = true
-			def.Visible = true
+			def.Visible = tvboxVisible(site)
 			def.Searchable = tvboxBool(site.Searchable, true)
 			def.HealthStatus = "unknown"
 			def.LastError = nil
@@ -169,7 +171,7 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			def.ProviderKind = "drpy_js"
 			def.RuntimeKind = JSRuntimeKindNodeDRPY
 			def.Enabled = true
-			def.Visible = true
+			def.Visible = tvboxVisible(site)
 			def.Searchable = tvboxBool(site.Searchable, true)
 			def.HealthStatus = "unknown"
 			def.LastError = nil
@@ -178,7 +180,7 @@ func ProviderDefinitionsFromTVBox(cfg TVBoxConfig) []ProviderDefinition {
 			def.ProviderKind = "tvbox_site"
 			def.RuntimeKind = CSPRuntimeKindJVM
 			def.Enabled = true
-			def.Visible = true
+			def.Visible = tvboxVisible(site)
 			def.Searchable = tvboxBool(site.Searchable, true)
 			def.HealthStatus = "unknown"
 			def.LastError = nil
@@ -293,13 +295,56 @@ func isCSPDexSite(site TVBoxSite) bool {
 }
 
 func tvboxCapabilities(site TVBoxSite) map[string]any {
+	headers := tvboxHeaders(site.Header)
 	return map[string]any{
-		"search":       tvboxBool(site.Searchable, true),
-		"quick_search": tvboxBool(site.QuickSearch, false),
-		"filter":       tvboxBool(site.Filterable, false),
-		"player_type":  int32OrNil(site.PlayerType),
-		"categories":   site.Categories,
+		"search":           tvboxBool(site.Searchable, true),
+		"quick_search":     tvboxBool(site.QuickSearch, true),
+		"filter":           tvboxBool(site.Filterable, false),
+		"hide":             int32OrNil(site.Hide),
+		"indexs":           site.Indexs,
+		"changeable":       tvboxBool(site.Changeable, true),
+		"player_type":      int32OrNil(site.PlayerType),
+		"categories":       site.Categories,
+		"category_source":  "tvbox_site_whitelist",
+		"header_present":   len(headers) > 0,
+		"header_keys":      tvboxHeaderKeys(headers),
+		"style":            site.Style,
+		"play_url_present": strings.TrimSpace(site.PlayURL) != "",
+		"click_present":    strings.TrimSpace(site.Click) != "",
+		"timeout_ms":       tvboxTimeoutMS(site.Timeout),
 	}
+}
+
+func tvboxVisible(site TVBoxSite) bool {
+	return tvboxBool(site.Hide, false) == false
+}
+
+func tvboxHeaders(raw map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range raw {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				out[key] = strings.TrimSpace(v)
+			}
+		case float64, bool, json.Number:
+			out[key] = fmt.Sprint(v)
+		}
+	}
+	return out
+}
+
+func tvboxHeaderKeys(headers map[string]any) []string {
+	out := make([]string, 0, len(headers))
+	for key := range headers {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func tvboxBool(value *int32, fallback bool) bool {
