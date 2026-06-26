@@ -90,28 +90,30 @@ func (s *TVBoxSite) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	type alias struct {
-		Key        string   `json:"key"`
-		Name       string   `json:"name"`
-		API        string   `json:"api"`
-		Indexs     []string `json:"indexs"`
-		Categories []string `json:"categories"`
-		PlayURL    string   `json:"playUrl"`
-		Click      string   `json:"click"`
+		Key     string `json:"key"`
+		Name    string `json:"name"`
+		API     string `json:"api"`
+		PlayURL string `json:"playUrl"`
+		Click   string `json:"click"`
 	}
 	var out alias
 	if err := json.Unmarshal(data, &out); err != nil {
 		return err
 	}
 	*s = TVBoxSite{
-		Key:        out.Key,
-		Name:       out.Name,
-		API:        out.API,
-		Indexs:     out.Indexs,
-		Categories: out.Categories,
-		PlayURL:    out.PlayURL,
-		Click:      out.Click,
+		Key:     out.Key,
+		Name:    out.Name,
+		API:     out.API,
+		PlayURL: out.PlayURL,
+		Click:   out.Click,
 	}
 	s.Raw = raw
+	if value, ok := raw["indexs"]; ok {
+		s.Indexs = normalizeTVBoxStringSlice(value)
+	}
+	if value, ok := raw["categories"]; ok {
+		s.Categories = normalizeTVBoxStringSlice(value)
+	}
 	if value, ok := raw["hide"]; ok {
 		s.Hide = normalizeTVBoxInt32(value)
 	}
@@ -249,6 +251,67 @@ func normalizeTVBoxObject(value any) map[string]any {
 		return obj
 	}
 	return map[string]any{"_raw": value}
+}
+
+func normalizeTVBoxStringSlice(value any) []string {
+	switch v := value.(type) {
+	case nil:
+		return []string{}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text, ok := normalizeTVBoxStringSliceItem(item); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := strings.TrimSpace(item); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return []string{}
+		}
+		fields := strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == '，' || r == '#'
+		})
+		out := make([]string, 0, len(fields))
+		for _, field := range fields {
+			if text := strings.TrimSpace(field); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		if text, ok := normalizeTVBoxStringSliceItem(v); ok {
+			return []string{text}
+		}
+		return []string{}
+	}
+}
+
+func normalizeTVBoxStringSliceItem(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		return v, v != ""
+	case float64:
+		if v == 0 {
+			return "", false
+		}
+		return strings.TrimSpace(fmt.Sprint(v)), true
+	case json.Number:
+		text := strings.TrimSpace(v.String())
+		return text, text != "" && text != "0"
+	default:
+		return "", false
+	}
 }
 
 func normalizeTVBoxInt32(value any) *int32 {
