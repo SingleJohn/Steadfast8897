@@ -18,11 +18,12 @@ type CSPProvider struct {
 	spider        string
 	configBaseURL string
 	ext           string
+	headers       map[string]string
 	runtime       *CSPRuntimeManager
 	timeout       time.Duration
 }
 
-func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL string, extRaw json.RawMessage, runtime *CSPRuntimeManager, timeout time.Duration) (*CSPProvider, error) {
+func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL string, extRaw json.RawMessage, headers map[string]string, runtime *CSPRuntimeManager, timeout time.Duration) (*CSPProvider, error) {
 	siteKey = strings.TrimSpace(siteKey)
 	if siteKey == "" {
 		return nil, fmt.Errorf("CSP Provider 缺少 site key")
@@ -49,6 +50,7 @@ func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL 
 		spider:        spider,
 		configBaseURL: strings.TrimSpace(configBaseURL),
 		ext:           cspProviderExt(extRaw),
+		headers:       compactHeaderMap(headers),
 		runtime:       runtime,
 		timeout:       timeout,
 	}, nil
@@ -261,6 +263,7 @@ func (p *CSPProvider) runData(ctx context.Context, method string, args map[strin
 		API:           p.api,
 		Ext:           p.ext,
 		Method:        method,
+		Headers:       p.headers,
 		Args:          args,
 		ProviderID:    &p.providerID,
 		ProviderKey:   p.siteKey,

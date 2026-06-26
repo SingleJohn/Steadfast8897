@@ -38,6 +38,7 @@ type sourceProviderDTO struct {
 	UpdatedAt       time.Time
 	Categories      any
 	Health          any
+	Capabilities    any
 	CategoriesCount int
 }
 
@@ -85,11 +86,17 @@ func listSourceProviders(c *gin.Context, state *AppState) {
 	if !ok {
 		return
 	}
+	visible := (*bool)(nil)
+	if !queryBool(c, "include_hidden", false) {
+		value := true
+		visible = &value
+	}
 	rows, err := state.Repo.Source.ListProviders(c.Request.Context(), repository.SourceProviderListOptions{
 		Limit:          int64(queryInt(c, "limit", 100)),
 		Offset:         int64(queryInt(c, "offset", 0)),
 		ConfigID:       configID,
 		Enabled:        enabled,
+		Visible:        visible,
 		HealthStatus:   strings.TrimSpace(c.Query("health_status")),
 		RuntimeStatus:  strings.TrimSpace(c.Query("runtime_status")),
 		HomeStatus:     strings.TrimSpace(c.Query("home_status")),
@@ -376,6 +383,7 @@ func sourceProviderDTOFromRepository(row repository.SourceProvider) sourceProvid
 		categories = row.Categories
 	}
 	health := providerHealthFromCapabilities(row.Capabilities)
+	capabilities := providerSafeCapabilities(row.Capabilities)
 	return sourceProviderDTO{
 		ID:              row.ID,
 		ConfigID:        row.ConfigID,
@@ -397,6 +405,7 @@ func sourceProviderDTOFromRepository(row repository.SourceProvider) sourceProvid
 		UpdatedAt:       row.UpdatedAt,
 		Categories:      categories,
 		Health:          health,
+		Capabilities:    capabilities,
 		CategoriesCount: categoriesCount(row.Categories),
 	}
 }
@@ -465,6 +474,42 @@ func providerHealthFromCapabilities(raw []byte) map[string]any {
 		return nil
 	}
 	return health
+}
+
+func providerSafeCapabilities(raw []byte) map[string]any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var capabilities map[string]any
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{
+		"search",
+		"quick_search",
+		"filter",
+		"hide",
+		"indexs",
+		"changeable",
+		"player_type",
+		"categories",
+		"category_source",
+		"header_present",
+		"header_keys",
+		"style",
+		"play_url_present",
+		"click_present",
+		"timeout_ms",
+	} {
+		if value, ok := capabilities[key]; ok {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func stringFromMap(values map[string]any, key string) string {

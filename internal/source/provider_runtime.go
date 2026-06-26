@@ -479,16 +479,7 @@ func (m *ProviderRuntimeManager) nativeCMSProvider(row *repository.SourceProvide
 	searchAC := ""
 	detailAC := ""
 	categoryAC := ""
-	if len(row.Headers) > 0 {
-		var raw map[string]any
-		if err := json.Unmarshal(row.Headers, &raw); err == nil {
-			for key, value := range raw {
-				if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
-					headers[key] = s
-				}
-			}
-		}
-	}
+	headers = headerMapFromJSON(row.Headers)
 	if len(row.Ext) > 0 {
 		var raw map[string]any
 		if err := json.Unmarshal(row.Ext, &raw); err == nil {
@@ -534,6 +525,7 @@ func (m *ProviderRuntimeManager) jsProvider(ctx context.Context, row *repository
 		engine,
 		rule,
 		baseURL,
+		headerMapFromJSON(row.Headers),
 		m.js,
 		time.Duration(row.TimeoutMS)*time.Millisecond,
 	)
@@ -582,9 +574,42 @@ func (m *ProviderRuntimeManager) cspProvider(ctx context.Context, row *repositor
 		spider,
 		baseURL,
 		row.Ext,
+		headerMapFromJSON(row.Headers),
 		m.csp,
 		time.Duration(row.TimeoutMS)*time.Millisecond,
 	)
+}
+
+func headerMapFromJSON(raw json.RawMessage) map[string]string {
+	if len(raw) == 0 {
+		return map[string]string{}
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return map[string]string{}
+	}
+	headers := map[string]string{}
+	for key, value := range values {
+		switch v := value.(type) {
+		case string:
+			headers[key] = v
+		case float64, bool, json.Number:
+			headers[key] = fmt.Sprint(v)
+		}
+	}
+	return compactHeaderMap(headers)
+}
+
+func compactHeaderMap(headers map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range headers {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func (m *ProviderRuntimeManager) cspSpiderAndBaseURL(ctx context.Context, row *repository.SourceProvider) (string, string) {

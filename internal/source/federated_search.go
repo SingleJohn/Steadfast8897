@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -120,6 +121,9 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		if !provider.Enabled || !provider.Searchable {
 			continue
 		}
+		if !providerQuickSearchEnabled(provider) {
+			continue
+		}
 		searchable = append(searchable, provider)
 	}
 
@@ -211,6 +215,30 @@ collected:
 		"provider_failed", response.Provider.Failed,
 		"hit_count", response.Total)
 	return response, nil
+}
+
+func providerQuickSearchEnabled(provider repository.SourceProvider) bool {
+	if len(provider.Capabilities) == 0 || string(provider.Capabilities) == "null" {
+		return true
+	}
+	var capabilities map[string]any
+	if err := json.Unmarshal(provider.Capabilities, &capabilities); err != nil {
+		return true
+	}
+	value, ok := capabilities["quick_search"]
+	if !ok {
+		return true
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.TrimSpace(strings.ToLower(v)) != "false" && strings.TrimSpace(v) != "0"
+	case float64:
+		return v != 0
+	default:
+		return true
+	}
 }
 
 func isSearchableRuntimeProvider(provider repository.SourceProvider) bool {

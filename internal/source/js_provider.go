@@ -16,11 +16,12 @@ type JSProvider struct {
 	engine        string
 	rule          string
 	configBaseURL string
+	headers       map[string]string
 	runtime       *JSRuntimeManager
 	timeout       time.Duration
 }
 
-func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configBaseURL string, runtime *JSRuntimeManager, timeout time.Duration) (*JSProvider, error) {
+func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configBaseURL string, headers map[string]string, runtime *JSRuntimeManager, timeout time.Duration) (*JSProvider, error) {
 	siteKey := strings.TrimSpace(rowProviderKey)
 	if siteKey == "" {
 		return nil, fmt.Errorf("JS Provider 缺少 site key")
@@ -46,6 +47,7 @@ func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configB
 		engine:        engine,
 		rule:          rule,
 		configBaseURL: strings.TrimSpace(configBaseURL),
+		headers:       compactHeaderMap(headers),
 		runtime:       runtime,
 		timeout:       timeout,
 	}, nil
@@ -196,6 +198,7 @@ func (p *JSProvider) runData(ctx context.Context, method string, args map[string
 		Engine:        p.engine,
 		Rule:          p.rule,
 		Method:        method,
+		Headers:       p.headers,
 		Args:          args,
 		ProviderID:    &p.providerID,
 		ProviderKey:   p.siteKey,

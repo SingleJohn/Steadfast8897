@@ -458,6 +458,7 @@ type SourceProviderListOptions struct {
 	Offset         int64
 	ConfigID       *int64
 	Enabled        *bool
+	Visible        *bool
 	HealthStatus   string
 	RuntimeStatus  string
 	HomeStatus     string

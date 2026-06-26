@@ -84,6 +84,7 @@ async function runRuntime(input) {
 
 function createContext(input, logs) {
   const baseUrl = input.baseUrl || 'https://tvboxconfig.singlelovely.cn/gao/';
+  const siteHeaders = normalizeHeaders(input.headers || {});
   function logLine(...args) {
     const line = args.map(v => typeof v === 'string' ? v : JSON.stringify(v)).join(' ');
     logs.push(line);
@@ -91,7 +92,7 @@ function createContext(input, logs) {
   }
   async function request(raw, options = {}) {
     const url = makeURL(baseUrl, raw);
-    const headers = Object.assign({ 'User-Agent': MOBILE_UA }, options.headers || {});
+    const headers = Object.assign({ 'User-Agent': MOBILE_UA }, siteHeaders, options.headers || {});
     logLine(`[bridgeHTTP:start] ${options.method || 'GET'} ${safeURLForLog(url)}`);
     const resp = await bridgeHTTP({
       url,
@@ -148,6 +149,16 @@ function createContext(input, logs) {
   };
   sandbox.globalThis = sandbox;
   return vm.createContext(sandbox, { name: 'fyms-drpy-context' });
+}
+
+function normalizeHeaders(raw) {
+  const out = {};
+  for (const [key, value] of Object.entries(raw || {})) {
+    const name = String(key || '').trim();
+    const text = String(value || '').trim();
+    if (name && text) out[name] = text;
+  }
+  return out;
 }
 
 async function runOne(context, method, args, engine) {

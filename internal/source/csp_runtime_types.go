@@ -16,16 +16,17 @@ const (
 )
 
 type CSPRuntimeRequest struct {
-	ConfigBaseURL string         `json:"configBaseUrl"`
-	Spider        string         `json:"spider"`
-	MD5           string         `json:"md5"`
-	API           string         `json:"api"`
-	Ext           string         `json:"ext"`
-	Method        string         `json:"method"`
-	Args          map[string]any `json:"args"`
-	ProviderID    *int64         `json:"providerId"`
-	ProviderKey   string         `json:"providerKey"`
-	TimeoutMs     int            `json:"timeoutMs"`
+	ConfigBaseURL string            `json:"configBaseUrl"`
+	Spider        string            `json:"spider"`
+	MD5           string            `json:"md5"`
+	API           string            `json:"api"`
+	Ext           string            `json:"ext"`
+	Method        string            `json:"method"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Args          map[string]any    `json:"args"`
+	ProviderID    *int64            `json:"providerId"`
+	ProviderKey   string            `json:"providerKey"`
+	TimeoutMs     int               `json:"timeoutMs"`
 }
 
 type CSPRuntimeArtifact struct {

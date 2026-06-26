@@ -127,6 +127,9 @@ func (r *SourceRepository) ListProviders(ctx context.Context, opts SourceProvide
 	if opts.Enabled != nil {
 		clauses = append(clauses, "sp.enabled = "+addArg(*opts.Enabled))
 	}
+	if opts.Visible != nil {
+		clauses = append(clauses, "sp.visible = "+addArg(*opts.Visible))
+	}
 	if value := strings.TrimSpace(opts.HealthStatus); value != "" {
 		clauses = append(clauses, "sp.health_status = "+addArg(value))
 	}
