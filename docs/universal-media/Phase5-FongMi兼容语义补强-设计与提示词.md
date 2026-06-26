@@ -709,3 +709,53 @@ source_provider_health_checks
 ```
 
 **实际落点**：
+
+### FM6 设计说明
+
+#### 1. TVBox parse type 支持矩阵
+
+| parse type | FongMi/TVBox 语义 | FYMS 服务端策略 | 落地状态 |
+| --- | --- | --- | --- |
+| `0` | WebView/嗅探或播放器端解析，通常依赖 Android WebView、JS 注入、点击脚本。 | 服务端不提供 WebView 宿主，不伪装支持。导入可保留记录，但运行时标记 unsupported。 | unsupported |
+| `1` | JSON 解析器 URL 模板：把原始播放地址作为参数请求解析器，解析器返回直链和可选 headers。 | 最小落地：仅支持 HTTP(S) JSON/text 解析器模板，请求 URL 与返回 URL 都走 `ValidateOutboundURL`，响应大小和重定向受限。 | supported |
+| `2` | 直连/免解析或外部播放器口径，通常不需要全局 parser。 | 不进入 `ParserResolver`；播放源保持 direct/provider runtime 语义，若线路已是直链则由 provider `ResolvePlay` 或 `source.ResolvePlay` 处理。 | not parser |
+| `3` | mix/sniffer，常见为解析器 + 嗅探混合，依赖 WebView 行为。 | 服务端无法安全还原 WebView/sniffer，保持 unsupported，并在 UI 明确原因。 | unsupported |
+| `4` | super parse/扩展宿主能力，不同壳实现差异大。 | 不实现宿主私有能力，保持 unsupported，并在 UI 明确原因。 | unsupported |
+
+#### 2. flag 匹配策略
+
+- `source_play_sources.flag` 是首要匹配依据；为空时用 `line_name` 作为 fallback。
+- `source_parsers.raw.flags` / `flags` 若存在且非空，解析器只处理命中的播放源。
+- flag 比较大小写不敏感，去空白；支持 raw 中字符串数组、逗号分隔字符串和 `[{flag/name/value}]` 这类常见形态。
+- 未声明 flags 的 type=1 parser 视为全局可用，继续按启用顺序尝试。
+
+#### 3. playUrl / json: / parse: 前缀策略
+
+- `playUrl` 是站点级解析前缀，不直接改 Emby 模型；本阶段只用于 parser 请求模板构造，不引入站点级播放链路改造。
+- parser URL 模板优先级：
+  1. URL 中含 `{url}` / `{{url}}` / `{playUrl}` 占位符时，替换为 `url.QueryEscape(rawPlayURL)`。
+  2. URL 已有 `url=` 参数时覆盖该参数。
+  3. URL 有 query 但无 `url` 参数时追加 `url=rawPlayURL`。
+  4. URL 无 query 时追加 `?url=rawPlayURL`。
+- `json:` 前缀表示响应必须按 JSON 解析；去掉前缀后作为真实 parser URL 模板。
+- `parse:` 前缀表示普通 URL 模板；去掉前缀后请求，响应允许 JSON 或纯文本直链。
+- 解析器响应仅接受 HTTP(S) 直链；返回的最终 URL 必须再次 `ValidateOutboundURL`。
+
+#### 4. click/header 传递策略
+
+- `click` 属于 WebView 点击脚本语义，FYMS 服务端不执行；仅作为 provider capability/UI 元数据展示，不传给 `ParserResolver`。
+- 播放源自身 `headers` 继续随 `source_play_sources.headers` 传递；parser 响应的 `header/headers` 会作为最终 `PlayResult.Headers`。
+- 本阶段新增请求解析器时的保守 header 透传：从播放源 headers 中提取 `User-Agent`、`Referer`、`Origin`、`Cookie` 等站点必要 header 传给 parser 请求；不在 UI 明文显示 header value。
+
+#### 5. 不支持 WebView 嗅探的降级说明
+
+- FYMS 服务端没有 Android WebView、DOM、用户手势、媒体嗅探和 App 私有宿主能力。
+- type=0/3/4 如果强行伪装为支持，会引入安全风险和不可预测的站点依赖；因此保持 unsupported 是预期行为。
+- UI 需要展示每类 parser 的支持状态和原因，让管理员知道“未启用/不可用”不是导入失败，而是服务端能力边界。
+
+#### 6. 最小代码落地计划
+
+1. `internal/source/tvbox_importer.go`：导入 parser 时为 type=0/3/4 写入明确 unsupported reason；type=1 保持可启用候选。
+2. `internal/source/parser_resolver.go`：只执行 type=1；增加 flag 过滤、`json:` / `parse:` / 占位符 URL 模板处理、请求 header 透传和响应 header 保留。
+3. `web/src/api/source.ts`、`web/src/components/source-center/SourceParserPanel.vue`：展示支持矩阵、parser 支持状态与 unsupported 原因。
+4. 不改 `/SourcePlay` 主流程，只增强现有 `ParserResolver.Resolve` 的内部判定；不新增 tests，不启动服务。
