@@ -27,6 +27,7 @@ type CSPRuntimeRequest struct {
 	ProviderID    *int64            `json:"providerId"`
 	ProviderKey   string            `json:"providerKey"`
 	TimeoutMs     int               `json:"timeoutMs"`
+	SkipAudit     bool              `json:"skipAudit,omitempty"`
 }
 
 type CSPRuntimeArtifact struct {

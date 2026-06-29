@@ -33,6 +33,20 @@ func scanSourceProvider(row pgx.Row) (*SourceProvider, error) {
 	return &out, nil
 }
 
+func scanSourceProviderAutoDisable(row pgx.Row) (*SourceProvider, int, bool, error) {
+	var out SourceProvider
+	var failureCount int
+	var disabled bool
+	if err := row.Scan(&out.ID, &out.ConfigID, &out.SourceKey, &out.Name, &out.ProviderKind,
+		&out.RuntimeKind, &out.TVBoxType, &out.API, &out.Ext, &out.Categories, &out.Headers,
+		&out.Capabilities, &out.TimeoutMS, &out.Enabled, &out.Visible, &out.Searchable,
+		&out.HealthStatus, &out.LastCheckAt, &out.LastError, &out.RawSite, &out.CreatedAt,
+		&out.UpdatedAt, &failureCount, &disabled); err != nil {
+		return nil, 0, false, nilIfNoRows[SourceProvider](err)
+	}
+	return &out, failureCount, disabled, nil
+}
+
 func scanSourceParser(row pgx.Row) (*SourceParser, error) {
 	var out SourceParser
 	if err := row.Scan(&out.ID, &out.ConfigID, &out.SourceType, &out.Name, &out.ParserType,

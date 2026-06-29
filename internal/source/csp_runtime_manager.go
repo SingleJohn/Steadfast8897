@@ -107,33 +107,33 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 	case <-runCtx.Done():
 		err := fmt.Errorf("CSP runtime 等待 worker 超时: %w", runCtx.Err())
 		resp := m.errorResponse(start, req, err, "timeout")
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
 	}
 	artifact, err := m.artifacts.Fetch(runCtx, req)
 	if err != nil {
 		resp := m.errorResponse(start, req, err, ErrorType(err))
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
 	}
 	artifact, err = m.ensureLocalArtifact(runCtx, req, artifact)
 	if err != nil {
 		resp := m.errorResponse(start, req, err, ErrorType(err))
 		resp.Artifact = artifact
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
 	}
 	if err := ensureCSPArtifactTrusted(artifact); err != nil {
 		resp := m.errorResponse(start, req, err, "untrusted_artifact")
 		resp.Artifact = artifact
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return resp, nil
 	}
 	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
 		if err := m.Start(runCtx); err != nil {
 			resp := m.errorResponse(start, req, err, "runtime_unavailable")
 			resp.Artifact = artifact
-			m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+			m.maybeRecordInvocation(ctx, req, resp)
 			return resp, nil
 		}
 	}
@@ -165,7 +165,7 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 	resp.Logs = logs
 	resp.WorkerPID = pid
 	resp.DurationMs = time.Since(start).Milliseconds()
-	m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+	m.maybeRecordInvocation(ctx, req, resp)
 	return resp, nil
 }
 
@@ -472,6 +472,13 @@ func (m *CSPRuntimeManager) recordInvocation(ctx context.Context, req CSPRuntime
 	}); err != nil {
 		m.logger.WarnContext(ctx, "record CSP runtime invocation failed", "log_target", "provider", "error", err)
 	}
+}
+
+func (m *CSPRuntimeManager) maybeRecordInvocation(ctx context.Context, req CSPRuntimeRequest, resp *CSPRuntimeResponse) {
+	if req.SkipAudit {
+		return
+	}
+	m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 }
 
 func normalizeCSPRuntimeRequest(req CSPRuntimeRequest) CSPRuntimeRequest {

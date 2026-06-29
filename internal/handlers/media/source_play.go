@@ -49,6 +49,7 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 		result, cacheHit, err := resolveCachedPlay(ctx, state, current)
 		if err != nil {
 			_ = state.Repo.Source.MarkPlaySourceFailure(ctx, current.ID, time.Since(start).Milliseconds())
+			source.RecordProviderPlayFailure(context.WithoutCancel(ctx), state.Repo.Source, state.Repo.SystemConfig, current.ProviderID, err)
 			logSourceProxy(logger, start, current, "", cacheHit, 0, err)
 			lastErr = err
 			continue
@@ -57,6 +58,7 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 		if err != nil {
 			state.Cache.Del(ctx, sourcePlayCacheKey(current.PublicUUID))
 			_ = state.Repo.Source.MarkPlaySourceFailure(ctx, current.ID, time.Since(start).Milliseconds())
+			source.RecordProviderPlayFailure(context.WithoutCancel(ctx), state.Repo.Source, state.Repo.SystemConfig, current.ProviderID, err)
 			logSourceProxy(logger, start, current, result.URL, cacheHit, statusCode, err)
 			lastErr = err
 			if c.Writer.Written() {
@@ -67,6 +69,7 @@ func streamSourcePlay(c *gin.Context, state *AppState) {
 		if !cacheHit {
 			_ = state.Repo.Source.MarkPlaySourceSuccess(ctx, current.ID, time.Since(start).Milliseconds())
 		}
+		source.RecordProviderPlaySuccess(context.WithoutCancel(ctx), state.Repo.Source, state.Repo.SystemConfig, current.ProviderID)
 		logSourceProxy(logger, start, current, result.URL, cacheHit, statusCode, nil)
 		return
 	}

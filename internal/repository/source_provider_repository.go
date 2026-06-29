@@ -221,6 +221,75 @@ func (r *SourceRepository) SetProviderEnabled(ctx context.Context, id int64, ena
 	return scanSourceProvider(row)
 }
 
+func (r *SourceRepository) RecordProviderAutoDisableFailure(ctx context.Context, id int64, scope, errorType, message string, threshold int) (*SourceProvider, int, bool, error) {
+	if threshold <= 0 {
+		threshold = 3
+	}
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "unknown"
+	}
+	errorType = strings.TrimSpace(errorType)
+	message = strings.TrimSpace(message)
+	row := r.pool.QueryRow(ctx, `
+		WITH current AS (
+			SELECT COALESCE(capabilities, '{}'::jsonb) AS capabilities
+			  FROM source_providers
+			 WHERE id = $1
+			 FOR UPDATE
+		),
+		next AS (
+			SELECT capabilities,
+			       COALESCE((capabilities #>> ARRAY['auto_disable', $2, 'failure_count'])::int, 0) + 1 AS failure_count
+			  FROM current
+		),
+		updated AS (
+			UPDATE source_providers sp
+			   SET enabled = CASE WHEN next.failure_count >= $5 THEN FALSE ELSE sp.enabled END,
+			       health_status = CASE WHEN next.failure_count >= $5 THEN 'unhealthy' ELSE sp.health_status END,
+			       last_error = CASE WHEN next.failure_count >= $5 THEN $4 ELSE sp.last_error END,
+			       capabilities = jsonb_set(
+			         jsonb_set(
+			           jsonb_set(
+			             jsonb_set(COALESCE(sp.capabilities, '{}'::jsonb), ARRAY['auto_disable', $2, 'failure_count'], to_jsonb(next.failure_count), true),
+			             ARRAY['auto_disable', $2, 'last_error_type'], to_jsonb($3::text), true
+			           ),
+			           ARRAY['auto_disable', $2, 'last_error'], to_jsonb($4::text), true
+			         ),
+			         ARRAY['auto_disable', $2, 'last_failure_at'], to_jsonb(NOW()::text), true
+			       ),
+			       updated_at = NOW()
+			  FROM next
+			 WHERE sp.id = $1
+			RETURNING sp.id, sp.config_id, sp.source_key, sp.name, sp.provider_kind, sp.runtime_kind, sp.tvbox_type, sp.api,
+			          sp.ext, sp.categories, sp.headers, sp.capabilities, sp.timeout_ms, sp.enabled, sp.visible, sp.searchable,
+			          sp.health_status, sp.last_check_at, sp.last_error, sp.raw_site, sp.created_at, sp.updated_at,
+			          next.failure_count,
+			          next.failure_count >= $5 AS disabled
+		)
+		SELECT * FROM updated`, id, scope, errorType, message, threshold)
+	provider, count, disabled, err := scanSourceProviderAutoDisable(row)
+	return provider, count, disabled, err
+}
+
+func (r *SourceRepository) ResetProviderAutoDisableFailure(ctx context.Context, id int64, scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE source_providers
+		   SET capabilities = jsonb_set(
+		         COALESCE(capabilities, '{}'::jsonb),
+		         ARRAY['auto_disable', $2, 'failure_count'],
+		         '0'::jsonb,
+		         true
+		       ),
+		       updated_at = NOW()
+		 WHERE id = $1`, id, scope)
+	return err
+}
+
 func (r *SourceRepository) DeleteProvidersCascade(ctx context.Context, ids []int64) (*SourceProviderDeleteResult, error) {
 	ids = compactInt64s(ids)
 	if len(ids) == 0 {

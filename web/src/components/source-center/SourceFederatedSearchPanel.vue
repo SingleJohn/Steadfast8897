@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import { NButton, NInput, NInputNumber, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
-import { getSourceItemLines, refreshSourceItemDetail, type FederatedSearchError, type FederatedSearchItem, type FederatedSearchResponse, type SourceItemLinesResponse } from '@/api/source'
+import { getSourceItemLines, materializeSourceSearchItem, refreshSourceItemDetail, type FederatedSearchError, type FederatedSearchItem, type FederatedSearchResponse, type SourceItemLinesResponse } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
 type TagType = 'default' | 'success' | 'warning' | 'error' | 'info'
@@ -16,6 +16,10 @@ const props = defineProps<{
   savingEmbyEnabled: boolean
   liveEnabled: boolean
   savingLiveEnabled: boolean
+  autoDisableSearchEnabled: boolean
+  savingAutoDisableSearch: boolean
+  autoDisablePlayEnabled: boolean
+  savingAutoDisablePlay: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,6 +28,8 @@ const emit = defineEmits<{
   'update:dryRun': [value: boolean]
   'update:embyEnabled': [value: boolean]
   'update:liveEnabled': [value: boolean]
+  'update:autoDisableSearchEnabled': [value: boolean]
+  'update:autoDisablePlayEnabled': [value: boolean]
   search: []
 }>()
 
@@ -35,6 +41,7 @@ const failedCount = computed(() => props.result?.provider.failed || 0)
 const totalProviders = computed(() => props.result?.provider.total || 0)
 const expandedItemUUID = shallowRef('')
 const lineLoadingUUID = shallowRef('')
+const openingItemUUID = shallowRef('')
 const refreshingItemId = shallowRef<number | null>(null)
 const itemLinesByUUID = shallowRef<Record<string, SourceItemLinesResponse>>({})
 
@@ -45,6 +52,54 @@ function posterStyle(item: FederatedSearchItem) {
 
 function providerLine(item: FederatedSearchItem) {
   return item.providers.map((provider) => provider.name).join(' / ')
+}
+
+function userDetailPath(item: FederatedSearchItem) {
+  return `/item/${item.public_uuid}`
+}
+
+function userDetailURL(item: FederatedSearchItem) {
+  return `${window.location.origin}${window.location.pathname}${window.location.search}#${userDetailPath(item)}`
+}
+
+function preferredProvider(item: FederatedSearchItem) {
+  return item.providers.find((provider) => provider.item_uuid === item.public_uuid) || item.providers[0]
+}
+
+async function openUserDetail(item: FederatedSearchItem) {
+  const provider = preferredProvider(item)
+  if (!provider) {
+    message.error('没有可用 Provider')
+    return
+  }
+  const popup = window.open('', '_blank')
+  if (popup) {
+    popup.opener = null
+    popup.document.title = '正在准备在线条目'
+    popup.document.body.textContent = '正在准备在线条目...'
+  }
+  openingItemUUID.value = item.public_uuid
+  try {
+    const materialized = await materializeSourceSearchItem({
+      provider_id: provider.id,
+      source_item_id: provider.source_item_id,
+      title: item.title,
+      item_type: item.item_type,
+      normalized_kind: item.normalized_kind,
+      year: item.year,
+      region: item.region,
+      poster_url: item.poster_url,
+      remarks: item.remarks,
+    })
+    const url = userDetailURL({ ...item, public_uuid: materialized.public_uuid })
+    if (popup) popup.location.href = url
+    else window.location.href = url
+  } catch (e: any) {
+    if (popup) popup.close()
+    message.error(e?.message || '打开用户端详情失败')
+  } finally {
+    if (openingItemUUID.value === item.public_uuid) openingItemUUID.value = ''
+  }
 }
 
 function expandedLines(item: FederatedSearchItem) {
@@ -129,13 +184,14 @@ async function copySearchError(error: FederatedSearchError) {
       <div>
         <h2 class="panel-title">聚合搜索</h2>
         <p class="panel-subtitle">
-          并发搜索全部已启用 Provider。<template v-if="dryRun">测试模式：只验证连通与命中，<strong>不写入</strong> source_items。</template><template v-else>结果写入 source_items 后可被 Emby 搜索读取。</template>
+          并发搜索全部已启用 Provider。<template v-if="dryRun">快速测试：只验证连通与命中，<strong>不写入</strong> source_items。</template><template v-else>正式搜索：命中会写入 source_items，之后可被 Emby 搜索读取。</template>
         </p>
       </div>
       <div v-if="result" class="summary-strip">
         <span>{{ result.total }} 条</span>
         <span>{{ result.latency_ms }} ms</span>
         <span>{{ successCount }}/{{ totalProviders }} 源成功</span>
+        <span>{{ result.provider.concurrency || 1 }} 并发</span>
         <NTag size="small" :type="result.cache_write ? 'success' : 'warning'" :bordered="false">
           {{ result.cache_write ? '已写缓存' : '未写缓存' }}
         </NTag>
@@ -170,6 +226,36 @@ async function copySearchError(error: FederatedSearchError) {
             size="small"
             aria-labelledby="source-live-switch-label"
             @update:value="emit('update:liveEnabled', $event)"
+          />
+        </div>
+        <div class="emby-switch">
+          <NTooltip>
+            <template #trigger>
+              <span id="source-auto-disable-search-label" class="emby-switch-label">搜索失败禁用<span class="lbl-info" aria-label="搜索失败禁用说明">?</span></span>
+            </template>
+            默认关闭。开启后,TVBox/CMS/DRPY/CSP 等在线 Provider 连续搜索失败达到阈值会自动停用;成功返回会清零失败计数。
+          </NTooltip>
+          <NSwitch
+            :value="autoDisableSearchEnabled"
+            :loading="savingAutoDisableSearch"
+            size="small"
+            aria-labelledby="source-auto-disable-search-label"
+            @update:value="emit('update:autoDisableSearchEnabled', $event)"
+          />
+        </div>
+        <div class="emby-switch">
+          <NTooltip>
+            <template #trigger>
+              <span id="source-auto-disable-play-label" class="emby-switch-label">播放失败禁用<span class="lbl-info" aria-label="播放失败禁用说明">?</span></span>
+            </template>
+            默认关闭。开启后,智能选路代理播放连续失败达到阈值会自动停用对应在线 Provider;只作用于在线源,本地媒体播放保持原样。
+          </NTooltip>
+          <NSwitch
+            :value="autoDisablePlayEnabled"
+            :loading="savingAutoDisablePlay"
+            size="small"
+            aria-labelledby="source-auto-disable-play-label"
+            @update:value="emit('update:autoDisablePlayEnabled', $event)"
           />
         </div>
       </div>
@@ -222,7 +308,14 @@ async function copySearchError(error: FederatedSearchError) {
           </div>
           <div class="result-body">
             <div class="result-title-row">
-              <h3 class="result-title">{{ item.title }}</h3>
+              <button
+                class="result-title-link"
+                type="button"
+                :disabled="openingItemUUID === item.public_uuid"
+                @click="openUserDetail(item)"
+              >
+                {{ openingItemUUID === item.public_uuid ? '准备中...' : item.title }}
+              </button>
               <NTag size="small" :bordered="false">{{ item.provider_count }} 源</NTag>
             </div>
             <div class="result-meta">
@@ -470,13 +563,28 @@ async function copySearchError(error: FederatedSearchError) {
   justify-content: space-between;
   gap: 8px;
 }
-.result-title {
+.result-title-link {
   min-width: 0;
-  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
   overflow: hidden;
+  color: var(--app-text);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: left;
+  text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+}
+.result-title-link:hover {
+  color: var(--app-primary);
+}
+.result-title-link:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 .result-meta,
 .provider-line,

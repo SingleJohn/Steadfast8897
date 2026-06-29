@@ -100,20 +100,20 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 	case <-runCtx.Done():
 		err := fmt.Errorf("JS runtime 等待 worker 超时: %w", runCtx.Err())
 		resp := m.errorResponse(start, req, err, "timeout")
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
 	}
 	if strings.TrimSpace(m.nodePath) == "" || strings.TrimSpace(m.script) == "" {
 		if err := m.Start(runCtx); err != nil {
 			resp := m.errorResponse(start, req, err, "runtime_unavailable")
-			m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+			m.maybeRecordInvocation(ctx, req, resp)
 			return resp, nil
 		}
 	}
 	artifacts, bodies, err := m.artifacts.FetchPair(runCtx, req)
 	if err != nil {
 		resp := m.errorResponse(start, req, err, ErrorType(err))
-		m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
 	}
 	payload := map[string]any{
@@ -151,7 +151,7 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 		resp.Results[0].Error = "JS runtime 调用超时，worker 已终止"
 		resp.Results[0].ErrorType = "timeout"
 	}
-	m.recordInvocation(context.WithoutCancel(ctx), req, resp)
+	m.maybeRecordInvocation(ctx, req, resp)
 	return resp, nil
 }
 
@@ -236,6 +236,13 @@ func (m *JSRuntimeManager) recordInvocation(ctx context.Context, req JSRuntimeRe
 	}); err != nil {
 		m.logger.WarnContext(ctx, "record JS runtime invocation failed", "log_target", "provider", "error", err)
 	}
+}
+
+func (m *JSRuntimeManager) maybeRecordInvocation(ctx context.Context, req JSRuntimeRequest, resp *JSRuntimeResponse) {
+	if req.SkipAudit {
+		return
+	}
+	m.recordInvocation(context.WithoutCancel(ctx), req, resp)
 }
 
 func sanitizeRuntimeAuditError(message string) string {

@@ -229,6 +229,18 @@ type federatedSearchRequest struct {
 	DryRun  bool   `json:"dry_run"`
 }
 
+type materializeSearchItemRequest struct {
+	ProviderID     int64   `json:"provider_id"`
+	SourceItemID   string  `json:"source_item_id"`
+	Title          string  `json:"title"`
+	ItemType       string  `json:"item_type"`
+	NormalizedKind string  `json:"normalized_kind"`
+	Year           *int32  `json:"year"`
+	Region         *string `json:"region"`
+	PosterURL      *string `json:"poster_url"`
+	Remarks        *string `json:"remarks"`
+}
+
 func federatedSourceSearch(c *gin.Context, state *AppState) {
 	var req federatedSearchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -236,16 +248,82 @@ func federatedSourceSearch(c *gin.Context, state *AppState) {
 		return
 	}
 	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
-	result, err := manager.FederatedSearch(c.Request.Context(), sourcebridge.FederatedSearchRequest{
+	result, err := manager.FederatedSearchWithOptions(c.Request.Context(), sourcebridge.FederatedSearchRequest{
 		Keyword: req.Keyword,
 		Limit:   req.Limit,
 		DryRun:  req.DryRun,
+	}, sourcebridge.FederatedSearchOptions{
+		SystemConfig: state.Repo.SystemConfig,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func streamFederatedSourceSearch(c *gin.Context, state *AppState) {
+	req := federatedSearchRequest{
+		Keyword: strings.TrimSpace(c.Query("keyword")),
+		Limit:   queryInt(c, "limit", 50),
+		DryRun:  queryBool(c, "dry_run", true),
+	}
+	if req.Keyword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "搜索关键词不能为空"})
+		return
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
+	_, err := manager.FederatedSearchWithOptions(c.Request.Context(), sourcebridge.FederatedSearchRequest{
+		Keyword: req.Keyword,
+		Limit:   req.Limit,
+		DryRun:  req.DryRun,
+	}, sourcebridge.FederatedSearchOptions{
+		SystemConfig: state.Repo.SystemConfig,
+		OnEvent: func(event sourcebridge.FederatedSearchStreamEvent) bool {
+			if !writeSSE(c, event.Type, event) {
+				return false
+			}
+			c.Writer.Flush()
+			return true
+		},
+	})
+	if err != nil {
+		_ = writeSSE(c, "stream_error", gin.H{"type": "stream_error", "message": err.Error()})
+		c.Writer.Flush()
+	}
+}
+
+func materializeSourceSearchItem(c *gin.Context, state *AppState) {
+	var req materializeSearchItemRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	manager := sourcebridge.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
+	item, err := manager.MaterializeSearchItem(c.Request.Context(), sourcebridge.MaterializeSearchItemRequest{
+		ProviderID:     req.ProviderID,
+		SourceItemID:   req.SourceItemID,
+		Title:          req.Title,
+		ItemType:       req.ItemType,
+		NormalizedKind: req.NormalizedKind,
+		Year:           req.Year,
+		Region:         req.Region,
+		PosterURL:      req.PosterURL,
+		Remarks:        req.Remarks,
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":          item.ID,
+		"public_uuid": item.PublicUUID,
+	})
 }
 
 type providerDetailRequest struct {

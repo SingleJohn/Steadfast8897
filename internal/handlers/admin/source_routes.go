@@ -4,6 +4,8 @@ import "github.com/gin-gonic/gin"
 
 func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.HandlerFunc) {
 	group.POST("/SourceSearch", adminMW, func(c *gin.Context) { federatedSourceSearch(c, state) })
+	group.GET("/SourceSearch/stream", adminMW, func(c *gin.Context) { streamFederatedSourceSearch(c, state) })
+	group.POST("/SourceSearch/MaterializeItem", adminMW, func(c *gin.Context) { materializeSourceSearchItem(c, state) })
 	group.POST("/SourceRuntime/TestJS", adminMW, func(c *gin.Context) { testSourceRuntimeJS(c, state) })
 	group.POST("/SourceRuntime/TestCSP", adminMW, func(c *gin.Context) { testSourceRuntimeCSP(c, state) })
 	group.GET("/SourceRuntime/Artifacts", adminMW, func(c *gin.Context) { listSourceRuntimeArtifacts(c, state) })

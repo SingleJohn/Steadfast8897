@@ -346,6 +346,7 @@ export type FederatedSearchProviderSummary = {
   total: number
   success: number
   failed: number
+  concurrency?: number
 }
 
 export type FederatedSearchError = {
@@ -379,6 +380,23 @@ export type FederatedSearchItem = {
   provider_count: number
   providers: FederatedSearchItemProvider[]
   score: number
+}
+
+export type SourceSearchMaterializePayload = {
+  provider_id: number
+  source_item_id: string
+  title: string
+  item_type: string
+  normalized_kind: string
+  year?: number
+  region?: string
+  poster_url?: string
+  remarks?: string
+}
+
+export type SourceSearchMaterializeResult = {
+  id: number
+  public_uuid: string
 }
 
 export type SourcePlayLineSummary = {
@@ -425,6 +443,29 @@ export type FederatedSearchResponse = {
   latency_ms: number
   truncated: boolean
   cache_write: boolean
+}
+
+export type SourceAutoDisableDecision = {
+  enabled: boolean
+  provider_id?: number
+  provider_name?: string
+  scope?: string
+  failure_count?: number
+  threshold?: number
+  disabled?: boolean
+}
+
+export type FederatedSearchStreamEvent = {
+  type: 'start' | 'provider_result' | 'provider_error' | 'done' | 'stream_error'
+  response?: FederatedSearchResponse
+  item?: FederatedSearchItem
+  error?: FederatedSearchError
+  provider?: FederatedSearchProviderSummary
+  latency_ms?: number
+  auto_disable?: SourceAutoDisableDecision
+  provider_id?: number
+  provider_name?: string
+  message?: string
 }
 
 export async function importTVBoxConfig(payload: { name?: string; source_url?: string; raw_json?: string }) {
@@ -597,6 +638,65 @@ export async function federatedSourceSearch(keyword: string, limit = 50, dryRun 
     method: 'POST',
     body: JSON.stringify({ keyword, limit, dry_run: dryRun }),
     timeoutMs: 120_000,
+  })
+}
+
+export function openFederatedSourceSearchStream(
+  keyword: string,
+  limit = 50,
+  dryRun = true,
+  onEvent: (event: FederatedSearchStreamEvent) => void,
+  onError?: (message: string) => void,
+) {
+  const params = new URLSearchParams({
+    keyword,
+    limit: String(limit),
+    dry_run: dryRun ? 'true' : 'false',
+  })
+  const token = localStorage.getItem('accessToken')
+  if (token) params.set('api_key', token)
+  const source = new EventSource(`/SourceSearch/stream?${params.toString()}`)
+  const nativeClose = source.close.bind(source)
+  let closedByClient = false
+  const close = () => {
+    closedByClient = true
+    nativeClose()
+  }
+  const bind = (eventName: Exclude<FederatedSearchStreamEvent['type'], 'stream_error'>) => {
+    source.addEventListener(eventName, (event) => {
+      try {
+        onEvent(JSON.parse((event as MessageEvent).data) as FederatedSearchStreamEvent)
+      } catch {
+        onError?.('搜索流数据解析失败')
+      }
+    })
+  }
+  bind('start')
+  bind('provider_result')
+  bind('provider_error')
+  bind('done')
+  source.addEventListener('stream_error', (event) => {
+    try {
+      const payload = JSON.parse((event as MessageEvent).data) as FederatedSearchStreamEvent
+      onError?.(payload.message || '聚合搜索失败')
+    } catch {
+      onError?.('聚合搜索失败')
+    }
+    close()
+  })
+  source.onerror = () => {
+    if (closedByClient) return
+    onError?.('搜索流已断开')
+    close()
+  }
+  return Object.assign(source, { close })
+}
+
+export async function materializeSourceSearchItem(payload: SourceSearchMaterializePayload) {
+  return requestJson<SourceSearchMaterializeResult>('/SourceSearch/MaterializeItem', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
   })
 }
 

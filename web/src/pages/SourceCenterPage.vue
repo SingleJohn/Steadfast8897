@@ -84,6 +84,10 @@ const {
   savingEmbyLiveSearch,
   sourceRefreshSchedulerEnabled,
   savingSourceRefreshScheduler,
+  autoDisableSearchEnabled,
+  savingAutoDisableSearch,
+  autoDisablePlayEnabled,
+  savingAutoDisablePlay,
   viewDraft,
   discoverDimension,
   discoverSearch,
@@ -275,11 +279,17 @@ watch(federatedKeyword, (value) => {
               :saving-emby-enabled="savingEmbySourceSearch"
               :live-enabled="embyLiveSearchEnabled"
               :saving-live-enabled="savingEmbyLiveSearch"
+              :auto-disable-search-enabled="autoDisableSearchEnabled"
+              :saving-auto-disable-search="savingAutoDisableSearch"
+              :auto-disable-play-enabled="autoDisablePlayEnabled"
+              :saving-auto-disable-play="savingAutoDisablePlay"
               @update:keyword="federatedKeyword = $event"
               @update:limit="federatedLimit = $event"
               @update:dry-run="federatedDryRun = $event"
               @update:emby-enabled="source.updateEmbySourceSearchEnabled"
               @update:live-enabled="source.updateEmbyLiveSearchEnabled"
+              @update:auto-disable-search-enabled="source.updateAutoDisableSearchEnabled"
+              @update:auto-disable-play-enabled="source.updateAutoDisablePlayEnabled"
               @search="source.runFederatedSearch"
             />
           </div>

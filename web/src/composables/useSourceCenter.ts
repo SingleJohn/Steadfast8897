@@ -103,7 +103,6 @@ export function useSourceCenter(showToast: ToastFn) {
 
   async function runFederatedSearch() {
     await providers.runFederatedSearch()
-    await views.refreshViews()
   }
 
   return {
@@ -155,6 +154,10 @@ export function useSourceCenter(showToast: ToastFn) {
     savingEmbyLiveSearch: providers.savingEmbyLiveSearch,
     sourceRefreshSchedulerEnabled: providers.sourceRefreshSchedulerEnabled,
     savingSourceRefreshScheduler: providers.savingSourceRefreshScheduler,
+    autoDisableSearchEnabled: providers.autoDisableSearchEnabled,
+    savingAutoDisableSearch: providers.savingAutoDisableSearch,
+    autoDisablePlayEnabled: providers.autoDisablePlayEnabled,
+    savingAutoDisablePlay: providers.savingAutoDisablePlay,
     viewDraft: views.viewDraft,
     discoverDimension: views.discoverDimension,
     discoverSearch: views.discoverSearch,
@@ -205,6 +208,8 @@ export function useSourceCenter(showToast: ToastFn) {
     updateEmbySourceSearchEnabled: providers.updateEmbySourceSearchEnabled,
     updateEmbyLiveSearchEnabled: providers.updateEmbyLiveSearchEnabled,
     updateSourceRefreshSchedulerEnabled: providers.updateSourceRefreshSchedulerEnabled,
+    updateAutoDisableSearchEnabled: providers.updateAutoDisableSearchEnabled,
+    updateAutoDisablePlayEnabled: providers.updateAutoDisablePlayEnabled,
     editView: views.editView,
     saveView: views.saveView,
     previewView: views.previewView,

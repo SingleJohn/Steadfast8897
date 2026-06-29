@@ -19,9 +19,18 @@ type JSProvider struct {
 	headers       map[string]string
 	runtime       *JSRuntimeManager
 	timeout       time.Duration
+	skipAudit     bool
 }
 
-func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configBaseURL string, headers map[string]string, runtime *JSRuntimeManager, timeout time.Duration) (*JSProvider, error) {
+type JSProviderOption func(*JSProvider)
+
+func WithJSProviderSkipAudit(skip bool) JSProviderOption {
+	return func(p *JSProvider) {
+		p.skipAudit = skip
+	}
+}
+
+func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configBaseURL string, headers map[string]string, runtime *JSRuntimeManager, timeout time.Duration, opts ...JSProviderOption) (*JSProvider, error) {
 	siteKey := strings.TrimSpace(rowProviderKey)
 	if siteKey == "" {
 		return nil, fmt.Errorf("JS Provider 缺少 site key")
@@ -40,7 +49,7 @@ func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configB
 	if timeout <= 0 {
 		timeout = jsRuntimeDefaultTimeout
 	}
-	return &JSProvider{
+	provider := &JSProvider{
 		providerID:    providerID,
 		siteKey:       siteKey,
 		name:          strings.TrimSpace(name),
@@ -50,7 +59,13 @@ func NewJSProvider(providerID int64, rowProviderKey, name, engine, rule, configB
 		headers:       compactHeaderMap(headers),
 		runtime:       runtime,
 		timeout:       timeout,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(provider)
+		}
+	}
+	return provider, nil
 }
 
 func (p *JSProvider) Categories(ctx context.Context) ([]ProviderCategory, error) {
@@ -203,6 +218,7 @@ func (p *JSProvider) runData(ctx context.Context, method string, args map[string
 		ProviderID:    &p.providerID,
 		ProviderKey:   p.siteKey,
 		TimeoutMs:     timeoutMS,
+		SkipAudit:     p.skipAudit,
 	})
 	if err != nil {
 		return nil, err

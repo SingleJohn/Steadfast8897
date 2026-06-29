@@ -18,7 +18,7 @@ const (
 	maxFederatedSearchLimit             = 100
 	defaultFederatedSearchGrace         = 3 * time.Second
 	maxFederatedProviderDefaultTimeout  = 15 * time.Second
-	defaultFederatedProviderConcurrency = 12
+	defaultFederatedProviderConcurrency = 24
 )
 
 type FederatedSearchRequest struct {
@@ -26,6 +26,11 @@ type FederatedSearchRequest struct {
 	Limit   int
 	// DryRun 为 true 时只测试连通/命中，不写入 source_items（搜索测试场景）。
 	DryRun bool
+}
+
+type FederatedSearchOptions struct {
+	SystemConfig AutoDisableConfigReader
+	OnEvent      func(FederatedSearchStreamEvent) bool
 }
 
 type FederatedSearchResponse struct {
@@ -39,10 +44,23 @@ type FederatedSearchResponse struct {
 	CacheWrite bool                    `json:"cache_write"`
 }
 
+type FederatedSearchStreamEvent struct {
+	Type         string                   `json:"type"`
+	Response     *FederatedSearchResponse `json:"response,omitempty"`
+	Item         *FederatedSearchItem     `json:"item,omitempty"`
+	Error        *FederatedSearchError    `json:"error,omitempty"`
+	Provider     FederatedSearchProvider  `json:"provider"`
+	LatencyMS    int64                    `json:"latency_ms"`
+	AutoDisable  *AutoDisableDecision     `json:"auto_disable,omitempty"`
+	ProviderID   int64                    `json:"provider_id,omitempty"`
+	ProviderName string                   `json:"provider_name,omitempty"`
+}
+
 type FederatedSearchProvider struct {
-	Total   int `json:"total"`
-	Success int `json:"success"`
-	Failed  int `json:"failed"`
+	Total       int `json:"total"`
+	Success     int `json:"success"`
+	Failed      int `json:"failed"`
+	Concurrency int `json:"concurrency"`
 }
 
 type FederatedSearchItem struct {
@@ -86,13 +104,18 @@ type FederatedSearchError struct {
 }
 
 type federatedProviderResult struct {
-	provider repository.SourceProvider
-	items    []repository.SourceItem
-	err      error
-	latency  int64
+	provider    repository.SourceProvider
+	items       []repository.SourceItem
+	err         error
+	latency     int64
+	autoDisable AutoDisableDecision
 }
 
 func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req FederatedSearchRequest) (*FederatedSearchResponse, error) {
+	return m.FederatedSearchWithOptions(ctx, req, FederatedSearchOptions{})
+}
+
+func (m *ProviderRuntimeManager) FederatedSearchWithOptions(ctx context.Context, req FederatedSearchRequest, opts FederatedSearchOptions) (*FederatedSearchResponse, error) {
 	if m == nil || m.repo == nil {
 		return nil, fmt.Errorf("provider runtime 缺少 repository")
 	}
@@ -130,16 +153,26 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		searchable = append(searchable, provider)
 	}
 
+	concurrency := federatedProviderConcurrency(len(searchable))
 	response := &FederatedSearchResponse{
 		Keyword:    keyword,
-		Provider:   FederatedSearchProvider{Total: len(searchable)},
+		Provider:   FederatedSearchProvider{Total: len(searchable), Concurrency: concurrency},
 		CacheWrite: !req.DryRun,
+	}
+	emit := func(event FederatedSearchStreamEvent) bool {
+		if opts.OnEvent == nil {
+			return true
+		}
+		return opts.OnEvent(event)
+	}
+	if !emit(FederatedSearchStreamEvent{Type: "start", Provider: response.Provider, LatencyMS: 0}) {
+		return response, nil
 	}
 	groups := map[string]*FederatedSearchItem{}
 	searchCtx, cancelSearch := context.WithCancel(ctx)
 	defer cancelSearch()
 	results := make(chan federatedProviderResult, len(searchable))
-	sem := make(chan struct{}, federatedProviderConcurrency(len(searchable)))
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, provider := range searchable {
 		provider := provider
@@ -153,7 +186,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 				results <- federatedProviderResult{provider: provider, err: searchCtx.Err(), latency: time.Since(start).Milliseconds()}
 				return
 			}
-			results <- m.searchProviderSafely(searchCtx, provider, keyword, req.DryRun)
+			results <- m.searchProviderSafely(searchCtx, provider, keyword, req.DryRun, opts.SystemConfig)
 		}()
 	}
 	go func() {
@@ -165,7 +198,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 	for _, provider := range searchable {
 		pending[provider.ID] = provider
 	}
-	timer := time.NewTimer(federatedSearchBudget(searchable, federatedProviderConcurrency(len(searchable))))
+	timer := time.NewTimer(federatedSearchBudget(searchable, concurrency))
 	defer timer.Stop()
 	for len(pending) > 0 {
 		select {
@@ -175,14 +208,20 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 				break
 			}
 			delete(pending, result.provider.ID)
-			applyFederatedProviderResult(response, groups, keyword, result)
+			if !m.applyFederatedProviderResultAndEmit(response, groups, keyword, result, emit) {
+				cancelSearch()
+				pending = map[int64]repository.SourceProvider{}
+			}
 		case <-ctx.Done():
 			for _, provider := range pending {
-				applyFederatedProviderResult(response, groups, keyword, federatedProviderResult{
+				if !m.applyFederatedProviderResultAndEmit(response, groups, keyword, federatedProviderResult{
 					provider: provider,
 					err:      ctx.Err(),
 					latency:  time.Since(start).Milliseconds(),
-				})
+				}, emit) {
+					cancelSearch()
+					break
+				}
 			}
 			pending = map[int64]repository.SourceProvider{}
 		case <-timer.C:
@@ -194,18 +233,25 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 						goto collected
 					}
 					delete(pending, result.provider.ID)
-					applyFederatedProviderResult(response, groups, keyword, result)
+					if !m.applyFederatedProviderResultAndEmit(response, groups, keyword, result, emit) {
+						cancelSearch()
+						pending = map[int64]repository.SourceProvider{}
+						goto collected
+					}
 				default:
 					goto timedOut
 				}
 			}
 		timedOut:
 			for _, provider := range pending {
-				applyFederatedProviderResult(response, groups, keyword, federatedProviderResult{
+				if !m.applyFederatedProviderResultAndEmit(response, groups, keyword, federatedProviderResult{
 					provider: provider,
 					err:      context.DeadlineExceeded,
 					latency:  time.Since(start).Milliseconds(),
-				})
+				}, emit) {
+					cancelSearch()
+					break
+				}
 			}
 			pending = map[int64]repository.SourceProvider{}
 		}
@@ -234,7 +280,10 @@ collected:
 		"provider_total", response.Provider.Total,
 		"provider_success", response.Provider.Success,
 		"provider_failed", response.Provider.Failed,
+		"provider_concurrency", response.Provider.Concurrency,
+		"cache_write", response.CacheWrite,
 		"hit_count", response.Total)
+	emit(FederatedSearchStreamEvent{Type: "done", Response: response, Provider: response.Provider, LatencyMS: response.LatencyMS})
 	return response, nil
 }
 
@@ -277,13 +326,18 @@ func isSearchableRuntimeProvider(provider repository.SourceProvider) bool {
 	}
 }
 
-func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string, dryRun bool) (result federatedProviderResult) {
+func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string, dryRun bool, config AutoDisableConfigReader) (result federatedProviderResult) {
 	start := time.Now()
 	result.provider = provider
 	defer func() {
 		result.latency = time.Since(start).Milliseconds()
 		if recovered := recover(); recovered != nil {
 			result.err = fmt.Errorf("provider panic: %v", recovered)
+		}
+		if result.err != nil {
+			result.autoDisable = RecordProviderSearchFailure(context.WithoutCancel(ctx), m.repo, config, provider, result.err)
+		} else {
+			RecordProviderSearchSuccess(context.WithoutCancel(ctx), m.repo, config, provider.ID)
 		}
 	}()
 	providerCtx, cancel := context.WithTimeout(ctx, federatedProviderTimeout(provider))
@@ -302,41 +356,67 @@ func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provi
 	return result
 }
 
-func applyFederatedProviderResult(response *FederatedSearchResponse, groups map[string]*FederatedSearchItem, keyword string, result federatedProviderResult) {
+func (m *ProviderRuntimeManager) applyFederatedProviderResultAndEmit(response *FederatedSearchResponse, groups map[string]*FederatedSearchItem, keyword string, result federatedProviderResult, emit func(FederatedSearchStreamEvent) bool) bool {
 	if result.err != nil {
 		response.Provider.Failed++
-		response.Errors = append(response.Errors, FederatedSearchError{
+		searchErr := FederatedSearchError{
 			ProviderID:   result.provider.ID,
 			ProviderName: result.provider.Name,
 			SourceKey:    result.provider.SourceKey,
 			ErrorType:    ErrorType(result.err),
 			Message:      result.err.Error(),
 			LatencyMS:    result.latency,
+		}
+		response.Errors = append(response.Errors, searchErr)
+		return emit(FederatedSearchStreamEvent{
+			Type:         "provider_error",
+			Error:        &searchErr,
+			Provider:     response.Provider,
+			LatencyMS:    result.latency,
+			AutoDisable:  &result.autoDisable,
+			ProviderID:   result.provider.ID,
+			ProviderName: result.provider.Name,
 		})
-		return
 	}
 	response.Provider.Success++
+	if len(result.items) == 0 {
+		return emit(FederatedSearchStreamEvent{
+			Type:         "provider_result",
+			Provider:     response.Provider,
+			LatencyMS:    result.latency,
+			ProviderID:   result.provider.ID,
+			ProviderName: result.provider.Name,
+		})
+	}
 	for _, item := range result.items {
 		addFederatedItem(groups, keyword, result.provider, item)
+		key := federatedItemKey(item)
+		if group := groups[key]; group != nil {
+			copy := *group
+			if !emit(FederatedSearchStreamEvent{
+				Type:         "provider_result",
+				Item:         &copy,
+				Provider:     response.Provider,
+				LatencyMS:    result.latency,
+				ProviderID:   result.provider.ID,
+				ProviderName: result.provider.Name,
+			}) {
+				return false
+			}
+		}
 	}
+	return true
 }
 
-func federatedSearchBudget(providers []repository.SourceProvider, concurrency int) time.Duration {
+func federatedSearchBudget(providers []repository.SourceProvider, _ int) time.Duration {
 	maxTimeout := defaultCMSTimeout
 	for _, provider := range providers {
 		if timeout := federatedProviderTimeout(provider); timeout > maxTimeout {
 			maxTimeout = timeout
 		}
 	}
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	batches := (len(providers) + concurrency - 1) / concurrency
-	if batches < 1 {
-		batches = 1
-	}
-	budget := time.Duration(batches)*maxTimeout + defaultFederatedSearchGrace
-	maxBudget := 110 * time.Second
+	budget := maxTimeout + defaultFederatedSearchGrace
+	maxBudget := 30 * time.Second
 	if budget > maxBudget {
 		return maxBudget
 	}

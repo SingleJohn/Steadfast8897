@@ -24,11 +24,12 @@ var (
 )
 
 type ProviderRuntimeManager struct {
-	repo   *repository.SourceRepository
-	client *http.Client
-	js     *JSRuntimeManager
-	csp    *CSPRuntimeManager
-	logger *slog.Logger
+	repo             *repository.SourceRepository
+	client           *http.Client
+	js               *JSRuntimeManager
+	csp              *CSPRuntimeManager
+	logger           *slog.Logger
+	skipRuntimeAudit bool
 }
 
 func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.Client) *ProviderRuntimeManager {
@@ -145,27 +146,110 @@ func (m *ProviderRuntimeManager) Search(ctx context.Context, providerID int64, r
 // 结果在内存中映射为 SourceItem，便于复用聚合分组/打分逻辑而不污染媒体库与缓存。
 func (m *ProviderRuntimeManager) SearchPreview(ctx context.Context, providerID int64, req SearchRequest) (*ProviderPage, []repository.SourceItem, error) {
 	start := time.Now()
-	provider, row, err := m.enabledProvider(ctx, providerID)
+	manager := m
+	if manager != nil {
+		copy := *manager
+		copy.skipRuntimeAudit = true
+		manager = &copy
+	}
+	provider, row, err := manager.enabledProvider(ctx, providerID)
 	if err != nil {
-		LogProviderAction(m.logger, start, providerID, "search_preview", err)
+		LogProviderAction(manager.logger, start, providerID, "search_preview", err)
 		return nil, nil, err
 	}
-	if err := m.wait(row.ID).Wait(ctx); err != nil {
+	if err := manager.wait(row.ID).Wait(ctx); err != nil {
 		err = fmt.Errorf("provider 限流等待失败: %w", err)
-		LogProviderAction(m.logger, start, row.ID, "search_preview", err)
+		LogProviderAction(manager.logger, start, row.ID, "search_preview", err)
 		return nil, nil, err
 	}
 	page, err := provider.Search(ctx, req)
 	if err != nil {
-		LogProviderAction(m.logger, start, row.ID, "search_preview", err, "keyword_len", len(strings.TrimSpace(req.Keyword)))
+		LogProviderAction(manager.logger, start, row.ID, "search_preview", err, "keyword_len", len(strings.TrimSpace(req.Keyword)))
 		return nil, nil, err
 	}
 	items := SnapshotsToSourceItems(row.SourceKey, row.ID, page)
-	LogProviderAction(m.logger, start, row.ID, "search_preview", nil,
+	LogProviderAction(manager.logger, start, row.ID, "search_preview", nil,
 		"keyword_len", len(strings.TrimSpace(req.Keyword)),
 		"page", req.Page,
 		"count", len(items))
 	return page, items, nil
+}
+
+type MaterializeSearchItemRequest struct {
+	ProviderID     int64
+	SourceItemID   string
+	Title          string
+	ItemType       string
+	NormalizedKind string
+	Year           *int32
+	Region         *string
+	PosterURL      *string
+	Remarks        *string
+}
+
+func (m *ProviderRuntimeManager) MaterializeSearchItem(ctx context.Context, req MaterializeSearchItemRequest) (*repository.SourceItem, error) {
+	start := time.Now()
+	_, row, err := m.enabledProvider(ctx, req.ProviderID)
+	if err != nil {
+		LogProviderAction(m.logger, start, req.ProviderID, "materialize_search_item", err)
+		return nil, err
+	}
+	if !isSearchableRuntimeProvider(*row) {
+		err := fmt.Errorf("provider 不支持在线媒体搜索物化")
+		LogProviderAction(m.logger, start, row.ID, "materialize_search_item", err)
+		return nil, err
+	}
+	sourceItemID := strings.TrimSpace(req.SourceItemID)
+	title := strings.TrimSpace(req.Title)
+	if sourceItemID == "" {
+		err := fmt.Errorf("source item id 不能为空")
+		LogProviderAction(m.logger, start, row.ID, "materialize_search_item", err)
+		return nil, err
+	}
+	if title == "" {
+		err := fmt.Errorf("标题不能为空")
+		LogProviderAction(m.logger, start, row.ID, "materialize_search_item", err)
+		return nil, err
+	}
+	itemType := defaultSnapshotString(req.ItemType, "unknown")
+	normalizedKind := defaultSnapshotString(req.NormalizedKind, normalizedKindFromItemType(itemType))
+	ingestor, err := NewSourceIngestor(m.repo, row.SourceKey, row.ID)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "materialize_search_item", err)
+		return nil, err
+	}
+	item, err := ingestor.IngestItem(ctx, SourceItemSnapshot{
+		SourceItemID:   sourceItemID,
+		ItemType:       itemType,
+		Title:          title,
+		Year:           req.Year,
+		Region:         req.Region,
+		NormalizedKind: normalizedKind,
+		PosterURL:      req.PosterURL,
+		Remarks:        req.Remarks,
+		Raw: map[string]any{
+			"source":        "federated_search_materialize",
+			"provider_id":   row.ID,
+			"provider_name": row.Name,
+		},
+	})
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "materialize_search_item", err)
+		return nil, err
+	}
+	LogProviderAction(m.logger, start, row.ID, "materialize_search_item", nil, "source_item_hash", URLHash(sourceItemID))
+	return item, nil
+}
+
+func normalizedKindFromItemType(itemType string) string {
+	switch strings.TrimSpace(strings.ToLower(itemType)) {
+	case "movie":
+		return "movie"
+	case "series":
+		return "series"
+	default:
+		return NormalizeCMSKind(itemType)
+	}
 }
 
 // FetchCategory 拉取某分类某页内容并写入 source_items，用于批量填充在线虚拟库。
@@ -642,6 +726,7 @@ func (m *ProviderRuntimeManager) jsProvider(ctx context.Context, row *repository
 		headerMapFromJSON(row.Headers),
 		m.js,
 		time.Duration(row.TimeoutMS)*time.Millisecond,
+		WithJSProviderSkipAudit(m.skipRuntimeAudit),
 	)
 }
 
@@ -691,6 +776,7 @@ func (m *ProviderRuntimeManager) cspProvider(ctx context.Context, row *repositor
 		headerMapFromJSON(row.Headers),
 		m.csp,
 		time.Duration(row.TimeoutMS)*time.Millisecond,
+		WithCSPProviderSkipAudit(m.skipRuntimeAudit),
 	)
 }
 

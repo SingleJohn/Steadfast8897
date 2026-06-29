@@ -21,9 +21,18 @@ type CSPProvider struct {
 	headers       map[string]string
 	runtime       *CSPRuntimeManager
 	timeout       time.Duration
+	skipAudit     bool
 }
 
-func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL string, extRaw json.RawMessage, headers map[string]string, runtime *CSPRuntimeManager, timeout time.Duration) (*CSPProvider, error) {
+type CSPProviderOption func(*CSPProvider)
+
+func WithCSPProviderSkipAudit(skip bool) CSPProviderOption {
+	return func(p *CSPProvider) {
+		p.skipAudit = skip
+	}
+}
+
+func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL string, extRaw json.RawMessage, headers map[string]string, runtime *CSPRuntimeManager, timeout time.Duration, opts ...CSPProviderOption) (*CSPProvider, error) {
 	siteKey = strings.TrimSpace(siteKey)
 	if siteKey == "" {
 		return nil, fmt.Errorf("CSP Provider 缺少 site key")
@@ -42,7 +51,7 @@ func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL 
 	if timeout <= 0 {
 		timeout = cspRuntimeDefaultTimeout
 	}
-	return &CSPProvider{
+	provider := &CSPProvider{
 		providerID:    providerID,
 		siteKey:       siteKey,
 		name:          strings.TrimSpace(name),
@@ -53,7 +62,13 @@ func NewCSPProvider(providerID int64, siteKey, name, api, spider, configBaseURL 
 		headers:       compactHeaderMap(headers),
 		runtime:       runtime,
 		timeout:       timeout,
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(provider)
+		}
+	}
+	return provider, nil
 }
 
 func (p *CSPProvider) Categories(ctx context.Context) ([]ProviderCategory, error) {
@@ -268,6 +283,7 @@ func (p *CSPProvider) runData(ctx context.Context, method string, args map[strin
 		ProviderID:    &p.providerID,
 		ProviderKey:   p.siteKey,
 		TimeoutMs:     timeoutMS,
+		SkipAudit:     p.skipAudit,
 	})
 	if err != nil {
 		return nil, err
