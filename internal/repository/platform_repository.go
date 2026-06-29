@@ -253,7 +253,7 @@ func (r *PlatformRepository) UpdateSortOrder(ctx context.Context, orderedIDs []s
 	return nil
 }
 
-func (r *PlatformRepository) AddLibrary(ctx context.Context, dimension, matchValue, displayName string, enabled bool) error {
+func (r *PlatformRepository) AddLibrary(ctx context.Context, dimension, matchValue, displayName string, enabled bool) (bool, error) {
 	dimension = strings.TrimSpace(dimension)
 	if dimension == "" {
 		dimension = PlatformDimStudio
@@ -263,12 +263,15 @@ func (r *PlatformRepository) AddLibrary(ctx context.Context, dimension, matchVal
 	if displayName == "" {
 		displayName = matchValue
 	}
-	_, err := r.pool.Exec(ctx,
+	tag, err := r.pool.Exec(ctx,
 		`INSERT INTO platform_libraries (platform_name, dimension, match_value, match_values, enabled)
 		 VALUES ($1, $2, $3, ARRAY[$3], $4)
 		 ON CONFLICT (dimension, match_value) DO NOTHING`,
 		displayName, dimension, matchValue, enabled)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *PlatformRepository) GetByID(ctx context.Context, id string) (*PlatformLibrary, error) {

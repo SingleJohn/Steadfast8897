@@ -140,12 +140,14 @@ export function usePlatformLibraries(
     if (discoverSelected.value.length === 0) return
     try {
       const res = await addPlatformsBatch(discoverDimension.value, discoverSelected.value)
-      showToast(`已添加 ${res.added} 个虚拟库(默认关闭，可在下方启用)`, 'success')
+      const skippedText = res.skipped > 0 ? `，已存在 ${res.skipped} 个` : ''
+      const failedText = res.failed?.length ? `，失败 ${res.failed.length} 个` : ''
+      showToast(`已添加 ${res.added} 个虚拟库${skippedText}${failedText}(默认关闭，可在下方启用)`, res.failed?.length ? 'warning' : 'success')
       discoverSelected.value = []
       await runDiscover()
       await loadPlatforms()
-    } catch {
-      showToast('添加失败', 'error')
+    } catch (e: any) {
+      showToast(e?.message || '添加失败', 'error')
     }
   }
 

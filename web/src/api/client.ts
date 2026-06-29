@@ -1158,7 +1158,7 @@ export async function discoverPlatformDimension(dimension: string, search = '', 
   );
 }
 export async function addPlatformsBatch(dimension: string, values: string[]) {
-  return requestJson<{ added: number }>('/Library/Platforms/Batch', {
+  return requestJson<{ added: number; skipped: number; failed?: { value: string; message: string }[] }>('/Library/Platforms/Batch', {
     method: 'POST',
     body: JSON.stringify({ Dimension: dimension, Values: values }),
   });

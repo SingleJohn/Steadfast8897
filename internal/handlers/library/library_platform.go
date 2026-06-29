@@ -88,7 +88,7 @@ func addPlatform(c *gin.Context, state *AppState) {
 	if matchValue == "" {
 		matchValue = strings.TrimSpace(body.PlatformName)
 	}
-	if err := models.AddPlatformLibrary(c.Request.Context(), state.DB,
+	if _, err := models.AddPlatformLibrary(c.Request.Context(), state.DB,
 		body.Dimension, matchValue, strings.TrimSpace(body.PlatformName), false); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
@@ -132,19 +132,43 @@ func addPlatformsBatch(c *gin.Context, state *AppState) {
 	}
 	ctx := c.Request.Context()
 	added := 0
+	skipped := 0
+	var failed []gin.H
 	for _, v := range body.Values {
 		v = strings.TrimSpace(v)
 		if v == "" {
 			continue
 		}
-		if err := models.AddPlatformLibrary(ctx, state.DB, body.Dimension, v, v, false); err != nil {
+		created, err := models.AddPlatformLibrary(ctx, state.DB, body.Dimension, v, v, false)
+		if err != nil {
 			slog.Warn("[Platform] batch add failed", "dimension", body.Dimension, "value", v, "error", err)
+			failed = append(failed, gin.H{"value": v, "message": err.Error()})
 			continue
 		}
-		added++
+		if created {
+			added++
+		} else {
+			skipped++
+		}
+	}
+	if len(failed) > 0 {
+		if added > 0 {
+			invalidateViewsCache(c, state)
+		}
+		status := http.StatusMultiStatus
+		if added == 0 {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, gin.H{
+			"message": "部分虚拟库添加失败",
+			"added":   added,
+			"skipped": skipped,
+			"failed":  failed,
+		})
+		return
 	}
 	invalidateViewsCache(c, state)
-	c.JSON(http.StatusOK, gin.H{"added": added})
+	c.JSON(http.StatusOK, gin.H{"added": added, "skipped": skipped})
 }
 
 func setPlatformEnabled(c *gin.Context, state *AppState, enabled bool) {

@@ -204,7 +204,8 @@ func UpdatePlatformSortOrder(ctx context.Context, pool *pgxpool.Pool, orderedIDs
 }
 
 // AddPlatformLibrary 新增一个虚拟库。dimension 为空时默认 studio;displayName 为空时取 matchValue。
-func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matchValue, displayName string, enabled bool) error {
+// 返回值表示本次是否真实新增;已存在时返回 false,nil。
+func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matchValue, displayName string, enabled bool) (bool, error) {
 	dimension = strings.TrimSpace(dimension)
 	if dimension == "" {
 		dimension = PlatformDimStudio
