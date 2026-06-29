@@ -102,7 +102,18 @@ const cardStyle = computed(() => {
   const ratio = resolvedShape.value === 'landscape' && primaryAspectRatio.value > 0
     ? primaryAspectRatio.value
     : 16 / 9
-  return { '--media-card-ratio': String(ratio) }
+  const widthExpr = (() => {
+    if (resolvedShape.value === 'portrait') return 'calc(var(--media-card-fixed-height, 195px) * 2 / 3)'
+    if (resolvedShape.value === 'thumb') return 'calc(var(--media-card-fixed-height, 195px) * 16 / 9)'
+    if (resolvedShape.value === 'landscape') {
+      return `min(calc(var(--media-card-fixed-height, 195px) * ${ratio}), calc(100vw - 48px))`
+    }
+    return 'var(--media-card-fixed-height, 195px)'
+  })()
+  return {
+    '--media-card-ratio': String(ratio),
+    '--media-card-image-width': widthExpr,
+  }
 })
 
 const platformName = computed(() => {
@@ -240,8 +251,8 @@ const linkTarget = computed(() => {
       </div>
     </router-link>
     <div class="card-text">
-      <span class="card-title">{{ item.Name }}</span>
-      <span v-if="subtitle" class="card-subtitle">{{ subtitle }}</span>
+      <span class="card-title" :title="item.Name || ''">{{ item.Name }}</span>
+      <span v-if="subtitle" class="card-subtitle" :title="String(subtitle)">{{ subtitle }}</span>
     </div>
   </div>
 </template>
@@ -293,27 +304,24 @@ const linkTarget = computed(() => {
 }
 
 .card-box-fixed-height {
-  width: fit-content;
+  width: var(--media-card-image-width);
   max-width: 100%;
 }
 
 .card-box-fixed-height .portrait-card {
-  width: calc(var(--media-card-fixed-height, 195px) * 2 / 3);
+  width: var(--media-card-image-width);
   height: var(--media-card-fixed-height, 195px);
   aspect-ratio: auto;
 }
 
 .card-box-fixed-height .landscape-card {
-  width: min(
-    calc(var(--media-card-fixed-height, 195px) * var(--media-card-ratio)),
-    calc(100vw - 48px)
-  );
+  width: var(--media-card-image-width);
   height: var(--media-card-fixed-height, 195px);
   aspect-ratio: auto;
 }
 
 .card-box-fixed-height .thumb-card {
-  width: calc(var(--media-card-fixed-height, 195px) * 16 / 9);
+  width: var(--media-card-image-width);
   height: var(--media-card-fixed-height, 195px);
   aspect-ratio: auto;
 }
@@ -539,9 +547,11 @@ const linkTarget = computed(() => {
 
 .card-text {
   margin-top: 0.7em;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   padding: 0 0.2em;
+  box-sizing: border-box;
 }
 
 .card-title {
