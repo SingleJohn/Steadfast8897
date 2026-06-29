@@ -1,11 +1,10 @@
 package admin
 
 import (
+	sourcebridge "fyms/internal/source"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-
-	sourcebridge "fyms/internal/source"
 )
 
 // fetchProviderCatalog 把单个 provider 的分类抓取入队(后台批量入库以填充虚拟库)。
