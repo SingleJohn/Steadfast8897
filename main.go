@@ -155,6 +155,10 @@ func main() {
 		slog.Warn("CSP runtime PoC unavailable", "log_target", "provider", "error", err)
 	}
 
+	// 在线源内容刷新：填充虚拟库(catalog_fetch) + 连载剧追更(detail_refresh)。
+	sourceRefreshWorker := sourcebridge.NewSourceRefreshWorker(repo.Source, httpClient, jsRuntime, cspRuntime)
+	sourceRefreshScheduler := sourcebridge.NewSourceRefreshScheduler(repo.Source)
+
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()
 
@@ -251,6 +255,8 @@ func main() {
 	go ingestWorker.Run(ctx)
 	go scrapeWorker.Run(ctx)
 	go refreshWorker.Run(ctx)
+	go sourceRefreshWorker.Run(ctx)
+	go sourceRefreshScheduler.Run(ctx)
 	go notifier.Run(ctx)
 	go notifier.RunLibraryNewSweeper(ctx)
 	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)

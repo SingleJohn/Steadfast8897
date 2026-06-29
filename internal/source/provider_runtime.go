@@ -163,6 +163,39 @@ func (m *ProviderRuntimeManager) SearchPreview(ctx context.Context, providerID i
 	return page, items, nil
 }
 
+// FetchCategory 拉取某分类某页内容并写入 source_items，用于批量填充在线虚拟库。
+func (m *ProviderRuntimeManager) FetchCategory(ctx context.Context, providerID int64, req CategoryRequest) (*ProviderPage, []repository.SourceItem, error) {
+	start := time.Now()
+	provider, row, err := m.enabledProvider(ctx, providerID)
+	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "category_fetch", err)
+		return nil, nil, err
+	}
+	if err := m.wait(row.ID).Wait(ctx); err != nil {
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "category_fetch", err)
+		return nil, nil, err
+	}
+	page, err := provider.Category(ctx, req)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "category_fetch", err, "category_id", req.CategoryID, "page", req.Page)
+		return nil, nil, err
+	}
+	ingestor, err := NewSourceIngestor(m.repo, row.SourceKey, row.ID)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "category_fetch", err)
+		return nil, nil, err
+	}
+	items, err := ingestor.IngestPage(ctx, page)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "category_fetch", err)
+		return nil, nil, err
+	}
+	LogProviderAction(m.logger, start, row.ID, "category_fetch", nil,
+		"category_id", req.CategoryID, "page", req.Page, "count", len(items))
+	return page, items, nil
+}
+
 func (m *ProviderRuntimeManager) Detail(ctx context.Context, providerID int64, sourceItemID string) (*ProviderDetail, *repository.SourceItem, []repository.SourcePlaySource, error) {
 	start := time.Now()
 	provider, row, err := m.enabledProvider(ctx, providerID)
