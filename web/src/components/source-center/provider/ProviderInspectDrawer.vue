@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NDrawer, NDrawerContent, NEmpty, NTabPane, NTabs, NTag } from 'naive-ui'
+import { NDrawer, NDrawerContent, NEmpty, NSpin, NTabPane, NTabs, NTag } from 'naive-ui'
 import type {
   SourceProviderDiagnoseResult,
   SourceProviderHomeProfile,
@@ -11,12 +11,18 @@ import { runtimeKindLabel } from '../sourceGlossary'
 const props = defineProps<{
   show: boolean
   tab: string
+  loading: boolean
   providerName: string
   diagnosis: SourceProviderDiagnoseResult | null
   homeProfile: SourceProviderHomeProfile | null
   categories: Array<{ id: string; name: string }>
   searchResult: any
 }>()
+
+function posterStyle(url?: string) {
+  if (!url) return {}
+  return { backgroundImage: `url("${url}")` }
+}
 
 const emit = defineEmits<{
   'update:show': [value: boolean]
@@ -97,7 +103,8 @@ function homeProfileMessage(slice: SourceProviderHomeProfileSlice) {
       <NTabs :value="tab" type="line" animated @update:value="emit('update:tab', $event)">
         <!-- FongMi 兼容诊断 -->
         <NTabPane name="diagnose" tab="兼容诊断">
-          <section v-if="diagnosis" class="block" aria-live="polite">
+          <div v-if="loading && !diagnosis" class="loading-state"><NSpin size="small" /><span>正在诊断…</span></div>
+          <section v-else-if="diagnosis" class="block" aria-live="polite">
             <div class="block-head">
               <p class="muted">
                 {{ diagnosis.provider_name }} · {{ runtimeKindLabel(diagnosis.runtime_kind) }} · {{ diagnosis.duration_ms }} ms
@@ -134,78 +141,90 @@ function homeProfileMessage(slice: SourceProviderHomeProfileSlice) {
 
         <!-- 首页画像 -->
         <NTabPane name="home" tab="首页画像">
-          <section v-if="homeProfile" class="block" aria-live="polite">
+          <div v-if="loading && !homeProfile" class="loading-state"><NSpin size="small" /><span>正在拉取首页内容…</span></div>
+          <section v-else-if="homeProfile" class="block" aria-live="polite">
             <div class="block-head">
               <p class="muted">
-                {{ runtimeKindLabel(homeProfile.runtime_kind) }} · 首页列表来源 {{ homeProfileSourceLabel(homeProfile.home_item_source) }}
+                {{ runtimeKindLabel(homeProfile.runtime_kind) }} · 列表来源 {{ homeProfileSourceLabel(homeProfile.home_item_source) }}
+                · 分类 {{ homeProfile.categories.length }} · 首页 {{ homeProfile.home_items.length }}
               </p>
               <NTag size="small" type="info">read-only</NTag>
             </div>
-            <div class="metrics">
-              <span>class {{ homeProfile.categories.length }}</span>
-              <span>filters {{ homeProfile.filters_count }}</span>
-              <span>home items {{ homeProfile.home_items.length }}</span>
+            <div v-if="homeProfile.categories.length" class="chips">
+              <NTag v-for="cat in homeProfile.categories" :key="cat.id" size="small" round>{{ cat.name }}</NTag>
             </div>
-            <div class="card-grid">
+            <div v-if="homeProfile.home_items.length" class="poster-wall">
               <article
-                v-for="slice in [homeProfile.sources.home_content, homeProfile.sources.home_video_content]"
-                :key="slice.method"
-                class="card"
+                v-for="item in homeProfile.home_items"
+                :key="item.source_item_id || item.title"
+                class="poster-card"
               >
-                <div class="card-head">
-                  <strong>{{ homeProfileSliceLabel(slice) }}</strong>
-                  <NTag size="small" :type="diagnoseStatusType(slice.status)">{{ slice.status }}</NTag>
+                <div class="poster" :class="{ empty: !item.poster_url }" :style="posterStyle(item.poster_url)">
+                  <span v-if="!item.poster_url">{{ item.item_type || '—' }}</span>
                 </div>
-                <div class="metrics">
-                  <span>{{ slice.duration_ms }} ms</span>
-                  <span>class {{ slice.categories_count }}</span>
-                  <span>filters {{ slice.filters_count }}</span>
-                  <span>list {{ slice.items_count }}</span>
-                </div>
-                <p v-if="homeProfileMessage(slice)" class="msg">{{ homeProfileMessage(slice) }}</p>
+                <div class="poster-title" :title="item.title || item.source_item_id">{{ item.title || item.source_item_id || '-' }}</div>
+                <div class="poster-meta">{{ item.item_type || '' }}<template v-if="item.year"> · {{ item.year }}</template></div>
               </article>
             </div>
-            <div v-if="homeProfile.categories.length" class="chips">
-              <NTag v-for="cat in homeProfile.categories.slice(0, 24)" :key="cat.id" size="small">{{ cat.name }}</NTag>
-            </div>
-            <div v-if="homeProfile.home_items.length" class="sample-list">
-              <div
-                v-for="item in homeProfile.home_items.slice(0, 12)"
-                :key="item.source_item_id || item.title"
-                class="sample-row"
-              >
-                <span class="sample-title">{{ item.title || item.source_item_id || '-' }}</span>
-                <span class="muted">{{ item.item_type || '-' }}<template v-if="item.year"> · {{ item.year }}</template></span>
+            <NEmpty v-else size="small" description="该站点首页未返回内容条目；可看上面的分类，或用「抓取入库」按分类填充。" />
+            <details class="diag-fold">
+              <summary>首页来源诊断</summary>
+              <div class="card-grid">
+                <article
+                  v-for="slice in [homeProfile.sources.home_content, homeProfile.sources.home_video_content]"
+                  :key="slice.method"
+                  class="card"
+                >
+                  <div class="card-head">
+                    <strong>{{ homeProfileSliceLabel(slice) }}</strong>
+                    <NTag size="small" :type="diagnoseStatusType(slice.status)">{{ slice.status }}</NTag>
+                  </div>
+                  <div class="metrics">
+                    <span>{{ slice.duration_ms }} ms</span>
+                    <span>class {{ slice.categories_count }}</span>
+                    <span>list {{ slice.items_count }}</span>
+                  </div>
+                  <p v-if="homeProfileMessage(slice)" class="msg">{{ homeProfileMessage(slice) }}</p>
+                </article>
               </div>
-            </div>
+            </details>
           </section>
-          <NEmpty v-else description="点击站点行的“首页”后在此查看首页画像（只读，不写入在线缓存）。" />
+          <NEmpty v-else description="点击站点行的「首页」图标，在此查看首页内容墙（只读，不写入在线缓存）。" />
         </NTabPane>
 
         <!-- 分类 -->
         <NTabPane name="categories" tab="分类">
-          <div v-if="categories.length" class="chips">
-            <NTag v-for="cat in categories" :key="cat.id" size="small">{{ cat.name }}</NTag>
-          </div>
-          <NEmpty v-else description="点击站点行的“分类”后在此查看该站点的分类列表。" />
+          <div v-if="loading && !categories.length" class="loading-state"><NSpin size="small" /><span>正在拉取分类…</span></div>
+          <section v-else-if="categories.length" class="block">
+            <p class="muted">共 {{ categories.length }} 个分类。点站点行的「抓取入库」可把这些分类的内容批量填进在线虚拟库。</p>
+            <div class="chips">
+              <NTag v-for="cat in categories" :key="cat.id" size="small" round>{{ cat.name }}</NTag>
+            </div>
+          </section>
+          <NEmpty v-else description="点击站点行的「分类」图标，在此查看该站点的分类列表。" />
         </NTabPane>
 
         <!-- 搜索测试 -->
         <NTabPane name="search" tab="搜索测试">
-          <section v-if="searchResult?.page" class="block">
+          <div v-if="loading && !searchResult" class="loading-state"><NSpin size="small" /><span>正在搜索…</span></div>
+          <section v-else-if="searchResult?.page" class="block">
             <div class="metrics">
               <span>页码 {{ searchResult.page.page }}</span>
               <span>结果 {{ searchPageItems.length }}</span>
               <span>入库 {{ searchResult.items?.length || 0 }}</span>
             </div>
-            <div v-if="searchPageItems.length" class="sample-list">
-              <div v-for="(item, idx) in searchPageItems" :key="item.source_item_id || item.title || idx" class="sample-row">
-                <span class="sample-title">{{ item.title || item.source_item_id || '-' }}</span>
-                <span class="muted">{{ item.item_type || '-' }}<template v-if="item.year"> · {{ item.year }}</template></span>
-              </div>
+            <div v-if="searchPageItems.length" class="poster-wall">
+              <article v-for="(item, idx) in searchPageItems" :key="item.source_item_id || item.title || idx" class="poster-card">
+                <div class="poster" :class="{ empty: !item.poster_url }" :style="posterStyle(item.poster_url)">
+                  <span v-if="!item.poster_url">{{ item.item_type || '—' }}</span>
+                </div>
+                <div class="poster-title" :title="item.title || item.source_item_id">{{ item.title || item.source_item_id || '-' }}</div>
+                <div class="poster-meta">{{ item.item_type || '' }}<template v-if="item.year"> · {{ item.year }}</template></div>
+              </article>
             </div>
+            <NEmpty v-else size="small" description="无结果" />
           </section>
-          <NEmpty v-else description="在“站点排障”里选择站点并点击“搜索测试”后，在此查看返回结果。" />
+          <NEmpty v-else description="在下方「站点排障」选择站点、填关键词并点「搜索测试」，在此查看返回结果。" />
         </NTabPane>
       </NTabs>
     </NDrawerContent>
@@ -289,6 +308,62 @@ function homeProfileMessage(slice: SourceProviderHomeProfileSlice) {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 0;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+/* FongMi 风格首页/搜索海报墙 */
+.poster-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 12px;
+}
+.poster-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.poster-card .poster {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  background-color: var(--app-surface-2);
+  background-position: center;
+  background-size: cover;
+  display: grid;
+  place-items: center;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.poster-card .poster.empty {
+  border: 1px dashed var(--app-border);
+}
+.poster-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.poster-meta {
+  color: var(--app-text-muted);
+  font-size: 11px;
+}
+.diag-fold {
+  margin-top: 4px;
+}
+.diag-fold summary {
+  cursor: pointer;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  margin-bottom: 8px;
 }
 .sample-list {
   display: grid;

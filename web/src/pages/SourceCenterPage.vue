@@ -366,6 +366,7 @@ watch(federatedKeyword, (value) => {
 .source-workbench {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .source-nav {
@@ -404,6 +405,13 @@ watch(federatedKeyword, (value) => {
 .tab-stack {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+/* NSpin 包裹层默认会被表格内容撑开，强制收缩让表格走自身横向滚动 */
+.source-workbench :deep(.n-spin-container),
+.source-workbench :deep(.n-spin-content) {
+  min-width: 0;
 }
 
 @media (max-width: 1080px) {

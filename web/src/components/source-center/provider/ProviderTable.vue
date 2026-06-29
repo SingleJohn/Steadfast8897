@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { h } from 'vue'
-import { NButton, NDataTable, NPopconfirm, NPopover, NSpace, NTag, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NDataTable, NIcon, NPopconfirm, NPopover, NSpace, NTag, NTooltip, useMessage } from 'naive-ui'
+import type { Component } from 'vue'
 import type { DataTableColumns } from 'naive-ui'
+import {
+  CloudDownloadOutline,
+  ConstructOutline,
+  GridOutline,
+  HomeOutline,
+  PowerOutline,
+  PulseOutline,
+  TrashOutline,
+} from '@vicons/ionicons5'
 import type { SourceProvider, SourceProviderHealthSummary } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 import {
@@ -140,24 +150,58 @@ function hCapabilityTags(row: SourceProvider) {
   })
 }
 
-function hButton(label: string) {
-  return h(NButton, { size: 'small', quaternary: true }, { default: () => label })
+// 图标动作按钮：圆形 + hover tooltip，紧凑且统一。
+function iconAction(icon: Component, label: string, opts: { type?: 'primary' | 'error'; loading?: boolean; onClick: () => void }) {
+  return h(NTooltip, null, {
+    trigger: () => h(NButton, {
+      size: 'small',
+      circle: true,
+      quaternary: true,
+      type: opts.type,
+      loading: opts.loading,
+      onClick: opts.onClick,
+    }, { icon: () => h(NIcon, null, { default: () => h(icon) }) }),
+    default: () => label,
+  })
+}
+
+function hEnabledToggle(row: SourceProvider) {
+  return h(NPopconfirm, {
+    positiveText: row.Enabled ? '停用' : '启用',
+    negativeText: '取消',
+    onPositiveClick: () => emit('toggle', row.ID, !row.Enabled),
+  }, {
+    trigger: () => h(NTooltip, null, {
+      trigger: () => h(NButton, {
+        size: 'small',
+        circle: true,
+        quaternary: true,
+        type: row.Enabled ? 'success' : undefined,
+        onClick: () => {},
+      }, { icon: () => h(NIcon, null, { default: () => h(PowerOutline) }) }),
+      default: () => row.Enabled ? '已启用（点击停用）' : '已停用（点击启用）',
+    }),
+    default: () => `${row.Enabled ? '停用' : '启用'}站点“${row.Name}”？在线虚拟库命中范围会随之变化。`,
+  })
 }
 
 function hActions(row: SourceProvider) {
-  return h(NSpace, { size: 4, wrap: true }, {
+  return h(NSpace, { size: 2, wrap: false, align: 'center' }, {
     default: () => [
-      h(NButton, { size: 'small', loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }, { default: () => '探活' }),
-      h(NButton, { size: 'small', quaternary: true, loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }, { default: () => '诊断' }),
-      h(NButton, { size: 'small', quaternary: true, loading: props.action === `home-profile:${row.ID}`, onClick: () => emit('homeProfile', row.ID) }, { default: () => '首页' }),
-      h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
-      h(NButton, { size: 'small', quaternary: true, type: 'primary', loading: props.action === `catalog:${row.ID}`, onClick: () => emit('fetchCatalog', row.ID) }, { default: () => '抓取' }),
+      iconAction(PulseOutline, '探活', { loading: props.action === `health:${row.ID}`, onClick: () => emit('health', row.ID) }),
+      iconAction(ConstructOutline, '兼容诊断', { loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }),
+      iconAction(HomeOutline, '首页画像', { loading: props.action === `home-profile:${row.ID}`, onClick: () => emit('homeProfile', row.ID) }),
+      iconAction(GridOutline, '分类', { loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }),
+      iconAction(CloudDownloadOutline, '抓取入库', { type: 'primary', loading: props.action === `catalog:${row.ID}`, onClick: () => emit('fetchCatalog', row.ID) }),
       h(NPopconfirm, {
         positiveText: '删除',
         negativeText: '取消',
         onPositiveClick: () => emit('deleteOne', row.ID),
       }, {
-        trigger: () => h(NButton, { size: 'small', type: 'error', quaternary: true, loading: props.action === 'batch-delete' }, { default: () => '删除' }),
+        trigger: () => h(NTooltip, null, {
+          trigger: () => h(NButton, { size: 'small', circle: true, quaternary: true, type: 'error', loading: props.action === 'batch-delete' }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
+          default: () => '删除',
+        }),
         default: () => `删除 Provider “${row.Name}”？在线缓存条目会级联删除，运行时审计保留脱敏记录。`,
       }),
     ],
@@ -239,22 +283,16 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '启用',
     key: 'Enabled',
-    width: 110,
+    width: 64,
+    align: 'center',
     render(row) {
-      return h(NPopconfirm, {
-        positiveText: row.Enabled ? '停用' : '启用',
-        negativeText: '取消',
-        onPositiveClick: () => emit('toggle', row.ID, !row.Enabled),
-      }, {
-        trigger: () => hButton(row.Enabled ? '停用' : '启用'),
-        default: () => `${row.Enabled ? '停用' : '启用'}站点“${row.Name}”？在线虚拟库命中范围会随之变化。`,
-      })
+      return hEnabledToggle(row)
     },
   },
   {
     title: '操作',
     key: 'actions',
-    width: 300,
+    width: 196,
     render(row) {
       return hActions(row)
     },
@@ -269,6 +307,7 @@ const columns: DataTableColumns<SourceProvider> = [
     :checked-row-keys="selectedIds"
     :pagination="tablePagination"
     :row-key="(row: SourceProvider) => row.ID"
+    :scroll-x="1180"
     size="small"
     :bordered="false"
     @update:checked-row-keys="emit('update:selectedIds', $event as number[])"

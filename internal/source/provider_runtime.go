@@ -15,14 +15,20 @@ import (
 	"fyms/internal/repository"
 )
 
+// 限流器按 providerID 全局共享。Handler/worker 每次请求都会 new 一个 ProviderRuntimeManager，
+// 若限流器挂在实例上则每次重置、形同虚设；改为包级全局后所有实例对同一 provider 共享同一限流器，
+// 真正约束对单个源站的并发/频率（尤其是后台 catalog_fetch 批量抓取）。
+var (
+	providerLimiterMu sync.Mutex
+	providerLimiters  = map[int64]*rate.Limiter{}
+)
+
 type ProviderRuntimeManager struct {
-	repo     *repository.SourceRepository
-	client   *http.Client
-	js       *JSRuntimeManager
-	csp      *CSPRuntimeManager
-	mu       sync.Mutex
-	limiters map[int64]*rate.Limiter
-	logger   *slog.Logger
+	repo   *repository.SourceRepository
+	client *http.Client
+	js     *JSRuntimeManager
+	csp    *CSPRuntimeManager
+	logger *slog.Logger
 }
 
 func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.Client) *ProviderRuntimeManager {
@@ -30,10 +36,9 @@ func NewProviderRuntimeManager(repo *repository.SourceRepository, client *http.C
 		client = http.DefaultClient
 	}
 	return &ProviderRuntimeManager{
-		repo:     repo,
-		client:   client,
-		limiters: map[int64]*rate.Limiter{},
-		logger:   SourceLogger("provider"),
+		repo:   repo,
+		client: client,
+		logger: SourceLogger("provider"),
 	}
 }
 
@@ -749,12 +754,12 @@ func (m *ProviderRuntimeManager) cspSpiderAndBaseURL(ctx context.Context, row *r
 }
 
 func (m *ProviderRuntimeManager) wait(providerID int64) *rate.Limiter {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	limiter := m.limiters[providerID]
+	providerLimiterMu.Lock()
+	defer providerLimiterMu.Unlock()
+	limiter := providerLimiters[providerID]
 	if limiter == nil {
 		limiter = rate.NewLimiter(rate.Every(500*time.Millisecond), 2)
-		m.limiters[providerID] = limiter
+		providerLimiters[providerID] = limiter
 	}
 	return limiter
 }

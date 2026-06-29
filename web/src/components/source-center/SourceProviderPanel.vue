@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { NButton, NInput, NSelect } from 'naive-ui'
 import type {
   SourceProvider,
@@ -65,16 +65,25 @@ function onToggle(id: number, enabled: boolean) {
   emit('toggle', id, enabled)
 }
 
-function openDrawer(tab: 'diagnose' | 'home' | 'categories' | 'search') {
+// 点击行内"诊断/首页/分类"时立即打开抽屉到对应页签并触发加载，数据到达后响应式填充。
+// 不再依赖 watch 结果变化才弹出（那会出现“点了没反应、要再点一次”的问题）。
+function onInspect(tab: 'diagnose' | 'home' | 'categories', id: number) {
+  emit('update:activeProviderId', id)
   drawerTab.value = tab
   drawerOpen.value = true
+  if (tab === 'diagnose') emit('diagnose', id)
+  else if (tab === 'home') emit('homeProfile', id)
+  else emit('categories', id)
 }
 
-// 任一排障动作产生新结果时，自动弹出抽屉并切到对应页签（解决“点了不知道加载成了啥”）
-watch(() => props.diagnosis, (value) => { if (value) openDrawer('diagnose') })
-watch(() => props.homeProfile, (value) => { if (value) openDrawer('home') })
-watch(() => props.categories, () => { openDrawer('categories') })
-watch(() => props.searchResult, (value) => { if (value) openDrawer('search') })
+function onSearchTest() {
+  drawerTab.value = 'search'
+  drawerOpen.value = true
+  emit('search')
+}
+
+// 抽屉当前页签是否正在加载（用于显示加载态而非空状态）。
+const inspectLoading = computed(() => /^(diagnose|home-profile|categories|search):/.test(props.action))
 </script>
 
 <template>
@@ -115,9 +124,9 @@ watch(() => props.searchResult, (value) => { if (value) openDrawer('search') })
       @update:selected-ids="emit('update:selectedIds', $event)"
       @toggle="onToggle"
       @health="emit('health', $event)"
-      @diagnose="emit('diagnose', $event)"
-      @home-profile="emit('homeProfile', $event)"
-      @categories="emit('categories', $event)"
+      @diagnose="onInspect('diagnose', $event)"
+      @home-profile="onInspect('home', $event)"
+      @categories="onInspect('categories', $event)"
       @fetch-catalog="emit('fetchCatalog', $event)"
       @delete-one="emit('batchDelete', [$event])"
     />
@@ -152,13 +161,14 @@ watch(() => props.searchResult, (value) => { if (value) openDrawer('search') })
           <span class="field-label">搜索关键词</span>
           <NInput :value="keyword" placeholder="搜索关键词" clearable @update:value="emit('update:keyword', $event)" />
         </label>
-        <NButton type="primary" :loading="!!activeProviderId && action === `search:${activeProviderId}`" @click="emit('search')">搜索测试</NButton>
+        <NButton type="primary" :loading="!!activeProviderId && action === `search:${activeProviderId}`" @click="onSearchTest">搜索测试</NButton>
       </div>
     </div>
 
     <ProviderInspectDrawer
       :show="drawerOpen"
       :tab="drawerTab"
+      :loading="inspectLoading"
       :provider-name="activeProviderName"
       :diagnosis="diagnosis"
       :home-profile="homeProfile"
