@@ -42,7 +42,8 @@ func scanSourceProviderAutoDisable(row pgx.Row) (*SourceProvider, int, bool, err
 		&out.Capabilities, &out.TimeoutMS, &out.Enabled, &out.Visible, &out.Searchable,
 		&out.HealthStatus, &out.LastCheckAt, &out.LastError, &out.RawSite, &out.CreatedAt,
 		&out.UpdatedAt, &failureCount, &disabled); err != nil {
-		return nil, 0, false, nilIfNoRows[SourceProvider](err)
+		provider, scanErr := nilIfNoRows[SourceProvider](err)
+		return provider, 0, false, scanErr
 	}
 	return &out, failureCount, disabled, nil
 }
