@@ -49,6 +49,16 @@ export function useSourceCenter(showToast: ToastFn) {
     }
   }
 
+  async function refreshConfig(id: number) {
+    const ok = await configs.refreshConfig(id)
+    if (ok) {
+      await Promise.all([
+        providers.refreshProviders(),
+        views.refreshViews(),
+      ])
+    }
+  }
+
   async function toggleProvider(id: number, enabled: boolean) {
     await providers.toggleProvider(id, enabled)
     await views.refreshViews()
@@ -114,6 +124,7 @@ export function useSourceCenter(showToast: ToastFn) {
     configDeleteTarget: configs.deleteTarget,
     configDeleteImpact: configs.deleteImpact,
     configDeleteLoading: configs.deleteLoading,
+    configRefreshingId: configs.refreshingConfigId,
     activeProviderId: providers.activeProviderId,
     selectedProvider: providers.selectedProvider,
     selectedProviderIds: providers.selectedProviderIds,
@@ -137,8 +148,11 @@ export function useSourceCenter(showToast: ToastFn) {
     federatedLimit: providers.federatedLimit,
     federatedLoading: providers.federatedLoading,
     federatedResult: providers.federatedResult,
+    federatedDryRun: providers.federatedDryRun,
     embySourceSearchEnabled: providers.embySourceSearchEnabled,
     savingEmbySourceSearch: providers.savingEmbySourceSearch,
+    embyLiveSearchEnabled: providers.embyLiveSearchEnabled,
+    savingEmbyLiveSearch: providers.savingEmbyLiveSearch,
     viewDraft: views.viewDraft,
     discoverDimension: views.discoverDimension,
     discoverSearch: views.discoverSearch,
@@ -169,6 +183,7 @@ export function useSourceCenter(showToast: ToastFn) {
     inspectDeleteConfig: configs.inspectDeleteConfig,
     cancelDeleteConfig: configs.cancelDeleteConfig,
     confirmDeleteConfig,
+    refreshConfig,
     toggleProvider,
     batchToggleProviders,
     batchHealthProviders,
@@ -184,6 +199,7 @@ export function useSourceCenter(showToast: ToastFn) {
     loadProviderCategories: providers.loadProviderCategories,
     runFederatedSearch,
     updateEmbySourceSearchEnabled: providers.updateEmbySourceSearchEnabled,
+    updateEmbyLiveSearchEnabled: providers.updateEmbyLiveSearchEnabled,
     editView: views.editView,
     saveView: views.saveView,
     previewView: views.previewView,

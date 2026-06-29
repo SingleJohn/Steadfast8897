@@ -65,6 +65,49 @@ func (i *SourceIngestor) IngestDetail(ctx context.Context, detail *ProviderDetai
 	return item, playSources, nil
 }
 
+// SnapshotsToSourceItems 把一页抓取结果映射为 SourceItem（不落库），用于 dry-run 搜索测试。
+// 跳过缺少来源 ID 或标题的无效条目，与 IngestItem 的校验保持一致。
+func SnapshotsToSourceItems(siteKey string, providerID int64, page *ProviderPage) []repository.SourceItem {
+	if page == nil {
+		return nil
+	}
+	items := make([]repository.SourceItem, 0, len(page.Items))
+	for _, snapshot := range page.Items {
+		sourceItemID := strings.TrimSpace(snapshot.SourceItemID)
+		if sourceItemID == "" || strings.TrimSpace(snapshot.Title) == "" {
+			continue
+		}
+		items = append(items, repository.SourceItem{
+			PublicUUID:     SourceItemPublicUUID(siteKey, sourceItemID),
+			ProviderID:     providerID,
+			SourceItemID:   sourceItemID,
+			SourceParentID: snapshot.SourceParentID,
+			ItemType:       defaultSnapshotString(snapshot.ItemType, "unknown"),
+			Title:          strings.TrimSpace(snapshot.Title),
+			OriginalTitle:  snapshot.OriginalTitle,
+			SortTitle:      snapshot.SortTitle,
+			Year:           snapshot.Year,
+			Region:         snapshot.Region,
+			Area:           snapshot.Area,
+			Language:       snapshot.Language,
+			CategoryName:   snapshot.CategoryName,
+			NormalizedKind: defaultSnapshotString(snapshot.NormalizedKind, "unknown"),
+			SeasonNumber:   snapshot.SeasonNumber,
+			EpisodeNumber:  snapshot.EpisodeNumber,
+			PosterURL:      snapshot.PosterURL,
+			BackdropURL:    snapshot.BackdropURL,
+			Remarks:        snapshot.Remarks,
+			Summary:        snapshot.Summary,
+			Directors:      nonNilStringList(snapshot.Directors),
+			Actors:         nonNilStringList(snapshot.Actors),
+			ProviderIDs:    jsonObjectBytes(snapshot.ProviderIDs),
+			Raw:            jsonObjectBytes(snapshot.Raw),
+			DetailLoaded:   snapshot.DetailLoaded,
+		})
+	}
+	return items
+}
+
 func (i *SourceIngestor) IngestItem(ctx context.Context, snapshot SourceItemSnapshot) (*repository.SourceItem, error) {
 	sourceItemID := strings.TrimSpace(snapshot.SourceItemID)
 	if sourceItemID == "" {

@@ -19,6 +19,9 @@ type ImportTVBoxInput struct {
 	SourceURL  string
 	RawJSON    []byte
 	ImportedBy *string
+	// PreserveProviderState 为 true 时（配置包更新场景），沿用已存在 Provider 的启停状态，
+	// 不被本次定义的默认值覆盖，避免刷新源后用户的启用/停用选择被重置。
+	PreserveProviderState bool
 }
 
 type ImportTVBoxResult struct {
@@ -75,6 +78,11 @@ func (i *TVBoxImporter) Import(ctx context.Context, in ImportTVBoxInput) (*Impor
 	accepted := 0
 	skipped := 0
 	for _, def := range definitions {
+		if in.PreserveProviderState && def.Usable {
+			if existing, err := i.repo.GetProviderBySourceKey(ctx, def.SourceKey); err == nil && existing != nil {
+				def.Enabled = existing.Enabled
+			}
+		}
 		provider, err := i.repo.UpsertProviderBySourceKey(ctx, def.toUpsert(config.ID))
 		if err != nil {
 			return nil, err

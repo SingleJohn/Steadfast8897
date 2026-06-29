@@ -5,6 +5,7 @@ import {
   importCMSListConfig,
   importTVBoxConfig,
   listSourceConfigs,
+  refreshSourceConfig,
   setSourceConfigEnabled,
   type SourceConfig,
   type SourceConfigImpact,
@@ -25,6 +26,7 @@ export function useSourceConfigs(showToast: ToastFn) {
   const deleteTarget = shallowRef<SourceConfig | null>(null)
   const deleteImpact = shallowRef<SourceConfigImpact | null>(null)
   const deleteLoading = shallowRef(false)
+  const refreshingConfigId = shallowRef<number | null>(null)
 
   async function refreshConfigs() {
     configs.value = await listSourceConfigs()
@@ -67,6 +69,24 @@ export function useSourceConfigs(showToast: ToastFn) {
   async function toggleConfig(id: number, enabled: boolean) {
     await setSourceConfigEnabled(id, enabled)
     await refreshConfigs()
+  }
+
+  // 用已存来源 URL 重新拉取并重导，原地更新 Provider 并保留启停状态。
+  // 返回是否成功，便于调用方决定是否联动刷新 Provider/虚拟库。
+  async function refreshConfig(id: number): Promise<boolean> {
+    refreshingConfigId.value = id
+    try {
+      const result: any = await refreshSourceConfig(id)
+      const accepted = result?.accepted ?? result?.providers?.length ?? 0
+      showToast(`配置已更新：可用 ${accepted}${typeof result?.skipped === 'number' ? `，暂不可用 ${result.skipped}` : ''}`, 'success')
+      await refreshConfigs()
+      return true
+    } catch (e: any) {
+      showToast(e?.message || '更新配置失败', 'error')
+      return false
+    } finally {
+      refreshingConfigId.value = null
+    }
   }
 
   async function inspectDeleteConfig(config: SourceConfig) {
@@ -117,9 +137,11 @@ export function useSourceConfigs(showToast: ToastFn) {
     deleteTarget,
     deleteImpact,
     deleteLoading,
+    refreshingConfigId,
     refreshConfigs,
     submitImport,
     toggleConfig,
+    refreshConfig,
     inspectDeleteConfig,
     cancelDeleteConfig,
     confirmDeleteConfig,

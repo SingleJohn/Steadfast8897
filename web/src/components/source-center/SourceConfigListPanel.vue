@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NDataTable, NTag } from 'naive-ui'
+import { NButton, NDataTable, NPopconfirm, NTag, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import type { SourceConfig, SourceConfigImpact } from '@/api/source'
 
@@ -10,10 +10,12 @@ const props = defineProps<{
   deleteTarget: SourceConfig | null
   deleteImpact: SourceConfigImpact | null
   deleteLoading: boolean
+  refreshingId: number | null
 }>()
 
 const emit = defineEmits<{
   toggle: [id: number, enabled: boolean]
+  updateConfig: [id: number]
   inspectDelete: [config: SourceConfig]
   cancelDelete: []
   confirmDelete: []
@@ -63,7 +65,7 @@ const columns: DataTableColumns<SourceConfig> = [
   {
     title: '操作',
     key: 'actions',
-    width: 170,
+    width: 230,
     render(row) {
       return h('div', { class: 'row-actions' }, [
         h(NButton, {
@@ -72,6 +74,7 @@ const columns: DataTableColumns<SourceConfig> = [
           loading: props.action === `toggle:${row.ID}`,
           onClick: () => emit('toggle', row.ID, !row.Enabled),
         }, { default: () => row.Enabled ? '停用' : '启用' }),
+        renderUpdateButton(row),
         h(NButton, {
           size: 'small',
           quaternary: true,
@@ -83,6 +86,27 @@ const columns: DataTableColumns<SourceConfig> = [
     },
   },
 ]
+
+// “更新”：重新拉取来源并原地刷新 Provider（保留启停状态）。CMS 源清单需有来源 URL 才能自动更新。
+function renderUpdateButton(row: SourceConfig) {
+  const button = h(NPopconfirm, {
+    positiveText: '更新',
+    negativeText: '取消',
+    onPositiveClick: () => emit('updateConfig', row.ID),
+  }, {
+    trigger: () => h(NButton, {
+      size: 'small',
+      quaternary: true,
+      type: 'primary',
+      loading: props.refreshingId === row.ID,
+    }, { default: () => '更新' }),
+    default: () => `从来源重新拉取并更新配置“${row.Name}”？已存在的站点会原地更新并保留启停状态，移除的站点将被清理。`,
+  })
+  return h(NTooltip, null, {
+    trigger: () => button,
+    default: () => '重新拉取来源 URL 并刷新站点；TVBox 无 URL 时回退已存内容，CMS 源清单必须有来源 URL。',
+  })
+}
 
 function formatTime(value?: string) {
   if (!value) return '-'

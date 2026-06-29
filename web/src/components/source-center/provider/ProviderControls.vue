@@ -139,6 +139,9 @@ function setCategoryHealth(value: string | null) {
   emitHealthFilters()
 }
 
+function selectAllProviders() {
+  emit('update:selectedIds', props.providers.map((provider) => provider.ID))
+}
 function selectFilteredProviders() {
   const ids = new Set([...props.selectedIds, ...filteredProviderIds.value])
   emit('update:selectedIds', Array.from(ids))
@@ -230,6 +233,35 @@ function emitFailedHealthDisable() {
       </label>
     </div>
 
+    <!-- 跨页选择条：明确批量作用于全部分页，而非当前表格页 -->
+    <div class="select-bar">
+      <span class="select-summary">
+        已选 <strong>{{ selectedIds.length }}</strong> / 共 {{ totalCount }} 个站点
+        <span class="select-note">（批量操作对所有分页生效，不限当前表格页）</span>
+      </span>
+      <div class="select-actions">
+        <NButton
+          size="small"
+          type="primary"
+          secondary
+          :disabled="totalCount === 0 || selectedIds.length === totalCount"
+          @click="selectAllProviders"
+        >
+          全选全部（{{ totalCount }}）
+        </NButton>
+        <NButton
+          size="small"
+          :disabled="filteredProviders.length === 0 || filteredSelectedCount === filteredProviders.length"
+          @click="selectFilteredProviders"
+        >
+          全选当前筛选（{{ filteredProviders.length }}）
+        </NButton>
+        <NButton size="small" quaternary :disabled="selectedIds.length === 0" @click="clearSelectedProviders">
+          清空选择
+        </NButton>
+      </div>
+    </div>
+
     <!-- 批量操作（按作用域分组） -->
     <div class="bulk">
       <div class="bulk-group">
@@ -298,8 +330,8 @@ function emitFailedHealthDisable() {
           <span class="bulk-meta">命中 {{ filteredProviders.length }} · 已选 {{ filteredSelectedCount }}</span>
         </div>
         <div class="bulk-actions">
-          <NButton size="small" :disabled="filteredProviders.length === 0" @click="selectFilteredProviders">选中命中项</NButton>
-          <NButton size="small" quaternary :disabled="filteredSelectedCount === 0" @click="clearFilteredSelection">取消命中选择</NButton>
+          <NButton size="small" :disabled="filteredProviders.length === 0" @click="selectFilteredProviders">加入选中（{{ filteredProviders.length }}）</NButton>
+          <NButton size="small" quaternary :disabled="filteredSelectedCount === 0" @click="clearFilteredSelection">移出选中</NButton>
           <NPopconfirm positive-text="启用筛选结果" negative-text="取消" :disabled="filteredProviders.length === 0" @positive-click="emitFilteredBatch('enable')">
             <template #trigger>
               <NButton size="small" :disabled="filteredProviders.length === 0" :loading="action === 'batch-enable'">启用</NButton>
@@ -398,6 +430,32 @@ function emitFailedHealthDisable() {
 }
 .visibility-field {
   align-content: start;
+}
+.select-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-2);
+  padding: 8px 12px;
+}
+.select-summary {
+  font-size: 13px;
+}
+.select-summary strong {
+  font-variant-numeric: tabular-nums;
+}
+.select-note {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.select-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .bulk {
   display: flex;

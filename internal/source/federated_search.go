@@ -23,6 +23,8 @@ const (
 type FederatedSearchRequest struct {
 	Keyword string
 	Limit   int
+	// DryRun 为 true 时只测试连通/命中，不写入 source_items（搜索测试场景）。
+	DryRun bool
 }
 
 type FederatedSearchResponse struct {
@@ -130,7 +132,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 	response := &FederatedSearchResponse{
 		Keyword:    keyword,
 		Provider:   FederatedSearchProvider{Total: len(searchable)},
-		CacheWrite: true,
+		CacheWrite: !req.DryRun,
 	}
 	groups := map[string]*FederatedSearchItem{}
 	results := make(chan federatedProviderResult, len(searchable))
@@ -141,7 +143,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- m.searchProviderSafely(providerRoot, provider, keyword)
+			results <- m.searchProviderSafely(providerRoot, provider, keyword, req.DryRun)
 		}()
 	}
 	go func() {
@@ -256,7 +258,7 @@ func isSearchableRuntimeProvider(provider repository.SourceProvider) bool {
 	}
 }
 
-func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string) (result federatedProviderResult) {
+func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provider repository.SourceProvider, keyword string, dryRun bool) (result federatedProviderResult) {
 	start := time.Now()
 	result.provider = provider
 	defer func() {
@@ -267,7 +269,15 @@ func (m *ProviderRuntimeManager) searchProviderSafely(ctx context.Context, provi
 	}()
 	providerCtx, cancel := context.WithTimeout(ctx, federatedProviderTimeout(provider))
 	defer cancel()
-	_, items, err := m.Search(providerCtx, provider.ID, SearchRequest{Keyword: keyword, Page: 1})
+	var (
+		items []repository.SourceItem
+		err   error
+	)
+	if dryRun {
+		_, items, err = m.SearchPreview(providerCtx, provider.ID, SearchRequest{Keyword: keyword, Page: 1})
+	} else {
+		_, items, err = m.Search(providerCtx, provider.ID, SearchRequest{Keyword: keyword, Page: 1})
+	}
 	result.items = items
 	result.err = err
 	return result

@@ -42,6 +42,8 @@ type ImportCMSListInput struct {
 	Format         string
 	DefaultEnabled bool
 	ImportedBy     *string
+	// PreserveProviderState 为 true 时（配置包更新场景），沿用已存在 Provider 的启停状态。
+	PreserveProviderState bool
 }
 
 type ImportCMSListResult struct {
@@ -113,6 +115,11 @@ func (i *CMSListImporter) Import(ctx context.Context, in ImportCMSListInput) (*I
 			continue
 		}
 		sourceKeys = append(sourceKeys, def.SourceKey)
+		if in.PreserveProviderState {
+			if existing, err := i.repo.GetProviderBySourceKey(ctx, def.SourceKey); err == nil && existing != nil {
+				def.Enabled = existing.Enabled
+			}
+		}
 		provider, err := i.repo.UpsertProviderBySourceKey(ctx, def.toUpsert(config.ID))
 		if err != nil {
 			return nil, err

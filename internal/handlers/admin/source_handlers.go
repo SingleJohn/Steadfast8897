@@ -86,6 +86,67 @@ func importCMSListConfig(c *gin.Context, state *AppState) {
 	c.JSON(http.StatusOK, result)
 }
 
+// refreshSourceConfig 用已存配置的 source_url 重新拉取并重导，原地更新 Provider 并保留启停状态。
+// TVBox 在无 URL 时回退到已存原始 JSON；CMS 源清单仅保存解析后的元数据，无 URL 时无法自动更新。
+func refreshSourceConfig(c *gin.Context, state *AppState) {
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		return
+	}
+	config, err := state.Repo.Source.GetConfigImportByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if config == nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "source config not found"})
+		return
+	}
+	sourceURL := ""
+	if config.SourceURL != nil {
+		sourceURL = strings.TrimSpace(*config.SourceURL)
+	}
+	switch config.SourceType {
+	case "tvbox":
+		raw := []byte(config.RawConfig)
+		if sourceURL == "" && len(raw) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "该 TVBox 配置无来源 URL 且无原始内容，无法自动更新，请重新导入"})
+			return
+		}
+		importer := sourcebridge.NewTVBoxImporter(state.Repo.Source)
+		result, err := importer.Import(c.Request.Context(), sourcebridge.ImportTVBoxInput{
+			Name:                  config.Name,
+			SourceURL:             sourceURL,
+			RawJSON:               raw,
+			PreserveProviderState: true,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	case sourcebridge.CMSListSourceType:
+		if sourceURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "该 CMS 源清单由粘贴内容导入，无来源 URL，无法自动更新，请重新粘贴导入"})
+			return
+		}
+		importer := sourcebridge.NewCMSListImporter(state.Repo.Source)
+		result, err := importer.Import(c.Request.Context(), sourcebridge.ImportCMSListInput{
+			Name:                  config.Name,
+			SourceURL:             sourceURL,
+			Format:                sourcebridge.CMSListFormatAuto,
+			PreserveProviderState: true,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"message": "不支持的配置类型: " + config.SourceType})
+	}
+}
+
 func listSourceConfigs(c *gin.Context, state *AppState) {
 	rows, err := state.Repo.Source.ListConfigImports(c.Request.Context(), repository.SourceConfigListOptions{
 		Limit:  int64(queryInt(c, "limit", 100)),
@@ -162,6 +223,7 @@ type providerSearchRequest struct {
 type federatedSearchRequest struct {
 	Keyword string `json:"keyword"`
 	Limit   int    `json:"limit"`
+	DryRun  bool   `json:"dry_run"`
 }
 
 func federatedSourceSearch(c *gin.Context, state *AppState) {
@@ -174,6 +236,7 @@ func federatedSourceSearch(c *gin.Context, state *AppState) {
 	result, err := manager.FederatedSearch(c.Request.Context(), sourcebridge.FederatedSearchRequest{
 		Keyword: req.Keyword,
 		Limit:   req.Limit,
+		DryRun:  req.DryRun,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})

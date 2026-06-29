@@ -136,6 +136,33 @@ func (m *ProviderRuntimeManager) Search(ctx context.Context, providerID int64, r
 	return page, items, nil
 }
 
+// SearchPreview 执行一次站点搜索但不写入 source_items，用于聚合搜索测试(dry-run)。
+// 结果在内存中映射为 SourceItem，便于复用聚合分组/打分逻辑而不污染媒体库与缓存。
+func (m *ProviderRuntimeManager) SearchPreview(ctx context.Context, providerID int64, req SearchRequest) (*ProviderPage, []repository.SourceItem, error) {
+	start := time.Now()
+	provider, row, err := m.enabledProvider(ctx, providerID)
+	if err != nil {
+		LogProviderAction(m.logger, start, providerID, "search_preview", err)
+		return nil, nil, err
+	}
+	if err := m.wait(row.ID).Wait(ctx); err != nil {
+		err = fmt.Errorf("provider 限流等待失败: %w", err)
+		LogProviderAction(m.logger, start, row.ID, "search_preview", err)
+		return nil, nil, err
+	}
+	page, err := provider.Search(ctx, req)
+	if err != nil {
+		LogProviderAction(m.logger, start, row.ID, "search_preview", err, "keyword_len", len(strings.TrimSpace(req.Keyword)))
+		return nil, nil, err
+	}
+	items := SnapshotsToSourceItems(row.SourceKey, row.ID, page)
+	LogProviderAction(m.logger, start, row.ID, "search_preview", nil,
+		"keyword_len", len(strings.TrimSpace(req.Keyword)),
+		"page", req.Page,
+		"count", len(items))
+	return page, items, nil
+}
+
 func (m *ProviderRuntimeManager) Detail(ctx context.Context, providerID int64, sourceItemID string) (*ProviderDetail, *repository.SourceItem, []repository.SourcePlaySource, error) {
 	start := time.Now()
 	provider, row, err := m.enabledProvider(ctx, providerID)

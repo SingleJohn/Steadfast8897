@@ -35,8 +35,13 @@ export function useSourceProviders(showToast: ToastFn) {
   const federatedLimit = shallowRef(50)
   const federatedLoading = shallowRef(false)
   const federatedResult = shallowRef<FederatedSearchResponse | null>(null)
+  // 测试模式：只测连通/命中，不写入 source_items（dry-run）
+  const federatedDryRun = shallowRef(false)
   const embySourceSearchEnabled = shallowRef(true)
   const savingEmbySourceSearch = shallowRef(false)
+  // Emby 同步直搜：客户端搜索时实时跑一次跨源聚合搜索预热缓存（会增加搜索延迟）
+  const embyLiveSearchEnabled = shallowRef(true)
+  const savingEmbyLiveSearch = shallowRef(false)
   const selectedProviderIds = ref<number[]>([])
   const providerHealthFilters = ref<SourceProviderListOptions>({})
   const includeHiddenProviders = shallowRef(false)
@@ -61,8 +66,10 @@ export function useSourceProviders(showToast: ToastFn) {
     try {
       const cfg: any = await getSystemConfig()
       embySourceSearchEnabled.value = String(cfg?.source_emby_search_enabled ?? 'true') !== 'false'
+      embyLiveSearchEnabled.value = String(cfg?.source_emby_live_search_enabled ?? 'true') !== 'false'
     } catch {
       embySourceSearchEnabled.value = true
+      embyLiveSearchEnabled.value = true
     }
   }
 
@@ -80,8 +87,13 @@ export function useSourceProviders(showToast: ToastFn) {
     providerAction.value = enabled ? 'batch-enable' : 'batch-disable'
     try {
       const result = await batchSetSourceProvidersEnabled(targetIds, enabled)
-      showToast(`${enabled ? '启用' : '停用'}完成：${result.count} 个 Provider`, 'success')
-      selectedProviderIds.value = selectedProviderIds.value.filter((id) => !targetIds.includes(id))
+      // 只清除真正被设置成功的项，失败的保留在选中里便于重试
+      const succeeded = new Set((result.items || []).map((item) => item.ID))
+      const cleared = succeeded.size > 0 ? succeeded : new Set(targetIds)
+      const failed = targetIds.filter((id) => !cleared.has(id)).length
+      const tip = `${enabled ? '启用' : '停用'}完成：${result.count} 个 Provider${failed > 0 ? `，${failed} 个未生效已保留选中` : ''}`
+      showToast(tip, failed > 0 ? 'info' : 'success')
+      selectedProviderIds.value = selectedProviderIds.value.filter((id) => !cleared.has(id))
       await refreshProviders()
     } catch (e: any) {
       showToast(e?.message || '批量启停失败', 'error')
@@ -222,10 +234,15 @@ export function useSourceProviders(showToast: ToastFn) {
       return
     }
     federatedLoading.value = true
+    const dryRun = federatedDryRun.value
     try {
-      federatedResult.value = await federatedSourceSearch(keyword, federatedLimit.value)
-      showToast('聚合搜索完成，命中已写入在线缓存', 'success')
-      await refreshProviders()
+      federatedResult.value = await federatedSourceSearch(keyword, federatedLimit.value, dryRun)
+      if (dryRun) {
+        showToast('搜索测试完成（测试模式，未写入在线缓存）', 'success')
+      } else {
+        showToast('聚合搜索完成，命中已写入在线缓存', 'success')
+        await refreshProviders()
+      }
     } catch (e: any) {
       showToast(e?.message || '聚合搜索失败', 'error')
     } finally {
@@ -243,6 +260,19 @@ export function useSourceProviders(showToast: ToastFn) {
       showToast(e?.message || '保存失败', 'error')
     } finally {
       savingEmbySourceSearch.value = false
+    }
+  }
+
+  async function updateEmbyLiveSearchEnabled(value: boolean) {
+    savingEmbyLiveSearch.value = true
+    try {
+      await updateSystemConfig({ source_emby_live_search_enabled: value ? 'true' : 'false' })
+      embyLiveSearchEnabled.value = value
+      showToast(value ? 'Emby 同步直搜已开启' : 'Emby 同步直搜已关闭', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '保存失败', 'error')
+    } finally {
+      savingEmbyLiveSearch.value = false
     }
   }
 
@@ -266,8 +296,11 @@ export function useSourceProviders(showToast: ToastFn) {
     federatedLimit,
     federatedLoading,
     federatedResult,
+    federatedDryRun,
     embySourceSearchEnabled,
     savingEmbySourceSearch,
+    embyLiveSearchEnabled,
+    savingEmbyLiveSearch,
     refreshProviders,
     loadSourceSearchConfig,
     toggleProvider,
@@ -283,5 +316,6 @@ export function useSourceProviders(showToast: ToastFn) {
     loadProviderCategories,
     runFederatedSearch,
     updateEmbySourceSearchEnabled,
+    updateEmbyLiveSearchEnabled,
   }
 }

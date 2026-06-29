@@ -57,6 +57,7 @@ const {
   configDeleteTarget,
   configDeleteImpact,
   configDeleteLoading,
+  configRefreshingId,
   activeProviderId,
   selectedProviderIds,
   providerSearchKeyword,
@@ -76,8 +77,11 @@ const {
   federatedLimit,
   federatedLoading,
   federatedResult,
+  federatedDryRun,
   embySourceSearchEnabled,
   savingEmbySourceSearch,
+  embyLiveSearchEnabled,
+  savingEmbyLiveSearch,
   viewDraft,
   discoverDimension,
   discoverSearch,
@@ -200,7 +204,9 @@ watch(federatedKeyword, (value) => {
               :delete-target="configDeleteTarget"
               :delete-impact="configDeleteImpact"
               :delete-loading="configDeleteLoading"
+              :refreshing-id="configRefreshingId"
               @toggle="source.toggleConfig"
+              @update-config="source.refreshConfig"
               @inspect-delete="source.inspectDeleteConfig"
               @cancel-delete="source.cancelDeleteConfig"
               @confirm-delete="source.confirmDeleteConfig"
@@ -257,11 +263,16 @@ watch(federatedKeyword, (value) => {
               :limit="federatedLimit"
               :loading="federatedLoading"
               :result="federatedResult"
+              :dry-run="federatedDryRun"
               :emby-enabled="embySourceSearchEnabled"
               :saving-emby-enabled="savingEmbySourceSearch"
+              :live-enabled="embyLiveSearchEnabled"
+              :saving-live-enabled="savingEmbyLiveSearch"
               @update:keyword="federatedKeyword = $event"
               @update:limit="federatedLimit = $event"
+              @update:dry-run="federatedDryRun = $event"
               @update:emby-enabled="source.updateEmbySourceSearchEnabled"
+              @update:live-enabled="source.updateEmbyLiveSearchEnabled"
               @search="source.runFederatedSearch"
             />
           </div>

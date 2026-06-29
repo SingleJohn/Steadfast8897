@@ -36,7 +36,7 @@ export function useSourceViews(showToast: ToastFn) {
     ProviderIds: [] as number[],
     SortOrder: 0,
     Enabled: true,
-    ExposeToEmby: false,
+    ExposeToEmby: true,
   })
   const discoverDimension = shallowRef('normalized_kind')
   const discoverSearch = shallowRef('')
@@ -116,7 +116,8 @@ export function useSourceViews(showToast: ToastFn) {
     viewDraft.ProviderIds = [...(view?.ProviderIds || [])]
     viewDraft.SortOrder = view?.SortOrder || 0
     viewDraft.Enabled = view?.Enabled ?? true
-    viewDraft.ExposeToEmby = view?.ExposeToEmby ?? false
+    // 新建默认暴露给 Emby（不暴露的库客户端不可见，对终端用户无意义）；编辑时保留原值
+    viewDraft.ExposeToEmby = view?.ExposeToEmby ?? true
     viewPreview.value = null
     matchValueError.value = ''
   }

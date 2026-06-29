@@ -199,6 +199,7 @@ func appendCompatSourceSearchItems(c *gin.Context, state *AppState, items []gin.
 	if sourceLimit > 50 {
 		sourceLimit = 50
 	}
+	warmSourceSearchCache(c, state, searchTerm, sourceLimit)
 	rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(c.Request.Context(), repository.SourceItemSearchOptions{
 		SearchTerm:   searchTerm,
 		IncludeTypes: compatSourceIncludeTypes(includeTypes),
@@ -230,6 +231,7 @@ func AppendSourceSearchDTOs(c *gin.Context, state *AppState, items []dto.BaseIte
 	if sourceLimit > 50 {
 		sourceLimit = 50
 	}
+	warmSourceSearchCache(c, state, searchTerm, sourceLimit)
 	rows, sourceTotal, err := state.Repo.Source.SearchSourceItems(c.Request.Context(), repository.SourceItemSearchOptions{
 		SearchTerm:   searchTerm,
 		IncludeTypes: includeTypes,

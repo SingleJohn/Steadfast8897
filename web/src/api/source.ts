@@ -429,6 +429,13 @@ export async function getSourceConfigImpact(id: number) {
   return requestJson<SourceConfigImpact>(`/SourceConfigs/${id}/Impact`)
 }
 
+export async function refreshSourceConfig(id: number) {
+  return requestJson<ImportTVBoxResult>(`/SourceConfigs/${id}/Refresh`, {
+    method: 'POST',
+    timeoutMs: 120_000,
+  })
+}
+
 export async function deleteSourceConfig(id: number) {
   return requestJson<SourceConfigDeleteResult>(`/SourceConfigs/${id}?confirm=true`, { method: 'DELETE' })
 }
@@ -532,10 +539,10 @@ export async function searchSourceProvider(id: number, keyword: string, page = 1
   })
 }
 
-export async function federatedSourceSearch(keyword: string, limit = 50) {
+export async function federatedSourceSearch(keyword: string, limit = 50, dryRun = false) {
   return requestJson<FederatedSearchResponse>('/SourceSearch', {
     method: 'POST',
-    body: JSON.stringify({ keyword, limit }),
+    body: JSON.stringify({ keyword, limit, dry_run: dryRun }),
     timeoutMs: 120_000,
   })
 }

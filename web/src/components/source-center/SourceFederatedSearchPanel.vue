@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NInput, NInputNumber, NSwitch, NTag, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
 import type { FederatedSearchError, FederatedSearchItem, FederatedSearchResponse } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
 
@@ -9,14 +9,19 @@ const props = defineProps<{
   limit: number
   loading: boolean
   result: FederatedSearchResponse | null
+  dryRun: boolean
   embyEnabled: boolean
   savingEmbyEnabled: boolean
+  liveEnabled: boolean
+  savingLiveEnabled: boolean
 }>()
 
 const emit = defineEmits<{
   'update:keyword': [value: string]
   'update:limit': [value: number]
+  'update:dryRun': [value: boolean]
   'update:embyEnabled': [value: boolean]
+  'update:liveEnabled': [value: boolean]
   search: []
 }>()
 
@@ -79,22 +84,50 @@ async function copySearchError(error: FederatedSearchError) {
     <div class="panel-head">
       <div>
         <h2 class="panel-title">聚合搜索</h2>
-        <p class="panel-subtitle">并发搜索已启用 Provider，结果写入 source_items 后可被 Emby 搜索读取。</p>
+        <p class="panel-subtitle">
+          并发搜索全部已启用 Provider。<template v-if="dryRun">测试模式：只验证连通与命中，<strong>不写入</strong> source_items。</template><template v-else>结果写入 source_items 后可被 Emby 搜索读取。</template>
+        </p>
       </div>
       <div v-if="result" class="summary-strip">
         <span>{{ result.total }} 条</span>
         <span>{{ result.latency_ms }} ms</span>
         <span>{{ successCount }}/{{ totalProviders }} 源成功</span>
+        <NTag size="small" :type="result.cache_write ? 'success' : 'warning'" :bordered="false">
+          {{ result.cache_write ? '已写缓存' : '未写缓存' }}
+        </NTag>
       </div>
-      <div class="emby-switch">
-        <span id="source-emby-switch-label">Emby</span>
-        <NSwitch
-          :value="embyEnabled"
-          :loading="savingEmbyEnabled"
-          size="small"
-          aria-labelledby="source-emby-switch-label"
-          @update:value="emit('update:embyEnabled', $event)"
-        />
+      <div class="emby-switches">
+        <div class="emby-switch">
+          <NTooltip>
+            <template #trigger>
+              <span id="source-emby-switch-label" class="emby-switch-label">Emby 搜索可见<span class="lbl-info" aria-label="Emby 搜索可见说明">?</span></span>
+            </template>
+            默认开启。开启后,聚合搜索缓存进 source_items 的结果会出现在 Emby/Infuse 客户端的搜索里;关闭则客户端搜索不返回在线源结果(后台聚合搜索不受影响)。
+          </NTooltip>
+          <NSwitch
+            :value="embyEnabled"
+            :loading="savingEmbyEnabled"
+            size="small"
+            aria-labelledby="source-emby-switch-label"
+            @update:value="emit('update:embyEnabled', $event)"
+          />
+        </div>
+        <div class="emby-switch">
+          <NTooltip>
+            <template #trigger>
+              <span id="source-live-switch-label" class="emby-switch-label">同步直搜<span class="lbl-info" aria-label="同步直搜说明">?</span></span>
+            </template>
+            默认开启。开启后,Emby 客户端每次搜索都会实时跑一次跨源聚合搜索把命中写进缓存(同关键词 45 秒内只跑一次,单次最多等 10 秒),实现“搜啥有啥”;关闭则只读已有缓存,未预热的片名搜不到。依赖上方“Emby 搜索可见”开启才有意义。
+          </NTooltip>
+          <NSwitch
+            :value="liveEnabled"
+            :loading="savingLiveEnabled"
+            :disabled="!embyEnabled"
+            size="small"
+            aria-labelledby="source-live-switch-label"
+            @update:value="emit('update:liveEnabled', $event)"
+          />
+        </div>
       </div>
     </div>
 
@@ -119,7 +152,22 @@ async function copySearchError(error: FederatedSearchError) {
           @update:value="emit('update:limit', Number($event || 50))"
         />
       </label>
-      <NButton type="primary" :loading="loading" @click="emit('search')">搜索</NButton>
+      <div class="dryrun-switch">
+        <NTooltip>
+          <template #trigger>
+            <span class="dryrun-label">测试模式<span class="lbl-info" aria-label="测试模式说明">?</span></span>
+          </template>
+          开启后只测试各源连通与命中,不把结果写入 source_items(不污染媒体库/缓存);关闭则正常落库并对 Emby 搜索可见。
+        </NTooltip>
+        <NSwitch
+          :value="dryRun"
+          size="small"
+          @update:value="emit('update:dryRun', $event)"
+        />
+      </div>
+      <NButton type="primary" :loading="loading" @click="emit('search')">
+        {{ dryRun ? '搜索测试' : '搜索' }}
+      </NButton>
     </div>
 
     <div v-if="result" class="federated-grid">
@@ -213,15 +261,54 @@ async function copySearchError(error: FederatedSearchError) {
   color: var(--app-text-muted);
   font-size: 12px;
 }
+.emby-switches {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 16px;
+}
 .emby-switch {
   align-items: center;
   flex-wrap: nowrap;
 }
+.emby-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-text);
+}
+.lbl-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--app-surface-2);
+  color: var(--app-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: help;
+}
 .search-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 120px auto;
+  grid-template-columns: minmax(220px, 1fr) 120px auto auto;
   align-items: end;
   gap: 10px;
+}
+.dryrun-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+.dryrun-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 .field {
   display: grid;
