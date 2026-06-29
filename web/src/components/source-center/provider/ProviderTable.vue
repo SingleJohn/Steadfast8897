@@ -28,6 +28,7 @@ const emit = defineEmits<{
   diagnose: [id: number]
   homeProfile: [id: number]
   categories: [id: number]
+  fetchCatalog: [id: number]
   deleteOne: [id: number]
 }>()
 
@@ -150,6 +151,7 @@ function hActions(row: SourceProvider) {
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `diagnose:${row.ID}`, onClick: () => emit('diagnose', row.ID) }, { default: () => '诊断' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `home-profile:${row.ID}`, onClick: () => emit('homeProfile', row.ID) }, { default: () => '首页' }),
       h(NButton, { size: 'small', quaternary: true, loading: props.action === `categories:${row.ID}`, onClick: () => emit('categories', row.ID) }, { default: () => '分类' }),
+      h(NButton, { size: 'small', quaternary: true, type: 'primary', loading: props.action === `catalog:${row.ID}`, onClick: () => emit('fetchCatalog', row.ID) }, { default: () => '抓取' }),
       h(NPopconfirm, {
         positiveText: '删除',
         negativeText: '取消',
@@ -252,7 +254,7 @@ const columns: DataTableColumns<SourceProvider> = [
   {
     title: '操作',
     key: 'actions',
-    width: 240,
+    width: 300,
     render(row) {
       return hActions(row)
     },

@@ -193,6 +193,8 @@ export function useSourceCenter(showToast: ToastFn) {
     toggleParser: runtimeAudit.toggleParser,
     trustRuntimeArtifact: runtimeAudit.trustRuntimeArtifact,
     runProviderHealth,
+    fetchProviderCatalog: providers.fetchProviderCatalog,
+    batchFetchProviderCatalog: providers.batchFetchProviderCatalog,
     runProviderDiagnose: providers.runProviderDiagnose,
     loadProviderHomeProfile: providers.loadProviderHomeProfile,
     runProviderSearch,

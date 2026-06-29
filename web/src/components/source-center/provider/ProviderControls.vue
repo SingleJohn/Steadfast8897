@@ -23,6 +23,7 @@ const emit = defineEmits<{
   batchEnableIds: [ids: number[]]
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
+  batchCatalog: []
 }>()
 
 const healthFilter = shallowRef<string | null>(null)
@@ -287,6 +288,12 @@ function emitFailedHealthDisable() {
               <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-health'">探活</NButton>
             </template>
             将并发探活 {{ selectedIds.length }} 个站点，单站失败不会中断整批。
+          </NPopconfirm>
+          <NPopconfirm positive-text="加入抓取" negative-text="取消" :disabled="selectedIds.length === 0" @positive-click="emit('batchCatalog')">
+            <template #trigger>
+              <NButton size="small" :disabled="selectedIds.length === 0" :loading="action === 'batch-catalog'">抓取入库</NButton>
+            </template>
+            将把 {{ selectedIds.length }} 个站点的分类内容加入后台抓取队列，填充在线虚拟库；不阻塞，内容稍后陆续入库。
           </NPopconfirm>
           <NPopconfirm positive-text="删除" negative-text="取消" :disabled="selectedIds.length === 0" @positive-click="emit('batchDelete')">
             <template #trigger>

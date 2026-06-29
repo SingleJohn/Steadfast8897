@@ -2,10 +2,12 @@ import { computed, ref, shallowRef } from 'vue'
 import { getSystemConfig, updateSystemConfig } from '@/api/client'
 import {
   batchDeleteSourceProviders,
+  batchFetchProviderCatalog as batchFetchProviderCatalogApi,
   batchHealthCheckSourceProviders,
   batchSetSourceProvidersEnabled,
   diagnoseSourceProvider,
   federatedSourceSearch,
+  fetchProviderCatalog as fetchProviderCatalogApi,
   getSourceProviderHomeProfile,
   healthCheckSourceProvider,
   listSourceProviderCategories,
@@ -137,6 +139,36 @@ export function useSourceProviders(showToast: ToastFn) {
     } catch (e: any) {
       showToast(e?.message || '批量删除失败', 'error')
       return null
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
+  // 手动触发：把站点的分类内容抓取入队，后台填充虚拟库（不阻塞，稍后内容陆续入库）。
+  async function fetchProviderCatalog(id: number) {
+    providerAction.value = `catalog:${id}`
+    try {
+      await fetchProviderCatalogApi(id)
+      showToast('已加入抓取队列，后台填充中（稍后刷新查看库内容）', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '加入抓取队列失败', 'error')
+    } finally {
+      providerAction.value = ''
+    }
+  }
+
+  async function batchFetchProviderCatalog(ids = selectedProviderIds.value) {
+    const targetIds = [...ids]
+    if (targetIds.length === 0) {
+      showToast('请先选择 Provider', 'info')
+      return
+    }
+    providerAction.value = 'batch-catalog'
+    try {
+      const result = await batchFetchProviderCatalogApi(targetIds)
+      showToast(`已加入抓取队列：${result.enqueued} 个站点，后台填充中`, 'success')
+    } catch (e: any) {
+      showToast(e?.message || '批量抓取失败', 'error')
     } finally {
       providerAction.value = ''
     }
@@ -317,5 +349,7 @@ export function useSourceProviders(showToast: ToastFn) {
     runFederatedSearch,
     updateEmbySourceSearchEnabled,
     updateEmbyLiveSearchEnabled,
+    fetchProviderCatalog,
+    batchFetchProviderCatalog,
   }
 }

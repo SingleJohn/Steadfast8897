@@ -37,6 +37,8 @@ const emit = defineEmits<{
   batchEnableIds: [ids: number[]]
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
+  batchCatalog: []
+  fetchCatalog: [id: number]
   updateHealthFilters: [filters: SourceProviderListOptions]
   updateIncludeHidden: [value: boolean]
   health: [id: number]
@@ -102,6 +104,7 @@ watch(() => props.searchResult, (value) => { if (value) openDrawer('search') })
       @batch-enable-ids="emit('batchEnableIds', $event)"
       @batch-disable-ids="emit('batchDisableIds', $event)"
       @batch-health-ids="emit('batchHealthIds', $event)"
+      @batch-catalog="emit('batchCatalog')"
     />
 
     <ProviderTable
@@ -115,6 +118,7 @@ watch(() => props.searchResult, (value) => { if (value) openDrawer('search') })
       @diagnose="emit('diagnose', $event)"
       @home-profile="emit('homeProfile', $event)"
       @categories="emit('categories', $event)"
+      @fetch-catalog="emit('fetchCatalog', $event)"
       @delete-one="emit('batchDelete', [$event])"
     />
     <div v-else class="empty-state">暂无站点，先在配置包页导入 TVBox 或 CMS 来源配置。</div>

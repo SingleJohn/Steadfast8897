@@ -513,6 +513,24 @@ export async function batchDeleteSourceProviders(ids: number[]) {
   })
 }
 
+export async function fetchProviderCatalog(id: number) {
+  return requestJson<{ enqueued: number; count: number }>(`/SourceProviders/${id}/FetchCatalog`, { method: 'POST' })
+}
+
+export async function batchFetchProviderCatalog(ids: number[]) {
+  return requestJson<{ enqueued: number; count: number }>('/SourceProviders/BatchFetchCatalog', {
+    method: 'POST',
+    body: JSON.stringify({ provider_ids: ids }),
+  })
+}
+
+export async function refreshSourceItemDetail(id: number) {
+  return requestJson<{ loaded: boolean; play_source_count: number }>(`/SourceItems/${id}/RefreshDetail`, {
+    method: 'POST',
+    timeoutMs: 60_000,
+  })
+}
+
 export async function healthCheckSourceProvider(id: number) {
   return requestJson<SourceProvider>(`/SourceProviders/${id}/HealthCheck`, { method: 'POST', timeoutMs: 120_000 })
 }
