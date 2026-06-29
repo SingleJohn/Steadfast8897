@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NButton, NDataTable, NPopconfirm, NTag, NTooltip } from 'naive-ui'
+import { NButton, NDataTable, NIcon, NPopconfirm, NTag, NTooltip } from 'naive-ui'
+import type { Component } from 'vue'
 import type { DataTableColumns } from 'naive-ui'
+import { PowerOutline, RefreshOutline, TrashOutline } from '@vicons/ionicons5'
 import type { SourceConfig, SourceConfigImpact } from '@/api/source'
 
 const props = defineProps<{
@@ -65,23 +67,33 @@ const columns: DataTableColumns<SourceConfig> = [
   {
     title: '操作',
     key: 'actions',
-    width: 230,
+    width: 130,
+    align: 'center',
     render(row) {
       return h('div', { class: 'row-actions' }, [
-        h(NButton, {
-          size: 'small',
-          quaternary: true,
-          loading: props.action === `toggle:${row.ID}`,
-          onClick: () => emit('toggle', row.ID, !row.Enabled),
-        }, { default: () => row.Enabled ? '停用' : '启用' }),
+        h(NTooltip, null, {
+          trigger: () => h(NButton, {
+            size: 'small',
+            circle: true,
+            quaternary: true,
+            type: row.Enabled ? 'success' : undefined,
+            loading: props.action === `toggle:${row.ID}`,
+            onClick: () => emit('toggle', row.ID, !row.Enabled),
+          }, { icon: () => h(NIcon, null, { default: () => h(PowerOutline) }) }),
+          default: () => row.Enabled ? '已启用（点击停用）' : '已停用（点击启用）',
+        }),
         renderUpdateButton(row),
-        h(NButton, {
-          size: 'small',
-          quaternary: true,
-          type: 'error',
-          loading: props.deleteLoading && props.deleteTarget?.ID === row.ID,
-          onClick: () => emit('inspectDelete', row),
-        }, { default: () => '删除' }),
+        h(NTooltip, null, {
+          trigger: () => h(NButton, {
+            size: 'small',
+            circle: true,
+            quaternary: true,
+            type: 'error',
+            loading: props.deleteLoading && props.deleteTarget?.ID === row.ID,
+            onClick: () => emit('inspectDelete', row),
+          }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
+          default: () => '删除配置（先展示影响再确认）',
+        }),
       ])
     },
   },
@@ -89,22 +101,22 @@ const columns: DataTableColumns<SourceConfig> = [
 
 // “更新”：重新拉取来源并原地刷新 Provider（保留启停状态）。CMS 源清单需有来源 URL 才能自动更新。
 function renderUpdateButton(row: SourceConfig) {
-  const button = h(NPopconfirm, {
+  return h(NPopconfirm, {
     positiveText: '更新',
     negativeText: '取消',
     onPositiveClick: () => emit('updateConfig', row.ID),
   }, {
-    trigger: () => h(NButton, {
-      size: 'small',
-      quaternary: true,
-      type: 'primary',
-      loading: props.refreshingId === row.ID,
-    }, { default: () => '更新' }),
+    trigger: () => h(NTooltip, null, {
+      trigger: () => h(NButton, {
+        size: 'small',
+        circle: true,
+        quaternary: true,
+        type: 'primary',
+        loading: props.refreshingId === row.ID,
+      }, { icon: () => h(NIcon, null, { default: () => h(RefreshOutline as Component) }) }),
+      default: () => '从来源重新拉取并更新站点（保留启停状态）；CMS 源清单需有来源 URL',
+    }),
     default: () => `从来源重新拉取并更新配置“${row.Name}”？已存在的站点会原地更新并保留启停状态，移除的站点将被清理。`,
-  })
-  return h(NTooltip, null, {
-    trigger: () => button,
-    default: () => '重新拉取来源 URL 并刷新站点；TVBox 无 URL 时回退已存内容，CMS 源清单必须有来源 URL。',
   })
 }
 
@@ -124,7 +136,7 @@ function formatTime(value?: string) {
       <NButton quaternary size="small" @click="emit('refresh')">刷新</NButton>
     </div>
 
-    <NDataTable v-if="configs.length > 0" :columns="columns" :data="configs" :pagination="tablePagination" size="small" :bordered="false" />
+    <NDataTable v-if="configs.length > 0" :columns="columns" :data="configs" :pagination="tablePagination" :scroll-x="900" size="small" :bordered="false" />
     <div v-else class="empty-state">暂无来源配置，先导入 TVBox 或 CMS 源清单。</div>
 
     <section v-if="deleteTarget" class="impact-panel" aria-live="polite">
@@ -206,8 +218,9 @@ function formatTime(value?: string) {
 
 .row-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  justify-content: center;
+  gap: 4px;
 }
 
 .impact-panel {
