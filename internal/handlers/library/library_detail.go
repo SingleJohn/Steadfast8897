@@ -25,11 +25,11 @@ import (
 	"fyms/internal/repository"
 )
 
-func applyListMediaSourceDisplay(c *gin.Context, ctx context.Context, state *AppState, row *dto.ItemRow, item *dto.BaseItemDto) {
+func applyListMediaSourceDisplay(c *gin.Context, ctx context.Context, state *AppState, row *dto.ItemRow, item *dto.BaseItemDto, userID string) {
 	if row == nil || item == nil || (row.ItemType != "Movie" && row.ItemType != "Episode") {
 		return
 	}
-	sources := mediahandlers.BuildItemMediaSources(ctx, state, row.ID, row)
+	sources := mediahandlers.BuildItemMediaSources(ctx, state, row.ID, row, userID)
 	if len(sources) == 0 {
 		return
 	}
@@ -161,6 +161,13 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 		return base, err
 	}
 
+	versionUserData := map[string]repository.MediaVersionUserData{}
+	if userID != "" {
+		if rows, err := repository.NewMediaVersionUserDataRepository(pool).ListForItem(ctx, userID, item.ID); err == nil {
+			versionUserData = rows
+		}
+	}
+
 	sources := make([]dto.MediaSourceInfo, 0)
 	for mvIdx, mv := range versions {
 		versionStreams := streamDtos
@@ -208,6 +215,9 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 			FymsQualityLabel:      mv.QualityLabel,
 			Chapters:              mediahandlers.ParseChaptersJSON(mv.ChaptersJSON),
 		}
+		if data, ok := versionUserData[mv.ID]; ok {
+			mediahandlers.ApplyMediaSourceUserData(&ms, &data)
+		}
 		mediahandlers.ApplyMediaSourceCompatDefaults(&ms, item.ID)
 		sources = append(sources, ms)
 	}
@@ -237,7 +247,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 	}
 
 	if item.ItemType == "Movie" || item.ItemType == "Episode" {
-		mergedSources := collectMergedMediaSources(ctx, pool, item.ID, streamDtos)
+		mergedSources := collectMergedMediaSources(ctx, pool, item.ID, userID, streamDtos)
 		if len(mergedSources) > 0 {
 			base.MediaSources = append(base.MediaSources, mergedSources...)
 		}
@@ -253,7 +263,7 @@ func enrichItemDetail(ctx context.Context, pool *pgxpool.Pool, item *dto.ItemRow
 
 // collectMergedMediaSources finds items merged into itemID (via merged_to_id)
 // and returns their media_versions as additional MediaSourceInfo entries.
-func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
+func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID, userID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
 	repo := repository.NewPlaybackRepository(pool)
 	siblings, err := repo.ListMergedSiblingItems(ctx, itemID)
 	if err != nil {
@@ -265,6 +275,12 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
+		versionUserData := map[string]repository.MediaVersionUserData{}
+		if userID != "" {
+			if rows, err := repository.NewMediaVersionUserDataRepository(pool).ListForItem(ctx, userID, sib.ID); err == nil {
+				versionUserData = rows
+			}
+		}
 		versions, err := repo.ListMediaVersionsForItem(ctx, sib.ID)
 		if err != nil {
 			continue
@@ -312,6 +328,9 @@ func collectMergedMediaSources(ctx context.Context, pool *pgxpool.Pool, itemID s
 				FymsSource:            mv.Source,
 				FymsQualityLabel:      mv.QualityLabel,
 				Chapters:              mediahandlers.ParseChaptersJSON(mv.ChaptersJSON),
+			}
+			if data, ok := versionUserData[mv.ID]; ok {
+				mediahandlers.ApplyMediaSourceUserData(&ms, &data)
 			}
 			mediahandlers.ApplyMediaSourceCompatDefaults(&ms, itemID)
 			merged = append(merged, ms)

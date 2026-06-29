@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"fyms/internal/dto"
+	"fyms/internal/repository"
 )
 
 func HideMediaSourceSizeForInfuse(c *gin.Context, sources []dto.MediaSourceInfo) {
@@ -73,7 +74,23 @@ func ApplyMediaSourceCompatDefaults(src *dto.MediaSourceInfo, itemID string) {
 	}
 }
 
-func BuildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow) []dto.MediaSourceInfo {
+func ApplyMediaSourceUserData(src *dto.MediaSourceInfo, data *repository.MediaVersionUserData) {
+	if src == nil || data == nil {
+		return
+	}
+	pos := data.PlaybackPositionTicks
+	playCount := data.PlayCount
+	played := data.Played
+	src.FymsPlaybackPositionTicks = &pos
+	src.FymsPlayCount = &playCount
+	src.FymsPlayed = &played
+	if data.LastPlayedDate != nil {
+		s := data.LastPlayedDate.UTC().Format("2006-01-02T15:04:05.0000000Z")
+		src.FymsLastPlayedDate = &s
+	}
+}
+
+func BuildItemMediaSources(ctx context.Context, state *AppState, itemID string, item *dto.ItemRow, userID string) []dto.MediaSourceInfo {
 	versions, err := loadMediaVersions(ctx, state, itemID)
 	if err != nil {
 		return nil
@@ -94,6 +111,13 @@ func BuildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 	baseStreams := make([]dto.MediaStreamInfo, 0, len(streamRows))
 	for i := range streamRows {
 		baseStreams = append(baseStreams, dto.FormatMediaStreamDto(&streamRows[i]))
+	}
+
+	versionUserData := map[string]repository.MediaVersionUserData{}
+	if userID != "" {
+		if rows, err := state.Repo.MediaVersionUserData.ListForItem(ctx, userID, itemID); err == nil {
+			versionUserData = rows
+		}
 	}
 
 	var sources []dto.MediaSourceInfo
@@ -175,11 +199,14 @@ func BuildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 			b := int64(*mv.Bitrate)
 			src.Bitrate = &b
 		}
+		if data, ok := versionUserData[msid]; ok {
+			ApplyMediaSourceUserData(&src, &data)
+		}
 		ApplyMediaSourceCompatDefaults(&src, itemID)
 		sources = append(sources, src)
 	}
 
-	mergedSources := CollectMergedVersionSources(ctx, state, itemID, baseStreams)
+	mergedSources := CollectMergedVersionSources(ctx, state, itemID, userID, baseStreams)
 	if len(mergedSources) > 0 {
 		sources = append(sources, mergedSources...)
 	}
@@ -189,7 +216,7 @@ func BuildItemMediaSources(ctx context.Context, state *AppState, itemID string, 
 
 // collectMergedVersionSources finds items merged into itemID (via merged_to_id)
 // and returns their media_versions as additional MediaSourceInfo entries.
-func CollectMergedVersionSources(ctx context.Context, state *AppState, itemID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
+func CollectMergedVersionSources(ctx context.Context, state *AppState, itemID, userID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
 	siblings, err := state.Repo.Playback.ListMergedSiblingItems(ctx, itemID)
 	if err != nil {
 		return nil
@@ -200,6 +227,12 @@ func CollectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
+		versionUserData := map[string]repository.MediaVersionUserData{}
+		if userID != "" {
+			if rows, err := state.Repo.MediaVersionUserData.ListForItem(ctx, userID, sib.ID); err == nil {
+				versionUserData = rows
+			}
+		}
 		versions, err := loadMediaVersions(ctx, state, sib.ID)
 		if err != nil {
 			continue
@@ -270,6 +303,9 @@ func CollectMergedVersionSources(ctx context.Context, state *AppState, itemID st
 			if mv.Bitrate != nil {
 				b := int64(*mv.Bitrate)
 				src.Bitrate = &b
+			}
+			if data, ok := versionUserData[msid]; ok {
+				ApplyMediaSourceUserData(&src, &data)
 			}
 			ApplyMediaSourceCompatDefaults(&src, itemID)
 			merged = append(merged, src)

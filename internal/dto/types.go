@@ -150,12 +150,16 @@ type MediaSourceInfo struct {
 	MediaAttachments           []interface{}     `json:"MediaAttachments,omitempty"`
 
 	// M7.4 FYMS 专用画质标签(前端胶囊用);Emby 客户端会忽略未知字段。
-	FymsResolution   *string `json:"FymsResolution,omitempty"`
-	FymsHdrFormat    *string `json:"FymsHdrFormat,omitempty"`
-	FymsVideoCodec   *string `json:"FymsVideoCodec,omitempty"`
-	FymsAudioCodec   *string `json:"FymsAudioCodec,omitempty"`
-	FymsSource       *string `json:"FymsSource,omitempty"`
-	FymsQualityLabel *string `json:"FymsQualityLabel,omitempty"`
+	FymsResolution            *string `json:"FymsResolution,omitempty"`
+	FymsHdrFormat             *string `json:"FymsHdrFormat,omitempty"`
+	FymsVideoCodec            *string `json:"FymsVideoCodec,omitempty"`
+	FymsAudioCodec            *string `json:"FymsAudioCodec,omitempty"`
+	FymsSource                *string `json:"FymsSource,omitempty"`
+	FymsQualityLabel          *string `json:"FymsQualityLabel,omitempty"`
+	FymsPlaybackPositionTicks *int64  `json:"FymsPlaybackPositionTicks,omitempty"`
+	FymsPlayCount             *int32  `json:"FymsPlayCount,omitempty"`
+	FymsPlayed                *bool   `json:"FymsPlayed,omitempty"`
+	FymsLastPlayedDate        *string `json:"FymsLastPlayedDate,omitempty"`
 
 	Chapters []ChapterInfo `json:"Chapters"`
 }

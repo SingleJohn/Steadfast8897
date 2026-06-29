@@ -23,6 +23,7 @@ import (
 
 type activePlayback struct {
 	itemID            string
+	mediaSourceID     string
 	itemName          string
 	itemType          string
 	seriesName        string
@@ -306,6 +307,7 @@ func OnPlaybackStart(c *gin.Context) {
 	st.ProgressBuffer.BufferProgress(&services.ProgressEntry{
 		UserID:        auth.ID,
 		ItemID:        resolvedItemID,
+		MediaSourceID: body.MediaSourceId,
 		PositionTicks: body.PositionTicks,
 	})
 
@@ -317,7 +319,7 @@ func OnPlaybackStart(c *gin.Context) {
 		clientIP,
 	)
 
-	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused, body.PlaySessionId)
+	np := buildNowPlaying(item, resolvedItemID, body.MediaSourceId, body.PositionTicks, body.IsPaused, body.PlaySessionId)
 	st.SessionManager.SetNowPlaying(auth.ID, deviceID, np)
 
 	// 首次播放异步回填 MediaStreams(strm 远程媒体入库时未探测,详情为空)。
@@ -347,6 +349,7 @@ func OnPlaybackStart(c *gin.Context) {
 
 	activePlaybacks[playbackKey(auth.ID, deviceID)] = &activePlayback{
 		itemID:            resolvedItemID,
+		mediaSourceID:     body.MediaSourceId,
 		itemName:          itemName,
 		itemType:          itemType,
 		seriesName:        seriesName,
@@ -412,6 +415,7 @@ func OnPlaybackProgress(c *gin.Context) {
 	st.ProgressBuffer.BufferProgress(&services.ProgressEntry{
 		UserID:        auth.ID,
 		ItemID:        resolvedItemID,
+		MediaSourceID: body.MediaSourceId,
 		PositionTicks: body.PositionTicks,
 	})
 
@@ -432,9 +436,12 @@ func OnPlaybackProgress(c *gin.Context) {
 	needNew := false
 	activePlaybacksMu.Lock()
 	existing, ok := activePlaybacks[key]
-	if ok && existing.itemID == resolvedItemID {
+	if ok && existing.itemID == resolvedItemID && sameMediaSource(existing.mediaSourceID, body.MediaSourceId) {
 		existing.lastProgressMs = nowMs
 		existing.lastPositionTicks = body.PositionTicks
+		if body.MediaSourceId != "" {
+			existing.mediaSourceID = body.MediaSourceId
+		}
 	} else if ok {
 		durationSec := (nowMs - existing.startTimeMs) / 1000
 		if durationSec > 5 {
@@ -450,7 +457,7 @@ func OnPlaybackProgress(c *gin.Context) {
 	}
 	activePlaybacksMu.Unlock()
 
-	np := buildNowPlaying(item, resolvedItemID, body.PositionTicks, body.IsPaused, body.PlaySessionId)
+	np := buildNowPlaying(item, resolvedItemID, body.MediaSourceId, body.PositionTicks, body.IsPaused, body.PlaySessionId)
 	progressPM := c.GetHeader("X-Play-Method")
 	if progressPM == "" {
 		// Inherit from existing activePlayback if available
@@ -481,6 +488,7 @@ func OnPlaybackProgress(c *gin.Context) {
 		}
 		activePlaybacks[key] = &activePlayback{
 			itemID:            resolvedItemID,
+			mediaSourceID:     body.MediaSourceId,
 			itemName:          itemName,
 			itemType:          itemType,
 			seriesName:        seriesName,
@@ -559,7 +567,8 @@ func OnPlaybackStopped(c *gin.Context) {
 	if pos <= 0 && existed && session.lastPositionTicks > 0 {
 		pos = session.lastPositionTicks
 	}
-	if item != nil && item.RuntimeTicks != nil && *item.RuntimeTicks > 0 {
+	runtimeTicks := playbackRuntimeTicks(c.Request.Context(), st, body.MediaSourceId, item)
+	if runtimeTicks != nil && *runtimeTicks > 0 {
 		// 看完判定阈值可在系统设置里配置(playback_played_threshold,默认 90%)。
 		th := st.Repo.SystemConfig.GetIntOrDefault(c.Request.Context(), "playback_played_threshold", 90)
 		if th < 1 {
@@ -568,7 +577,7 @@ func OnPlaybackStopped(c *gin.Context) {
 		if th > 100 {
 			th = 100
 		}
-		pct := pos * 100 / *item.RuntimeTicks
+		pct := pos * 100 / *runtimeTicks
 		if pct >= int64(th) {
 			t := true
 			played = &t
@@ -594,6 +603,16 @@ func OnPlaybackStopped(c *gin.Context) {
 	if err := models.UpsertUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID, position, playCount, nil, played); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
+	}
+	if body.MediaSourceId != "" {
+		_ = st.Repo.MediaVersionUserData.Upsert(c.Request.Context(), repository.MediaVersionUserDataUpsert{
+			UserID:         auth.ID,
+			ItemID:         itemUUID,
+			MediaVersionID: body.MediaSourceId,
+			PositionTicks:  position,
+			PlayCount:      playCount,
+			Played:         played,
+		})
 	}
 	updatedUD, _ := models.GetUserItemData(c.Request.Context(), st.DB, auth.ID, itemUUID)
 	notifySession := buildNotifySessionFromPlayback(session, deviceID, body.PlaySessionId)
@@ -642,6 +661,7 @@ func MarkPlayed(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	_ = st.Repo.MediaVersionUserData.MarkItemVersions(c.Request.Context(), userID, iid, pos, true)
 	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
 	services.EmitUserDataNotify(services.NotifyEventItemMarkPlayed, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"Played": true})
@@ -673,6 +693,7 @@ func MarkUnplayed(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	_ = st.Repo.MediaVersionUserData.MarkItemVersions(c.Request.Context(), userID, iid, pos, false)
 	ud, _ := models.GetUserItemData(c.Request.Context(), st.DB, userID, iid)
 	services.EmitUserDataNotify(services.NotifyEventItemMarkUnplayed, iid, userID, notifyUserName(c.Request.Context(), st, userID), ud)
 	c.JSON(http.StatusOK, gin.H{"Played": false})
@@ -868,10 +889,29 @@ func buildNotifySessionFromPlayback(pb *activePlayback, deviceID, sessionID stri
 	return buildNotifySession(pb.clientIP, pb.clientName, pb.deviceName, did, pb.appVersion, sessionID)
 }
 
-func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPaused bool, playSessionID string) *services.NowPlaying {
+func sameMediaSource(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a == "" || b == "" || a == b
+}
+
+func playbackRuntimeTicks(ctx context.Context, st *AppState, mediaSourceID string, item *dto.ItemRow) *int64 {
+	if strings.TrimSpace(mediaSourceID) != "" {
+		if info, err := st.Repo.Playback.GetMediaVersionRuntimeTicks(ctx, mediaSourceID); err == nil && info != nil && *info > 0 {
+			return info
+		}
+	}
+	if item != nil {
+		return item.RuntimeTicks
+	}
+	return nil
+}
+
+func buildNowPlaying(item *dto.ItemRow, itemID, mediaSourceID string, positionTicks int64, isPaused bool, playSessionID string) *services.NowPlaying {
 	if item == nil {
 		return &services.NowPlaying{
 			ItemID:        itemID,
+			MediaSourceID: mediaSourceID,
 			PositionTicks: positionTicks,
 			IsPaused:      isPaused,
 			PlaySessionID: playSessionID,
@@ -879,6 +919,7 @@ func buildNowPlaying(item *dto.ItemRow, itemID string, positionTicks int64, isPa
 	}
 	np := &services.NowPlaying{
 		ItemID:        item.ID,
+		MediaSourceID: mediaSourceID,
 		ItemName:      item.Name,
 		ItemType:      item.ItemType,
 		PositionTicks: positionTicks,

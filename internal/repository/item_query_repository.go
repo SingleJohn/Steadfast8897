@@ -268,7 +268,14 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 	userJoin := ""
 	if options.UserID != nil {
 		userJoin = fmt.Sprintf(
-			"LEFT JOIN user_item_data uid ON i.id = uid.item_id AND uid.user_id = $%d::uuid", paramIdx)
+			`LEFT JOIN user_item_data uid ON i.id = uid.item_id AND uid.user_id = $%d::uuid
+			 LEFT JOIN LATERAL (
+				SELECT playback_position_ticks, played, last_played_date
+				  FROM user_media_version_data
+				 WHERE user_id = $%d::uuid AND item_id = i.id
+				 ORDER BY last_played_date DESC NULLS LAST, updated_at DESC
+				 LIMIT 1
+			 ) mvud ON TRUE`, paramIdx, paramIdx)
 		params = append(params, *options.UserID)
 		paramIdx++
 	}
@@ -279,13 +286,13 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 		}
 		switch f {
 		case "IsResumable":
-			conditions = append(conditions, "uid.playback_position_ticks > 0 AND uid.is_hidden_from_resume = FALSE AND (uid.played IS NULL OR uid.played = FALSE)")
+			conditions = append(conditions, "COALESCE(mvud.playback_position_ticks, uid.playback_position_ticks) > 0 AND uid.is_hidden_from_resume = FALSE AND (COALESCE(mvud.played, uid.played) IS NULL OR COALESCE(mvud.played, uid.played) = FALSE)")
 		case "IsFavorite":
 			conditions = append(conditions, "uid.is_favorite = TRUE")
 		case "IsUnplayed":
-			conditions = append(conditions, "(uid.played IS NULL OR uid.played = FALSE)")
+			conditions = append(conditions, "(COALESCE(mvud.played, uid.played) IS NULL OR COALESCE(mvud.played, uid.played) = FALSE)")
 		case "IsPlayed":
-			conditions = append(conditions, "uid.played = TRUE")
+			conditions = append(conditions, "COALESCE(mvud.played, uid.played) = TRUE")
 		}
 	}
 
@@ -306,7 +313,7 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 
 	userColumns := "NULL::bigint as playback_position_ticks, 0::int as play_count, FALSE as is_favorite, FALSE as played, NULL::timestamp as last_played_date"
 	if options.UserID != nil {
-		userColumns = "uid.playback_position_ticks, uid.play_count, uid.is_favorite, uid.played, uid.last_played_date"
+		userColumns = "COALESCE(mvud.playback_position_ticks, uid.playback_position_ticks) AS playback_position_ticks, uid.play_count, uid.is_favorite, COALESCE(mvud.played, uid.played) AS played, COALESCE(mvud.last_played_date, uid.last_played_date) AS last_played_date"
 	}
 
 	var seriesJoin, seriesCols string

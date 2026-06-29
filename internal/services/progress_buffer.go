@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ProgressEntry struct {
 	UserID        string
 	ItemID        string
+	MediaSourceID string
 	PositionTicks int64
 	PlayCount     *int32
 	IsFavorite    *bool
@@ -19,11 +21,11 @@ type ProgressEntry struct {
 }
 
 type ProgressBuffer struct {
-	mu       sync.Mutex
-	buffer   map[string]*ProgressEntry
-	pool     *pgxpool.Pool
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	mu     sync.Mutex
+	buffer map[string]*ProgressEntry
+	pool   *pgxpool.Pool
+	stopCh chan struct{}
+	doneCh chan struct{}
 }
 
 func NewProgressBuffer(pool *pgxpool.Pool) *ProgressBuffer {
@@ -82,16 +84,45 @@ func (pb *ProgressBuffer) flushOnce() {
 		if err != nil {
 			slog.Error("Progress flush error", "error", err)
 		}
+		if entry.MediaSourceID != "" {
+			if _, err := uuid.Parse(entry.MediaSourceID); err == nil {
+				_, err = pb.pool.Exec(ctx,
+					`INSERT INTO user_media_version_data (
+						user_id, item_id, media_version_id, playback_position_ticks, play_count, played, last_played_date, updated_at
+					)
+					SELECT $1::uuid, mv.item_id, mv.id, $3, COALESCE($4, 0), COALESCE($5, false), NOW(), NOW()
+					  FROM media_versions mv
+					 WHERE mv.id = $2::uuid
+					ON CONFLICT (user_id, media_version_id) DO UPDATE SET
+						item_id = EXCLUDED.item_id,
+						playback_position_ticks = $3,
+						play_count = CASE WHEN $4 IS NOT NULL THEN $4 ELSE user_media_version_data.play_count END,
+						played = CASE WHEN $5 IS NOT NULL THEN $5 ELSE user_media_version_data.played END,
+						last_played_date = NOW(),
+						updated_at = NOW()`,
+					entry.UserID, entry.MediaSourceID,
+					entry.PositionTicks, entry.PlayCount, entry.Played)
+				if err != nil {
+					slog.Error("Media version progress flush error", "error", err)
+				}
+			}
+		}
 	}
 }
 
 func (pb *ProgressBuffer) BufferProgress(entry *ProgressEntry) {
 	key := entry.UserID + ":" + entry.ItemID
+	if entry.MediaSourceID != "" {
+		key += ":" + entry.MediaSourceID
+	}
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 
 	if existing, ok := pb.buffer[key]; ok {
 		existing.PositionTicks = entry.PositionTicks
+		if entry.MediaSourceID != "" {
+			existing.MediaSourceID = entry.MediaSourceID
+		}
 		if entry.PlayCount != nil {
 			existing.PlayCount = entry.PlayCount
 		}

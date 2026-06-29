@@ -427,6 +427,12 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 	}
 
 	var sources []dto.MediaSourceInfo
+	versionUserData := map[string]repository.MediaVersionUserData{}
+	if authUser != nil {
+		if rows, err := state.Repo.MediaVersionUserData.ListForItem(ctx, authUser.ID, *uid); err == nil {
+			versionUserData = rows
+		}
+	}
 	for idx, mv := range versions {
 		msid := mv.ID.String()
 		if mv.ID == uuid.Nil {
@@ -508,12 +514,15 @@ func getPlaybackInfo(c *gin.Context, state *AppState) {
 			b := int64(*mv.Bitrate)
 			src.Bitrate = &b
 		}
+		if data, ok := versionUserData[msid]; ok {
+			ApplyMediaSourceUserData(&src, &data)
+		}
 		ApplyMediaSourceCompatDefaults(&src, *uid)
 		sources = append(sources, src)
 	}
 
 	// Append MediaSources from merged secondary items
-	mergedSources := collectMergedPlaybackSources(ctx, state, *uid, mediaStreams)
+	mergedSources := collectMergedPlaybackSources(ctx, state, *uid, authUser.ID, mediaStreams)
 	if len(mergedSources) > 0 {
 		sources = append(sources, mergedSources...)
 	}
@@ -896,7 +905,7 @@ func serveSubtitleFile(c *gin.Context, filePath string) {
 
 // collectMergedPlaybackSources finds media_versions from items that have been
 // merged into the given primary item and returns them as additional MediaSources.
-func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
+func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryID, userID string, fallbackStreams []dto.MediaStreamInfo) []dto.MediaSourceInfo {
 	siblings, err := state.Repo.Playback.ListMergedSiblingItems(ctx, primaryID)
 	if err != nil {
 		return nil
@@ -907,6 +916,12 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 
 	var merged []dto.MediaSourceInfo
 	for _, sib := range siblings {
+		versionUserData := map[string]repository.MediaVersionUserData{}
+		if userID != "" {
+			if rows, err := state.Repo.MediaVersionUserData.ListForItem(ctx, userID, sib.ID); err == nil {
+				versionUserData = rows
+			}
+		}
 		versions, err := loadMediaVersions(ctx, state, sib.ID)
 		if err != nil {
 			continue
@@ -980,6 +995,9 @@ func collectMergedPlaybackSources(ctx context.Context, state *AppState, primaryI
 			if mv.Bitrate != nil {
 				b := int64(*mv.Bitrate)
 				src.Bitrate = &b
+			}
+			if data, ok := versionUserData[msid]; ok {
+				ApplyMediaSourceUserData(&src, &data)
 			}
 			ApplyMediaSourceCompatDefaults(&src, primaryID)
 			merged = append(merged, src)

@@ -14,6 +14,7 @@ import (
 )
 
 type PlaybackRepository struct {
+	pool    *pgxpool.Pool
 	queries *dbgen.Queries
 }
 
@@ -71,7 +72,7 @@ type MediaVersionItemInfo struct {
 }
 
 func NewPlaybackRepository(pool *pgxpool.Pool) *PlaybackRepository {
-	return &PlaybackRepository{queries: dbgen.New(pool)}
+	return &PlaybackRepository{pool: pool, queries: dbgen.New(pool)}
 }
 
 func (r *PlaybackRepository) ListMediaVersionsForItem(ctx context.Context, itemID string) ([]MediaVersion, error) {
@@ -163,6 +164,25 @@ func (r *PlaybackRepository) GetMediaVersionItemAndInfo(ctx context.Context, med
 		return nil, err
 	}
 	return &MediaVersionItemInfo{ItemID: row.ItemID, MediaInfo: row.Mediainfo}, nil
+}
+
+func (r *PlaybackRepository) GetMediaVersionRuntimeTicks(ctx context.Context, mediaVersionID string) (*int64, error) {
+	uid, err := uuid.Parse(mediaVersionID)
+	if err != nil {
+		return nil, err
+	}
+	var runtimeTicks pgtype.Int8
+	err = r.pool.QueryRow(ctx,
+		`SELECT runtime_ticks FROM media_versions WHERE id = $1`,
+		toPGUUID(uid)).Scan(&runtimeTicks)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil || !runtimeTicks.Valid {
+		return nil, err
+	}
+	value := runtimeTicks.Int64
+	return &value, nil
 }
 
 func (r *PlaybackRepository) GetPrimaryMediaStreamsJSON(ctx context.Context, itemID string) ([]byte, error) {

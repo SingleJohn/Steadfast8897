@@ -204,13 +204,21 @@ func (r *ItemHelperRepository) GetUserItemData(ctx context.Context, userID, item
 	if err != nil {
 		return nil, err
 	}
-	return &dto.UserDataRow{
+	out := &dto.UserDataRow{
 		PlaybackPositionTicks: &row.PlaybackPositionTicks,
 		PlayCount:             &row.PlayCount,
 		IsFavorite:            &row.IsFavorite,
 		Played:                &row.Played,
 		LastPlayedDate:        ptrTime(row.LastPlayedDate),
-	}, nil
+	}
+	if versionData, err := NewMediaVersionUserDataRepository(r.pool).GetLatestForItem(ctx, userID, itemID); err == nil && versionData != nil {
+		pos := versionData.PlaybackPositionTicks
+		played := versionData.Played
+		out.PlaybackPositionTicks = &pos
+		out.Played = &played
+		out.LastPlayedDate = versionData.LastPlayedDate
+	}
+	return out, nil
 }
 
 func (r *ItemHelperRepository) UpsertUserItemData(ctx context.Context, userID, itemID string, position *int64, playCount *int32, isFavorite *bool, played *bool) error {

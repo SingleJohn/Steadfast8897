@@ -28,6 +28,7 @@ type ActiveSession struct {
 
 type NowPlaying struct {
 	ItemID             string  `json:"ItemId"`
+	MediaSourceID      string  `json:"MediaSourceId,omitempty"`
 	ItemName           string  `json:"ItemName"`
 	ItemType           string  `json:"ItemType"`
 	SeriesName         *string `json:"SeriesName,omitempty"`

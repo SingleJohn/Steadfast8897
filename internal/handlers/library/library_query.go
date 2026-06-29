@@ -500,7 +500,7 @@ func getItems(c *gin.Context) {
 		}
 		item := dto.FormatItemDtoList(&res.Items[i], sid, ud)
 		if needMediaSources {
-			applyListMediaSourceDisplay(c, ctx, state, &res.Items[i], &item)
+			applyListMediaSourceDisplay(c, ctx, state, &res.Items[i], &item, pathUser)
 		}
 		items = append(items, item)
 	}
@@ -691,7 +691,7 @@ func getLatestItems(c *gin.Context) {
 			items := make([]dto.BaseItemDto, 0, len(rows))
 			for i := range rows {
 				item := dto.FormatItemDtoList(&rows[i], sid, nil)
-				applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item)
+				applyListMediaSourceDisplay(c, ctx, state, &rows[i], &item, pathUser)
 				items = append(items, item)
 			}
 			compathandlers.ApplyUnplayedItemCounts(ctx, state.DB, pathUser, items)

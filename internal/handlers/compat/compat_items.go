@@ -591,7 +591,7 @@ func itemsSearch(c *gin.Context, state *AppState) {
 
 		if row.ItemType == "Movie" || row.ItemType == "Episode" {
 			if needMediaSources {
-				sources := mediahandlers.BuildItemMediaSources(ctx, state, itemID, &row)
+				sources := mediahandlers.BuildItemMediaSources(ctx, state, itemID, &row, userID)
 				if len(sources) > 0 {
 					mediahandlers.HideMediaSourceSizeForInfuse(c, sources)
 					result["MediaSources"] = embysupport.MediaSourcesToEmbyMaps(sources)

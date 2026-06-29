@@ -247,7 +247,7 @@ func getEpisodes(c *gin.Context, state *AppState) {
 		}
 
 		if row.FilePath != nil && *row.FilePath != "" {
-			sources := mediahandlers.BuildItemMediaSources(ctx, state, id, row)
+			sources := mediahandlers.BuildItemMediaSources(ctx, state, id, row, userID)
 			if len(sources) > 0 {
 				mediahandlers.HideMediaSourceSizeForInfuse(c, sources)
 				d.MediaSources = sources
