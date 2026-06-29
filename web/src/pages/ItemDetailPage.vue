@@ -158,7 +158,7 @@ watch(selectedSeason, (id) => {
 const hasPoster = computed(() => !!item.value && !!(item.value.ImageTags?.Primary || item.value.SeriesPrimaryImageItemId))
 const primaryAspectRatio = computed(() => Number(item.value?.PrimaryImageAspectRatio || 0))
 const primaryIsLandscape = computed(() => primaryAspectRatio.value >= 1.25)
-const showHeroPoster = computed(() => hasPoster.value && !primaryIsLandscape.value)
+const showHeroPoster = computed(() => hasPoster.value)
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const canPlay = computed(() => !!item.value && (item.value.Type === 'Movie' || item.value.Type === 'Episode'))
@@ -383,9 +383,6 @@ function handleTagClick(tag: string) {
   router.push({ name: 'browse', params: { kind: 'tag', value: name }, query: { name } })
 }
 
-function similarCardShape(entry: any): 'portrait' | 'thumb' {
-  return Number(entry?.PrimaryImageAspectRatio || 0) >= 1.25 ? 'thumb' : 'portrait'
-}
 </script>
 
 <template>
@@ -418,6 +415,8 @@ function similarCardShape(entry: any): 'portrait' | 'thumb' {
       :item="item"
       :has-poster="showHeroPoster"
       :poster-id="posterId"
+      :primary-aspect-ratio="primaryAspectRatio"
+      :primary-is-landscape="primaryIsLandscape"
       :original-title="originalTitle"
       :title-density="titleDensity"
       :can-play="canPlay"
@@ -475,7 +474,8 @@ function similarCardShape(entry: any): 'portrait' | 'thumb' {
             v-for="similar in similarItems"
             :key="similar.Id"
             :item="similar"
-            :shape="similarCardShape(similar)"
+            shape="auto"
+            fixed-height
           />
         </div>
       </section>

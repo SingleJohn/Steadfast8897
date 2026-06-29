@@ -191,6 +191,7 @@ onMounted(() => {
           <SwiperRow
             title="我的收藏"
             :items="favoriteItems"
+            shape="mixed"
             density="compact"
           />
           <template #fallback>
@@ -208,6 +209,7 @@ onMounted(() => {
             :title="`最新 ${name}`"
             :items="items"
             :link-to="`/library/${id}`"
+            shape="mixed"
             density="compact"
           />
           <template #fallback>

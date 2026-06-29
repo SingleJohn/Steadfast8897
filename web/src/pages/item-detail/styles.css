@@ -106,14 +106,24 @@
 .hero-poster {
   flex-shrink: 0;
   width: 220px;
+  --detail-poster-height: 330px;
+  --detail-poster-ratio: 0.6667;
 }
 
 .poster-card {
   position: relative;
-  padding-bottom: 150%;
+  width: 100%;
+  height: var(--detail-poster-height);
   border-radius: var(--app-radius-xl, 24px);
   overflow: hidden;
   box-shadow: var(--app-shadow-ambient, 0 24px 48px rgba(0, 0, 0, 0.55));
+}
+
+.hero-poster-landscape {
+  width: min(
+    calc(var(--detail-poster-height) * var(--detail-poster-ratio)),
+    min(56vw, 640px)
+  );
 }
 
 .poster-img {
@@ -654,14 +664,16 @@
 }
 
 .similar-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  --media-card-fixed-height: 231px;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 22px 16px;
 }
 
 @media (min-width: 960px) {
   .similar-grid {
-    grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
+    gap: 22px 16px;
   }
 }
 
@@ -1162,7 +1174,16 @@
 @media (max-width: 960px) {
   .hero-backdrop-section { width: calc(100% + 32px); margin: -56px -16px 0; }
   .hero-inner { padding: 0 20px; }
-  .hero-poster { width: 160px; }
+  .hero-poster {
+    width: 160px;
+    --detail-poster-height: 240px;
+  }
+  .hero-poster-landscape {
+    width: min(
+      calc(var(--detail-poster-height) * var(--detail-poster-ratio)),
+      min(58vw, 480px)
+    );
+  }
   .hero-info { max-width: 680px; }
   .item-title {
     font-size: 3rem;
@@ -1194,7 +1215,16 @@
     gap: 20px;
     padding: 0 16px;
   }
-  .hero-poster { width: 160px; }
+  .hero-poster {
+    width: 160px;
+    --detail-poster-height: 240px;
+  }
+  .hero-poster-landscape {
+    width: min(
+      calc(var(--detail-poster-height) * var(--detail-poster-ratio)),
+      calc(100vw - 48px)
+    );
+  }
   .hero-info { text-align: center; }
   .item-title,
   .item-title.title-long,
@@ -1217,7 +1247,7 @@
     min-width: 0;
   }
   .similar-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    --media-card-fixed-height: 180px;
     gap: 18px 12px;
   }
   .trailer-header {

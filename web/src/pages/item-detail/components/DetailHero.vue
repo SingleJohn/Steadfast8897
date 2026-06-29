@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { NIcon, NSelect } from 'naive-ui'
 import {
   CheckmarkDoneOutline,
@@ -14,11 +15,13 @@ import { getImageUrl } from '@/api/client'
 import { endTimeStr, formatRuntime } from '../utils/format'
 import ExternalPlayMenu from './ExternalPlayMenu.vue'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     item: any
     hasPoster: boolean
     posterId: string
+    primaryAspectRatio?: number
+    primaryIsLandscape?: boolean
     originalTitle: string
     titleDensity: string
     canPlay: boolean
@@ -33,12 +36,20 @@ withDefaults(
     browserUnsupported?: boolean
   }>(),
   {
+    primaryAspectRatio: 0,
+    primaryIsLandscape: false,
     versionOptions: () => [],
     selectedSourceId: '',
     selectedSource: null,
     browserUnsupported: false,
   },
 )
+
+const heroPosterStyle = computed(() => {
+  if (!props.primaryIsLandscape) return undefined
+  const ratio = props.primaryAspectRatio > 0 ? props.primaryAspectRatio : 16 / 9
+  return { '--detail-poster-ratio': String(ratio) }
+})
 
 const emit = defineEmits<{
   play: []
@@ -59,14 +70,19 @@ const emit = defineEmits<{
 
     <div class="hero-content">
       <div class="hero-inner">
-        <div v-if="hasPoster" class="hero-poster">
+        <div
+          v-if="hasPoster"
+          class="hero-poster"
+          :class="{ 'hero-poster-landscape': primaryIsLandscape }"
+          :style="heroPosterStyle"
+        >
           <div class="poster-card">
             <img
-              :src="getImageUrl(posterId, 'Primary', 400)"
+              :src="getImageUrl(posterId, 'Primary', primaryIsLandscape ? 720 : 400)"
               :alt="item.Name"
               class="poster-img"
-              width="400"
-              height="600"
+              :width="primaryIsLandscape ? 640 : 400"
+              :height="primaryIsLandscape ? 360 : 600"
               fetchpriority="high"
             />
           </div>

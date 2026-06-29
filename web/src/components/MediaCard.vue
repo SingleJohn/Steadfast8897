@@ -7,13 +7,17 @@ const props = withDefaults(
   defineProps<{
     item: any
     showProgress?: boolean
-    shape?: 'portrait' | 'thumb' | 'square'
+    shape?: 'portrait' | 'thumb' | 'square' | 'landscape' | 'auto'
+    fixedHeight?: boolean
   }>(),
   {
     showProgress: false,
     shape: 'portrait',
+    fixedHeight: false,
   },
 )
+
+const LANDSCAPE_PRIMARY_RATIO = 1.25
 
 function formatDuration(ticks?: number): string {
   if (!ticks) return ''
@@ -79,10 +83,26 @@ const subtitle = computed(() => {
   return props.item.ProductionYear || ''
 })
 
+const primaryAspectRatio = computed(() => Number(props.item?.PrimaryImageAspectRatio || 0))
+const primaryIsLandscape = computed(() => primaryAspectRatio.value >= LANDSCAPE_PRIMARY_RATIO)
+const resolvedShape = computed(() => {
+  if (props.shape === 'auto') return primaryIsLandscape.value ? 'landscape' : 'portrait'
+  return props.shape
+})
+
 const shapeClass = computed(() => {
-  if (props.shape === 'thumb') return 'thumb-card'
-  if (props.shape === 'square') return 'square-card'
+  if (resolvedShape.value === 'thumb') return 'thumb-card'
+  if (resolvedShape.value === 'square') return 'square-card'
+  if (resolvedShape.value === 'landscape') return 'landscape-card'
   return 'portrait-card'
+})
+
+const cardStyle = computed(() => {
+  if (!props.fixedHeight) return undefined
+  const ratio = resolvedShape.value === 'landscape' && primaryAspectRatio.value > 0
+    ? primaryAspectRatio.value
+    : 16 / 9
+  return { '--media-card-ratio': String(ratio) }
 })
 
 const platformName = computed(() => {
@@ -152,7 +172,7 @@ const linkTarget = computed(() => {
 </script>
 
 <template>
-  <div class="card-box">
+  <div class="card-box" :class="{ 'card-box-fixed-height': fixedHeight }" :style="cardStyle">
     <router-link :to="linkTarget" class="card-link">
       <div :class="shapeClass" class="card-surface elevation-2">
         <div
@@ -230,6 +250,7 @@ const linkTarget = computed(() => {
 .card-box {
   text-decoration: none;
   color: unset;
+  --media-card-ratio: 1.7778;
 }
 
 .card-link {
@@ -257,11 +278,44 @@ const linkTarget = computed(() => {
   border-radius: var(--app-radius-xl, 24px);
 }
 
+.landscape-card {
+  position: relative;
+  aspect-ratio: var(--media-card-ratio) / 1;
+  contain: layout paint style;
+  border-radius: var(--app-radius-xl, 24px);
+}
+
 .square-card {
   position: relative;
   aspect-ratio: 1 / 1;
   contain: layout paint style;
   border-radius: var(--app-radius-xl, 24px);
+}
+
+.card-box-fixed-height {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.card-box-fixed-height .portrait-card {
+  width: calc(var(--media-card-fixed-height, 195px) * 2 / 3);
+  height: var(--media-card-fixed-height, 195px);
+  aspect-ratio: auto;
+}
+
+.card-box-fixed-height .landscape-card {
+  width: min(
+    calc(var(--media-card-fixed-height, 195px) * var(--media-card-ratio)),
+    calc(100vw - 48px)
+  );
+  height: var(--media-card-fixed-height, 195px);
+  aspect-ratio: auto;
+}
+
+.card-box-fixed-height .thumb-card {
+  width: calc(var(--media-card-fixed-height, 195px) * 16 / 9);
+  height: var(--media-card-fixed-height, 195px);
+  aspect-ratio: auto;
 }
 
 .elevation-2 {

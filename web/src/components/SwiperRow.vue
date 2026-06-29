@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   items: any[]
   showProgress?: boolean
   linkTo?: string
-  shape?: 'portrait' | 'thumb'
+  shape?: 'portrait' | 'thumb' | 'mixed'
   density?: 'default' | 'compact'
 }>(), {
   showProgress: false,
@@ -58,11 +58,18 @@ const portraitBreakpointsCompact: Record<number, any> = {
 }
 
 const breakpoints = computed(() => {
+  if (props.shape === 'mixed') return undefined
   if (props.shape === 'thumb') {
     return props.density === 'compact' ? thumbBreakpointsCompact : thumbBreakpoints
   }
   return props.density === 'compact' ? portraitBreakpointsCompact : portraitBreakpoints
 })
+
+const isMixed = computed(() => props.shape === 'mixed')
+const cardShape = computed<'auto' | 'portrait' | 'thumb'>(() => (
+  props.shape === 'mixed' ? 'auto' : props.shape
+))
+const mixedSpaceBetween = computed(() => props.density === 'compact' ? 12 : 16)
 </script>
 
 <template>
@@ -84,14 +91,22 @@ const breakpoints = computed(() => {
       :modules="modules"
       :free-mode="isMobile"
       :navigation="{ prevEl: navPrev, nextEl: navNext, disabledClass: 'sr-arrow-disabled' }"
+      :slides-per-view="isMixed ? 'auto' : undefined"
+      :space-between="isMixed ? mixedSpaceBetween : undefined"
       :breakpoints="breakpoints"
       :observer="true"
       :observe-parents="true"
       :resize-observer="true"
       class="sr-swiper"
+      :class="{ 'sr-swiper-mixed': isMixed }"
     >
       <SwiperSlide v-for="item in items" :key="item.Id">
-        <MediaCard :item="item" :show-progress="showProgress" :shape="shape" />
+        <MediaCard
+          :item="item"
+          :show-progress="showProgress"
+          :shape="cardShape"
+          :fixed-height="isMixed"
+        />
       </SwiperSlide>
     </Swiper>
   </section>
@@ -185,4 +200,28 @@ const breakpoints = computed(() => {
   padding: 4px 8px 10px;
 }
 .sr-swiper :deep(.swiper-slide) { height: auto; }
+
+.sr-swiper-mixed :deep(.swiper-wrapper) {
+  align-items: flex-start;
+}
+
+.sr-swiper-mixed :deep(.swiper-slide) {
+  width: auto;
+}
+
+.sr-swiper-mixed {
+  --media-card-fixed-height: 195px;
+}
+
+@media (min-width: 960px) and (max-width: 1903px) {
+  .sr-swiper-mixed {
+    --media-card-fixed-height: 220px;
+  }
+}
+
+@media (max-width: 599px) {
+  .sr-swiper-mixed {
+    --media-card-fixed-height: 150px;
+  }
+}
 </style>
