@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	defaultFederatedSearchLimit        = 50
-	maxFederatedSearchLimit            = 100
-	defaultFederatedSearchGrace        = 3 * time.Second
-	maxFederatedProviderDefaultTimeout = 15 * time.Second
+	defaultFederatedSearchLimit         = 50
+	maxFederatedSearchLimit             = 100
+	defaultFederatedSearchGrace         = 3 * time.Second
+	maxFederatedProviderDefaultTimeout  = 15 * time.Second
+	defaultFederatedProviderConcurrency = 12
 )
 
 type FederatedSearchRequest struct {
@@ -135,14 +136,24 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 		CacheWrite: !req.DryRun,
 	}
 	groups := map[string]*FederatedSearchItem{}
+	searchCtx, cancelSearch := context.WithCancel(ctx)
+	defer cancelSearch()
 	results := make(chan federatedProviderResult, len(searchable))
+	sem := make(chan struct{}, federatedProviderConcurrency(len(searchable)))
 	var wg sync.WaitGroup
 	for _, provider := range searchable {
 		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- m.searchProviderSafely(ctx, provider, keyword, req.DryRun)
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-searchCtx.Done():
+				results <- federatedProviderResult{provider: provider, err: searchCtx.Err(), latency: time.Since(start).Milliseconds()}
+				return
+			}
+			results <- m.searchProviderSafely(searchCtx, provider, keyword, req.DryRun)
 		}()
 	}
 	go func() {
@@ -154,7 +165,7 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 	for _, provider := range searchable {
 		pending[provider.ID] = provider
 	}
-	timer := time.NewTimer(federatedSearchBudget(searchable))
+	timer := time.NewTimer(federatedSearchBudget(searchable, federatedProviderConcurrency(len(searchable))))
 	defer timer.Stop()
 	for len(pending) > 0 {
 		select {
@@ -310,14 +321,36 @@ func applyFederatedProviderResult(response *FederatedSearchResponse, groups map[
 	}
 }
 
-func federatedSearchBudget(providers []repository.SourceProvider) time.Duration {
+func federatedSearchBudget(providers []repository.SourceProvider, concurrency int) time.Duration {
 	maxTimeout := defaultCMSTimeout
 	for _, provider := range providers {
 		if timeout := federatedProviderTimeout(provider); timeout > maxTimeout {
 			maxTimeout = timeout
 		}
 	}
-	return maxTimeout + defaultFederatedSearchGrace
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	batches := (len(providers) + concurrency - 1) / concurrency
+	if batches < 1 {
+		batches = 1
+	}
+	budget := time.Duration(batches)*maxTimeout + defaultFederatedSearchGrace
+	maxBudget := 110 * time.Second
+	if budget > maxBudget {
+		return maxBudget
+	}
+	return budget
+}
+
+func federatedProviderConcurrency(total int) int {
+	if total <= 0 {
+		return 1
+	}
+	if total < defaultFederatedProviderConcurrency {
+		return total
+	}
+	return defaultFederatedProviderConcurrency
 }
 
 func federatedProviderTimeout(provider repository.SourceProvider) time.Duration {

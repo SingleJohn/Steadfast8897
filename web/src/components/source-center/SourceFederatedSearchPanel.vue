@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { NButton, NInput, NInputNumber, NSwitch, NTag, NTooltip, useMessage } from 'naive-ui'
-import type { FederatedSearchError, FederatedSearchItem, FederatedSearchResponse } from '@/api/source'
+import { getSourceItemLines, refreshSourceItemDetail, type FederatedSearchError, type FederatedSearchItem, type FederatedSearchResponse, type SourceItemLinesResponse } from '@/api/source'
 import { copyText } from '@/utils/externalPlayers'
+
+type TagType = 'default' | 'success' | 'warning' | 'error' | 'info'
 
 const props = defineProps<{
   keyword: string
@@ -31,6 +33,10 @@ const errors = computed(() => props.result?.errors || [])
 const successCount = computed(() => props.result?.provider.success || 0)
 const failedCount = computed(() => props.result?.provider.failed || 0)
 const totalProviders = computed(() => props.result?.provider.total || 0)
+const expandedItemUUID = shallowRef('')
+const lineLoadingUUID = shallowRef('')
+const refreshingItemId = shallowRef<number | null>(null)
+const itemLinesByUUID = shallowRef<Record<string, SourceItemLinesResponse>>({})
 
 function posterStyle(item: FederatedSearchItem) {
   if (!item.poster_url) return {}
@@ -41,16 +47,54 @@ function providerLine(item: FederatedSearchItem) {
   return item.providers.map((provider) => provider.name).join(' / ')
 }
 
-function detailPath(item: FederatedSearchItem) {
-  return `/item/${item.public_uuid}`
+function expandedLines(item: FederatedSearchItem) {
+  return itemLinesByUUID.value[item.public_uuid] || null
 }
 
-function providerDetailPath(provider: FederatedSearchItem['providers'][number]) {
-  return `/item/${provider.item_uuid}`
+function lineHealthType(status: string): TagType {
+  switch (status) {
+    case 'ok':
+      return 'success'
+    case 'error':
+    case 'unhealthy':
+      return 'error'
+    case 'unknown':
+      return 'warning'
+    default:
+      return 'default'
+  }
 }
 
-function playPath(item: FederatedSearchItem) {
-  return item.item_type === 'Movie' ? `/play/${item.public_uuid}` : ''
+async function toggleLines(item: FederatedSearchItem) {
+  if (expandedItemUUID.value === item.public_uuid) {
+    expandedItemUUID.value = ''
+    return
+  }
+  expandedItemUUID.value = item.public_uuid
+  if (itemLinesByUUID.value[item.public_uuid]) return
+  lineLoadingUUID.value = item.public_uuid
+  try {
+    const lines = await getSourceItemLines(item.public_uuid)
+    itemLinesByUUID.value = { ...itemLinesByUUID.value, [item.public_uuid]: lines }
+  } catch (e: any) {
+    message.error(e?.message || '加载线路失败')
+  } finally {
+    if (lineLoadingUUID.value === item.public_uuid) lineLoadingUUID.value = ''
+  }
+}
+
+async function refreshLines(item: FederatedSearchItem, sourceItemId: number) {
+  refreshingItemId.value = sourceItemId
+  try {
+    await refreshSourceItemDetail(sourceItemId)
+    const lines = await getSourceItemLines(item.public_uuid)
+    itemLinesByUUID.value = { ...itemLinesByUUID.value, [item.public_uuid]: lines }
+    message.success('线路已刷新')
+  } catch (e: any) {
+    message.error(e?.message || '刷新线路失败')
+  } finally {
+    refreshingItemId.value = null
+  }
 }
 
 function errorType(error: FederatedSearchError) {
@@ -190,16 +234,76 @@ async function copySearchError(error: FederatedSearchError) {
             <p v-if="item.remarks" class="result-remarks">{{ item.remarks }}</p>
             <div class="provider-line">{{ providerLine(item) }}</div>
             <div class="result-actions">
-              <RouterLink class="action-link" :to="detailPath(item)">详情/线路</RouterLink>
-              <RouterLink v-if="playPath(item)" class="action-link" :to="playPath(item)">播放</RouterLink>
-              <RouterLink
+              <NButton
+                size="tiny"
+                secondary
+                type="primary"
+                :loading="lineLoadingUUID === item.public_uuid"
+                @click="toggleLines(item)"
+              >
+                {{ expandedItemUUID === item.public_uuid ? '收起线路' : '详情/线路' }}
+              </NButton>
+              <span
                 v-for="provider in item.providers"
                 :key="provider.item_uuid"
                 class="provider-chip"
-                :to="providerDetailPath(provider)"
               >
                 {{ provider.name }}
-              </RouterLink>
+              </span>
+            </div>
+            <div v-if="expandedItemUUID === item.public_uuid" class="line-panel">
+              <div v-if="lineLoadingUUID === item.public_uuid" class="empty-state">正在读取已缓存线路</div>
+              <template v-else-if="expandedLines(item)">
+                <article
+                  v-for="group in expandedLines(item)?.alternatives || []"
+                  :key="group.public_uuid"
+                  class="line-group"
+                >
+                  <header class="line-group-head">
+                    <div class="line-provider">
+                      <strong>{{ group.provider_name || `Provider ${group.provider_id}` }}</strong>
+                      <span>{{ group.provider_key }}</span>
+                    </div>
+                    <div class="line-tags">
+                      <NTag size="small" :type="lineHealthType(group.provider_health)" :bordered="false">
+                        {{ group.provider_health || 'unknown' }}
+                      </NTag>
+                      <NTag size="small" :type="group.detail_loaded ? 'success' : 'warning'" :bordered="false">
+                        {{ group.detail_loaded ? '已加载详情' : '未加载详情' }}
+                      </NTag>
+                      <NTag size="small" :bordered="false">{{ group.play_source_count }} 线路</NTag>
+                    </div>
+                  </header>
+                  <div class="line-meta">
+                    <span>{{ group.title }}</span>
+                    <span>{{ group.source_item_id }}</span>
+                    <span v-if="group.remarks">{{ group.remarks }}</span>
+                  </div>
+                  <div v-if="group.play_sources.length > 0" class="play-line-list">
+                    <div v-for="line in group.play_sources" :key="line.public_uuid" class="play-line">
+                      <span class="play-line-name">{{ line.line_name }}</span>
+                      <span v-if="line.episode_title" class="play-line-episode">{{ line.episode_title }}</span>
+                      <NTag size="small" :type="lineHealthType(line.health_status)" :bordered="false">
+                        {{ line.health_status || 'unknown' }}
+                      </NTag>
+                      <span class="play-line-mode">{{ line.parse_mode }}</span>
+                      <span class="play-line-score">成功 {{ line.success_count }} / 失败 {{ line.failure_count }}</span>
+                    </div>
+                  </div>
+                  <div v-else class="line-empty-row">
+                    <span>暂无已缓存线路</span>
+                    <NButton
+                      size="tiny"
+                      secondary
+                      :loading="refreshingItemId === group.id"
+                      @click="refreshLines(item, group.id)"
+                    >
+                      加载线路
+                    </NButton>
+                  </div>
+                </article>
+              </template>
+              <div v-else class="empty-state">暂无线路信息</div>
             </div>
           </div>
         </article>
@@ -401,10 +505,10 @@ async function copySearchError(error: FederatedSearchError) {
 .result-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: 8px;
 }
-.action-link,
 .provider-chip {
   display: inline-flex;
   align-items: center;
@@ -417,19 +521,83 @@ async function copySearchError(error: FederatedSearchError) {
   font-size: 12px;
   text-decoration: none;
 }
-.action-link {
-  border-color: rgba(59, 130, 246, 0.45);
-  color: #2563eb;
-}
 .provider-chip {
   overflow: hidden;
   color: var(--app-text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.action-link:hover,
 .provider-chip:hover {
   background: var(--app-surface-2);
+}
+.line-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-2);
+  padding: 10px;
+}
+.line-group {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid var(--app-border);
+  padding-bottom: 8px;
+}
+.line-group:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.line-group-head,
+.line-tags,
+.play-line,
+.line-empty-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.line-group-head,
+.line-empty-row {
+  justify-content: space-between;
+}
+.line-provider {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.line-provider strong {
+  font-size: 13px;
+}
+.line-provider span,
+.line-meta,
+.play-line-mode,
+.play-line-score,
+.play-line-episode,
+.line-empty-row {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.line-tags {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.line-meta,
+.play-line-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.play-line {
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-1);
+  padding: 5px 8px;
+}
+.play-line-name {
+  font-size: 12px;
+  font-weight: 700;
 }
 .error-panel {
   border-left: 1px solid var(--app-border);
@@ -483,6 +651,11 @@ async function copySearchError(error: FederatedSearchError) {
     border-top: 1px solid var(--app-border);
     padding-top: 14px;
     padding-left: 0;
+  }
+  .line-group-head,
+  .line-empty-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

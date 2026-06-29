@@ -14,6 +14,7 @@ import (
 )
 
 const ensureDetailTimeout = 12 * time.Second
+const ensureFallbackDetailTimeout = 5 * time.Second
 
 // sourceSeriesDetailTTL：连载剧 detail 追更 TTL。客户端打开剧集时若超过该时长，
 // 自动重拉一次 detail 以补齐新增集数。电影类不受 TTL 影响（内容不会变）。
@@ -28,6 +29,14 @@ type EnsureDetailResult struct {
 }
 
 func EnsureItemDetailLoaded(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, itemID int64) (*EnsureDetailResult, error) {
+	return ensureItemDetailLoadedWithTimeout(ctx, repo, client, jsRuntime, cspRuntime, itemID, ensureDetailTimeout)
+}
+
+func EnsureItemDetailLoadedForFallback(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, itemID int64) (*EnsureDetailResult, error) {
+	return ensureItemDetailLoadedWithTimeout(ctx, repo, client, jsRuntime, cspRuntime, itemID, ensureFallbackDetailTimeout)
+}
+
+func ensureItemDetailLoadedWithTimeout(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, itemID int64, timeout time.Duration) (*EnsureDetailResult, error) {
 	start := time.Now()
 	logger := SourceLogger("provider")
 	result := &EnsureDetailResult{}
@@ -54,7 +63,7 @@ func EnsureItemDetailLoaded(ctx context.Context, repo *repository.SourceReposito
 		logEnsureDetail(logger, start, item.ProviderID, item.ID, false, err)
 		return result, err
 	}
-	return loadAndIngestDetail(ctx, repo, client, jsRuntime, cspRuntime, item, start, logger, result)
+	return loadAndIngestDetail(ctx, repo, client, jsRuntime, cspRuntime, item, start, logger, result, timeout)
 }
 
 // RefreshSourceItemDetail 强制重拉某条在线条目的 detail，无视 DetailLoaded/TTL。
@@ -79,7 +88,7 @@ func RefreshSourceItemDetail(ctx context.Context, repo *repository.SourceReposit
 		return result, err
 	}
 	result.Item = item
-	return loadAndIngestDetail(ctx, repo, client, jsRuntime, cspRuntime, item, start, logger, result)
+	return loadAndIngestDetail(ctx, repo, client, jsRuntime, cspRuntime, item, start, logger, result, ensureDetailTimeout)
 }
 
 // sourceItemDetailExpired 判断连载剧 detail 是否过期需要重拉。非连载(电影)恒为 false。
@@ -97,10 +106,13 @@ func sourceItemDetailExpired(ctx context.Context, repo *repository.SourceReposit
 	return time.Since(*ts) >= sourceSeriesDetailTTL
 }
 
-func loadAndIngestDetail(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, item *repository.SourceItem, start time.Time, logger *slog.Logger, result *EnsureDetailResult) (*EnsureDetailResult, error) {
+func loadAndIngestDetail(ctx context.Context, repo *repository.SourceRepository, client *http.Client, jsRuntime *JSRuntimeManager, cspRuntime *CSPRuntimeManager, item *repository.SourceItem, start time.Time, logger *slog.Logger, result *EnsureDetailResult, timeout time.Duration) (*EnsureDetailResult, error) {
 	key := fmt.Sprintf("source-detail:%d", item.ID)
 	value, err, _ := sourceDetailLoadGroup.Do(key, func() (any, error) {
-		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureDetailTimeout)
+		if timeout <= 0 {
+			timeout = ensureDetailTimeout
+		}
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 		defer cancel()
 		manager := NewProviderRuntimeManager(repo, client).WithJSRuntime(jsRuntime).WithCSPRuntime(cspRuntime)
 		_, loadedItem, playSources, err := manager.Detail(loadCtx, item.ProviderID, item.SourceItemID)

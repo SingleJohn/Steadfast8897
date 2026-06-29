@@ -124,6 +124,61 @@ func (r *SourceRepository) SearchSourceItems(ctx context.Context, opts SourceIte
 	return out, total, rows.Err()
 }
 
+func (r *SourceRepository) ListSourceItemAlternatives(ctx context.Context, item SourceItem, limit int) ([]SourceItem, error) {
+	if limit <= 0 {
+		limit = 12
+	}
+	title := strings.TrimSpace(item.Title)
+	if title == "" {
+		return []SourceItem{item}, nil
+	}
+	args := []any{strings.ToLower(title), strings.TrimSpace(item.ItemType), item.ID, limit}
+	yearClause := "TRUE"
+	if item.Year != nil && *item.Year > 0 {
+		args = append(args, *item.Year)
+		yearClause = "(si.year = $5 OR si.year IS NULL)"
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT si.id, si.public_uuid::text, si.provider_id, si.source_item_id, si.source_parent_id, si.item_type, si.title,
+		       si.original_title, si.sort_title, si.year, si.region, si.area, si.language, si.category_name, si.normalized_kind,
+		       si.season_number, si.episode_number, si.poster_url, si.backdrop_url, si.remarks, si.summary, si.directors, si.actors,
+		       si.provider_ids, si.raw, si.detail_loaded, si.last_seen_at, si.created_at, si.updated_at
+		  FROM source_items si
+		  JOIN source_providers sp ON sp.id = si.provider_id
+		  LEFT JOIN source_config_imports sci ON sci.id = sp.config_id
+		 WHERE si.item_type = $2
+		   AND si.id <> $3
+		   AND lower(regexp_replace(si.title, '[[:space:]　_·:：-]+', '', 'g')) =
+		       lower(regexp_replace($1, '[[:space:]　_·:：-]+', '', 'g'))
+		   AND `+yearClause+`
+		   AND sp.enabled = TRUE
+		   AND sp.searchable = TRUE
+		   AND (
+		     (sp.provider_kind = 'cms_vod' AND sp.runtime_kind = 'native_cms')
+		     OR (sp.provider_kind IN ('drpy_js', 'tvbox_site') AND sp.runtime_kind = 'js_node_drpy')
+		     OR (sp.provider_kind = 'tvbox_site' AND sp.runtime_kind = 'csp_dex')
+		   )
+		   AND (sp.config_id IS NULL OR (sci.enabled = TRUE AND sci.import_status = 'active'))
+		 ORDER BY CASE WHEN si.detail_loaded THEN 0 ELSE 1 END,
+		          CASE sp.health_status WHEN 'ok' THEN 0 WHEN 'unknown' THEN 1 WHEN 'partial' THEN 2 ELSE 3 END,
+		          si.last_seen_at DESC,
+		          si.id DESC
+		 LIMIT $4`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SourceItem{item}
+	for rows.Next() {
+		next, err := scanSourceItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *next)
+	}
+	return out, rows.Err()
+}
+
 func sourceItemSearchWhere(opts SourceItemSearchOptions, firstArg int) (string, []any) {
 	search := strings.TrimSpace(opts.SearchTerm)
 	args := []any{}
@@ -140,6 +195,7 @@ func sourceItemSearchWhere(opts SourceItemSearchOptions, firstArg int) (string, 
 			   AND (
 			     (sp.provider_kind = 'cms_vod' AND sp.runtime_kind = 'native_cms')
 			     OR (sp.provider_kind IN ('drpy_js', 'tvbox_site') AND sp.runtime_kind = 'js_node_drpy')
+			     OR (sp.provider_kind = 'tvbox_site' AND sp.runtime_kind = 'csp_dex')
 			   )
 			   AND (sp.config_id IS NULL OR (sci.enabled = TRUE AND sci.import_status = 'active'))
 		)`,

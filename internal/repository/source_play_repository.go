@@ -113,6 +113,45 @@ func (r *SourceRepository) ListPlayableAlternatives(ctx context.Context, sourceI
 	return out, rows.Err()
 }
 
+func (r *SourceRepository) ListPlayableAlternativesForItems(ctx context.Context, sourceItemIDs []int64, episodeKey string) ([]SourcePlaySource, error) {
+	if len(sourceItemIDs) == 0 {
+		return []SourcePlaySource{}, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, public_uuid::text, source_item_id, provider_id, line_name, episode_title, episode_key,
+		       episode_number, raw_url, parse_mode, flag, headers, resolver_payload, sort_order,
+		       health_status, success_count, failure_count, avg_latency_ms,
+		       last_success_at, last_failure_at, created_at, updated_at
+		  FROM source_play_sources
+		 WHERE source_item_id = ANY($1::bigint[])
+		   AND COALESCE(NULLIF(episode_key, ''), episode_title) = $2
+		 ORDER BY array_position($1::bigint[], source_item_id),
+		          CASE health_status
+		            WHEN 'ok' THEN 0
+		            WHEN 'unknown' THEN 1
+		            WHEN 'error' THEN 2
+		            WHEN 'unhealthy' THEN 3
+		            ELSE 4
+		          END,
+		          CASE WHEN lower(COALESCE(parse_mode, '')) IN ('', 'unknown', 'direct') THEN 0 ELSE 1 END,
+		          (success_count::float / GREATEST(success_count + failure_count, 1)) DESC,
+		          avg_latency_ms NULLS LAST,
+		          sort_order, line_name, id`, sourceItemIDs, episodeKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourcePlaySource
+	for rows.Next() {
+		ps, err := scanSourcePlaySource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *ps)
+	}
+	return out, rows.Err()
+}
+
 func (r *SourceRepository) ListEpisodesForSeries(ctx context.Context, sourceItemID int64) ([]SourceEpisode, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT si.id, si.public_uuid::text, si.provider_id, si.title, si.summary, si.poster_url, si.backdrop_url,

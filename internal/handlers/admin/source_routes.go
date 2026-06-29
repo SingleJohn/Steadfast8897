@@ -31,6 +31,7 @@ func RegisterSourceRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.POST("/SourceProviders/BatchHealthCheck", adminMW, func(c *gin.Context) { batchHealthCheckSourceProviders(c, state) })
 	group.POST("/SourceProviders/BatchFetchCatalog", adminMW, func(c *gin.Context) { batchFetchProviderCatalog(c, state) })
 	group.POST("/SourceProviders/:id/FetchCatalog", adminMW, func(c *gin.Context) { fetchProviderCatalog(c, state) })
+	group.GET("/SourceItems/:uuid/Lines", adminMW, func(c *gin.Context) { getSourceItemLines(c, state) })
 	group.POST("/SourceItems/:id/RefreshDetail", adminMW, func(c *gin.Context) { refreshSourceItemDetail(c, state) })
 	group.GET("/SourceRefresh/Stats", adminMW, func(c *gin.Context) { sourceRefreshQueueStats(c, state) })
 	group.POST("/SourceProviders/:id/Enable", adminMW, func(c *gin.Context) { setSourceProviderEnabled(c, state, true) })

@@ -381,6 +381,41 @@ export type FederatedSearchItem = {
   score: number
 }
 
+export type SourcePlayLineSummary = {
+  id: number
+  public_uuid: string
+  line_name: string
+  episode_title: string
+  episode_key: string
+  parse_mode: string
+  health_status: string
+  success_count: number
+  failure_count: number
+  avg_latency_ms?: number
+}
+
+export type SourceItemLineGroup = {
+  id: number
+  public_uuid: string
+  provider_id: number
+  provider_name: string
+  provider_key: string
+  provider_health: string
+  source_item_id: string
+  title: string
+  item_type: string
+  year?: number
+  remarks?: string
+  detail_loaded: boolean
+  play_source_count: number
+  play_sources: SourcePlayLineSummary[]
+}
+
+export type SourceItemLinesResponse = {
+  item: SourceItemLineGroup
+  alternatives: SourceItemLineGroup[]
+}
+
 export type FederatedSearchResponse = {
   keyword: string
   total: number
@@ -563,6 +598,10 @@ export async function federatedSourceSearch(keyword: string, limit = 50, dryRun 
     body: JSON.stringify({ keyword, limit, dry_run: dryRun }),
     timeoutMs: 120_000,
   })
+}
+
+export async function getSourceItemLines(publicUUID: string) {
+  return requestJson<SourceItemLinesResponse>(`/SourceItems/${encodeURIComponent(publicUUID)}/Lines`)
 }
 
 export async function listSourceProviderCategories(id: number) {

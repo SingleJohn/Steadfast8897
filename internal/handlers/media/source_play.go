@@ -17,6 +17,7 @@ import (
 
 const sourcePlayCacheTTL = 15 * time.Minute
 const sourcePlayMaxRedirects = 5
+const sourcePlayFallbackWarmLimit = 4
 
 func streamSourcePlay(c *gin.Context, state *AppState) {
 	ctx := c.Request.Context()
@@ -83,16 +84,50 @@ func sourcePlayCandidates(ctx context.Context, state *AppState, primary reposito
 	if episodeKey == "" || primary.SourceItemID <= 0 {
 		return []repository.SourcePlaySource{primary}, nil
 	}
-	all, err := state.Repo.Source.ListPlayableAlternatives(ctx, primary.SourceItemID, episodeKey)
+	item, err := state.Repo.Source.GetSourceItemByID(ctx, primary.SourceItemID)
+	if err != nil {
+		return nil, err
+	}
+	sourceItemIDs := []int64{primary.SourceItemID}
+	if item != nil {
+		alternatives, err := state.Repo.Source.ListSourceItemAlternatives(ctx, *item, 12)
+		if err != nil {
+			return nil, err
+		}
+		sourceItemIDs = make([]int64, 0, len(alternatives))
+		seenItems := map[int64]bool{}
+		warmed := 0
+		for i := range alternatives {
+			if alternatives[i].ID <= 0 || seenItems[alternatives[i].ID] {
+				continue
+			}
+			if alternatives[i].ID != primary.SourceItemID && !alternatives[i].DetailLoaded && warmed < sourcePlayFallbackWarmLimit {
+				if _, err := source.EnsureItemDetailLoadedForFallback(ctx, state.Repo.Source, state.HTTPClient, state.JSRuntime, state.CSPRuntime, alternatives[i].ID); err != nil {
+					source.SourceLogger("resolver").Warn("[Source] fallback detail warm failed",
+						"log_target", "source",
+						"action", "fallback_detail_warm",
+						"source_item_id", alternatives[i].ID,
+						"error_type", source.ErrorType(err),
+						"error", err)
+				}
+				warmed++
+			}
+			seenItems[alternatives[i].ID] = true
+			sourceItemIDs = append(sourceItemIDs, alternatives[i].ID)
+		}
+	}
+	all, err := state.Repo.Source.ListPlayableAlternativesForItems(ctx, sourceItemIDs, episodeKey)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]repository.SourcePlaySource, 0, len(all)+1)
 	out = append(out, primary)
+	seen := map[int64]bool{primary.ID: true}
 	for i := range all {
-		if all[i].ID == primary.ID {
+		if all[i].ID <= 0 || seen[all[i].ID] {
 			continue
 		}
+		seen[all[i].ID] = true
 		out = append(out, all[i])
 	}
 	return out, nil
