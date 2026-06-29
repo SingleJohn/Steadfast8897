@@ -108,7 +108,10 @@ func refreshSourceConfig(c *gin.Context, state *AppState) {
 	}
 	switch config.SourceType {
 	case "tvbox":
-		raw := []byte(config.RawConfig)
+		var raw []byte
+		if sourceURL == "" {
+			raw = []byte(config.RawConfig)
+		}
 		if sourceURL == "" && len(raw) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "该 TVBox 配置无来源 URL 且无原始内容，无法自动更新，请重新导入"})
 			return

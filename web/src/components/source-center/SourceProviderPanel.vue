@@ -23,6 +23,8 @@ const props = defineProps<{
   selectedIds: number[]
   healthFilters: SourceProviderListOptions
   includeHidden: boolean
+  schedulerEnabled: boolean
+  savingScheduler: boolean
 }>()
 
 const emit = defineEmits<{
@@ -38,6 +40,7 @@ const emit = defineEmits<{
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
   batchCatalog: []
+  updateSchedulerEnabled: [value: boolean]
   fetchCatalog: [id: number]
   updateHealthFilters: [filters: SourceProviderListOptions]
   updateIncludeHidden: [value: boolean]
@@ -102,6 +105,8 @@ const inspectLoading = computed(() => /^(diagnose|home-profile|categories|search
       :action="action"
       :health-filters="healthFilters"
       :include-hidden="includeHidden"
+      :scheduler-enabled="schedulerEnabled"
+      :saving-scheduler="savingScheduler"
       @update:selected-ids="emit('update:selectedIds', $event)"
       @update:filtered="filtered = $event"
       @update-health-filters="emit('updateHealthFilters', $event)"
@@ -114,6 +119,7 @@ const inspectLoading = computed(() => /^(diagnose|home-profile|categories|search
       @batch-disable-ids="emit('batchDisableIds', $event)"
       @batch-health-ids="emit('batchHealthIds', $event)"
       @batch-catalog="emit('batchCatalog')"
+      @update-scheduler-enabled="emit('updateSchedulerEnabled', $event)"
     />
 
     <ProviderTable

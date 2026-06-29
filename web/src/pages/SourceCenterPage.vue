@@ -82,6 +82,8 @@ const {
   savingEmbySourceSearch,
   embyLiveSearchEnabled,
   savingEmbyLiveSearch,
+  sourceRefreshSchedulerEnabled,
+  savingSourceRefreshScheduler,
   viewDraft,
   discoverDimension,
   discoverSearch,
@@ -238,6 +240,8 @@ watch(federatedKeyword, (value) => {
               :selected-ids="selectedProviderIds"
               :health-filters="providerHealthFilters"
               :include-hidden="includeHiddenProviders"
+              :scheduler-enabled="sourceRefreshSchedulerEnabled"
+              :saving-scheduler="savingSourceRefreshScheduler"
               @update:active-provider-id="activeProviderId = $event"
               @update:keyword="providerSearchKeyword = $event"
               @update:selected-ids="selectedProviderIds = $event"
@@ -252,6 +256,7 @@ watch(federatedKeyword, (value) => {
               @batch-health-ids="source.batchHealthProviders($event)"
               @batch-delete="source.batchDeleteProviders"
               @batch-catalog="source.batchFetchProviderCatalog"
+              @update-scheduler-enabled="source.updateSourceRefreshSchedulerEnabled"
               @fetch-catalog="source.fetchProviderCatalog"
               @health="source.runProviderHealth"
               @diagnose="source.runProviderDiagnose"

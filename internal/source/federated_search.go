@@ -136,14 +136,13 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 	}
 	groups := map[string]*FederatedSearchItem{}
 	results := make(chan federatedProviderResult, len(searchable))
-	providerRoot := context.WithoutCancel(ctx)
 	var wg sync.WaitGroup
 	for _, provider := range searchable {
 		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- m.searchProviderSafely(providerRoot, provider, keyword, req.DryRun)
+			results <- m.searchProviderSafely(ctx, provider, keyword, req.DryRun)
 		}()
 	}
 	go func() {
@@ -166,6 +165,15 @@ func (m *ProviderRuntimeManager) FederatedSearch(ctx context.Context, req Federa
 			}
 			delete(pending, result.provider.ID)
 			applyFederatedProviderResult(response, groups, keyword, result)
+		case <-ctx.Done():
+			for _, provider := range pending {
+				applyFederatedProviderResult(response, groups, keyword, federatedProviderResult{
+					provider: provider,
+					err:      ctx.Err(),
+					latency:  time.Since(start).Milliseconds(),
+				})
+			}
+			pending = map[int64]repository.SourceProvider{}
 		case <-timer.C:
 			for {
 				select {

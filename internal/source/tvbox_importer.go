@@ -81,6 +81,8 @@ func (i *TVBoxImporter) Import(ctx context.Context, in ImportTVBoxInput) (*Impor
 		if in.PreserveProviderState && def.Usable {
 			if existing, err := i.repo.GetProviderBySourceKey(ctx, def.SourceKey); err == nil && existing != nil {
 				def.Enabled = existing.Enabled
+				def.Visible = existing.Visible
+				def.Searchable = existing.Searchable
 			}
 		}
 		provider, err := i.repo.UpsertProviderBySourceKey(ctx, def.toUpsert(config.ID))

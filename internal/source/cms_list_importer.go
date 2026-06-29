@@ -118,6 +118,8 @@ func (i *CMSListImporter) Import(ctx context.Context, in ImportCMSListInput) (*I
 		if in.PreserveProviderState {
 			if existing, err := i.repo.GetProviderBySourceKey(ctx, def.SourceKey); err == nil && existing != nil {
 				def.Enabled = existing.Enabled
+				def.Visible = existing.Visible
+				def.Searchable = existing.Searchable
 			}
 		}
 		provider, err := i.repo.UpsertProviderBySourceKey(ctx, def.toUpsert(config.ID))

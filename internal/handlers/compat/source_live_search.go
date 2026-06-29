@@ -13,7 +13,7 @@ import (
 )
 
 // source_emby_live_search_enabled 控制 Emby 客户端搜索时是否同步触发一次跨源聚合搜索，
-// 把命中实时写入 source_items 后再返回，实现“搜啥有啥”。默认开启；关闭后退回纯缓存读取。
+// 把命中实时写入 source_items 后再返回。默认关闭；开启后会增加客户端搜索延迟和外站请求量。
 const sourceEmbyLiveSearchEnabledKey = "source_emby_live_search_enabled"
 
 const (
@@ -36,7 +36,7 @@ func warmSourceSearchCache(c *gin.Context, state *AppState, searchTerm string, l
 		return
 	}
 	if state.Repo.SystemConfig == nil ||
-		!state.Repo.SystemConfig.GetBoolOrDefault(c.Request.Context(), sourceEmbyLiveSearchEnabledKey, true) {
+		!state.Repo.SystemConfig.GetBoolOrDefault(c.Request.Context(), sourceEmbyLiveSearchEnabledKey, false) {
 		return
 	}
 	if !claimLiveSearch(term) {

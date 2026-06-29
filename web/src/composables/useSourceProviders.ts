@@ -41,9 +41,11 @@ export function useSourceProviders(showToast: ToastFn) {
   const federatedDryRun = shallowRef(false)
   const embySourceSearchEnabled = shallowRef(true)
   const savingEmbySourceSearch = shallowRef(false)
-  // Emby 同步直搜：客户端搜索时实时跑一次跨源聚合搜索预热缓存（会增加搜索延迟）
-  const embyLiveSearchEnabled = shallowRef(true)
+  // Emby 同步直搜：客户端搜索时实时跑一次跨源聚合搜索预热缓存（默认关闭）
+  const embyLiveSearchEnabled = shallowRef(false)
   const savingEmbyLiveSearch = shallowRef(false)
+  const sourceRefreshSchedulerEnabled = shallowRef(false)
+  const savingSourceRefreshScheduler = shallowRef(false)
   const selectedProviderIds = ref<number[]>([])
   const providerHealthFilters = ref<SourceProviderListOptions>({})
   const includeHiddenProviders = shallowRef(false)
@@ -68,10 +70,12 @@ export function useSourceProviders(showToast: ToastFn) {
     try {
       const cfg: any = await getSystemConfig()
       embySourceSearchEnabled.value = String(cfg?.source_emby_search_enabled ?? 'true') !== 'false'
-      embyLiveSearchEnabled.value = String(cfg?.source_emby_live_search_enabled ?? 'true') !== 'false'
+      embyLiveSearchEnabled.value = String(cfg?.source_emby_live_search_enabled ?? 'false') === 'true'
+      sourceRefreshSchedulerEnabled.value = String(cfg?.source_refresh_scheduler_enabled ?? 'false') === 'true'
     } catch {
       embySourceSearchEnabled.value = true
-      embyLiveSearchEnabled.value = true
+      embyLiveSearchEnabled.value = false
+      sourceRefreshSchedulerEnabled.value = false
     }
   }
 
@@ -308,6 +312,19 @@ export function useSourceProviders(showToast: ToastFn) {
     }
   }
 
+  async function updateSourceRefreshSchedulerEnabled(value: boolean) {
+    savingSourceRefreshScheduler.value = true
+    try {
+      await updateSystemConfig({ source_refresh_scheduler_enabled: value ? 'true' : 'false' })
+      sourceRefreshSchedulerEnabled.value = value
+      showToast(value ? '在线源自动刷新已开启' : '在线源自动刷新已关闭', 'success')
+    } catch (e: any) {
+      showToast(e?.message || '保存失败', 'error')
+    } finally {
+      savingSourceRefreshScheduler.value = false
+    }
+  }
+
   return {
     providers,
     activeProviderId,
@@ -333,6 +350,8 @@ export function useSourceProviders(showToast: ToastFn) {
     savingEmbySourceSearch,
     embyLiveSearchEnabled,
     savingEmbyLiveSearch,
+    sourceRefreshSchedulerEnabled,
+    savingSourceRefreshScheduler,
     refreshProviders,
     loadSourceSearchConfig,
     toggleProvider,
@@ -349,6 +368,7 @@ export function useSourceProviders(showToast: ToastFn) {
     runFederatedSearch,
     updateEmbySourceSearchEnabled,
     updateEmbyLiveSearchEnabled,
+    updateSourceRefreshSchedulerEnabled,
     fetchProviderCatalog,
     batchFetchProviderCatalog,
   }

@@ -102,7 +102,7 @@ async function copySearchError(error: FederatedSearchError) {
             <template #trigger>
               <span id="source-emby-switch-label" class="emby-switch-label">Emby 搜索可见<span class="lbl-info" aria-label="Emby 搜索可见说明">?</span></span>
             </template>
-            默认开启。开启后,聚合搜索缓存进 source_items 的结果会出现在 Emby/Infuse 客户端的搜索里;关闭则客户端搜索不返回在线源结果(后台聚合搜索不受影响)。
+            默认开启。开启后,已写入 source_items 的在线结果会出现在 Emby/Infuse 客户端搜索里;关闭则客户端搜索不返回在线源结果(后台聚合搜索不受影响)。
           </NTooltip>
           <NSwitch
             :value="embyEnabled"
@@ -117,7 +117,7 @@ async function copySearchError(error: FederatedSearchError) {
             <template #trigger>
               <span id="source-live-switch-label" class="emby-switch-label">同步直搜<span class="lbl-info" aria-label="同步直搜说明">?</span></span>
             </template>
-            默认开启。开启后,Emby 客户端每次搜索都会实时跑一次跨源聚合搜索把命中写进缓存(同关键词 45 秒内只跑一次,单次最多等 10 秒),实现“搜啥有啥”;关闭则只读已有缓存,未预热的片名搜不到。依赖上方“Emby 搜索可见”开启才有意义。
+            默认关闭。开启后,Emby 客户端搜索会实时跑一次跨源聚合搜索把命中写进缓存(同关键词 45 秒内只跑一次,单次最多等 10 秒),会增加搜索延迟和外站请求量;关闭则只读已有缓存。依赖上方“Emby 搜索可见”开启才有意义。
           </NTooltip>
           <NSwitch
             :value="liveEnabled"

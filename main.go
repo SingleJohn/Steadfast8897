@@ -157,7 +157,7 @@ func main() {
 
 	// 在线源内容刷新：填充虚拟库(catalog_fetch) + 连载剧追更(detail_refresh)。
 	sourceRefreshWorker := sourcebridge.NewSourceRefreshWorker(repo.Source, httpClient, jsRuntime, cspRuntime)
-	sourceRefreshScheduler := sourcebridge.NewSourceRefreshScheduler(repo.Source)
+	sourceRefreshScheduler := sourcebridge.NewSourceRefreshScheduler(repo.Source, repo.SystemConfig)
 
 	gapScanTask := services.NewGapScanTask()
 	backfillTask := services.NewBackfillTask()

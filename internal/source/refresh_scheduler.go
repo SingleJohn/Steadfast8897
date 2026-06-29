@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	sourceRefreshSchedulerEnabledKey = "source_refresh_scheduler_enabled"
 	// 每隔多久给所有启用 provider 入队一轮分类抓取（填充虚拟库）。
 	sourceCatalogSweepEvery = 6 * time.Hour
 	// 每隔多久扫描需要追更的连载剧。
@@ -22,16 +23,18 @@ const (
 // SourceRefreshScheduler 定时把 catalog_fetch / detail_refresh 任务入队，
 // 由 SourceRefreshWorker 实际消费。
 type SourceRefreshScheduler struct {
-	queue  *SourceRefreshQueue
-	repo   *repository.SourceRepository
-	logger *slog.Logger
+	queue        *SourceRefreshQueue
+	repo         *repository.SourceRepository
+	systemConfig *repository.SystemConfigRepository
+	logger       *slog.Logger
 }
 
-func NewSourceRefreshScheduler(repo *repository.SourceRepository) *SourceRefreshScheduler {
+func NewSourceRefreshScheduler(repo *repository.SourceRepository, systemConfig *repository.SystemConfigRepository) *SourceRefreshScheduler {
 	return &SourceRefreshScheduler{
-		queue:  NewSourceRefreshQueue(repo),
-		repo:   repo,
-		logger: SourceLogger("refresh"),
+		queue:        NewSourceRefreshQueue(repo),
+		repo:         repo,
+		systemConfig: systemConfig,
+		logger:       SourceLogger("refresh"),
 	}
 }
 
@@ -48,14 +51,43 @@ func (s *SourceRefreshScheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-first.C:
-			s.sweepCatalog(ctx)
-			s.sweepDetail(ctx)
+			s.sweepIfEnabled(ctx)
 		case <-catalogTicker.C:
-			s.sweepCatalog(ctx)
+			s.sweepCatalogIfEnabled(ctx)
 		case <-detailTicker.C:
-			s.sweepDetail(ctx)
+			s.sweepDetailIfEnabled(ctx)
 		}
 	}
+}
+
+func (s *SourceRefreshScheduler) enabled(ctx context.Context) bool {
+	if s.systemConfig == nil {
+		return false
+	}
+	return s.systemConfig.GetBoolOrDefault(ctx, sourceRefreshSchedulerEnabledKey, false)
+}
+
+func (s *SourceRefreshScheduler) sweepIfEnabled(ctx context.Context) {
+	if !s.enabled(ctx) {
+		s.logger.Debug("[SourceRefresh] scheduler disabled", "log_target", "refresh")
+		return
+	}
+	s.sweepCatalog(ctx)
+	s.sweepDetail(ctx)
+}
+
+func (s *SourceRefreshScheduler) sweepCatalogIfEnabled(ctx context.Context) {
+	if !s.enabled(ctx) {
+		return
+	}
+	s.sweepCatalog(ctx)
+}
+
+func (s *SourceRefreshScheduler) sweepDetailIfEnabled(ctx context.Context) {
+	if !s.enabled(ctx) {
+		return
+	}
+	s.sweepDetail(ctx)
 }
 
 // sweepCatalog 给所有启用 provider 入队一轮分类抓取。

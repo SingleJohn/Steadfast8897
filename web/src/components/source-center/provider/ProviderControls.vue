@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
-import { NButton, NCheckbox, NInput, NPopconfirm, NSelect, NTooltip } from 'naive-ui'
+import { NButton, NCheckbox, NInput, NPopconfirm, NSelect, NSwitch, NTooltip } from 'naive-ui'
 import type { SourceProvider, SourceProviderListOptions } from '@/api/source'
 
 const props = defineProps<{
@@ -9,6 +9,8 @@ const props = defineProps<{
   action: string
   healthFilters: SourceProviderListOptions
   includeHidden: boolean
+  schedulerEnabled: boolean
+  savingScheduler: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,6 +26,7 @@ const emit = defineEmits<{
   batchDisableIds: [ids: number[]]
   batchHealthIds: [ids: number[]]
   batchCatalog: []
+  updateSchedulerEnabled: [value: boolean]
 }>()
 
 const healthFilter = shallowRef<string | null>(null)
@@ -265,6 +268,27 @@ function emitFailedHealthDisable() {
 
     <!-- 批量操作（按作用域分组） -->
     <div class="bulk">
+      <div class="bulk-group">
+        <div class="bulk-head">
+          <span class="bulk-title">自动刷新</span>
+          <NTooltip>
+            <template #trigger>
+              <span class="bulk-info" aria-label="自动刷新说明">?</span>
+            </template>
+            默认关闭。开启后服务会定期给已启用 Provider 入队分类抓取与连载剧追更；手动抓取入库不受此开关影响。
+          </NTooltip>
+        </div>
+        <div class="bulk-actions">
+          <NSwitch
+            :value="schedulerEnabled"
+            :loading="savingScheduler"
+            size="small"
+            @update:value="emit('updateSchedulerEnabled', $event)"
+          />
+          <span class="bulk-meta">{{ schedulerEnabled ? '定时扫源开启' : '仅手动抓取' }}</span>
+        </div>
+      </div>
+
       <div class="bulk-group">
         <div class="bulk-head">
           <span class="bulk-title">对选中</span>
