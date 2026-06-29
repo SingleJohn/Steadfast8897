@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { NButton, NCheckbox, NCheckboxGroup, NIcon, NInput, NInputNumber, NProgress, NSelect, NSwitch } from 'naive-ui'
+import { MoveOutline } from '@vicons/ionicons5'
 
 import { getPlatformIcon } from '@/icons/PlatformIcons'
 
@@ -21,6 +22,9 @@ defineProps<{
   discoverResults: { Value: string; Count: number; AlreadyAdded: boolean }[]
   discoverSelected: string[]
   newPlatformName: string
+  savingPlatformOrder: boolean
+  draggingPlatformId: string | null
+  dragOverPlatformId: string | null
 }>()
 
 const emit = defineEmits<{
@@ -41,7 +45,11 @@ const emit = defineEmits<{
   openAlias: [platform: any]
   openRename: [platform: any]
   restoreCover: [id: string]
-  movePlatform: [index: number, dir: number]
+  dragStart: [index: number, event: DragEvent]
+  dragOver: [index: number, event: DragEvent]
+  drop: [event: DragEvent]
+  dragEnd: []
+  handleKeydown: [index: number, event: KeyboardEvent]
   togglePlatform: [id: string, enabled: boolean]
   deletePlatform: [id: string]
   updateNewPlatformName: [value: string]
@@ -165,7 +173,31 @@ const emit = defineEmits<{
         <div class="setting-label">平台/虚拟库列表</div>
         <n-button text size="tiny" @click="emit('openPlatformCover', null)">一键生成封面</n-button>
       </div>
-      <div v-for="(p, idx) in platformsData.Platforms" :key="p.Id" class="platform-row">
+      <div
+        v-for="(p, idx) in platformsData.Platforms"
+        :key="p.Id"
+        class="platform-row"
+        :class="{
+          'platform-row-dragging': draggingPlatformId === p.Id,
+          'platform-row-over': dragOverPlatformId === p.Id && draggingPlatformId !== p.Id,
+        }"
+        @dragover="emit('dragOver', idx, $event)"
+        @drop="emit('drop', $event)"
+      >
+        <button
+          type="button"
+          class="platform-drag-handle"
+          :draggable="platformsData.Platforms.length > 1 && !savingPlatformOrder"
+          :disabled="platformsData.Platforms.length <= 1 || savingPlatformOrder"
+          :aria-label="`拖动排序：${p.DisplayName || p.PlatformName}`"
+          title="拖动排序"
+          @click.stop
+          @keydown.stop="emit('handleKeydown', idx, $event)"
+          @dragstart.stop="emit('dragStart', idx, $event)"
+          @dragend.stop="emit('dragEnd')"
+        >
+          <n-icon size="16" aria-hidden="true"><MoveOutline /></n-icon>
+        </button>
         <img v-if="p.CoverUrl" :src="p.CoverUrl" class="platform-cover-thumb" alt="" />
         <img v-else-if="p.LogoUrl" :src="p.LogoUrl" class="platform-logo-icon" alt="" />
         <n-icon v-else size="28" class="platform-fallback-icon"><component :is="getPlatformIcon(p.PlatformName)" /></n-icon>
@@ -180,8 +212,6 @@ const emit = defineEmits<{
           <n-button text size="tiny" title="重命名" @click="emit('openRename', p)">重命名</n-button>
           <n-button text size="tiny" title="生成封面" @click="emit('openPlatformCover', p.Id)">封面</n-button>
           <n-button v-if="p.HasCover" text size="tiny" title="恢复默认封面" @click="emit('restoreCover', p.Id)">恢复默认</n-button>
-          <n-button text size="tiny" :disabled="idx === 0" title="上移" @click="emit('movePlatform', idx, -1)">上移</n-button>
-          <n-button text size="tiny" :disabled="idx === platformsData.Platforms.length - 1" title="下移" @click="emit('movePlatform', idx, 1)">下移</n-button>
           <n-switch :value="p.Enabled" size="small" @update:value="emit('togglePlatform', p.Id, $event)" />
           <n-button text type="error" size="tiny" @click="emit('deletePlatform', p.Id)">删除</n-button>
         </div>
@@ -238,8 +268,30 @@ const emit = defineEmits<{
 .already-added { color: var(--n-text-color-disabled); font-size: 11px; }
 
 .platform-list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.platform-row { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); gap: 8px; }
+.platform-row { display: flex; align-items: center; padding: 10px 8px; border-bottom: 1px solid var(--app-border, rgba(255,255,255,0.04)); border-radius: 8px; gap: 8px; transition: background-color 0.16s ease, opacity 0.16s ease; }
 .platform-row:last-child { border-bottom: none; }
+.platform-row-dragging { opacity: 0.55; }
+.platform-row-over { background: color-mix(in srgb, var(--app-primary, #10b981) 12%, transparent); box-shadow: inset 0 0 0 1px var(--app-primary, #10b981); }
+.platform-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--app-border, rgba(255,255,255,0.16));
+  border-radius: 6px;
+  background: var(--app-modal-panel-bg-soft, rgba(255,255,255,0.04));
+  color: var(--app-text-muted);
+  cursor: grab;
+  line-height: 1;
+  transition: opacity 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+.platform-drag-handle:hover,
+.platform-drag-handle:focus-visible { color: var(--app-text); border-color: rgba(var(--app-primary-rgb), 0.4); }
+.platform-drag-handle:focus-visible { outline: 2px solid var(--app-primary, #10b981); outline-offset: 2px; }
+.platform-drag-handle:active { cursor: grabbing; }
+.platform-drag-handle:disabled { cursor: default; opacity: 0.4; }
 .platform-row-main { flex: 1; min-width: 0; }
 .platform-row-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .platform-name { font-size: 14px; color: var(--app-text); font-weight: 500; }
@@ -249,6 +301,13 @@ const emit = defineEmits<{
 .platform-fallback-icon { flex-shrink: 0; }
 .platform-dim-badge { font-size: 10px; color: var(--app-text-muted); border: 1px solid var(--app-border, rgba(255,255,255,0.12)); border-radius: 4px; padding: 0 5px; margin-left: 8px; vertical-align: middle; }
 .platform-add-row { margin-top: 16px; display: flex; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .platform-row,
+  .platform-drag-handle {
+    transition: none;
+  }
+}
 
 @media (max-width: 640px) {
   .setting-row {
@@ -265,6 +324,10 @@ const emit = defineEmits<{
   .platform-row {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .platform-drag-handle {
+    margin-top: 1px;
   }
 }
 </style>

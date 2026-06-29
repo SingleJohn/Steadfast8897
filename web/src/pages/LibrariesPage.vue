@@ -160,6 +160,9 @@ const {
   platformShowcaseShowPosterTitles,
   platformShowcaseShowCount,
   generatingPlatformCover,
+  draggingPlatformId,
+  dragOverPlatformId,
+  savingPlatformOrder,
   dimensionOptions,
   discoverDimension,
   discoverSearch,
@@ -196,7 +199,11 @@ const {
   addAliasSelected,
   removeAlias,
   handleDeletePlatform,
-  movePlatform,
+  handlePlatformDragStart,
+  handlePlatformDragOver,
+  handlePlatformDrop,
+  handlePlatformDragEnd,
+  onPlatformDragHandleKeydown,
   handleScanStudios,
   handleScanFilename,
   handleRescrape,
@@ -421,6 +428,9 @@ onUnmounted(() => {
           :discover-results="discoverResults"
           :discover-selected="discoverSelected"
           :new-platform-name="newPlatformName"
+          :saving-platform-order="savingPlatformOrder"
+          :dragging-platform-id="draggingPlatformId"
+          :drag-over-platform-id="dragOverPlatformId"
           @toggle-global-platform="toggleGlobalPlatform"
           @update-platform-position="(value) => platformPosition = value"
           @update-show-library-item-count="(value) => showLibraryItemCount = value"
@@ -438,7 +448,11 @@ onUnmounted(() => {
           @open-alias="openAlias"
           @open-rename="openRename"
           @restore-cover="handleRestoreCover"
-          @move-platform="movePlatform"
+          @drag-start="handlePlatformDragStart"
+          @drag-over="handlePlatformDragOver"
+          @drop="handlePlatformDrop"
+          @drag-end="handlePlatformDragEnd"
+          @handle-keydown="onPlatformDragHandleKeydown"
           @toggle-platform="togglePlatform"
           @delete-platform="handleDeletePlatform"
           @update-new-platform-name="(value) => newPlatformName = value"

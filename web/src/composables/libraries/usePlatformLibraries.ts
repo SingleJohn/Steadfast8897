@@ -42,6 +42,12 @@ export function usePlatformLibraries(
   const platformShowcaseShowPosterTitles = ref(true)
   const platformShowcaseShowCount = ref(true)
   const generatingPlatformCover = ref(false)
+  const draggingPlatformId = ref<string | null>(null)
+  const dragOverPlatformId = ref<string | null>(null)
+  const dragStartPlatforms = ref<any[]>([])
+  const platformDragChanged = ref(false)
+  const platformDragCommitted = ref(false)
+  const savingPlatformOrder = ref(false)
 
   const dimensionOptions = [
     { label: '片商 (studio)', value: 'studio' },
@@ -289,17 +295,110 @@ export function usePlatformLibraries(
     }
   }
 
-  async function movePlatform(idx: number, dir: number) {
+  function reorderPlatform(fromIndex: number, toIndex: number) {
     const list = platformsData.value?.Platforms || []
-    const j = idx + dir
-    if (j < 0 || j >= list.length) return
-    const ids = list.map((p: any) => p.Id)
-    ;[ids[idx], ids[j]] = [ids[j], ids[idx]]
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= list.length || toIndex >= list.length) {
+      return false
+    }
+    const arr = [...list]
+    const [moved] = arr.splice(fromIndex, 1)
+    arr.splice(toIndex, 0, moved)
+    platformsData.value = { ...platformsData.value, Platforms: arr }
+    return true
+  }
+
+  async function persistPlatformOrder() {
+    const ids = (platformsData.value?.Platforms || []).map((p: any) => p.Id)
+    savingPlatformOrder.value = true
     try {
       await updatePlatformSortOrder(ids)
       await loadPlatforms()
     } catch {
-      showToast('排序失败', 'error')
+      showToast('排序保存失败，已恢复服务器顺序', 'error')
+      try {
+        await loadPlatforms()
+      } catch {
+        if (dragStartPlatforms.value.length > 0) {
+          platformsData.value = { ...platformsData.value, Platforms: dragStartPlatforms.value }
+        }
+      }
+    } finally {
+      savingPlatformOrder.value = false
+    }
+  }
+
+  async function movePlatform(idx: number, dir: number) {
+    if (savingPlatformOrder.value) return
+    if (reorderPlatform(idx, idx + dir)) await persistPlatformOrder()
+  }
+
+  function handlePlatformDragStart(index: number, e: DragEvent) {
+    const list = platformsData.value?.Platforms || []
+    const platform = list[index]
+    if (!platform || list.length <= 1 || savingPlatformOrder.value) return
+    draggingPlatformId.value = platform.Id
+    dragOverPlatformId.value = platform.Id
+    dragStartPlatforms.value = [...list]
+    platformDragChanged.value = false
+    platformDragCommitted.value = false
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', platform.Id)
+    }
+  }
+
+  function handlePlatformDragOver(index: number, e: DragEvent) {
+    if (!draggingPlatformId.value) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    const list = platformsData.value?.Platforms || []
+    const target = list[index]
+    if (!target) return
+    dragOverPlatformId.value = target.Id
+    const fromIndex = list.findIndex((p: any) => p.Id === draggingPlatformId.value)
+    if (reorderPlatform(fromIndex, index)) platformDragChanged.value = true
+  }
+
+  async function finishPlatformDrag(commit: boolean) {
+    if (!draggingPlatformId.value) return
+    if (!commit) {
+      if (platformDragChanged.value && dragStartPlatforms.value.length > 0) {
+        platformsData.value = { ...platformsData.value, Platforms: dragStartPlatforms.value }
+      }
+      resetPlatformDrag()
+      return
+    }
+    if (platformDragChanged.value) await persistPlatformOrder()
+    resetPlatformDrag()
+  }
+
+  function handlePlatformDrop(e: DragEvent) {
+    if (!draggingPlatformId.value) return
+    e.preventDefault()
+    platformDragCommitted.value = true
+    void finishPlatformDrag(true)
+  }
+
+  function handlePlatformDragEnd() {
+    if (platformDragCommitted.value) return
+    void finishPlatformDrag(false)
+  }
+
+  function resetPlatformDrag() {
+    draggingPlatformId.value = null
+    dragOverPlatformId.value = null
+    dragStartPlatforms.value = []
+    platformDragChanged.value = false
+    platformDragCommitted.value = false
+  }
+
+  function onPlatformDragHandleKeydown(index: number, e: KeyboardEvent) {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      void movePlatform(index, -1)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      void movePlatform(index, 1)
     }
   }
 
@@ -386,6 +485,9 @@ export function usePlatformLibraries(
     platformShowcaseShowPosterTitles,
     platformShowcaseShowCount,
     generatingPlatformCover,
+    draggingPlatformId,
+    dragOverPlatformId,
+    savingPlatformOrder,
     dimensionOptions,
     discoverDimension,
     discoverSearch,
@@ -422,7 +524,11 @@ export function usePlatformLibraries(
     addAliasSelected,
     removeAlias,
     handleDeletePlatform,
-    movePlatform,
+    handlePlatformDragStart,
+    handlePlatformDragOver,
+    handlePlatformDrop,
+    handlePlatformDragEnd,
+    onPlatformDragHandleKeydown,
     handleScanStudios,
     handleScanFilename,
     handleRescrape,
