@@ -62,7 +62,7 @@ func NewCSPRuntimeManager(repo *repository.SourceRepository, client *http.Client
 		artifacts: NewCSPArtifactManager(repo, client, dataDir),
 		dataDir:   dataDir,
 		workDir:   workDir,
-		sem:       make(chan struct{}, cspRuntimeMaxConcurrent),
+		sem:       make(chan struct{}, sourceRuntimeConcurrency("FYMS_CSP_RUNTIME_CONCURRENCY", cspRuntimeMaxConcurrent)),
 		limiters:  map[int64]*rate.Limiter{},
 		logger:    SourceLogger("provider"),
 	}
@@ -101,6 +101,14 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// 运行时不可用(无 java/sidecar)时立即失败,不占用有限的 worker 槽位,也避免无谓地下载 DEX artifact。
+	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
+		if err := m.Start(runCtx); err != nil {
+			resp := m.errorResponse(start, req, err, "runtime_unavailable")
+			m.maybeRecordInvocation(ctx, req, resp)
+			return resp, nil
+		}
+	}
 	select {
 	case m.sem <- struct{}{}:
 		defer func() { <-m.sem }()
@@ -128,14 +136,6 @@ func (m *CSPRuntimeManager) Run(ctx context.Context, req CSPRuntimeRequest) (*CS
 		resp.Artifact = artifact
 		m.maybeRecordInvocation(ctx, req, resp)
 		return resp, nil
-	}
-	if strings.TrimSpace(m.javaPath) == "" || strings.TrimSpace(m.sidecar) == "" {
-		if err := m.Start(runCtx); err != nil {
-			resp := m.errorResponse(start, req, err, "runtime_unavailable")
-			resp.Artifact = artifact
-			m.maybeRecordInvocation(ctx, req, resp)
-			return resp, nil
-		}
 	}
 	resp := &CSPRuntimeResponse{
 		RuntimeKind: CSPRuntimeKindJVM,

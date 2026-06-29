@@ -58,9 +58,17 @@ func handleSourcePlaybackInfo(c *gin.Context, state *AppState, itemID, selectedM
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return true
 	}
+	// 把同一影片/分集的全部线路(本站各线路 + 跨站备选)都暴露为可选 MediaSource,
+	// 供客户端手动切线;后端在 /SourcePlay/:uuid/stream 仍按候选顺序自动兜底失败线路。
+	if len(playSources) > 0 {
+		if expanded, err := sourcePlayCandidates(ctx, state, playSources[0]); err == nil {
+			playSources = mergePlaySources(playSources, expanded)
+		}
+	}
+	providerNames := sourceProviderNames(ctx, state, playSources)
 	sources := make([]dto.MediaSourceInfo, 0, len(playSources))
 	for i := range playSources {
-		sources = append(sources, sourceMediaSource(playSources[i]))
+		sources = append(sources, sourceMediaSource(playSources[i], providerNames[playSources[i].ProviderID]))
 	}
 	sources = preferMediaSource(sources, selectedMediaSourceID)
 	if sources == nil {
@@ -102,15 +110,58 @@ func sourcePlaybackSources(ctx context.Context, state *AppState, resolved *sourc
 	return out, nil
 }
 
-func sourceMediaSource(playSource repository.SourcePlaySource) dto.MediaSourceInfo {
+// mergePlaySources 按 ID 去重合并:base(本条目自身线路)在前,extra(跨站备选)在后。
+func mergePlaySources(base, extra []repository.SourcePlaySource) []repository.SourcePlaySource {
+	seen := make(map[int64]bool, len(base)+len(extra))
+	out := make([]repository.SourcePlaySource, 0, len(base)+len(extra))
+	add := func(rows []repository.SourcePlaySource) {
+		for i := range rows {
+			if rows[i].ID > 0 && seen[rows[i].ID] {
+				continue
+			}
+			seen[rows[i].ID] = true
+			out = append(out, rows[i])
+		}
+	}
+	add(base)
+	add(extra)
+	return out
+}
+
+// sourceProviderNames 批量取候选线路所属站点名,用于 MediaSource 显示名区分多站线路。
+func sourceProviderNames(ctx context.Context, state *AppState, playSources []repository.SourcePlaySource) map[int64]string {
+	names := map[int64]string{}
+	for i := range playSources {
+		pid := playSources[i].ProviderID
+		if _, ok := names[pid]; ok {
+			continue
+		}
+		if provider, err := state.Repo.Source.GetProviderByID(ctx, pid); err == nil && provider != nil {
+			names[pid] = strings.TrimSpace(provider.Name)
+		} else {
+			names[pid] = ""
+		}
+	}
+	return names
+}
+
+func sourceMediaSource(playSource repository.SourcePlaySource, siteName string) dto.MediaSourceInfo {
 	container := sourceContainer(playSource.RawURL)
+	lineName := strings.TrimSpace(playSource.LineName)
+	if lineName == "" {
+		lineName = "线路"
+	}
+	displayName := "在线: " + lineName
+	if siteName = strings.TrimSpace(siteName); siteName != "" {
+		displayName = siteName + " · " + lineName
+	}
 	ms := dto.MediaSourceInfo{
 		ID:                    playSource.PublicUUID,
 		Path:                  "/SourcePlay/" + playSource.PublicUUID + "/stream",
 		Protocol:              "Http",
 		Type:                  "Default",
 		Container:             container,
-		Name:                  "在线: " + playSource.LineName,
+		Name:                  displayName,
 		IsRemote:              true,
 		SupportsDirectPlay:    true,
 		SupportsDirectStream:  true,

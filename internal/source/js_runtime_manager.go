@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,17 @@ import (
 
 	"fyms/internal/repository"
 )
+
+// sourceRuntimeConcurrency 读取环境变量覆盖 worker 并发上限,缺省/非法时回退默认值。
+// 用于在不重新编译的情况下按部署机器算力调整 spider 运行时并发(范围 1-64)。
+func sourceRuntimeConcurrency(envKey string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 64 {
+			return n
+		}
+	}
+	return def
+}
 
 const (
 	jsRuntimeDefaultTimeout = 25 * time.Second
@@ -55,7 +67,7 @@ func NewJSRuntimeManager(repo *repository.SourceRepository, client *http.Client,
 		client:    client,
 		artifacts: NewJSArtifactManager(repo, client, dataDir),
 		dataDir:   dataDir,
-		sem:       make(chan struct{}, jsRuntimeMaxConcurrent),
+		sem:       make(chan struct{}, sourceRuntimeConcurrency("FYMS_JS_RUNTIME_CONCURRENCY", jsRuntimeMaxConcurrent)),
 		limiters:  map[int64]*rate.Limiter{},
 		logger:    SourceLogger("provider"),
 	}
@@ -94,6 +106,15 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// 运行时不可用(无 node/sidecar)时立即失败,不占用有限的 worker 槽位,
+	// 避免一个失效 provider 拖慢同批聚合搜索里的其它 provider。
+	if strings.TrimSpace(m.nodePath) == "" || strings.TrimSpace(m.script) == "" {
+		if err := m.Start(runCtx); err != nil {
+			resp := m.errorResponse(start, req, err, "runtime_unavailable")
+			m.maybeRecordInvocation(ctx, req, resp)
+			return resp, nil
+		}
+	}
 	select {
 	case m.sem <- struct{}{}:
 		defer func() { <-m.sem }()
@@ -102,13 +123,6 @@ func (m *JSRuntimeManager) Run(ctx context.Context, req JSRuntimeRequest) (*JSRu
 		resp := m.errorResponse(start, req, err, "timeout")
 		m.maybeRecordInvocation(ctx, req, resp)
 		return nil, err
-	}
-	if strings.TrimSpace(m.nodePath) == "" || strings.TrimSpace(m.script) == "" {
-		if err := m.Start(runCtx); err != nil {
-			resp := m.errorResponse(start, req, err, "runtime_unavailable")
-			m.maybeRecordInvocation(ctx, req, resp)
-			return resp, nil
-		}
 	}
 	artifacts, bodies, err := m.artifacts.FetchPair(runCtx, req)
 	if err != nil {

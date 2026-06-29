@@ -146,12 +146,15 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 		state.Cache.Del(ctx, key)
 	}
 	manager := source.NewProviderRuntimeManager(state.Repo.Source, state.HTTPClient).WithJSRuntime(state.JSRuntime).WithCSPRuntime(state.CSPRuntime)
+	// 先让 provider runtime 解析(spider 站点走 player 方法,CMS 直链也在此返回)。
 	result, err := manager.ResolvePlay(ctx, playSource)
-	if err != nil && !source.IsProviderDisabledError(err) {
-		if strings.EqualFold(strings.TrimSpace(playSource.ParseMode), "resolver") {
-			result, err = source.NewParserResolver(state.Repo.Source, state.HTTPClient).Resolve(ctx, playSource)
-		} else {
-			result, err = source.ResolvePlay(ctx, playSource)
+	// runtime 失败或返回空结果时,进入通用播放管线:直链 → parses 解析器 → 网页嗅探 → 直链兜底。
+	if (err != nil || !sourcePlayResultUsable(result)) && !source.IsProviderDisabledError(err) {
+		deps := source.PlayPipelineDeps{Repo: state.Repo.Source, Client: state.HTTPClient}
+		if pipeResult, pipeErr := source.ResolvePlayPipeline(ctx, deps, playSource); pipeErr == nil {
+			result, err = pipeResult, nil
+		} else if err == nil {
+			err = pipeErr
 		}
 	}
 	if err != nil {
@@ -162,6 +165,17 @@ func resolveCachedPlay(ctx context.Context, state *AppState, playSource reposito
 		state.Cache.SetJSON(ctx, key, result, sourcePlayCacheTTL)
 	}
 	return result, false, nil
+}
+
+// sourcePlayResultUsable 判断 runtime 是否已给出可用结果(有内嵌响应体或非空播放地址)。
+func sourcePlayResultUsable(result *source.PlayResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(result.Body) > 0 {
+		return true
+	}
+	return strings.TrimSpace(result.URL) != ""
 }
 
 func cacheableSourcePlayResult(ctx context.Context, result *source.PlayResult) bool {

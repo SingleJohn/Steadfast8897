@@ -20,6 +20,8 @@ func SourceItemSearchKey(item repository.SourceItem) string {
 
 func NormalizeSourceSearchTitle(title string) string {
 	title = strings.ToLower(cleanCMSValue(title))
+	// 繁→简折叠:让简繁标题/关键词归一到同一规范键,跨脚本去重与匹配不再分裂。
+	title = foldTraditionalToSimplified(title)
 	replacer := strings.NewReplacer(" ", "", "　", "", "-", "", "_", "", ":", "", "：", "", "·", "")
 	return replacer.Replace(title)
 }

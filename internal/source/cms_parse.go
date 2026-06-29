@@ -606,14 +606,27 @@ func splitCMSEpisode(raw string, ordinal int) (string, string) {
 	return title, rawURL
 }
 
+// parseModeForCMSURL 只做粗分类:真正的解析推迟到播放时由 ResolvePlayPipeline 处理。
+//   - 视频直链(.m3u8/.mp4/...)        → direct
+//   - 其余 http(s) 网页/未知地址        → resolver(交给 parses 解析器 + 网页嗅探)
+//   - magnet/ed2k/thunder              → magnet
+//   - 其余                              → unsupported
 func parseModeForCMSURL(rawURL string) string {
-	lower := strings.ToLower(strings.TrimSpace(rawURL))
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		if strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") {
-			return "direct"
-		}
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return "unsupported"
 	}
-	return "unsupported"
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.HasPrefix(lower, "magnet:"), strings.HasPrefix(lower, "ed2k:"), strings.HasPrefix(lower, "thunder:"):
+		return "magnet"
+	case isDirectVideoURL(raw):
+		return "direct"
+	case isHTTPURL(raw):
+		return "resolver"
+	default:
+		return "unsupported"
+	}
 }
 
 func cleanCMSValue(value string) string {
