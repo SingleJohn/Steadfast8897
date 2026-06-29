@@ -3,41 +3,43 @@ package repository
 import "github.com/jackc/pgx/v5/pgxpool"
 
 type Repository struct {
-	SystemConfig *SystemConfigRepository
-	Users        *UserRepository
-	Sessions     *SessionRepository
-	Libraries    *LibraryRepository
-	DisplayOrder *DisplayOrderRepository
-	ScrapeQueue  *ScrapeQueueRepository
-	RefreshQueue *RefreshQueueRepository
-	TaskRuns     *TaskRunRepository
-	ScanIngest   *ScanIngestRepository
-	ItemHelpers  *ItemHelperRepository
-	APIKeys      *APIKeyRepository
-	ImageLookup  *ImageLookupRepository
-	Playback     *PlaybackRepository
-	Background   *BackgroundTaskRepository
-	Notify       *NotifyRepository
-	Source       *SourceRepository
+	SystemConfig         *SystemConfigRepository
+	Users                *UserRepository
+	Sessions             *SessionRepository
+	Libraries            *LibraryRepository
+	DisplayOrder         *DisplayOrderRepository
+	ScrapeQueue          *ScrapeQueueRepository
+	RefreshQueue         *RefreshQueueRepository
+	TaskRuns             *TaskRunRepository
+	ScanIngest           *ScanIngestRepository
+	ItemHelpers          *ItemHelperRepository
+	MediaVersionUserData *MediaVersionUserDataRepository
+	APIKeys              *APIKeyRepository
+	ImageLookup          *ImageLookupRepository
+	Playback             *PlaybackRepository
+	Background           *BackgroundTaskRepository
+	Notify               *NotifyRepository
+	Source               *SourceRepository
 }
 
 func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{
-		SystemConfig: NewSystemConfigRepository(pool),
-		Users:        NewUserRepository(pool),
-		Sessions:     NewSessionRepository(pool),
-		Libraries:    NewLibraryRepository(pool),
-		DisplayOrder: NewDisplayOrderRepository(pool),
-		ScrapeQueue:  NewScrapeQueueRepository(pool),
-		RefreshQueue: NewRefreshQueueRepository(pool),
-		TaskRuns:     NewTaskRunRepository(pool),
-		ScanIngest:   NewScanIngestRepository(pool),
-		ItemHelpers:  NewItemHelperRepository(pool),
-		APIKeys:      NewAPIKeyRepository(pool),
-		ImageLookup:  NewImageLookupRepository(pool),
-		Playback:     NewPlaybackRepository(pool),
-		Background:   NewBackgroundTaskRepository(pool),
-		Notify:       NewNotifyRepository(pool),
-		Source:       NewSourceRepository(pool),
+		SystemConfig:         NewSystemConfigRepository(pool),
+		Users:                NewUserRepository(pool),
+		Sessions:             NewSessionRepository(pool),
+		Libraries:            NewLibraryRepository(pool),
+		DisplayOrder:         NewDisplayOrderRepository(pool),
+		ScrapeQueue:          NewScrapeQueueRepository(pool),
+		RefreshQueue:         NewRefreshQueueRepository(pool),
+		TaskRuns:             NewTaskRunRepository(pool),
+		ScanIngest:           NewScanIngestRepository(pool),
+		ItemHelpers:          NewItemHelperRepository(pool),
+		MediaVersionUserData: NewMediaVersionUserDataRepository(pool),
+		APIKeys:              NewAPIKeyRepository(pool),
+		ImageLookup:          NewImageLookupRepository(pool),
+		Playback:             NewPlaybackRepository(pool),
+		Background:           NewBackgroundTaskRepository(pool),
+		Notify:               NewNotifyRepository(pool),
+		Source:               NewSourceRepository(pool),
 	}
 }
