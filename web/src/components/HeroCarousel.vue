@@ -58,10 +58,6 @@ function goPlay(item: any) {
   router.push(item.Type === 'Movie' ? `/play/${item.Id}` : `/item/${item.Id}`)
 }
 
-function goDetail(item: any) {
-  router.push(`/item/${item.Id}`)
-}
-
 function backdropId(item: any): string {
   return item.ParentBackdropItemId || item.Id
 }
@@ -133,9 +129,12 @@ function titleClass(item: any): string {
                   </svg>
                   <span>播放</span>
                 </button>
-                <button class="hero-btn hero-btn-glass" @click.prevent="goDetail(item)">
+                <router-link
+                  class="hero-btn hero-btn-glass"
+                  :to="{ name: 'item_detail', params: { itemId: item.Id } }"
+                >
                   <span>查看详情</span>
-                </button>
+                </router-link>
                 <button
                   class="hero-btn hero-btn-square"
                   :aria-pressed="isFavorite(item)"
@@ -341,6 +340,7 @@ function titleClass(item: any): string {
   font-size: 15px;
   font-weight: 700;
   line-height: 1;
+  text-decoration: none;
   height: 52px;
   padding: 0 26px;
   border-radius: 14px;
