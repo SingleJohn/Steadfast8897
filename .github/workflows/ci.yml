@@ -40,7 +40,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          # 与 publish workflow 一致：不写 GitHub Actions cache，避免占 org 免费存储额度
+          cache: false
 
       - name: Fetch embedded fonts
         run: bash scripts/fetch-fonts.sh

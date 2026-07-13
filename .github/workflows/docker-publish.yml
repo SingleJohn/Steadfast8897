@@ -57,7 +57,9 @@ jobs:
           name: web-dist
           path: web-dist.tgz
           if-no-files-found: error
+          # 仅跨 job 传递；1 天足够，减少 Actions storage 堆积
           retention-days: 1
+          compression-level: 9
 
   csp-sidecar:
     runs-on: ubuntu-latest
@@ -87,6 +89,7 @@ jobs:
           path: runtime/csp-sidecar/build/libs/fyms-csp-sidecar-all.jar
           if-no-files-found: error
           retention-days: 1
+          compression-level: 9
 
   binaries:
     needs:
@@ -167,7 +170,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          # 关闭 Actions 模块缓存：7 个 matrix job 共享的 go cache 也会计入
+          # org「Actions and Packages storage」0.5GB；模块下载相对可接受。
+          cache: false
 
       - name: Fetch embedded fonts
         run: bash scripts/fetch-fonts.sh
@@ -214,6 +219,7 @@ jobs:
           path: dist/${{ matrix.binary_name }}
           if-no-files-found: error
           retention-days: 1
+          compression-level: 9
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
@@ -224,6 +230,9 @@ jobs:
             package/*.tar.gz
           if-no-files-found: error
           retention-days: 1
+          # 包内已是 zip/tar.gz，再压收益有限；仍开 9 略减 Actions 计费体积
+          compression-level: 9
+
 
   docker:
     needs:
@@ -341,6 +350,37 @@ jobs:
             type=ref,event=tag
             type=sha
 
+      # Docker 构建缓存策略（针对 org 免费档 0.5GB Actions+Packages 存储）：
+      # - 禁止 type=gha：多架构 + mode=max 会把 node/java/debian 层堆进 GitHub Cache，极易顶满额度
+      # - 有 Docker Hub 凭证时：把 buildcache 写到 Hub（不占 GitHub 存储），兼顾速度
+      # - 无 Hub 时：只只读复用已推送镜像层（若有），绝不往 GHCR 写 cache（GHCR 计入 Packages 额度）
+      - name: Resolve Docker build cache
+        id: buildcache
+        shell: bash
+        env:
+          DOCKERHUB_ENABLED: ${{ steps.dockerhub.outputs.enabled }}
+        run: |
+          set -euo pipefail
+          # multiline outputs for build-push-action cache-from
+          {
+            echo "from<<EOF"
+            if [[ "${DOCKERHUB_ENABLED}" == "true" ]]; then
+              echo "type=registry,ref=eianz/fyms:buildcache"
+              echo "type=registry,ref=eianz/fyms:nightly"
+              echo "type=registry,ref=eianz/fyms:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "${DOCKERHUB_ENABLED}" == "true" ]]; then
+            # mode=max 才能较好服务 multi-platform；落在 Docker Hub，不占 GitHub
+            echo "to=type=registry,ref=eianz/fyms:buildcache,mode=max" >> "$GITHUB_OUTPUT"
+            echo "Using Docker Hub registry cache (eianz/fyms:buildcache)"
+          else
+            echo "to=" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub unavailable: no remote cache write (avoids GitHub Actions/GHCR storage)"
+          fi
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -350,8 +390,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' && (steps.dockerhub.outputs.enabled == 'true' || steps.ghcr.outputs.enabled == 'true') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=fyms-release
-          cache-to: type=gha,scope=fyms-release,mode=max
+          cache-from: ${{ steps.buildcache.outputs.from }}
+          cache-to: ${{ steps.buildcache.outputs.to }}
 
   release-binaries:
     if: startsWith(github.ref, 'refs/tags/v')
