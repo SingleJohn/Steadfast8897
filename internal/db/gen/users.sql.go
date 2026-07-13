@@ -339,6 +339,15 @@ func (q *Queries) UpdateLastLogin(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const updateLastActivity = `-- name: UpdateLastActivity :exec
+UPDATE users SET last_activity_date = NOW() WHERE id = $1
+`
+
+func (q *Queries) UpdateLastActivity(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, updateLastActivity, id)
+	return err
+}
+
 const updateUserAdmin = `-- name: UpdateUserAdmin :exec
 UPDATE users SET is_admin = $1 WHERE id = $2
 `

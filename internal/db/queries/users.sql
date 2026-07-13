@@ -56,6 +56,11 @@ UPDATE users SET is_disabled = $1 WHERE id = $2;
 -- name: UpdateLastLogin :exec
 UPDATE users SET last_login_date = NOW(), last_activity_date = NOW() WHERE id = $1;
 
+-- name: UpdateLastActivity :exec
+-- Emby 语义：任意用户活动（含播放）刷新 LastActivityDate。
+-- Sakura_embyboss 活跃保号只读该字段，不读 playback_activity。
+UPDATE users SET last_activity_date = NOW() WHERE id = $1;
+
 -- name: GetUserPolicy :one
 SELECT user_id, is_administrator, enable_all_folders, enable_remote_access,
        enable_media_playback, enable_audio_transcoding, enable_video_transcoding,

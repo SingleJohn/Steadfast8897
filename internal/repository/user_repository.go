@@ -161,6 +161,12 @@ func (r *UserRepository) UpdateLastLogin(ctx context.Context, id uuid.UUID) erro
 	return r.queries.UpdateLastLogin(ctx, toPGUUID(id))
 }
 
+// UpdateLastActivity refreshes users.last_activity_date only (not last_login_date).
+// Used by playback paths so Emby-compatible LastActivityDate tracks real activity.
+func (r *UserRepository) UpdateLastActivity(ctx context.Context, id uuid.UUID) error {
+	return r.queries.UpdateLastActivity(ctx, toPGUUID(id))
+}
+
 func (r *UserRepository) GetUserPolicy(ctx context.Context, userID uuid.UUID) (*UserPolicy, error) {
 	row, err := r.queries.GetUserPolicy(ctx, toPGUUID(userID))
 	if err == pgx.ErrNoRows {

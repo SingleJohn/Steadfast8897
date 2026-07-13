@@ -43,10 +43,38 @@ type activePlayback struct {
 var (
 	activePlaybacks   = make(map[string]*activePlayback)
 	activePlaybacksMu sync.RWMutex
+
+	// 节流：Progress 很频繁，避免每条进度都 UPDATE users。
+	// Sakura bot 按天粒度看 LastActivityDate，5 分钟足够。
+	activityTouchInterval = 5 * time.Minute
+	activityTouchAt       sync.Map // userID -> time.Time
 )
 
 func playbackKey(userID, deviceID string) string {
 	return userID + ":" + deviceID
+}
+
+// touchUserActivity 把播放算作用户活跃，写入 users.last_activity_date。
+// Emby 原版任意 API 活动都会刷新 LastActivityDate；bot 活跃保号只读该字段。
+func touchUserActivity(ctx context.Context, st *AppState, userID string) {
+	if st == nil || userID == "" || strings.HasPrefix(userID, "api-key-") {
+		return
+	}
+	now := time.Now()
+	if v, ok := activityTouchAt.Load(userID); ok {
+		if last, ok := v.(time.Time); ok && now.Sub(last) < activityTouchInterval {
+			return
+		}
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return
+	}
+	if err := st.Repo.Users.UpdateLastActivity(ctx, uid); err != nil {
+		slog.Debug("touch user activity failed", "user_id", userID, "error", err)
+		return
+	}
+	activityTouchAt.Store(userID, now)
 }
 
 // ActivePlaybackCount returns the number of active playback sessions for a user.
@@ -282,6 +310,7 @@ func OnPlaybackStart(c *gin.Context) {
 		return
 	}
 	if handleSourcePlaybackStart(c, st, auth, body) {
+		touchUserActivity(c.Request.Context(), st, auth.ID)
 		return
 	}
 
@@ -321,6 +350,7 @@ func OnPlaybackStart(c *gin.Context) {
 
 	np := buildNowPlaying(item, resolvedItemID, body.MediaSourceId, body.PositionTicks, body.IsPaused, body.PlaySessionId)
 	st.SessionManager.SetNowPlaying(auth.ID, deviceID, np)
+	touchUserActivity(c.Request.Context(), st, auth.ID)
 
 	// 首次播放异步回填 MediaStreams(strm 远程媒体入库时未探测,详情为空)。
 	// fire-and-forget:内部自带独立 context 与去重,失败不影响播放。对齐 Emby
@@ -393,6 +423,7 @@ func OnPlaybackProgress(c *gin.Context) {
 		return
 	}
 	if handleSourcePlaybackProgress(c, st, auth, body) {
+		touchUserActivity(c.Request.Context(), st, auth.ID)
 		return
 	}
 
@@ -411,6 +442,8 @@ func OnPlaybackProgress(c *gin.Context) {
 	if item != nil {
 		resolvedItemID = item.ID
 	}
+
+	touchUserActivity(c.Request.Context(), st, auth.ID)
 
 	st.ProgressBuffer.BufferProgress(&services.ProgressEntry{
 		UserID:        auth.ID,
@@ -523,9 +556,11 @@ func OnPlaybackStopped(c *gin.Context) {
 		return
 	}
 	if handleSourcePlaybackStopped(c, st, auth, body) {
+		touchUserActivity(c.Request.Context(), st, auth.ID)
 		return
 	}
 
+	touchUserActivity(c.Request.Context(), st, auth.ID)
 	deviceID := deviceIDFromRequest(c)
 	key := playbackKey(auth.ID, deviceID)
 
