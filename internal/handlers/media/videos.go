@@ -1040,6 +1040,10 @@ func subtitleMimeForPath(p string) string {
 		return "text/vtt; charset=utf-8"
 	case ".ass", ".ssa":
 		return "text/plain; charset=utf-8"
+	case ".smi", ".sami":
+		return "application/x-sami; charset=utf-8"
+	case ".ttml", ".dfxp":
+		return "application/ttml+xml; charset=utf-8"
 	default:
 		return "text/plain; charset=utf-8"
 	}

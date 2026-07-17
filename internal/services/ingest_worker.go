@@ -274,6 +274,10 @@ func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
 			return nil
 		}
+		if !e.IsDir && IsDeferredSubtitleExt(filepath.Ext(e.Path)) {
+			slog.Debug("[Ingest] Subtitle format requires format-specific or paired-stream support", "subtitle", e.Path)
+			return nil
+		}
 		// Modify 事件只对视频文件有意义(mediainfo 可能变了)。
 		// nfo/jpg/mediainfo.json 等 sidecar 的 modify 不改变 item 树,
 		// 但会触发一次完整 scanOneShow(2~7s)+ autoScrapeNewItems,
@@ -287,6 +291,9 @@ func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
 			return nil
 		}
+		if !e.IsDir && IsDeferredSubtitleExt(filepath.Ext(e.Path)) {
+			return nil
+		}
 		return w.processDelete(ctx, e)
 	case EventRename:
 		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.OldPath))) {
@@ -294,6 +301,10 @@ func (w *IngestWorker) processEvent(ctx context.Context, e IngestEvent) error {
 		}
 		if !e.IsDir && IsSubtitleExt(strings.ToLower(filepath.Ext(e.Path))) {
 			RefreshExternalSubtitlesForSidecar(ctx, w.pool, e.Path)
+			return nil
+		}
+		if !e.IsDir && IsDeferredSubtitleExt(filepath.Ext(e.Path)) {
+			slog.Debug("[Ingest] Subtitle format requires format-specific or paired-stream support", "subtitle", e.Path)
 			return nil
 		}
 		return w.processRename(ctx, e)
