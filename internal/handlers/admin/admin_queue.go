@@ -1,10 +1,13 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"fyms/internal/services"
 )
 
 // RegisterAdminQueueRoutes 注册刮削队列/metrics/worker 管理 endpoint(Phase 5 队列面板用)。
@@ -265,6 +268,7 @@ func getMetricsSnapshot(c *gin.Context) {
 	}
 	if state.ScrapeWorker != nil {
 		resp["scrape_worker_count"] = state.ScrapeWorker.WorkerCount()
+		resp["scrape_worker"] = state.ScrapeWorker.RuntimeSnapshot()
 	}
 	if state.RefreshQueue != nil {
 		if stats, err := state.RefreshQueue.Stats(c.Request.Context()); err == nil {
@@ -279,6 +283,21 @@ func getMetricsSnapshot(c *gin.Context) {
 	}
 	// TmdbRequestCount 是 package 级导出函数
 	resp["tmdb_requests_total"] = tmdbRequestCountSnapshot()
+	if state.DB != nil {
+		stats := state.DB.Stat()
+		resp["db_pool"] = gin.H{
+			"max_conns":                 stats.MaxConns(),
+			"total_conns":               stats.TotalConns(),
+			"acquired_conns":            stats.AcquiredConns(),
+			"idle_conns":                stats.IdleConns(),
+			"constructing_conns":        stats.ConstructingConns(),
+			"acquire_count":             stats.AcquireCount(),
+			"empty_acquire_count":       stats.EmptyAcquireCount(),
+			"canceled_acquire_count":    stats.CanceledAcquireCount(),
+			"new_conns_count":           stats.NewConnsCount(),
+			"acquire_duration_ms_total": stats.AcquireDuration().Milliseconds(),
+		}
+	}
 
 	c.JSON(http.StatusOK, resp)
 }
@@ -290,7 +309,18 @@ func invalidateScrapeCache(c *gin.Context) {
 		return
 	}
 	state.ScrapeWorker.InvalidateCachedClient()
-	c.JSON(http.StatusOK, gin.H{"status": "invalidated"})
+	err := state.ScrapeWorker.ReloadTmdbClient(c.Request.Context())
+	if err != nil && !errors.Is(err, services.ErrTMDBNotConfigured) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"message": err.Error(),
+			"runtime": state.ScrapeWorker.RuntimeSnapshot(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "reloaded",
+		"runtime": state.ScrapeWorker.RuntimeSnapshot(),
+	})
 }
 
 func setIngestWorkerCount(c *gin.Context) {

@@ -83,8 +83,8 @@ func NewAppConfigWithArgs(databaseURL *string) *AppConfig {
 		DBName:     envOr("DB_NAME", "media_server"),
 		DBUser:     envOr("DB_USER", "postgres"),
 		DBPassword: envOr("DB_PASSWORD", "postgres"),
-		DBPoolMax:  envInt("DB_POOL_MAX", 400),
-		DBPoolMin:  envInt("DB_POOL_MIN", 20),
+		DBPoolMax:  envInt("DB_POOL_MAX", 40),
+		DBPoolMin:  envInt("DB_POOL_MIN", 2),
 
 		RedisHost:     envOr("REDIS_HOST", "127.0.0.1"),
 		RedisPort:     envInt("REDIS_PORT", 6379),

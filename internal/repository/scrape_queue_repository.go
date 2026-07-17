@@ -132,8 +132,11 @@ func (r *ScrapeQueueRepository) ListMissingScrapeIdentifyCandidates(ctx context.
 	return r.queries.ListMissingScrapeIdentifyCandidates(ctx)
 }
 
-func (r *ScrapeQueueRepository) Claim(ctx context.Context, limit int) ([]ScrapeQueueTask, error) {
-	rows, err := r.queries.ClaimScrapeQueueTasks(ctx, int32(limit))
+func (r *ScrapeQueueRepository) Claim(ctx context.Context, limit int, allowRemote bool) ([]ScrapeQueueTask, error) {
+	rows, err := r.queries.ClaimScrapeQueueTasks(ctx, dbgen.ClaimScrapeQueueTasksParams{
+		AllowRemote: allowRemote,
+		Limit:       int32(limit),
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -1322,6 +1322,35 @@ export type MetricsSnapshot = {
   refresh_done?: number;
   refresh_worker_count?: number;
   tmdb_requests_total?: number;
+  scrape_worker?: {
+    status: 'healthy' | 'degraded' | 'blocked';
+    tmdb_state: 'unknown' | 'ready' | 'degraded' | 'cooldown' | 'probing' | 'not_configured' | 'config_error';
+    remote_claims_allowed: boolean;
+    circuit_open: boolean;
+    cooldown_until?: string;
+    consecutive_failures: number;
+    last_error?: string;
+    last_error_at?: string;
+    last_success_at?: string;
+    claim_failures_total: number;
+    state_write_failures_total: number;
+    state_write_healthy: boolean;
+    last_state_write_error?: string;
+    last_state_write_error_at?: string;
+    circuit_openings_total: number;
+  };
+  db_pool?: {
+    max_conns: number;
+    total_conns: number;
+    acquired_conns: number;
+    idle_conns: number;
+    constructing_conns: number;
+    acquire_count: number;
+    empty_acquire_count: number;
+    canceled_acquire_count: number;
+    new_conns_count: number;
+    acquire_duration_ms_total: number;
+  };
 };
 
 export type RefreshQueueStats = {
@@ -1415,7 +1444,10 @@ export async function getMetricsSnapshot() {
 }
 
 export async function invalidateScrapeCache() {
-  return request<any>('/Admin/Scrape/Cache/Invalidate', { method: 'POST' });
+  return requestJson<{ status: string; runtime: NonNullable<MetricsSnapshot['scrape_worker']> }>(
+    '/Admin/Scrape/Cache/Invalidate',
+    { method: 'POST' },
+  );
 }
 
 export async function setIngestWorkerCount(count: number) {

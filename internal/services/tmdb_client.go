@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,11 +18,21 @@ import (
 	"fyms/internal/repository"
 )
 
+var ErrTMDBNotConfigured = errors.New("tmdb api key not configured")
+
 func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
+	client, _ := loadTmdbClientFromConfig(ctx, pool)
+	return client
+}
+
+func loadTmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) (*TmdbClient, error) {
 	configRepo := repository.NewSystemConfigRepository(pool)
 	rawKey, ok, err := configRepo.GetString(ctx, "tmdb_api_key")
-	if err != nil || !ok || rawKey == "" {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("load tmdb api key: %w", err)
+	}
+	if !ok || strings.TrimSpace(rawKey) == "" {
+		return nil, ErrTMDBNotConfigured
 	}
 
 	var apiKeys []string
@@ -32,17 +43,24 @@ func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 		}
 	}
 	if len(apiKeys) == 0 {
-		return nil
+		return nil, ErrTMDBNotConfigured
 	}
 
 	slog.Info("[TMDB] Loaded API key(s)", "count", len(apiKeys))
 
 	language := "zh-CN"
-	if langVal, ok, err := configRepo.GetString(ctx, "tmdb_language"); err == nil && ok && langVal != "" {
+	langVal, hasLanguage, err := configRepo.GetString(ctx, "tmdb_language")
+	if err != nil {
+		return nil, fmt.Errorf("load tmdb language: %w", err)
+	}
+	if hasLanguage && langVal != "" {
 		language = langVal
 	}
 
-	proxyURL, hasProxy, _ := configRepo.GetString(ctx, "tmdb_proxy")
+	proxyURL, hasProxy, err := configRepo.GetString(ctx, "tmdb_proxy")
+	if err != nil {
+		return nil, fmt.Errorf("load tmdb proxy: %w", err)
+	}
 
 	transport := &http.Transport{
 		MaxIdleConns:        100,
@@ -75,7 +93,7 @@ func TmdbClientFromConfig(ctx context.Context, pool *pgxpool.Pool) *TmdbClient {
 		httpClient: client,
 		apiKeys:    apiKeys,
 		language:   language,
-	}
+	}, nil
 }
 
 // sanitizeTmdbURL 把 api_key=XXX 替换成 api_key=***,避免日志泄漏。

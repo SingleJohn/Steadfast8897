@@ -7,7 +7,7 @@ import PageShell from '@/components/PageShell.vue'
 
 /**
  * 服务观测父容器：
- *   - 4 个子路由（playback / stats / logs / tasks）各自独立数据源，本容器不持有状态
+ *   - 5 个子路由（playback / stats / logs / tasks / queue）各自独立数据源，本容器不持有状态
  *   - 仅提供统一的 PageShell 外观与路由切换动画
  */
 

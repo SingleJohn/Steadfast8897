@@ -23,8 +23,19 @@ func CreatePool(cfg *config.AppConfig) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse db config: %w", err)
 	}
 
-	poolCfg.MaxConns = int32(cfg.DBPoolMax)
-	poolCfg.MinConns = int32(cfg.DBPoolMin)
+	maxConns := cfg.DBPoolMax
+	if maxConns < 1 {
+		maxConns = 40
+	}
+	minConns := cfg.DBPoolMin
+	if minConns < 0 {
+		minConns = 0
+	}
+	if minConns > maxConns {
+		minConns = maxConns
+	}
+	poolCfg.MaxConns = int32(maxConns)
+	poolCfg.MinConns = int32(minConns)
 	poolCfg.MaxConnIdleTime = 30 * time.Second
 	poolCfg.MaxConnLifetime = 5 * time.Minute
 	poolCfg.ConnConfig.Tracer = NewSlowSQLTracerFromEnv()
@@ -40,6 +51,7 @@ func CreatePool(cfg *config.AppConfig) (*pgxpool.Pool, error) {
 	if err := pool.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
+	slog.Info("database pool initialized", "log_target", "database", "max_conns", maxConns, "min_conns", minConns)
 
 	return pool, nil
 }

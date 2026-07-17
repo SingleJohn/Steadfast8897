@@ -161,7 +161,8 @@ export REDIS_PORT=6379
 | REDIS_HOST | 127.0.0.1 | Redis 地址 |
 | REDIS_PORT | 6379 | Redis 端口 |
 | REDIS_PASSWORD | | Redis 密码（可选） |
-| DB_POOL_MAX | 400 | 数据库连接池上限 |
+| DB_POOL_MAX | 40 | 数据库连接池上限（多实例总和需小于 PostgreSQL max_connections） |
+| DB_POOL_MIN | 2 | 数据库连接池最小保温连接数 |
 | FYMS_UPDATE_IMAGE_REPO | eianz/fyms | 应用内更新使用的 Docker 镜像仓库 |
 | FYMS_UPDATE_GITHUB_REPO | | 可选。配置后后台可显示对应 GitHub Releases 链接 |
 | FYMS_UPDATE_DOCKER_SOCKET | /var/run/docker.sock | 应用内更新访问 Docker Engine 的 Socket 路径 |

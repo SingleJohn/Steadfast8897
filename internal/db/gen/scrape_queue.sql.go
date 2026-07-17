@@ -14,10 +14,12 @@ import (
 const claimScrapeQueueTasks = `-- name: ClaimScrapeQueueTasks :many
 WITH claimed AS (
     SELECT id FROM scrape_queue
-    WHERE status = 'pending' AND next_run_at <= NOW()
+    WHERE status = 'pending'
+      AND next_run_at <= NOW()
+      AND ($1::boolean OR task_type = 'backfill_quality')
     ORDER BY priority, next_run_at
     FOR UPDATE SKIP LOCKED
-    LIMIT $1
+    LIMIT $2
 )
 UPDATE scrape_queue q
    SET status = 'running', updated_at = NOW()
@@ -25,6 +27,11 @@ UPDATE scrape_queue q
  WHERE q.id = claimed.id
 RETURNING q.id, q.item_id::text, q.task_type, q.priority, q.retry_count, q.next_run_at, q.created_at
 `
+
+type ClaimScrapeQueueTasksParams struct {
+	AllowRemote bool  `json:"allow_remote"`
+	Limit       int32 `json:"limit"`
+}
 
 type ClaimScrapeQueueTasksRow struct {
 	ID         int64              `json:"id"`
@@ -36,8 +43,8 @@ type ClaimScrapeQueueTasksRow struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
-func (q *Queries) ClaimScrapeQueueTasks(ctx context.Context, limit int32) ([]ClaimScrapeQueueTasksRow, error) {
-	rows, err := q.db.Query(ctx, claimScrapeQueueTasks, limit)
+func (q *Queries) ClaimScrapeQueueTasks(ctx context.Context, arg ClaimScrapeQueueTasksParams) ([]ClaimScrapeQueueTasksRow, error) {
+	rows, err := q.db.Query(ctx, claimScrapeQueueTasks, arg.AllowRemote, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

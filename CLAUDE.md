@@ -176,6 +176,7 @@ data/
 | `PORT` | `8961` | HTTP listen port |
 | `DB_HOST/PORT/NAME/USER/PASSWORD` | see README | PostgreSQL connection |
 | `REDIS_HOST/PORT/PASSWORD` | see README | Redis connection |
-| `DB_POOL_MAX` | `400` | pgxpool max connections |
+| `DB_POOL_MAX` | `40` | pgxpool max connections |
+| `DB_POOL_MIN` | `2` | pgxpool minimum warm connections |
 | `FYMS_UPDATE_IMAGE_REPO` | `eianz/fyms` | Docker image for self-update |
 | `FYMS_UPDATE_DOCKER_SOCKET` | `/var/run/docker.sock` | Docker socket path |

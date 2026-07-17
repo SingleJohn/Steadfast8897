@@ -259,7 +259,7 @@ func main() {
 	go sourceRefreshScheduler.Run(ctx)
 	go notifier.Run(ctx)
 	go notifier.RunLibraryNewSweeper(ctx)
-	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue)
+	services.StartMetricsLogger(ctx, ingestWorker, scrapeQueue, pool, scrapeWorker)
 	services.StartSourceItemsGC(ctx, pool, repo.Source)
 	fileWatcher.Start(ctx, pool, cache)
 

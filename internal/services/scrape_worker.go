@@ -52,9 +52,15 @@ type ScrapeWorker struct {
 	consumers  []chan struct{}
 	workersCtx context.Context
 
+	runtimeMu sync.Mutex
+	runtime   scrapeWorkerRuntimeState
+
+	claimFailures      atomic.Int64
+	stateWriteFailures atomic.Int64
+
 	// cachedClient 是 worker 生命周期内复用的 TmdbClient,配合 GetScrapeAggregator
 	// 的 key=client 缓存命中 —— 原先每个任务都重建 aggregator + http.Transport,
-	// 4 并发 worker 高频 identify 时开销显著。Admin 改 tmdb_* 配置后需重启生效。
+	// 4 并发 worker 高频 identify 时开销显著。Admin 改 tmdb_* 配置后通过 Reload 重建。
 	cachedClient atomic.Pointer[TmdbClient]
 }
 
@@ -65,6 +71,7 @@ func NewScrapeWorker(pool *pgxpool.Pool, queue *ScrapeQueue, limiter *rate.Limit
 		queue:   queue,
 		pool:    pool,
 		limiter: limiter,
+		runtime: scrapeWorkerRuntimeState{tmdbState: "unknown", stateWriteHealthy: true},
 	}
 }
 
@@ -147,6 +154,13 @@ func (w *ScrapeWorker) Run(ctx context.Context) {
 
 	if err := w.queue.ReconcileOnStartup(ctx); err != nil {
 		slog.Warn("[ScrapeWorker] reconcile failed", "error", err)
+	}
+	if err := w.ReloadTmdbClient(ctx); err != nil {
+		if errors.Is(err, ErrTMDBNotConfigured) {
+			slog.Info("[ScrapeWorker] TMDB tasks paused: api key not configured")
+		} else {
+			slog.Warn("[ScrapeWorker] TMDB config unavailable", "error", err)
+		}
 	}
 
 	w.workersCtx = ctx
@@ -262,11 +276,15 @@ func (w *ScrapeWorker) watchConfig(ctx context.Context, interval time.Duration) 
 			if n := w.loadDesiredCount(ctx); n != w.WorkerCount() {
 				w.SetWorkerCount(n)
 			}
+			if w.shouldReloadTMDBConfig() {
+				_ = w.ReloadTmdbClient(ctx)
+			}
 		}
 	}
 }
 
 func (w *ScrapeWorker) consume(ctx context.Context, id int, stopCh chan struct{}) {
+	failureStreak := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -276,14 +294,17 @@ func (w *ScrapeWorker) consume(ctx context.Context, id int, stopCh chan struct{}
 		default:
 		}
 
-		tasks, err := w.queue.Claim(ctx, scrapeClaimBatch)
+		tasks, err := w.queue.Claim(ctx, scrapeClaimBatch, w.remoteClaimsAllowed())
 		if err != nil {
+			w.claimFailures.Add(1)
+			failureStreak++
 			slog.Warn("[ScrapeWorker] claim failed", "worker", id, "error", err)
-			if !sleepOrStop(ctx, stopCh, scrapeIdleSleep) {
+			if !sleepOrStop(ctx, stopCh, scrapeWorkerFailureBackoff(failureStreak)) {
 				return
 			}
 			continue
 		}
+		failureStreak = 0
 		if len(tasks) == 0 {
 			if !sleepOrStop(ctx, stopCh, scrapeIdleSleep) {
 				return
@@ -300,38 +321,68 @@ func (w *ScrapeWorker) consume(ctx context.Context, id int, stopCh chan struct{}
 				return
 			default:
 			}
-			w.runTask(ctx, id, t)
+			if err := w.runTask(ctx, id, t); err != nil {
+				failureStreak++
+				slog.Error("[ScrapeWorker] task state write failed; pausing consumer",
+					"worker", id, "task", t.ID, "error", err)
+				if !sleepOrStop(ctx, stopCh, scrapeWorkerFailureBackoff(failureStreak)) {
+					return
+				}
+				break
+			}
 		}
 	}
 }
 
-func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) {
+func (w *ScrapeWorker) runTask(ctx context.Context, workerID int, t QueueTask) error {
 	ctx, diag := WithDiag(ctx)
 	start := time.Now()
 	err := w.dispatch(ctx, t)
 	dur := time.Since(start)
+	remoteTask := isRemoteScrapeTask(t.TaskType)
 
 	if err != nil {
 		fatal := isScrapeFatalError(err)
+		if remoteTask {
+			if fatal && !errors.Is(err, ErrTMDBNotConfigured) {
+				w.noteRemoteSuccess()
+			} else {
+				w.noteRemoteFailure(err, fatal)
+			}
+		}
 		slog.Info("[ScrapeWorker] task failed",
 			"worker", workerID, "type", t.TaskType, "item", t.ItemID,
 			"retry", t.RetryCount, "error", err, "duration", dur, "fatal", fatal)
+		var stateErr error
 		if fatal {
 			// 不可重试错误:直接落终态 failed,不走退避。
 			// 避免同一批 "no match" / 非 TMDB 源无法映射 的 item 在 pending 里
 			// 循环 5 次退避(最长 32 分钟)空耗代理和 worker。
-			w.queue.FailFatal(ctx, t.ID, err.Error(), diag)
+			stateErr = w.queue.FailFatal(ctx, t.ID, err.Error(), diag)
 		} else {
-			w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error(), diag)
+			stateErr = w.queue.Fail(ctx, t.ID, t.RetryCount, scrapeMaxRetry, err.Error(), diag)
 		}
-		return
+		if stateErr != nil {
+			w.noteStateWriteFailure(stateErr)
+			return fmt.Errorf("persist failed task %d: %w", t.ID, stateErr)
+		}
+		w.noteStateWriteSuccess()
+		return nil
 	}
 
-	w.queue.Done(ctx, t.ID)
+	if remoteTask {
+		w.noteRemoteSuccess()
+	}
+	if err := w.queue.Done(ctx, t.ID); err != nil {
+		w.noteStateWriteFailure(err)
+		return fmt.Errorf("persist completed task %d: %w", t.ID, err)
+	}
+	w.noteStateWriteSuccess()
 	if dur > 3*time.Second {
 		slog.Info("[ScrapeWorker] slow task",
 			"worker", workerID, "type", t.TaskType, "item", t.ItemID, "duration", dur)
 	}
+	return nil
 }
 
 // isScrapeFatalError 判断错误是否"重试也没用",应直接归入 failed 而不退避。
@@ -343,6 +394,9 @@ func isScrapeFatalError(err error) bool {
 		return false
 	}
 	if errors.Is(err, scraper.ErrNoMatch) {
+		return true
+	}
+	if errors.Is(err, ErrTMDBNotConfigured) {
 		return true
 	}
 	s := err.Error()
@@ -367,20 +421,20 @@ func isScrapeFatalError(err error) bool {
 func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 	switch t.TaskType {
 	case ScrapeTaskIdentify, ScrapeTaskRefresh:
-		client := w.tmdbClient(ctx)
-		if client == nil {
-			return fmt.Errorf("tmdb client unavailable (api key not configured)")
+		client, err := w.tmdbClient(ctx)
+		if err != nil {
+			return err
 		}
-		_, err := ScrapeItemWithClient(ctx, w.pool, t.ItemID, client)
+		_, err = ScrapeItemWithClient(ctx, w.pool, t.ItemID, client)
 		return err
 
 	case ScrapeTaskBackfillQuality:
 		return processBackfillQualityTask(ctx, w.pool, t.ItemID)
 
 	case ScrapeTaskBackfillEpisodeName:
-		client := w.tmdbClient(ctx)
-		if client == nil {
-			return fmt.Errorf("tmdb client unavailable")
+		client, err := w.tmdbClient(ctx)
+		if err != nil {
+			return err
 		}
 		return processBackfillEpisodeNameTask(ctx, w.pool, client, t.ItemID)
 
@@ -390,16 +444,16 @@ func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 		if !readEpisodeStillFetchEnabled(ctx, w.pool) {
 			return nil
 		}
-		client := w.tmdbClient(ctx)
-		if client == nil {
-			return fmt.Errorf("tmdb client unavailable")
+		client, err := w.tmdbClient(ctx)
+		if err != nil {
+			return err
 		}
 		return processBackfillEpisodeImageTask(ctx, w.pool, client, t.ItemID)
 
 	case ScrapeTaskBackfillActorImg:
-		client := w.tmdbClient(ctx)
-		if client == nil {
-			return fmt.Errorf("tmdb client unavailable")
+		client, err := w.tmdbClient(ctx)
+		if err != nil {
+			return err
 		}
 		return processBackfillActorImagesTask(ctx, w.pool, client, t.ItemID)
 	}
@@ -409,26 +463,21 @@ func (w *ScrapeWorker) dispatch(ctx context.Context, t QueueTask) error {
 // tmdbClient 返回 worker 级缓存的 TmdbClient(lazy init)。
 // 配合 GetScrapeAggregator 的 key=client 缓存,让同 worker 内所有 identify/name/image
 // 任务共享同一个 Aggregator + http.Transport 连接池。
-func (w *ScrapeWorker) tmdbClient(ctx context.Context) *TmdbClient {
+func (w *ScrapeWorker) tmdbClient(ctx context.Context) (*TmdbClient, error) {
 	if c := w.cachedClient.Load(); c != nil {
-		return c
+		return c, nil
 	}
-	c := TmdbClientFromConfig(ctx, w.pool)
-	if c == nil {
-		return nil
+	c, err := loadTmdbClientFromConfig(ctx, w.pool)
+	if err != nil {
+		w.noteTMDBConfigError(err)
+		return nil, err
 	}
 	if !w.cachedClient.CompareAndSwap(nil, c) {
 		// 被别的 goroutine 先赢 —— 用它设的值,丢弃自己 build 的
-		return w.cachedClient.Load()
+		return w.cachedClient.Load(), nil
 	}
-	return c
-}
-
-// InvalidateCachedClient 让下一次 tmdbClient 重建,同时失效 Aggregator 缓存。
-// Admin 改 tmdb_* 配置后调。
-func (w *ScrapeWorker) InvalidateCachedClient() {
-	w.cachedClient.Store(nil)
-	InvalidateScrapeAggregator()
+	w.noteRemoteSuccess()
+	return c, nil
 }
 
 func sleepOrCancel(ctx context.Context, d time.Duration) {

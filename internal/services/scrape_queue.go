@@ -75,8 +75,8 @@ func (q *ScrapeQueue) EnqueueBatch(ctx context.Context, itemIDs []string, taskTy
 
 // Claim 批量取出 limit 条待处理任务,原子地标记为 running。
 // 使用 FOR UPDATE SKIP LOCKED 让多个 worker 并发 Claim 不互相阻塞。
-func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error) {
-	rows, err := q.repo.Claim(ctx, limit)
+func (q *ScrapeQueue) Claim(ctx context.Context, limit int, allowRemote bool) ([]QueueTask, error) {
+	rows, err := q.repo.Claim(ctx, limit, allowRemote)
 	if err != nil {
 		return nil, err
 	}
@@ -97,14 +97,14 @@ func (q *ScrapeQueue) Claim(ctx context.Context, limit int) ([]QueueTask, error)
 
 // Done 标记成功完成。保留一段时间供审计,后续由 PruneDone 清理。
 // 同时清空 HTTP 诊断列和结构化 detail_json,避免前端看到过时信息。
-func (q *ScrapeQueue) Done(ctx context.Context, id int64) {
-	_ = q.repo.Done(ctx, id)
+func (q *ScrapeQueue) Done(ctx context.Context, id int64) error {
+	return q.repo.Done(ctx, id)
 }
 
 // FailFatal 标记任务为终态 failed,不走退避重试。
 // 用于明确不可能靠重试解决的错误(no match / 非 TMDB 源无法映射 / 类型不支持等)。
 // 节省 worker 资源和代理配额,避免 Pending 被一堆注定失败的 item 占住。
-func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, diag *ScrapeDiag) {
+func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, diag *ScrapeDiag) error {
 	var reqURL, respBody interface{}
 	var respStatus interface{}
 	var detailJSON interface{}
@@ -120,7 +120,7 @@ func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, di
 	if diag != nil && diag.Detail != "" {
 		detailJSON = diag.Detail
 	}
-	_ = q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
+	return q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
 		Error:          truncateError(errMsg),
 		RequestURL:     stringFromAny(reqURL),
 		ResponseStatus: intFromAny(respStatus),
@@ -131,7 +131,7 @@ func (q *ScrapeQueue) FailFatal(ctx context.Context, id int64, errMsg string, di
 
 // Fail 标记失败并按指数退避排下次运行。超过 maxRetry 就落成 failed。
 // diag 允许为 nil(非 HTTP 任务或上游没注入时三列写 NULL)。
-func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string, diag *ScrapeDiag) {
+func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxRetry int16, errMsg string, diag *ScrapeDiag) error {
 	var reqURL, respBody interface{}
 	var respStatus interface{}
 	var detailJSON interface{}
@@ -149,17 +149,16 @@ func (q *ScrapeQueue) Fail(ctx context.Context, id int64, retryCount int16, maxR
 	}
 
 	if retryCount+1 >= maxRetry {
-		_ = q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
+		return q.repo.FailFatal(ctx, id, repository.ScrapeQueueFailure{
 			Error:          truncateError(errMsg),
 			RequestURL:     stringFromAny(reqURL),
 			ResponseStatus: intFromAny(respStatus),
 			ResponseSample: stringFromAny(respBody),
 			DetailJSON:     bytesFromAny(detailJSON),
 		})
-		return
 	}
 	backoff := retryBackoff(retryCount + 1)
-	_ = q.repo.FailRetry(ctx, id, backoff, repository.ScrapeQueueFailure{
+	return q.repo.FailRetry(ctx, id, backoff, repository.ScrapeQueueFailure{
 		Error:          truncateError(errMsg),
 		RequestURL:     stringFromAny(reqURL),
 		ResponseStatus: intFromAny(respStatus),

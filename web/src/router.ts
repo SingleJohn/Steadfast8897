@@ -7,7 +7,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  *   媒体内容（submenu）→  /admin/media/{libraries|metadata|online-media}
  *   网关（submenu）    →  /admin/gateway/{emby-sources|path-rules|backends}
  *   观测中心（submenu）→  /admin/observability/gateway/{traffic|redirect|ip-stats}
- *                         /admin/observability/service/{playback|stats|logs|tasks}
+ *                         /admin/observability/service/{playback|stats|logs|tasks|queue}
  *   系统（submenu）    →  /admin/system/{users|api-keys|branding|webhook|backup|emby-migrate}
  *
  * 菜单由 AdminLayout 根据路由 meta 动态生成：
@@ -19,7 +19,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
  *
  * 观测中心下有两个父容器：
  *   - GatewayObsLayout：持有 useGatewayObservability，共享 source/tag 过滤器给网关 3 个子页
- *   - ServiceObsLayout：纯 router-view 壳，4 个子页各自管理数据
+ *   - ServiceObsLayout：纯 router-view 壳，5 个子页各自管理数据
  */
 
 const router = createRouter({
@@ -295,6 +295,7 @@ const router = createRouter({
               meta: {
                 title: '播放',
                 navLabel: '播放',
+                description: '实时查看播放会话、客户端与转码状态。',
                 icon: 'playback',
                 section: 'observability',
                 sectionLabel: '观测中心',
@@ -314,6 +315,7 @@ const router = createRouter({
               meta: {
                 title: '统计',
                 navLabel: '统计',
+                description: '聚合查看媒体、请求与服务资源趋势。',
                 icon: 'stats',
                 section: 'observability',
                 sectionLabel: '观测中心',
@@ -333,6 +335,7 @@ const router = createRouter({
               meta: {
                 title: '系统日志',
                 navLabel: '系统日志',
+                description: '按等级与模块定位服务端事件和异常。',
                 icon: 'logs',
                 section: 'observability',
                 sectionLabel: '观测中心',
@@ -352,6 +355,7 @@ const router = createRouter({
               meta: {
                 title: '作业调度',
                 navLabel: '作业调度',
+                description: '管理可触发作业、执行进度与历史运行。',
                 icon: 'tasks',
                 section: 'observability',
                 sectionLabel: '观测中心',
@@ -369,8 +373,9 @@ const router = createRouter({
               name: 'obs_svc_queue',
               component: () => import('./pages/observability/service/QueueTab.vue'),
               meta: {
-                title: '队列管道',
-                navLabel: '队列管道',
+                title: '运行队列',
+                navLabel: '运行队列',
+                description: '查看 Worker 健康、数据库连接、TMDB 熔断与持久化队列。',
                 icon: 'tasks',
                 section: 'observability',
                 sectionLabel: '观测中心',

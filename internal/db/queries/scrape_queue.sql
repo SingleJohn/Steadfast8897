@@ -35,10 +35,12 @@ ON CONFLICT (item_id, task_type) DO UPDATE SET
 -- name: ClaimScrapeQueueTasks :many
 WITH claimed AS (
     SELECT id FROM scrape_queue
-    WHERE status = 'pending' AND next_run_at <= NOW()
+    WHERE status = 'pending'
+      AND next_run_at <= NOW()
+      AND (sqlc.arg(allow_remote)::boolean OR task_type = 'backfill_quality')
     ORDER BY priority, next_run_at
     FOR UPDATE SKIP LOCKED
-    LIMIT $1
+    LIMIT sqlc.arg(limit)
 )
 UPDATE scrape_queue q
    SET status = 'running', updated_at = NOW()
