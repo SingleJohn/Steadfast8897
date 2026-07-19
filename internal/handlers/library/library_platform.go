@@ -42,6 +42,10 @@ func getPlatforms(c *gin.Context, state *AppState) {
 			"MatchValue":     p.MatchValue,
 			"MatchValues":    p.Values(),
 			"HasCover":       p.CoverImagePath != nil && *p.CoverImagePath != "",
+			"IsLatest":       p.IsLatest(),
+		}
+		if p.IsLatest() {
+			entry["ItemLimit"] = p.LatestLimit()
 		}
 		// 封面优先用生成封面(虚拟 ID 出图),否则已知平台用内置 logo
 		if p.CoverImagePath != nil && *p.CoverImagePath != "" {
@@ -65,6 +69,14 @@ func getPlatforms(c *gin.Context, state *AppState) {
 func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibrary) {
 	vals := p.Values()
 	switch p.Dimension {
+	case models.PlatformDimLatest:
+		limit := p.LatestLimit()
+		opts.LatestItemLimit = &limit
+		opts.IncludeItemTypes = []string{"Movie"}
+		sortBy := "DateCreated"
+		sortOrder := "Descending"
+		opts.SortBy = &sortBy
+		opts.SortOrder = &sortOrder
 	case models.PlatformDimActor:
 		opts.ActorName = vals
 	case models.PlatformDimNumPrefix:
@@ -72,6 +84,33 @@ func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibr
 	default:
 		opts.Studio = vals
 	}
+}
+
+// upsertLatestPlatform POST /Library/Platforms/Latest
+// 创建或更新唯一的最新影片虚拟库。
+func upsertLatestPlatform(c *gin.Context, state *AppState) {
+	var body struct {
+		Name    string `json:"Name"`
+		Limit   int64  `json:"Limit"`
+		Enabled *bool  `json:"Enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid body"})
+		return
+	}
+	if body.Limit == 0 {
+		body.Limit = models.DefaultLatestItemLimit
+	}
+	if body.Limit < 1 || body.Limit > 2000 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Limit must be between 1 and 2000"})
+		return
+	}
+	if err := models.UpsertLatestPlatformLibrary(c.Request.Context(), state.DB, body.Name, body.Limit, body.Enabled); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	invalidateViewsCache(c, state)
+	c.Status(http.StatusNoContent)
 }
 
 func addPlatform(c *gin.Context, state *AppState) {

@@ -13,6 +13,9 @@ const (
 	PlatformDimStudio    = "studio"
 	PlatformDimNumPrefix = "num_prefix"
 	PlatformDimActor     = "actor"
+	PlatformDimLatest    = "latest"
+
+	DefaultLatestItemLimit int64 = 200
 )
 
 const platformCatalogPrefixExpr = "regexp_replace(upper(catalog_number), '-[0-9]+$', '')"
@@ -32,6 +35,7 @@ type PlatformLibrary struct {
 	CoverImagePath *string
 	CoverImageTag  *string
 	DisplayName    *string
+	ItemLimit      *int64
 }
 
 func (p *PlatformLibrary) Values() []string {
@@ -86,7 +90,8 @@ func (r *PlatformRepository) ListLibraries(ctx context.Context, onlyEnabled bool
 	}
 	if withCounts {
 		for i := range result {
-			result[i].ItemCount, _ = r.CountItemsForVirtual(ctx, result[i].Dimension, result[i].Values())
+			result[i].ItemCount, _ = r.CountItemsForVirtualScoped(
+				ctx, result[i].Dimension, result[i].Values(), result[i].ItemLimit, nil)
 		}
 	}
 	return result, nil
@@ -94,7 +99,8 @@ func (r *PlatformRepository) ListLibraries(ctx context.Context, onlyEnabled bool
 
 func (r *PlatformRepository) listLibrariesLite(ctx context.Context, onlyEnabled bool) ([]PlatformLibrary, error) {
 	sql := `SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-	               dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
+	               dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name,
+	               item_limit
 	          FROM platform_libraries`
 	if onlyEnabled {
 		sql += ` WHERE enabled = true`
@@ -109,7 +115,8 @@ func (r *PlatformRepository) listLibrariesLite(ctx context.Context, onlyEnabled 
 	for rows.Next() {
 		var p PlatformLibrary
 		if err := rows.Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName); err != nil {
+			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName,
+			&p.ItemLimit); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -154,14 +161,48 @@ func platformDimensionSpec(dimension string) (platformDimensionSQL, bool) {
 }
 
 func (r *PlatformRepository) CountItemsForVirtual(ctx context.Context, dimension string, values []string) (int64, error) {
+	return r.CountItemsForVirtualScoped(ctx, dimension, values, nil, nil)
+}
+
+func (r *PlatformRepository) CountItemsForVirtualScoped(ctx context.Context, dimension string, values []string, itemLimit *int64, allowedLibraryIDs []string) (int64, error) {
+	if dimension == PlatformDimLatest {
+		limit := DefaultLatestItemLimit
+		if itemLimit != nil && *itemLimit > 0 {
+			limit = *itemLimit
+		}
+		where := "type = 'Movie' AND merged_to_id IS NULL"
+		args := []any{}
+		if allowedLibraryIDs != nil {
+			if len(allowedLibraryIDs) == 0 {
+				return 0, nil
+			}
+			where += " AND library_id = ANY($1::uuid[])"
+			args = append(args, allowedLibraryIDs)
+		}
+		args = append(args, limit)
+		limitParam := len(args)
+		var count int64
+		err := r.pool.QueryRow(ctx,
+			fmt.Sprintf(`SELECT COUNT(*) FROM (
+				SELECT 1 FROM items WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d::bigint
+			) latest_items`, where, limitParam), args...).Scan(&count)
+		return count, err
+	}
 	cond, ok := PlatformDimensionCondition(dimension)
 	if !ok || len(values) == 0 {
 		return 0, nil
 	}
+	where := cond + " AND type IN ('Movie','Series') AND merged_to_id IS NULL"
+	args := []any{values}
+	if allowedLibraryIDs != nil {
+		if len(allowedLibraryIDs) == 0 {
+			return 0, nil
+		}
+		where += " AND library_id::text = ANY($2)"
+		args = append(args, allowedLibraryIDs)
+	}
 	var count int64
-	err := r.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM items WHERE `+cond+` AND type IN ('Movie','Series') AND merged_to_id IS NULL`,
-		values).Scan(&count)
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM items WHERE `+where, args...).Scan(&count)
 	return count, err
 }
 
@@ -278,10 +319,12 @@ func (r *PlatformRepository) GetByID(ctx context.Context, id string) (*PlatformL
 	var p PlatformLibrary
 	err := r.pool.QueryRow(ctx,
 		`SELECT id::text, platform_name, enabled, collection_type, icon_url, created_at, sort_order,
-		        dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name
+		        dimension, COALESCE(match_value, platform_name), match_values, cover_image_path, cover_image_tag, display_name,
+		        item_limit
 		   FROM platform_libraries WHERE id = $1::uuid`, id).
 		Scan(&p.ID, &p.PlatformName, &p.Enabled, &p.CollectionType, &p.IconURL,
-			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName)
+			&p.CreatedAt, &p.SortOrder, &p.Dimension, &p.MatchValue, &p.MatchValues, &p.CoverImagePath, &p.CoverImageTag, &p.DisplayName,
+			&p.ItemLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -360,6 +403,9 @@ func (r *PlatformRepository) IsGlobalEnabled(ctx context.Context) bool {
 }
 
 func (r *PlatformRepository) CollectionType(ctx context.Context, dimension string, values []string) string {
+	if dimension == PlatformDimLatest {
+		return "movies"
+	}
 	cond, ok := PlatformDimensionCondition(dimension)
 	if !ok || len(values) == 0 {
 		return ""
@@ -375,6 +421,21 @@ func (r *PlatformRepository) CollectionType(ctx context.Context, dimension strin
 	default:
 		return ""
 	}
+}
+
+func (r *PlatformRepository) UpsertLatestLibrary(ctx context.Context, displayName string, itemLimit int64, enabled *bool) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO platform_libraries (
+			platform_name, display_name, dimension, match_value, match_values,
+			collection_type, item_limit, enabled
+		) VALUES ('Latest Movies', $1, $2, 'Movie', ARRAY['Movie'], 'movies', $3, COALESCE($4, true))
+		ON CONFLICT (dimension, match_value) DO UPDATE SET
+			display_name = EXCLUDED.display_name,
+			collection_type = 'movies',
+			item_limit = EXCLUDED.item_limit,
+			enabled = COALESCE($4, platform_libraries.enabled)`,
+		displayName, PlatformDimLatest, itemLimit, enabled)
+	return err
 }
 
 func (r *PlatformRepository) CountItemsByStudio(ctx context.Context, studio string) (int64, error) {

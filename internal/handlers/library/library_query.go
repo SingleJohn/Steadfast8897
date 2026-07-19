@@ -57,10 +57,21 @@ func getUserViews(c *gin.Context) {
 
 	// Platform virtual libraries
 	var platformEntries []gin.H
-	if scope.AllowAll && models.IsPlatformLibrariesEnabled(ctx, state.DB) {
+	if models.IsPlatformLibrariesEnabled(ctx, state.DB) {
 		platforms, _ := models.GetEnabledPlatforms(ctx, state.DB)
 		for _, p := range platforms {
-			if p.ItemCount == 0 {
+			if !scope.AllowAll && !p.IsLatest() {
+				continue
+			}
+			itemCount := p.ItemCount
+			if p.IsLatest() {
+				allowedLibraryIDs := []string(nil)
+				if !scope.AllowAll {
+					allowedLibraryIDs = scope.IDs
+				}
+				itemCount, _ = models.CountItemsForPlatform(ctx, state.DB, &p, allowedLibraryIDs)
+			}
+			if itemCount == 0 {
 				continue
 			}
 			vid := models.PlatformVirtualID(p.Dimension, p.MatchValue)
@@ -81,7 +92,7 @@ func getUserViews(c *gin.Context) {
 			}
 			var unplayedCount interface{}
 			if showItemCount {
-				unplayedCount = p.ItemCount
+				unplayedCount = itemCount
 			} else {
 				unplayedCount = 0
 			}
@@ -92,8 +103,8 @@ func getUserViews(c *gin.Context) {
 				"Etag":               vid,
 				"Type":               "CollectionFolder",
 				"IsFolder":           true,
-				"ChildCount":         p.ItemCount,
-				"RecursiveItemCount": p.ItemCount,
+				"ChildCount":         itemCount,
+				"RecursiveItemCount": itemCount,
 				"SortName":           fmt.Sprintf("%04d", p.SortOrder),
 				"ImageTags":          imgTags,
 				"BackdropImageTags":  []string{},
@@ -464,7 +475,7 @@ func getItems(c *gin.Context) {
 	// Handle platform virtual library (UUID-based lookup)
 	if opts.ParentID != nil {
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, *opts.ParentID); ok {
-			if !scope.AllowAll {
+			if !scope.AllowAll && !p.IsLatest() {
 				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
 				return
 			}
@@ -669,8 +680,8 @@ func getLatestItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if _, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
-		if !scope.AllowAll {
+	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
+		if !scope.AllowAll && !p.IsLatest() {
 			c.JSON(http.StatusOK, []interface{}{})
 			return
 		}
@@ -719,7 +730,7 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 		}
 	}
 	if platform != nil {
-		if scope != nil && !scope.AllowAll {
+		if scope != nil && !scope.AllowAll && !platform.IsLatest() {
 			return []dto.BaseItemDto{}, nil
 		}
 		opts := &models.ItemQueryOptions{

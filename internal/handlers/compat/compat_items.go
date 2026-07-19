@@ -222,20 +222,24 @@ func itemsSearch(c *gin.Context, state *AppState) {
 			return
 		}
 		if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, parentID); ok {
-			if scope != nil && !scope.AllowAll {
+			if scope != nil && !scope.AllowAll && !p.IsLatest() {
 				c.JSON(http.StatusOK, gin.H{"Items": []interface{}{}, "TotalRecordCount": 0})
 				return
 			}
 			parentMode := repository.CompatItemsParentPlatformStudio
 			switch p.Dimension {
+			case models.PlatformDimLatest:
+				parentMode = repository.CompatItemsParentPlatformLatest
 			case models.PlatformDimActor:
 				parentMode = repository.CompatItemsParentPlatformActor
 			case models.PlatformDimNumPrefix:
 				parentMode = repository.CompatItemsParentPlatformNumPrefix
 			}
 			searchOpts.Parent = &repository.CompatItemsParentFilter{
-				Mode:  parentMode,
-				Value: p.MatchValue,
+				Mode:      parentMode,
+				Value:     p.MatchValue,
+				Values:    p.Values(),
+				ItemLimit: p.LatestLimit(),
 			}
 		} else {
 			pid, _ := models.ResolveToUUID(ctx, state.DB, parentID)

@@ -67,7 +67,8 @@ func ApplyLibraryScope(opts *models.ItemQueryOptions, scope *UserLibraryScope) {
 	if opts == nil || scope == nil || scope.AllowAll {
 		return
 	}
-	opts.AllowedLibraryIDs = append([]string(nil), scope.IDs...)
+	opts.AllowedLibraryIDs = make([]string, len(scope.IDs))
+	copy(opts.AllowedLibraryIDs, scope.IDs)
 }
 
 func UserCanAccessItem(ctx context.Context, state *AppState, userID string, itemID string) (bool, error) {

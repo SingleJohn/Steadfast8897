@@ -61,15 +61,15 @@ const emit = defineEmits<{
   <div class="settings-card">
     <div class="settings-card-header">
       <div>
-        <h3 class="settings-card-title">平台媒体库</h3>
-        <div class="settings-card-desc">根据 TMDB 的出品平台信息（Netflix、HBO 等）自动生成虚拟媒体库，在播放器中可见。</div>
+        <h3 class="settings-card-title">平台与虚拟媒体库</h3>
+        <div class="settings-card-desc">管理按平台、演员、番号等规则聚合的虚拟媒体库，并控制它们在播放器中的展示。</div>
       </div>
     </div>
 
     <div class="setting-row">
       <div>
-        <div class="setting-label">启用平台库</div>
-        <div class="setting-desc">开启后，已启用的平台将作为虚拟媒体库显示在播放器中</div>
+        <div class="setting-label">启用虚拟库</div>
+        <div class="setting-desc">开启后，已启用的平台库和动态虚拟库将在播放器中显示</div>
       </div>
       <n-switch :value="platformsData.GlobalEnabled" @update:value="emit('toggleGlobalPlatform', $event)" />
     </div>
@@ -203,12 +203,12 @@ const emit = defineEmits<{
         <n-icon v-else size="28" class="platform-fallback-icon"><component :is="getPlatformIcon(p.PlatformName)" /></n-icon>
         <div class="platform-row-main">
           <span class="platform-name">{{ p.DisplayName || p.PlatformName }}</span>
-          <span class="platform-dim-badge">{{ p.Dimension }}</span>
+          <span class="platform-dim-badge">{{ p.IsLatest ? '动态最新' : p.Dimension }}</span>
           <span v-if="(p.MatchValues?.length || 1) > 1" class="platform-dim-badge" title="已聚合的匹配值数量">聚合 {{ p.MatchValues.length }}</span>
-          <span class="platform-count">{{ p.ItemCount }} 部</span>
+          <span class="platform-count">{{ p.ItemCount }}<template v-if="p.IsLatest"> / {{ p.ItemLimit }}</template> 部</span>
         </div>
         <div class="platform-row-actions">
-          <n-button text size="tiny" title="聚合多个匹配值" @click="emit('openAlias', p)">聚合</n-button>
+          <n-button v-if="!p.IsLatest" text size="tiny" title="聚合多个匹配值" @click="emit('openAlias', p)">聚合</n-button>
           <n-button text size="tiny" title="重命名" @click="emit('openRename', p)">重命名</n-button>
           <n-button text size="tiny" title="生成封面" @click="emit('openPlatformCover', p.Id)">封面</n-button>
           <n-button v-if="p.HasCover" text size="tiny" title="恢复默认封面" @click="emit('restoreCover', p.Id)">恢复默认</n-button>

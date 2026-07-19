@@ -316,16 +316,22 @@ func renderAndSaveVirtualCover(ctx context.Context, state *AppState, p *models.P
 	}
 	defer release()
 
-	cond, ok := models.VirtualDimensionCondition(p.Dimension)
-	if !ok {
-		return "", fmt.Errorf("unknown dimension: %s", p.Dimension)
+	var materials []coverart.Material
+	var err error
+	if p.IsLatest() {
+		materials, err = coverart.PickMaterialsForLatest(ctx, state.DB, p.LatestLimit())
+	} else {
+		cond, ok := models.VirtualDimensionCondition(p.Dimension)
+		if !ok {
+			return "", fmt.Errorf("unknown dimension: %s", p.Dimension)
+		}
+		materials, err = coverart.PickMaterialsForVirtual(ctx, state.DB, cond, p.Values())
 	}
-	materials, err := coverart.PickMaterialsForVirtual(ctx, state.DB, cond, p.Values())
 	if err != nil {
 		return "", err
 	}
 
-	itemCount, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.Values())
+	itemCount, _ := models.CountItemsForPlatform(ctx, state.DB, p, nil)
 	out, err := gen.Render(ctx, coverart.Input{
 		LibraryID:      pid,
 		LibraryName:    p.EffectiveDisplayName(),

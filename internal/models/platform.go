@@ -22,12 +22,13 @@ type PlatformLibrary struct {
 	CreatedAt      time.Time
 	ItemCount      int64
 	SortOrder      int
-	Dimension      string   // 'studio' | 'num_prefix' | 'actor'
+	Dimension      string   // 'studio' | 'num_prefix' | 'actor' | 'latest'
 	MatchValue     string   // 主匹配值(唯一键 + VirtualID 用),studio 维度 = platform_name
 	MatchValues    []string // 实际聚合的全部匹配值(含主值);空则退化为 [MatchValue]
 	CoverImagePath *string
 	CoverImageTag  *string
 	DisplayName    *string // 用户自定义显示名,非空时优先于 PlatformDisplayName
+	ItemLimit      *int64  // latest 规则的动态成员上限;其他维度为空
 }
 
 // Values 返回虚拟库实际聚合的匹配值集合;为空时退化为主匹配值。
@@ -52,6 +53,9 @@ const (
 	PlatformDimStudio    = "studio"
 	PlatformDimNumPrefix = "num_prefix"
 	PlatformDimActor     = "actor"
+	PlatformDimLatest    = "latest"
+
+	DefaultLatestItemLimit = repository.DefaultLatestItemLimit
 )
 
 type PlatformScanStatus string
@@ -103,6 +107,7 @@ func platformLibraryFromRepo(p repository.PlatformLibrary) PlatformLibrary {
 		CoverImagePath: p.CoverImagePath,
 		CoverImageTag:  p.CoverImageTag,
 		DisplayName:    p.DisplayName,
+		ItemLimit:      p.ItemLimit,
 	}
 }
 
@@ -168,6 +173,14 @@ func CountItemsForVirtual(ctx context.Context, pool *pgxpool.Pool, dimension str
 	return repository.NewPlatformRepository(pool).CountItemsForVirtual(ctx, dimension, values)
 }
 
+func CountItemsForPlatform(ctx context.Context, pool *pgxpool.Pool, p *PlatformLibrary, allowedLibraryIDs []string) (int64, error) {
+	if p == nil {
+		return 0, nil
+	}
+	return repository.NewPlatformRepository(pool).CountItemsForVirtualScoped(
+		ctx, p.Dimension, p.Values(), p.ItemLimit, allowedLibraryIDs)
+}
+
 // DiscoveredValue 是维度发现结果的一项。
 type DiscoveredValue struct {
 	Value        string `json:"Value"`
@@ -216,6 +229,14 @@ func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matc
 		displayName = matchValue
 	}
 	return repository.NewPlatformRepository(pool).AddLibrary(ctx, dimension, matchValue, displayName, enabled)
+}
+
+func UpsertLatestPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, displayName string, itemLimit int64, enabled *bool) error {
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = "最新影片"
+	}
+	return repository.NewPlatformRepository(pool).UpsertLatestLibrary(ctx, displayName, itemLimit, enabled)
 }
 
 // GetPlatformByID 取单个虚拟库(含维度/匹配值/封面),不填 ItemCount。
@@ -295,6 +316,17 @@ func ResolvePlatformVirtualID(ctx context.Context, pool *pgxpool.Pool, id string
 // 否则客户端会把整库当成电影库, 只显示电影而隐藏剧集。
 func PlatformCollectionType(ctx context.Context, pool *pgxpool.Pool, dimension string, values []string) string {
 	return repository.NewPlatformRepository(pool).CollectionType(ctx, dimension, values)
+}
+
+func (p *PlatformLibrary) IsLatest() bool {
+	return p != nil && p.Dimension == PlatformDimLatest
+}
+
+func (p *PlatformLibrary) LatestLimit() int64 {
+	if p != nil && p.ItemLimit != nil && *p.ItemLimit > 0 {
+		return *p.ItemLimit
+	}
+	return DefaultLatestItemLimit
 }
 
 // PlatformVirtualIDHash returns a deterministic emby-compatible numeric hash for a platform.

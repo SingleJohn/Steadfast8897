@@ -41,6 +41,7 @@ type ItemQueryOptions struct {
 	Studio            []string
 	ActorName         []string
 	CatalogPrefix     []string
+	LatestItemLimit   *int64
 	AnyProviderID     []ItemProviderIDMatch
 	HasSubtitles      *bool
 	AllowedLibraryIDs []string
@@ -119,6 +120,31 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 			params = append(params, options.AllowedLibraryIDs)
 			paramIdx++
 		}
+	}
+	if options.LatestItemLimit != nil {
+		limit := *options.LatestItemLimit
+		if limit <= 0 {
+			limit = DefaultLatestItemLimit
+		}
+		latestWhere := "recent.type = 'Movie' AND recent.merged_to_id IS NULL"
+		if options.AllowedLibraryIDs != nil {
+			if len(options.AllowedLibraryIDs) == 0 {
+				latestWhere += " AND FALSE"
+			} else {
+				latestWhere += fmt.Sprintf(" AND recent.library_id = ANY($%d::uuid[])", paramIdx)
+				params = append(params, options.AllowedLibraryIDs)
+				paramIdx++
+			}
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			`i.id IN (
+				SELECT recent.id FROM items recent
+				WHERE %s
+				ORDER BY recent.created_at DESC, recent.id DESC
+				LIMIT $%d::bigint
+			)`, latestWhere, paramIdx))
+		params = append(params, limit)
+		paramIdx++
 	}
 
 	if len(options.IncludeItemTypes) > 0 {
@@ -296,7 +322,7 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 		}
 	}
 
-	if len(options.Studio) > 0 || len(options.ActorName) > 0 || len(options.CatalogPrefix) > 0 ||
+	if len(options.Studio) > 0 || len(options.ActorName) > 0 || len(options.CatalogPrefix) > 0 || options.LatestItemLimit != nil ||
 		(!useRepresentative && (len(options.GenreIDs) > 0 || len(options.GenreNames) > 0 ||
 			len(options.TagIDs) > 0 || len(options.TagNames) > 0 ||
 			len(options.PersonIDs) > 0 || len(options.PersonNames) > 0)) {

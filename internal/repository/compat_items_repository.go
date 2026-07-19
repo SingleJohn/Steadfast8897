@@ -25,13 +25,16 @@ const (
 	CompatItemsParentPlatformActor     CompatItemsParentMode = "platform_actor"
 	CompatItemsParentPlatformNumPrefix CompatItemsParentMode = "platform_num_prefix"
 	CompatItemsParentPlatformStudio    CompatItemsParentMode = "platform_studio"
+	CompatItemsParentPlatformLatest    CompatItemsParentMode = "platform_latest"
 	CompatItemsParentLibrary           CompatItemsParentMode = "library"
 	CompatItemsParentLibraryRecursive  CompatItemsParentMode = "library_recursive"
 )
 
 type CompatItemsParentFilter struct {
-	Mode  CompatItemsParentMode
-	Value string
+	Mode      CompatItemsParentMode
+	Value     string
+	Values    []string
+	ItemLimit int64
 }
 
 type CompatItemsSearchOptions struct {
@@ -166,31 +169,58 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 			}
 		}
 	}
-	if opts.Parent != nil && strings.TrimSpace(opts.Parent.Value) != "" {
+	if opts.Parent != nil && (strings.TrimSpace(opts.Parent.Value) != "" || len(opts.Parent.Values) > 0 || opts.Parent.Mode == CompatItemsParentPlatformLatest) {
 		switch opts.Parent.Mode {
 		case CompatItemsParentPlatformActor:
-			whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = $"+strconv.Itoa(idx)+" AND cm.role = 'Actor')")
-			args = append(args, opts.Parent.Value)
+			whereParts = append(whereParts, "EXISTS (SELECT 1 FROM cast_members cm WHERE cm.item_id = i.id AND cm.name = ANY($"+strconv.Itoa(idx)+") AND cm.role = 'Actor')")
+			args = append(args, opts.Parent.Values)
 			idx++
 			whereParts = append(whereParts, "i.merged_to_id IS NULL")
 			if len(opts.IncludeTypes) == 0 {
 				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
 			}
 		case CompatItemsParentPlatformNumPrefix:
-			whereParts = append(whereParts, "regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = $"+strconv.Itoa(idx))
-			args = append(args, opts.Parent.Value)
+			whereParts = append(whereParts, "regexp_replace(upper(i.catalog_number), '-[0-9]+$', '') = ANY($"+strconv.Itoa(idx)+")")
+			args = append(args, opts.Parent.Values)
 			idx++
 			whereParts = append(whereParts, "i.merged_to_id IS NULL")
 			if len(opts.IncludeTypes) == 0 {
 				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
 			}
 		case CompatItemsParentPlatformStudio:
-			whereParts = append(whereParts, "i.studio = $"+strconv.Itoa(idx))
-			args = append(args, opts.Parent.Value)
+			whereParts = append(whereParts, "i.studio = ANY($"+strconv.Itoa(idx)+")")
+			args = append(args, opts.Parent.Values)
 			idx++
 			whereParts = append(whereParts, "i.merged_to_id IS NULL")
 			if len(opts.IncludeTypes) == 0 {
 				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
+			}
+		case CompatItemsParentPlatformLatest:
+			latestWhere := "recent.type = 'Movie' AND recent.merged_to_id IS NULL"
+			if opts.RestrictLibraries {
+				if len(opts.AllowedLibraryIDs) == 0 {
+					latestWhere += " AND FALSE"
+				} else {
+					latestWhere += " AND recent.library_id = ANY($" + strconv.Itoa(idx) + "::uuid[])"
+					args = append(args, opts.AllowedLibraryIDs)
+					idx++
+				}
+			}
+			limit := opts.Parent.ItemLimit
+			if limit <= 0 {
+				limit = DefaultLatestItemLimit
+			}
+			whereParts = append(whereParts, `i.id IN (
+				SELECT recent.id FROM items recent
+				WHERE `+latestWhere+`
+				ORDER BY recent.created_at DESC, recent.id DESC
+				LIMIT $`+strconv.Itoa(idx)+`::bigint
+			)`)
+			args = append(args, limit)
+			idx++
+			whereParts = append(whereParts, "i.merged_to_id IS NULL")
+			if len(opts.IncludeTypes) == 0 {
+				whereParts = append(whereParts, "i.type = 'Movie'")
 			}
 		case CompatItemsParentLibraryRecursive:
 			useRepresentative = true
@@ -271,6 +301,7 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 	}
 
 	countTarget := "COUNT(*)"
+	latestParent := opts.Parent != nil && opts.Parent.Mode == CompatItemsParentPlatformLatest
 	if useRepresentative {
 		countTarget = "COUNT(DISTINCT " + compatItemsRepresentativeExpr("i") + ")"
 	}
@@ -306,9 +337,17 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 			)
 			SELECT * FROM ranked WHERE merge_row_num = 1`,
 			baseCols, seriesCols, userCols, compatItemsRepresentativeExpr("i"), userJoin, seriesJoin, compatItemsWhereSuffix(whereParts))
-		sql += " ORDER BY ranked.sort_name"
+		if latestParent {
+			sql += " ORDER BY ranked.created_at DESC, ranked.id DESC"
+		} else {
+			sql += " ORDER BY ranked.sort_name"
+		}
 	} else {
-		sql += " ORDER BY i.sort_name"
+		if latestParent {
+			sql += " ORDER BY i.created_at DESC, i.id DESC"
+		} else {
+			sql += " ORDER BY i.sort_name"
+		}
 	}
 	sql += " LIMIT $" + strconv.Itoa(idx) + "::bigint"
 	args = append(args, opts.Limit)

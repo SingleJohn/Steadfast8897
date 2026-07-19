@@ -100,7 +100,7 @@ export function usePlatformLibraries(
     try {
       await updateSystemConfig({ platform_libraries_enabled: String(enabled) })
       platformsData.value.GlobalEnabled = enabled
-      showToast(enabled ? '平台库已启用' : '平台库已禁用', 'success')
+      showToast(enabled ? '虚拟库已启用' : '虚拟库已禁用', 'success')
     } catch {
       showToast('操作失败', 'error')
     }

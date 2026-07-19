@@ -111,6 +111,53 @@ func PickMaterialsForVirtual(ctx context.Context, pool *pgxpool.Pool, whereCond 
 	return out, nil
 }
 
+// PickMaterialsForLatest 从最新影片虚拟库的动态成员集合中抽取封面素材。
+func PickMaterialsForLatest(ctx context.Context, pool *pgxpool.Pool, itemLimit int64) ([]Material, error) {
+	if itemLimit <= 0 {
+		itemLimit = 200
+	}
+	rows, err := pool.Query(ctx, `
+		WITH latest AS (
+			SELECT id
+			  FROM items
+			 WHERE type = 'Movie' AND merged_to_id IS NULL
+			 ORDER BY created_at DESC, id DESC
+			 LIMIT $1
+		)
+		SELECT i.name, i.primary_image_path, COALESCE(i.backdrop_image_path, '')
+		  FROM items i
+		  JOIN latest ON latest.id = i.id
+		 WHERE i.primary_image_path IS NOT NULL AND i.primary_image_path <> ''
+		 ORDER BY (i.backdrop_image_path IS NULL OR i.backdrop_image_path = ''), RANDOM()
+		 LIMIT $2
+	`, itemLimit, PosterCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var raw []Material
+	for rows.Next() {
+		var m Material
+		if err := rows.Scan(&m.Title, &m.PosterPath, &m.BackdropPath); err != nil {
+			return nil, err
+		}
+		m.Title = strings.TrimSpace(m.Title)
+		raw = append(raw, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, ErrNoPosters
+	}
+	out := make([]Material, PosterCount)
+	for i := range out {
+		out[i] = raw[i%len(raw)]
+	}
+	return out, nil
+}
+
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }

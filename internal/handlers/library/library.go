@@ -115,6 +115,7 @@ func RegisterLibraryRoutes(group *gin.RouterGroup, state *AppState, authMW, admi
 	// Platform libraries
 	u.GET("/Library/Platforms", adminMW, func(c *gin.Context) { getPlatforms(c, state) })
 	u.POST("/Library/Platforms", adminMW, func(c *gin.Context) { addPlatform(c, state) })
+	u.POST("/Library/Platforms/Latest", adminMW, func(c *gin.Context) { upsertLatestPlatform(c, state) })
 	// 多维度虚拟库:发现 distinct 值 / 批量添加 / 封面生成
 	u.GET("/Library/Platforms/Discover", adminMW, func(c *gin.Context) { discoverPlatformDimension(c, state) })
 	u.POST("/Library/Platforms/Batch", adminMW, func(c *gin.Context) { addPlatformsBatch(c, state) })

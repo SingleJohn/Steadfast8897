@@ -1143,6 +1143,9 @@ export async function getPlatforms() {
 export async function addPlatformLibrary(name: string) {
   return request('/Library/Platforms', { method: 'POST', body: JSON.stringify({ PlatformName: name }) });
 }
+export async function upsertLatestPlatformLibrary(payload: { Name: string; Limit: number; Enabled?: boolean }) {
+  return request('/Library/Platforms/Latest', { method: 'POST', body: JSON.stringify(payload) });
+}
 export async function setPlatformEnable(id: string, enabled: boolean) {
   return request(`/Library/Platforms/${id}/${enabled ? 'Enable' : 'Disable'}`, { method: 'POST' });
 }

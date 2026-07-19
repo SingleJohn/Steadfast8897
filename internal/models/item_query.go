@@ -73,6 +73,7 @@ func itemQueryOptionsToRepo(options *ItemQueryOptions) *repository.ItemQueryOpti
 		Studio:            options.Studio,
 		ActorName:         options.ActorName,
 		CatalogPrefix:     options.CatalogPrefix,
+		LatestItemLimit:   options.LatestItemLimit,
 		AnyProviderID:     matches,
 		HasSubtitles:      options.HasSubtitles,
 		AllowedLibraryIDs: options.AllowedLibraryIDs,

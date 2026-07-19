@@ -423,11 +423,15 @@ func getItemDetail(c *gin.Context) {
 
 	// Check if this is a platform virtual library
 	if p, ok := models.ResolvePlatformVirtualID(ctx, state.DB, itemID); ok {
-		if !scope.AllowAll {
+		if !scope.AllowAll && !p.IsLatest() {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 			return
 		}
-		count, _ := models.CountItemsForVirtual(ctx, state.DB, p.Dimension, p.Values())
+		allowedLibraryIDs := []string(nil)
+		if !scope.AllowAll {
+			allowedLibraryIDs = scope.IDs
+		}
+		count, _ := models.CountItemsForPlatform(ctx, state.DB, p, allowedLibraryIDs)
 		colType := models.PlatformCollectionType(ctx, state.DB, p.Dimension, p.Values())
 		imgTags := gin.H{}
 		if (p.CoverImagePath != nil && *p.CoverImagePath != "") || models.HasPlatformLogo(p.PlatformName) {

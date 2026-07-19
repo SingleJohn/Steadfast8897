@@ -8,6 +8,7 @@ import PageShell from '@/components/PageShell.vue'
 import LibraryDisplayOrderPanel from '@/components/libraries/LibraryDisplayOrderPanel.vue'
 import LibraryGridPanel from '@/components/libraries/LibraryGridPanel.vue'
 import LibraryScanPanel from '@/components/libraries/LibraryScanPanel.vue'
+import LatestVirtualLibraryPanel from '@/components/libraries/LatestVirtualLibraryPanel.vue'
 import PlatformLibrariesPanel from '@/components/libraries/PlatformLibrariesPanel.vue'
 import { AppIcons } from '@/icons/appIcons'
 import {
@@ -18,6 +19,7 @@ import {
 import { useDisplayOrder } from '@/composables/libraries/useDisplayOrder'
 import { useLibraryCardOrder } from '@/composables/libraries/useLibraryCardOrder'
 import { useLibraryCreate } from '@/composables/libraries/useLibraryCreate'
+import { useLatestVirtualLibrary } from '@/composables/libraries/useLatestVirtualLibrary'
 import { usePlatformLibraries } from '@/composables/libraries/usePlatformLibraries'
 import { useLibraryScanState } from '@/composables/useLibraryScanState'
 import { useVisibleInterval } from '@/composables/useVisibleInterval'
@@ -210,6 +212,14 @@ const {
   resumeRescrapePolling,
   clearRescrapeTimer,
 } = usePlatformLibraries(showToast, ensureCoverStylesLoaded, coverStyles)
+
+const {
+  latestLibrary,
+  latestName,
+  latestLimit,
+  savingLatestLibrary,
+  saveLatestLibrary,
+} = useLatestVirtualLibrary(platformsData, loadPlatforms, showToast)
 
 const solidModalMenuProps = { class: 'solid-modal-menu' }
 const forceSolidModalStyle = {
@@ -410,6 +420,16 @@ onUnmounted(() => {
       </n-tab-pane>
 
       <n-tab-pane name="platforms" tab="平台库">
+        <LatestVirtualLibraryPanel
+          :latest-library="latestLibrary"
+          :latest-name="latestName"
+          :latest-limit="latestLimit"
+          :global-enabled="platformsData.GlobalEnabled"
+          :saving="savingLatestLibrary"
+          @update-latest-name="(value) => latestName = value"
+          @update-latest-limit="(value) => latestLimit = value"
+          @save="saveLatestLibrary"
+        />
         <PlatformLibrariesPanel
           :platforms-data="platformsData"
           :platform-task="platformTask"
