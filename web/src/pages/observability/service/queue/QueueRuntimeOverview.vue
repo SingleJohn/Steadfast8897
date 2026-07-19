@@ -13,10 +13,10 @@ import {
 import {
   CloudDownloadOutline,
   CloudOfflineOutline,
-  DatabaseOutline,
   PulseOutline,
   RefreshOutline,
   SaveOutline,
+  ServerOutline,
   ShieldCheckmarkOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
@@ -165,7 +165,7 @@ const runtimeError = computed(() => {
     <div class="signal-grid">
       <div class="signal-cell">
         <div class="signal-heading">
-          <span class="signal-label"><NIcon><DatabaseOutline /></NIcon> 数据库连接</span>
+          <span class="signal-label"><NIcon><ServerOutline /></NIcon> 数据库连接</span>
           <strong>{{ metrics.db_pool?.acquired_conns ?? '-' }} / {{ metrics.db_pool?.max_conns ?? '-' }}</strong>
         </div>
         <NProgress
