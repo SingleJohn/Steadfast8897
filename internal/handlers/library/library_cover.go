@@ -317,7 +317,6 @@ func renderAndSaveVirtualCover(ctx context.Context, state *AppState, p *models.P
 	defer release()
 
 	var materials []coverart.Material
-	var err error
 	if p.IsLatest() {
 		materials, err = coverart.PickMaterialsForLatest(ctx, state.DB, p.LatestLimit())
 	} else {
