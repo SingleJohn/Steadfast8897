@@ -38,7 +38,7 @@ type ItemQueryOptions struct {
 	Studio            []string          // 片商维度虚拟库:命中任一值(= ANY)
 	ActorName         []string          // 演员维度虚拟库:含任一演员(role='Actor')的影片
 	CatalogPrefix     []string          // 番号前缀维度虚拟库:命中任一番号字母前缀
-	LatestItemLimit   *int64            // 最新影片虚拟库:固定取 created_at 倒序的前 N 部
+	LatestItemLimit   *int64            // 最新媒体虚拟库:按电影/剧集活动时间取前 N 项
 	AnyProviderID     []ProviderIDMatch // 任一匹配即命中(OR);空则不过滤
 	HasSubtitles      *bool             // Emby/Jellyfin 查询参数 HasSubtitles
 	AllowedLibraryIDs []string          // 用户可访问的物理库;nil 表示不限制,空切片表示无可访问库

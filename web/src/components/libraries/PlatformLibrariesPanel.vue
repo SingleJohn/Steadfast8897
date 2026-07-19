@@ -204,8 +204,8 @@ const emit = defineEmits<{
         <div class="platform-row-main">
           <span class="platform-name">{{ p.DisplayName || p.PlatformName }}</span>
           <span class="platform-dim-badge">{{ p.IsLatest ? '动态最新' : p.Dimension }}</span>
-          <span v-if="(p.MatchValues?.length || 1) > 1" class="platform-dim-badge" title="已聚合的匹配值数量">聚合 {{ p.MatchValues.length }}</span>
-          <span class="platform-count">{{ p.ItemCount }}<template v-if="p.IsLatest"> / {{ p.ItemLimit }}</template> 部</span>
+          <span v-if="!p.IsLatest && (p.MatchValues?.length || 1) > 1" class="platform-dim-badge" title="已聚合的匹配值数量">聚合 {{ p.MatchValues.length }}</span>
+          <span class="platform-count">{{ p.ItemCount }}<template v-if="p.IsLatest"> / {{ p.ItemLimit }} 项</template><template v-else> 部</template></span>
         </div>
         <div class="platform-row-actions">
           <n-button v-if="!p.IsLatest" text size="tiny" title="聚合多个匹配值" @click="emit('openAlias', p)">聚合</n-button>

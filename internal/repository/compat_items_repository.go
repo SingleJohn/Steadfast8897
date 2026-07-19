@@ -196,12 +196,13 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
 			}
 		case CompatItemsParentPlatformLatest:
-			latestWhere := "recent.type = 'Movie' AND recent.merged_to_id IS NULL"
+			var allowedParam *int
 			if opts.RestrictLibraries {
 				if len(opts.AllowedLibraryIDs) == 0 {
-					latestWhere += " AND FALSE"
+					whereParts = append(whereParts, "FALSE")
 				} else {
-					latestWhere += " AND recent.library_id = ANY($" + strconv.Itoa(idx) + "::uuid[])"
+					param := idx
+					allowedParam = &param
 					args = append(args, opts.AllowedLibraryIDs)
 					idx++
 				}
@@ -210,17 +211,12 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 			if limit <= 0 {
 				limit = DefaultLatestItemLimit
 			}
-			whereParts = append(whereParts, `i.id IN (
-				SELECT recent.id FROM items recent
-				WHERE `+latestWhere+`
-				ORDER BY recent.created_at DESC, recent.id DESC
-				LIMIT $`+strconv.Itoa(idx)+`::bigint
-			)`)
+			whereParts = append(whereParts, "i.id IN ("+LatestVirtualMembersSQL(idx, allowedParam)+")")
 			args = append(args, limit)
 			idx++
 			whereParts = append(whereParts, "i.merged_to_id IS NULL")
 			if len(opts.IncludeTypes) == 0 {
-				whereParts = append(whereParts, "i.type = 'Movie'")
+				whereParts = append(whereParts, "i.type IN ('Movie','Series')")
 			}
 		case CompatItemsParentLibraryRecursive:
 			useRepresentative = true
@@ -338,13 +334,13 @@ func (r *CompatItemsRepository) SearchItems(ctx context.Context, opts CompatItem
 			SELECT * FROM ranked WHERE merge_row_num = 1`,
 			baseCols, seriesCols, userCols, compatItemsRepresentativeExpr("i"), userJoin, seriesJoin, compatItemsWhereSuffix(whereParts))
 		if latestParent {
-			sql += " ORDER BY ranked.created_at DESC, ranked.id DESC"
+			sql += " ORDER BY " + LatestVirtualActivityExpression("ranked") + " DESC, ranked.id DESC"
 		} else {
 			sql += " ORDER BY ranked.sort_name"
 		}
 	} else {
 		if latestParent {
-			sql += " ORDER BY i.created_at DESC, i.id DESC"
+			sql += " ORDER BY " + LatestVirtualActivityExpression("i") + " DESC, i.id DESC"
 		} else {
 			sql += " ORDER BY i.sort_name"
 		}

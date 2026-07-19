@@ -19,8 +19,8 @@ const emit = defineEmits<{
 <template>
   <section class="latest-panel">
     <div class="latest-copy">
-      <h3 class="latest-title">最新影片库</h3>
-      <p class="latest-desc">按文件时间动态聚合最近入库的电影，新增影片自动进入，超出数量的旧影片自动移出。</p>
+      <h3 class="latest-title">最新媒体库</h3>
+      <p class="latest-desc">动态聚合最近入库的电影和有新单集的剧集；剧集始终以完整剧集卡片显示。</p>
     </div>
     <div class="latest-form">
       <label class="latest-field">
@@ -28,7 +28,7 @@ const emit = defineEmits<{
         <n-input
           :value="latestName"
           size="small"
-          placeholder="最新影片"
+          placeholder="最新更新"
           @update:value="emit('updateLatestName', $event)"
         />
       </label>
@@ -48,7 +48,7 @@ const emit = defineEmits<{
       </n-button>
     </div>
     <div v-if="latestLibrary" class="latest-status">
-      当前聚合 {{ latestLibrary.ItemCount }} / {{ latestLibrary.ItemLimit }} 部，启停、排序和封面可在下方列表管理。
+      当前聚合 {{ latestLibrary.ItemCount }} / {{ latestLibrary.ItemLimit }} 项，启停、排序和封面可在下方列表管理。
       <span v-if="!globalEnabled"> 当前全局虚拟库开关未开启。</span>
     </div>
   </section>

@@ -740,10 +740,12 @@ func queryLatestItemsForParent(ctx context.Context, state *AppState, parentID st
 		}
 		applyVirtualDimension(opts, platform)
 		shared.ApplyLibraryScope(opts, scope)
-		sb := "DateCreated"
-		so := "Descending"
-		opts.SortBy = &sb
-		opts.SortOrder = &so
+		if !platform.IsLatest() {
+			sb := "DateCreated"
+			so := "Descending"
+			opts.SortBy = &sb
+			opts.SortOrder = &so
+		}
 		res, err := models.QueryItems(ctx, state.DB, opts)
 		if err != nil {
 			return nil, err

@@ -126,23 +126,18 @@ func (r *ItemQueryRepository) QueryItems(ctx context.Context, options *ItemQuery
 		if limit <= 0 {
 			limit = DefaultLatestItemLimit
 		}
-		latestWhere := "recent.type = 'Movie' AND recent.merged_to_id IS NULL"
+		var allowedParam *int
 		if options.AllowedLibraryIDs != nil {
 			if len(options.AllowedLibraryIDs) == 0 {
-				latestWhere += " AND FALSE"
+				conditions = append(conditions, "FALSE")
 			} else {
-				latestWhere += fmt.Sprintf(" AND recent.library_id = ANY($%d::uuid[])", paramIdx)
+				param := paramIdx
+				allowedParam = &param
 				params = append(params, options.AllowedLibraryIDs)
 				paramIdx++
 			}
 		}
-		conditions = append(conditions, fmt.Sprintf(
-			`i.id IN (
-				SELECT recent.id FROM items recent
-				WHERE %s
-				ORDER BY recent.created_at DESC, recent.id DESC
-				LIMIT $%d::bigint
-			)`, latestWhere, paramIdx))
+		conditions = append(conditions, "i.id IN ("+LatestVirtualMembersSQL(paramIdx, allowedParam)+")")
 		params = append(params, limit)
 		paramIdx++
 	}
@@ -559,6 +554,8 @@ func itemSortExpression(field, itemAlias, userAlias string) (string, bool) {
 		return itemAlias + ".sort_name", true
 	case "DateCreated":
 		return itemAlias + ".created_at", true
+	case "LatestActivity":
+		return LatestVirtualActivityExpression(itemAlias), true
 	case "PremiereDate":
 		return itemAlias + ".premiere_date", true
 	case "ProductionYear":

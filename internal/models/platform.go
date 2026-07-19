@@ -234,7 +234,7 @@ func AddPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, dimension, matc
 func UpsertLatestPlatformLibrary(ctx context.Context, pool *pgxpool.Pool, displayName string, itemLimit int64, enabled *bool) error {
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" {
-		displayName = "最新影片"
+		displayName = "最新更新"
 	}
 	return repository.NewPlatformRepository(pool).UpsertLatestLibrary(ctx, displayName, itemLimit, enabled)
 }

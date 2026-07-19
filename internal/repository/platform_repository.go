@@ -170,22 +170,21 @@ func (r *PlatformRepository) CountItemsForVirtualScoped(ctx context.Context, dim
 		if itemLimit != nil && *itemLimit > 0 {
 			limit = *itemLimit
 		}
-		where := "type = 'Movie' AND merged_to_id IS NULL"
 		args := []any{}
+		var allowedParam *int
 		if allowedLibraryIDs != nil {
 			if len(allowedLibraryIDs) == 0 {
 				return 0, nil
 			}
-			where += " AND library_id = ANY($1::uuid[])"
+			param := 1
+			allowedParam = &param
 			args = append(args, allowedLibraryIDs)
 		}
 		args = append(args, limit)
 		limitParam := len(args)
 		var count int64
-		err := r.pool.QueryRow(ctx,
-			fmt.Sprintf(`SELECT COUNT(*) FROM (
-				SELECT 1 FROM items WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d::bigint
-			) latest_items`, where, limitParam), args...).Scan(&count)
+		err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (`+
+			LatestVirtualMembersSQL(limitParam, allowedParam)+`) latest_items`, args...).Scan(&count)
 		return count, err
 	}
 	cond, ok := PlatformDimensionCondition(dimension)
@@ -404,7 +403,7 @@ func (r *PlatformRepository) IsGlobalEnabled(ctx context.Context) bool {
 
 func (r *PlatformRepository) CollectionType(ctx context.Context, dimension string, values []string) string {
 	if dimension == PlatformDimLatest {
-		return "movies"
+		return ""
 	}
 	cond, ok := PlatformDimensionCondition(dimension)
 	if !ok || len(values) == 0 {
@@ -428,10 +427,11 @@ func (r *PlatformRepository) UpsertLatestLibrary(ctx context.Context, displayNam
 		INSERT INTO platform_libraries (
 			platform_name, display_name, dimension, match_value, match_values,
 			collection_type, item_limit, enabled
-		) VALUES ('Latest Movies', $1, $2, 'Movie', ARRAY['Movie'], 'movies', $3, COALESCE($4, true))
+		) VALUES ('Latest Movies', $1, $2, 'Movie', ARRAY['Movie', 'Series'], 'mixed', $3, COALESCE($4, true))
 		ON CONFLICT (dimension, match_value) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
-			collection_type = 'movies',
+			match_values = EXCLUDED.match_values,
+			collection_type = 'mixed',
 			item_limit = EXCLUDED.item_limit,
 			enabled = COALESCE($4, platform_libraries.enabled)`,
 		displayName, PlatformDimLatest, itemLimit, enabled)

@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fyms/internal/repository"
 )
 
 // PosterCount 是封面生成需要的海报数量。九宫格风格改为 3 列 × 4 行后为 12;
@@ -111,18 +113,14 @@ func PickMaterialsForVirtual(ctx context.Context, pool *pgxpool.Pool, whereCond 
 	return out, nil
 }
 
-// PickMaterialsForLatest 从最新影片虚拟库的动态成员集合中抽取封面素材。
+// PickMaterialsForLatest 从最新媒体虚拟库的动态成员集合中抽取封面素材。
 func PickMaterialsForLatest(ctx context.Context, pool *pgxpool.Pool, itemLimit int64) ([]Material, error) {
 	if itemLimit <= 0 {
 		itemLimit = 200
 	}
 	rows, err := pool.Query(ctx, `
 		WITH latest AS (
-			SELECT id
-			  FROM items
-			 WHERE type = 'Movie' AND merged_to_id IS NULL
-			 ORDER BY created_at DESC, id DESC
-			 LIMIT $1
+			`+repository.LatestVirtualMembersSQL(1, nil)+`
 		)
 		SELECT i.name, i.primary_image_path, COALESCE(i.backdrop_image_path, '')
 		  FROM items i

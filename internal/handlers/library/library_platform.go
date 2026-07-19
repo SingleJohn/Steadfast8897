@@ -72,8 +72,7 @@ func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibr
 	case models.PlatformDimLatest:
 		limit := p.LatestLimit()
 		opts.LatestItemLimit = &limit
-		opts.IncludeItemTypes = []string{"Movie"}
-		sortBy := "DateCreated"
+		sortBy := "LatestActivity"
 		sortOrder := "Descending"
 		opts.SortBy = &sortBy
 		opts.SortOrder = &sortOrder
@@ -87,7 +86,7 @@ func applyVirtualDimension(opts *models.ItemQueryOptions, p *models.PlatformLibr
 }
 
 // upsertLatestPlatform POST /Library/Platforms/Latest
-// 创建或更新唯一的最新影片虚拟库。
+// 创建或更新唯一的最新媒体虚拟库。
 func upsertLatestPlatform(c *gin.Context, state *AppState) {
 	var body struct {
 		Name    string `json:"Name"`
