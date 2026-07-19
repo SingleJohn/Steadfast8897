@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fyms/internal/config"
 	"fyms/internal/dto"
 	"fyms/internal/middleware"
 	"fyms/internal/models"
@@ -71,68 +68,6 @@ func categoriesForTables(data map[string]json.RawMessage) []string {
 	return cats
 }
 
-func getLocalIP() string {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1"
-	}
-	defer conn.Close()
-	if udp, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-		return udp.IP.String()
-	}
-	return "127.0.0.1"
-}
-
-func systemInfo(ctx context.Context, state *AppState, public bool) gin.H {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	updateStatus := state.Updater.GetStatus(context.Background())
-	branding := services.LoadBrandingConfig(ctx, state.DB, state.Config)
-
-	port := state.Config.Port
-	info := gin.H{
-		"ServerName":             branding.ServerName,
-		"Version":                state.Config.Version,
-		"Id":                     state.Config.ServerID,
-		"OperatingSystem":        runtime.GOOS,
-		"ProductName":            "FYMS",
-		"StartupWizardCompleted": true,
-		"LocalAddress":           fmt.Sprintf("http://%s:%d", getLocalIP(), port),
-		"CanSelfRestart":         true,
-	}
-	if branding.IconURL != "" {
-		info["BrandIconUrl"] = branding.IconURL
-	}
-
-	if !public {
-		info["OperatingSystemDisplayName"] = fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
-		info["HasPendingRestart"] = updateStatus.Status == "pulling" || updateStatus.Status == "recreating" || updateStatus.Status == "restarting"
-		info["IsShuttingDown"] = false
-		info["CanLaunchWebBrowser"] = false
-		info["HasUpdateAvailable"] = updateStatus.HasUpdate
-		info["UpdateStatus"] = updateStatus
-		info["TranscodingTempPath"] = ""
-		info["LogPath"] = ""
-		info["InternalMetadataPath"] = ""
-		info["CachePath"] = state.Config.CacheDir
-		info["ProcessId"] = os.Getpid()
-		info["HeapAllocatedBytes"] = m.Alloc
-		info["SystemTotalBytes"] = m.Sys
-		info["ServerDateTime"] = time.Now().UTC().Format(time.RFC3339)
-		if config.BuildCommit != "" {
-			info["BuildCommit"] = config.BuildCommit
-		}
-		if config.BuildTime != "" {
-			info["BuildTime"] = config.BuildTime
-		}
-		if config.BuildRepo != "" {
-			info["BuildRepo"] = config.BuildRepo
-		}
-	}
-
-	return info
-}
-
 func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.HandlerFunc) {
 	group.GET("/System/Info", getSystemInfo)
 	group.GET("/System/Info/Public", getSystemInfoPublic)
@@ -164,57 +99,6 @@ func RegisterSystemRoutes(group *gin.RouterGroup, state *AppState, adminMW gin.H
 	group.POST("/System/Update/ApplyVersion", adminMW, applyUpdateVersion)
 	group.POST("/System/Update/Rollback", adminMW, rollbackUpdate)
 	group.POST("/System/Update/Channel", adminMW, setUpdateChannel)
-}
-
-func getSystemInfo(c *gin.Context) {
-	info := systemInfo(c.Request.Context(), GetState(c), false)
-	applyEmbyOfficialOverrides(c, info)
-	c.JSON(http.StatusOK, info)
-}
-
-func getSystemInfoPublic(c *gin.Context) {
-	info := systemInfo(c.Request.Context(), GetState(c), true)
-	applyEmbyOfficialOverrides(c, info)
-	c.JSON(http.StatusOK, info)
-}
-
-// isEmbyOfficialClient 识别 Emby 官方客户端，用于伪装 Version/ProductName 通过其严格校验。
-// 命中条件：UA 含 Emby/、Emby Theater、Emby for、EmbyAndroid；
-// 或 Authorization 头里 Client 是 Emby Theater / Emby for ... / Emby Web / Emby Mobile。
-// 前端用 Client="Media Server Web"，不会命中。
-func isEmbyOfficialClient(c *gin.Context) bool {
-	// Emby JS SDK 通用行为：所有 Emby 官方客户端 (Mac/iOS/Android/Web) 都会
-	// 设 X-Emby-Client 头。FYMS 前端不设此头，第三方客户端 (Infuse/Yamby
-	// /Hills 等) 也不用 Emby JS SDK，所以不会有这头。最可靠的命中条件。
-	if c.GetHeader("X-Emby-Client") != "" {
-		return true
-	}
-	ua := c.GetHeader("User-Agent")
-	if strings.Contains(ua, "Emby/") ||
-		strings.Contains(ua, "Emby Theater") ||
-		strings.Contains(ua, "Emby for ") ||
-		strings.Contains(ua, "EmbyAndroid") {
-		return true
-	}
-	auth := c.GetHeader("X-Emby-Authorization")
-	if auth == "" {
-		auth = c.GetHeader("Authorization")
-	}
-	return strings.Contains(auth, `Client="Emby Theater"`) ||
-		strings.Contains(auth, `Client="Emby for `) ||
-		strings.Contains(auth, `Client="Emby Web"`) ||
-		strings.Contains(auth, `Client="Emby Mobile"`)
-}
-
-func applyEmbyOfficialOverrides(c *gin.Context, info gin.H) {
-	if !isEmbyOfficialClient(c) {
-		return
-	}
-	// 必须严格等于 4.7.14：Emby Mobile (com.emby.mobile) connectionmanager.js 里
-	// compareVersions 把返回值当 boolean 用，-1/1 都是 truthy → 任何 !== "4.7.14"
-	// 都会被判定为"需要更新"。这是该客户端的 bug，只能精确匹配 minServerVersion。
-	info["Version"] = "4.7.14"
-	info["ProductName"] = "Emby Server"
 }
 
 func ping(c *gin.Context) {

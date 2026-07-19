@@ -536,34 +536,10 @@ type authenticateByNameBody struct {
 	Password string `json:"Password"`
 }
 
-func authenticateResponse(c *gin.Context, st *AppState, u *repository.User, token string) {
-	m, err := buildUserResponse(c.Request.Context(), st, u, true)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
-	// Match Rust: only User + AccessToken + ServerId (no SessionInfo)
-	c.JSON(http.StatusOK, gin.H{
-		"User":        m,
-		"AccessToken": token,
-		"ServerId":    st.Config.ServerID,
-	})
-}
-
 func AuthenticateByName(c *gin.Context) {
 	st := GetState(c)
 
-	ip := c.GetHeader("X-Forwarded-For")
-	if ip != "" {
-		ip = strings.SplitN(ip, ",", 2)[0]
-		ip = strings.TrimSpace(ip)
-	}
-	if ip == "" {
-		ip = c.GetHeader("X-Real-IP")
-	}
-	if ip == "" {
-		ip = c.ClientIP()
-	}
+	ip := requestClientIP(c)
 	if _, err := checkLoginRate(ip); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"message": err.Error()})
 		return

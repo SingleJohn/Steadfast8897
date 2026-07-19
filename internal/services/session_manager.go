@@ -48,6 +48,11 @@ type SessionManager struct {
 	stopCh   chan struct{}
 }
 
+// EmbySessionID returns the stable session identifier exposed by Emby-compatible APIs.
+func EmbySessionID(userID, deviceID string) string {
+	return userID + "_" + deviceID
+}
+
 func NewSessionManager() *SessionManager {
 	sm := &SessionManager{
 		sessions: make(map[string]*ActiveSession),
@@ -181,7 +186,7 @@ func sessionMatchesID(s *ActiveSession, sessionID string) bool {
 	if s == nil || sessionID == "" {
 		return false
 	}
-	if s.UserID+"_"+s.DeviceID == sessionID {
+	if EmbySessionID(s.UserID, s.DeviceID) == sessionID {
 		return true
 	}
 	if s.PlaySessionID == sessionID {

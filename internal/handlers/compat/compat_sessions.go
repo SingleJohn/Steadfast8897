@@ -21,7 +21,7 @@ func getSessions(c *gin.Context, state *AppState) {
 }
 
 func formatEmbySessionInfo(ctx context.Context, s services.ActiveSession, state *AppState) gin.H {
-	sessionID := s.UserID + "_" + s.DeviceID
+	sessionID := services.EmbySessionID(s.UserID, s.DeviceID)
 	playSessionID := s.PlaySessionID
 	if playSessionID == "" && s.NowPlaying != nil {
 		playSessionID = s.NowPlaying.PlaySessionID
